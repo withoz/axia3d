@@ -14498,6 +14498,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adr267_gamma_punch_result_passes_volume_integrity_gate() {
+        // ADR-267 γ — punch 결과(ring-with-hole 시트)는 crack/non-manifold 없이
+        // verify_volume_integrity(OpenMesh) 게이트를 통과한다 (게이트가 정상 punch 를
+        // 오탐하지 않음). punch_hole WASM wrapper 가 이 결과에 delta 게이트를 적용해
+        // 손상 유발 시에만 rollback.
+        let mut mesh = Mesh::new();
+        demo_rect_face(&mut mesh);
+        mesh.punch_circular_hole(DVec3::new(0.0, 0.0, 0.0), DVec3::Z, 500.0, 64)
+            .expect("punch succeeds");
+        let report = mesh.verify_volume_integrity(crate::IntegrityScope::OpenMesh);
+        assert!(
+            report.is_valid(),
+            "punch result must pass gate: {}",
+            report.summary()
+        );
+        assert!(report.geometric_cracks.is_empty(), "no cracks from punch");
+    }
+
     /// ADR-222 Phase 0 — the punched hole's inner-loop edges carry an
     /// AnalyticCurve::Circle + a single shared curve_owner_id (ADR-088
     /// grouping), while the polygonal ring topology stays unchanged.

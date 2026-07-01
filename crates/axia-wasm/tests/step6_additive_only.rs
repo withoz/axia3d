@@ -1481,6 +1481,29 @@ fn create_solid_extrude_handles_solid_created_and_fallback() {
         "W-1-β: must match CommandResult::Error");
 }
 
+/// ADR-267 γ — verifyVolumeIntegrity export + cut-op gate helper wired.
+#[test]
+fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
+    let l = lib_src();
+    assert!(
+        l.contains("pub fn verify_volume_integrity_json"),
+        "ADR-267 γ: verify_volume_integrity_json must exist"
+    );
+    assert!(
+        l.contains(r#"js_name = "verifyVolumeIntegrity""#),
+        "ADR-267 γ: must export as verifyVolumeIntegrity"
+    );
+    // The cut/carve/slice ops call the shared delta gate helper.
+    assert!(
+        l.contains("fn integrity_gate_passed"),
+        "ADR-267 γ: shared gate helper must exist"
+    );
+    assert!(
+        l.matches("integrity_gate_passed(").count() >= 4,
+        "ADR-267 γ: gate helper must be called by ≥4 cut ops (punch/drill/carve/slice)"
+    );
+}
+
 // ── ADR-080 V-β-α-bridge — `offset_edge_on_host` JSON contract ──────
 //
 // New WASM endpoint exposes V-β-α Rust core (offset_edge_on_host_face)

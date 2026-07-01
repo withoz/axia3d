@@ -7864,6 +7864,68 @@ impl AxiaEngine {
     /// alternative to draw-inner-circle + `mergeCoplanarContaining`.
     ///
     /// Returns the rebuilt face id, or -1 on failure (lastError set).
+    /// ADR-267 γ — delta 무결성 게이트 헬퍼 (cut/carve/slice op 의 Ok arm 에서 호출).
+    /// `baseline` = op 전 `verify_volume_integrity(OpenMesh).damage_count()`,
+    /// `snapshot` = op 전 `scene_snapshot()`. 반환 true = clean (caller 가 commit
+    /// 진행). false = op 가 새 손상 유발 → 이미 byte-identical rollback + txn cancel
+    /// + lastError 완료 (caller 는 실패값 반환).
+    ///
+    /// `manual_txn` — cleanup 모드: true = op 가 begin/commit/cancel 로 txn 을 직접
+    /// 관리하고 게이트가 commit 前 Ok arm 에서 호출됨(→ `cancel()`); false = Scene
+    /// 메서드가 txn 을 내부에서 이미 commit 함(→ `discard_last_undo()` 로 프레임 제거).
+    fn integrity_gate_passed(
+        &mut self,
+        baseline: usize,
+        snapshot: &[u8],
+        label: &str,
+        manual_txn: bool,
+    ) -> bool {
+        let after = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh);
+        if after.damage_count() > baseline {
+            console_error!(
+                "[RUST] {} REJECTED by integrity gate:\n{}",
+                label,
+                after.summary()
+            );
+            self.scene.restore_scene_snapshot(snapshot);
+            if manual_txn {
+                self.scene.transactions.cancel();
+            } else {
+                self.scene.transactions.discard_last_undo();
+            }
+            self.set_error(format!(
+                "부피 무결성 위반으로 취소됨 ({}): {}",
+                label,
+                after.summary()
+            ));
+            self.invalidate_cache();
+            false
+        } else {
+            true
+        }
+    }
+
+    /// ADR-267 γ — on-demand 씬 무결성 검사 (UI "씬 무결성 검사"). 전체 활성 mesh 에
+    /// OpenMesh scope 게이트를 적용한 JSON 리포트 반환. read-only (변경 없음).
+    #[wasm_bindgen(js_name = "verifyVolumeIntegrity")]
+    pub fn verify_volume_integrity_json(&self) -> String {
+        let r = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh);
+        format!(
+            r#"{{"valid":{},"invariantViolations":{},"geometricCracks":{},"openBoundaryEdges":{},"checkedFaces":{}}}"#,
+            r.is_valid(),
+            r.invariant_violations.len(),
+            r.geometric_cracks.len(),
+            r.open_boundary_edges,
+            r.checked_faces,
+        )
+    }
+
     #[wasm_bindgen(js_name = "punchHole")]
     pub fn punch_hole(
         &mut self,
@@ -7874,10 +7936,19 @@ impl AxiaEngine {
     ) -> i32 {
         let center = DVec3::new(cx, cy, cz);
         let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
         match self.scene.mesh.punch_circular_hole(center, normal, radius, segments) {
             Ok(new_face) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -7909,6 +7980,11 @@ impl AxiaEngine {
         let normal = DVec3::new(nx, ny, nz);
         // Drill mutates in several steps; capture a snapshot so a partial
         // failure (e.g. exit punch fails after entry) rolls back cleanly.
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
@@ -7918,6 +7994,9 @@ impl AxiaEngine {
             .drill_circular_through_hole(center, normal, radius, segments)
         {
             Ok(res) => {
+                if !self.integrity_gate_passed(integrity_before, &before, "drill", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -8131,10 +8210,26 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "carvePocketFromSourceFace")]
     pub fn carve_pocket_from_source_face(&mut self, source_face_raw: u32, depth: f64) -> i32 {
         let fid = FaceId::new(source_face_raw);
+        // ADR-267 γ — Scene 메서드가 txn 을 내부 commit 하므로 게이트는 op 후 실행,
+        // 실패 시 discard_last_undo 로 프레임 제거 (manual_txn=false).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         // The Scene method owns the transaction + XIA/Shape reconciliation
         // (ADR-252) so the new pocket faces are tracked by the wall's solid.
         match self.scene.carve_pocket_from_source_face(fid, depth) {
             CommandResult::PushPullDone { sides_created, .. } => {
+                if !self.integrity_gate_passed(
+                    integrity_before,
+                    &integrity_snapshot,
+                    "carve pocket",
+                    false,
+                ) {
+                    return -1;
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 sides_created as i32
@@ -8629,8 +8724,23 @@ impl AxiaEngine {
         debug_log!("[RUST] sliceVolumeByPlane: {} faces, plane n=({},{},{})",
             fids.len(), normal_x, normal_y, normal_z);
 
+        // ADR-267 γ — Scene 메서드가 txn 을 내부 commit → 게이트 op 후 실행,
+        // 실패 시 discard_last_undo (manual_txn=false).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         match self.scene.slice_volume_by_plane(&fids, plane) {
             Ok(new_xia) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "slice", false)
+                {
+                    return format!(
+                        r#"{{"ok":false,"error":"{}"}}"#,
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let total = self.scene.mesh.face_count();
