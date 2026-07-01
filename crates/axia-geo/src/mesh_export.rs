@@ -1,0 +1,1384 @@
+//! Mesh Export — Three.js buffer export for GPU rendering.
+//!
+//! Extracted from `mesh.rs` (Tier 2-A Stack #2, 2026-05-16, LOCKED #44
+//! complete meaning per merge). All export-related operations that
+//! produce flat vertex/index buffers for the TS Viewport.
+//!
+//! ## Contents
+//!
+//! - `Mesh::export_buffers` — main entry, returns 5-tuple of buffers
+//! - `Mesh::export_buffers_inner` — bulk triangulation + tessellation logic
+//! - `Mesh::last_export_skip_stats` — per-face skip diagnostics accessor
+//! - `Mesh::deactivate_empty_emit_faces` — invariant guard (earcut Ok([]))
+//! - `Mesh::export_edge_lines` — edge wireframe export (angle-filtered)
+//! - `Mesh::export_centerline_lines` — centerline-class edge export
+//! - `Mesh::export_edge_lines_with_map` — wireframe + edge owner-id map
+//! - `Mesh::projection_axes` (private) — 2D earcut projection helper
+//!
+//! ## ADR cross-link
+//!
+//! - ADR-031 Phase D — analytic surface tessellation
+//! - ADR-038 P23 — surface-aware normals
+//! - ADR-080 V — chord_tol policy for closed-curve render
+//! - ADR-089 Phase 2 — closed-curve face render path
+//! - LOCKED #15 P22.5 — owner-ID grouping in edge_map
+//! - LOCKED #16 P23 — surface-aware Gouraud smoothing
+//! - LOCKED #40 — render-only chord_tol
+//! - LOCKED #44 — complete meaning per merge
+
+use glam::DVec3;
+use anyhow::Result;
+
+use crate::entities::*;
+use crate::mesh::{Mesh, ExportSkipStats, compute_uv_slice_for_quad_face, surfaces_in_same_smooth_group};
+
+/// ADR-135 β — Default render chord_tol (LOCKED #40 §L1, 2026-05-12).
+///
+/// 0.02 mm = 5× finer than legacy 0.1 mm. Visual quality 우선 결정 —
+/// top rim facet 해소 (사용자 시연 "옆면처럼 원도 같은 방식 쓸 수 없나요?"
+/// 답습). LOD-aware caller (Viewport via WASM `setRenderChordTol`) 가
+/// `lod_chord_tol(camera_distance)` 의 결과를 `export_buffers_with_tol`
+/// 에 전달; 본 const 는 LOD 미적용 시 fallback (backward compat) 만.
+pub const DEFAULT_ANALYTIC_CHORD_TOL: f64 = 0.02;
+
+/// ADR-135 β — Distance-based LOD chord_tol formula.
+///
+/// Returns chord_tol for given camera distance (mm), clamped to
+/// `[DEFAULT_ANALYTIC_CHORD_TOL, MAX_LOD_CHORD_TOL]`.
+///
+/// **Formula**: `base * max(1, dist / threshold)`, capped at 1.0 mm.
+/// - `base = 0.02 mm` (DEFAULT_ANALYTIC_CHORD_TOL, LOCKED #40)
+/// - `threshold = 100 mm` (near rendering region)
+/// - `cap = 1.0 mm` (far rendering coarsest)
+///
+/// **Examples**:
+/// - cam 50 mm  (near) → 0.02 mm (unchanged, near rendering)
+/// - cam 100 mm (near) → 0.02 mm (still near, baseline)
+/// - cam 500 mm (mid)  → 0.10 mm (5× coarser)
+/// - cam 1 m    (mid)  → 0.20 mm (10× coarser)
+/// - cam 5 m    (far)  → 1.00 mm (capped, 50× coarser)
+/// - cam 100 m  (far)  → 1.00 mm (capped, max coarseness)
+///
+/// **r=1000 mm sphere triangle reduction example**:
+/// - Near (cam 100 mm, tol 0.02): ~2,000,000 tris
+/// - Mid (cam 1 m, tol 0.20): ~200,000 tris (10× reduction)
+/// - Far (cam 5 m+, tol 1.0): ~40,000 tris (50× reduction)
+///
+/// Visual impact: near rendering 영향 0 (≤ 100 mm), far rendering only
+/// auto-coarser. LOCKED #40 spirit 보존.
+pub fn lod_chord_tol(camera_distance: f64) -> f64 {
+    const THRESHOLD_MM: f64 = 100.0;
+    const MAX_LOD_CHORD_TOL: f64 = 1.0;
+    let dist = camera_distance.max(0.0);
+    let lod_factor = (dist / THRESHOLD_MM).max(1.0);
+    (DEFAULT_ANALYTIC_CHORD_TOL * lod_factor).min(MAX_LOD_CHORD_TOL)
+}
+
+impl Mesh {
+
+    /// Export mesh as flat vertex/index buffers for GPU rendering.
+    /// Returns (positions, normals, indices, face_id_per_triangle)
+    /// Export mesh as flat vertex/index buffers for GPU rendering.
+    /// Returns (positions_f32, normals_f32, indices, face_map, positions_f64)
+    /// positions_f64 has the same layout/indexing as positions_f32 but in full f64 precision.
+    /// **CONTRACT** (2026-05-02 invariant freeze): every active face MUST
+    /// emit ≥1 triangle. earcut Ok([]) faces are auto-deactivated INSIDE
+    /// this method — the call order is locked:
+    ///   1. clear `last_export_empty_faces`
+    ///   2. emit triangles, recording empty-emit face IDs
+    ///   3. deactivate empty-emit faces (`deactivate_empty_emit_faces`)
+    ///   4. (optional) re-export if any face was deactivated
+    ///   5. snapshot `last_export_stats` LAST
+    /// Any future change to this method MUST preserve this order. The
+    /// `debug_assert_eq!` after deactivation locks the invariant in
+    /// debug builds (release auto-corrects via the deactivation pass).
+    ///
+    /// **Guarantee on returned buffers**: `face_map` contains exactly
+    /// one entry per emitted triangle, and the *set* of distinct face
+    /// IDs in `face_map` equals the count of `is_active() && is_visible()`
+    /// faces in the mesh. NO active face with zero triangles can leak
+    /// past this boundary.
+    pub fn export_buffers(&mut self) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, Vec<u32>, Vec<f64>)> {
+        // Default render chord_tol — LOCKED #40 §L1 baseline (0.02 mm).
+        // For LOD-aware caller (ADR-135 β, Viewport), use
+        // `export_buffers_with_tol(chord_tol)`.
+        self.export_buffers_with_tol(DEFAULT_ANALYTIC_CHORD_TOL)
+    }
+
+    /// ADR-135 β — Distance-based LOD chord_tol export.
+    ///
+    /// Caller (Viewport via WASM `setRenderChordTol`) computes
+    /// `lod_chord_tol(camera_distance)` and passes it here. For near
+    /// rendering (camera ≤ 100mm), pass `DEFAULT_ANALYTIC_CHORD_TOL`
+    /// (= 0.02 mm, LOCKED #40 baseline) — visual output identical to
+    /// pre-ADR-135 path.
+    ///
+    /// For far rendering (camera > 100mm), pass a larger chord_tol
+    /// (e.g., 0.2 mm at 1m, 1.0 mm at 5m+) — significantly fewer
+    /// triangles per primitive, no visual difference at viewing distance.
+    ///
+    /// **Triangle count formula** (sphere example, r=100 mm):
+    /// - chord_tol = 0.02 mm → ~50,000 tris (LOCKED #40 baseline)
+    /// - chord_tol = 0.2 mm → ~5,000 tris (LOD at 1m)
+    /// - chord_tol = 1.0 mm → ~500 tris (LOD at 5m+)
+    pub fn export_buffers_with_tol(
+        &mut self,
+        chord_tol: f64,
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, Vec<u32>, Vec<f64>)> {
+        let result = self.export_buffers_inner(chord_tol)?;
+        // Step 3 — deactivate any face whose triangulation produced 0
+        // triangles (earcut Ok([])). Restores the "1 face = ≥1 tri"
+        // invariant before stats are snapshotted.
+        let removed = self.deactivate_empty_emit_faces();
+        if removed == 0 {
+            // Step 5 — snapshot stats (already done at end of inner pass).
+            return Ok(result);
+        }
+        // Step 4 — re-export with cleaned mesh state. Stats from this
+        // pass are the canonical snapshot (recorded at end of inner).
+        self.export_buffers_inner(chord_tol)
+    }
+
+    /// ADR-186 — sample a half-edge's Arc curve interior, oriented
+    /// origin→dst, for face-fill tessellation. Returns interior points
+    /// EXCLUDING both endpoints (the endpoint vertices are pushed
+    /// separately by the caller). Empty when the edge carries no Arc curve.
+    ///
+    /// Full-circle self-loops are handled by the `loop_verts.len() == 1`
+    /// fast-path; this covers *split* arcs (e.g. two overlapping circles →
+    /// lens bounded by 4 arcs). Without sampling, the fill connects arc
+    /// endpoints with straight chords → the "마름모" 회귀 (사용자 보고
+    /// 2026-06-02 "두개의 원이 교차되서 ... 마름모로 면이 변했네요").
+    /// **B4b-2b** — Bezier/BSpline/NURBS regular-edge fill sampling activated
+    /// (was straight chord). Mirrors the Arc arm; samples the sub-bezier so the
+    /// freeform lens boundary renders smooth (else 2 chords < B4b-2a line-seg).
+    fn he_arc_fill_points(
+        &self,
+        he_id: HeId,
+        origin_pos: DVec3,
+        dst_pos: DVec3,
+        chord_tol: f64,
+    ) -> Vec<DVec3> {
+        let edge_id = self.hes[he_id].edge();
+        let edge = match self.edges.get(edge_id) {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+        let mut pts = match edge.curve().cloned() {
+            Some(crate::curves::AnalyticCurve::Arc {
+                center,
+                radius,
+                normal,
+                basis_u,
+                start_angle,
+                end_angle,
+            }) => {
+                let ct = chord_tol.min(radius * 0.002).max(1e-6);
+                crate::curves::arc::tessellate(
+                    center, radius, normal, basis_u, start_angle, end_angle, ct,
+                )
+            }
+            // B4b-2b — freeform regular-edge (sub-bezier from lens split).
+            Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
+                crate::curves::bezier::tessellate(&control_pts, chord_tol).unwrap_or_default()
+            }
+            Some(crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree }) => {
+                crate::curves::bspline::tessellate(&control_pts, &knots, degree as usize, chord_tol)
+                    .unwrap_or_default()
+            }
+            Some(crate::curves::AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
+                crate::curves::nurbs::tessellate(
+                    &control_pts, &weights, &knots, degree as usize, chord_tol,
+                )
+                .unwrap_or_default()
+            }
+            _ => return Vec::new(),
+        };
+        if pts.len() < 3 {
+            return Vec::new();
+        }
+        // Orient origin→dst (the stored arc may run either direction
+        // relative to this half-edge's traversal).
+        let d_fwd = (pts[0] - origin_pos).length();
+        let d_rev = (pts[0] - dst_pos).length();
+        if d_rev < d_fwd {
+            pts.reverse();
+        }
+        pts.remove(0);
+        pts.pop();
+        pts
+    }
+
+    fn export_buffers_inner(
+        &self,
+        chord_tol: f64,
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, Vec<u32>, Vec<f64>)> {
+        let mut positions: Vec<f32> = Vec::new();
+        let mut positions_f64: Vec<f64> = Vec::new();
+        let mut normals: Vec<f32> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut face_map: Vec<u32> = Vec::new(); // one FaceId per triangle
+        let mut vert_offset: u32 = 0;
+
+        // Step 1 — reset diagnostic counters + empty-emit list at start of
+        // every export pass (the "clear" in clear → emit → deactivate →
+        // snapshot ordering).
+        let mut stats = ExportSkipStats::default();
+        self.last_export_empty_faces.borrow_mut().clear();
+
+        // ADR-038 P23.2 + 2026-05-12 visual quality refinement —
+        // chord tolerance for **render-only** analytic surface / curve
+        // tessellation. 0.02mm 는 0.1mm 의 5× refinement 으로, top rim
+        // facet (사용자 시연 결함 — "옆면처럼 원도 같은 방식 쓸 수 없나요?")
+        // 해소. Side surface 가 매끈해 보이는 진짜 이유는 N 이 충분해서가
+        // 아니라 surface-aware Gouraud normal 이 적은 segment 도 매끈하게
+        // 보이게 만들기 때문 (ADR-038 P23.5). Top face 는 Plane normal 만
+        // 가지므로 segment count 가 그대로 시각 facet 으로 노출 → 더 fine
+        // chord 가 필요.
+        //
+        // Engine ops (offset / Boolean / Push-Pull Path A 의 polygon
+        // substitute) 는 별도 chord_tol (`radius * 0.01`) 을 caller 가
+        // 명시 전달 — 본 const 는 render path 전용. 두 tolerance 분리는
+        // ADR-049 §4 의 "Form/Property layer" 패턴 답습 (truth vs view).
+        //
+        // 메모리 영향 (r=5 cylinder 기준):
+        //   Side surface: ~16 → ~38 segments (×2.4)
+        //   Top face fan: ~22 → ~78 triangles (×3.5)
+        //   Rim wireframe: ~22 → ~78 line segments (×3.5)
+        //   합계 cylinder 1개: ~150 → ~360 verts (+210 verts, 무시 가능)
+        //
+        // ADR-135 β — Distance-based LOD chord_tol activated.
+        // Caller (Viewport via WASM setRenderChordTol) passes
+        // `lod_chord_tol(camera_distance)`. Default = 0.02 mm (LOCKED #40).
+        // Far rendering (camera > 100mm) auto-coarser via LOD formula.
+        let analytic_chord_tol = chord_tol;
+
+        for (face_id, face) in self.faces.iter() {
+            if !face.is_active() || !face.is_visible() {
+                continue;
+            }
+            stats.total_active_faces += 1;
+
+            // ADR-038 P23.1 — Analytic evaluate priority.
+            // `Face.surface = Some(AnalyticSurface)` 이면 surface 의 정확한
+            // tessellation + analytic normal 사용. 없으면 기존 path
+            // (DCEL fan averaging) 유지.
+            //
+            // ADR-087 K-ε hotfix — LOCKED #12 (ADR-025 P11) "닫힌 엣지로
+            // face 합성" 규칙: Plane variant 는 polygon = exact 이므로
+            // surface tessellation 을 *건너뛰고* DCEL polygon path 로
+            // fall through. Plane.u_range/v_range = (-1e6, 1e6) 가
+            // tessellate 시 2km × 2km mesh 로 확장되어 face 가 edge 를
+            // 벗어나는 회귀 차단. Curved surface (Cylinder/Sphere/Cone/
+            // Torus/Bezier/BSpline/NURBS) 는 surface tessellation 유지
+            // (chord-based curve 샘플링 필수).
+            if let Some(surface) = face.surface() {
+                if matches!(surface, crate::surfaces::AnalyticSurface::Plane { .. }) {
+                    // Plane → polygon path (DCEL boundary = exact)
+                    // fall through to the polygon tessellation below.
+                } else {
+                use crate::surfaces::SurfaceOps;
+
+                // ADR-089 A-ρ-β / A-φ-β — curved surface uv-slice fast-path.
+                // For 4-vert quad faces with shared curved surface
+                // (Cylinder/Sphere/Cone/Torus), compute the quad's actual
+                // uv sub-range from its boundary verts and tessellate only
+                // that slice. L-φ-1 / L-φ-2 / L-φ-3 / L-φ-4.
+                let face_surface_owned;
+                let slice = compute_uv_slice_for_quad_face(self, face, surface);
+                let render_surface: &crate::surfaces::AnalyticSurface =
+                    if let Some(sliced) = slice {
+                        face_surface_owned = sliced;
+                        &face_surface_owned
+                    } else {
+                        surface
+                    };
+
+                // ADR-197 γ-2b-2 — arc-bounded curved patch (Boolean corner): the
+                // surface uv-range spans the whole sphere, so the default
+                // tessellation would fill it; instead clip to the arc boundary
+                // via uv-earcut. `None` for non-arc-bounded faces (quad / self-
+                // loop / non-Sphere) → keep the existing surface tessellation.
+                // ADR-202 β-3b — Sphere face split by a circle (cap / annulus):
+                // tessellate the hemisphere and keep only this face's side of the
+                // boundary circle (cap = inside, annulus = outside the hole), so
+                // the two sub-faces don't z-fight. `None` for plain hemispheres /
+                // non-Sphere → keep the existing path.
+                // ADR-205 β-2 — a Cylinder band with an OBLIQUE elliptic
+                // boundary (tilted-plane Boolean) is clipped to its boundary
+                // planes; `None` for perpendicular bands → default tessellation.
+                // ADR-257 β-4 — P3-B Cylinder geodesic-porthole split (checked
+                // first; returns None for every non-split face → the existing
+                // cascade below is reached unchanged).
+                let tess = match self.tessellate_cylinder_circle_clipped(face_id, analytic_chord_tol) {
+                    Some(t) => t,
+                    // ADR-263 β-3 — P3-C Cone geodesic-porthole split (parallel
+                    // to the cylinder circle-clip; None for every non-split face
+                    // → the existing cascade below is reached unchanged).
+                    None => match self.tessellate_cone_circle_clipped(face_id, analytic_chord_tol) {
+                    Some(t) => t,
+                    // ADR-263 β-6 — P3-C Torus porthole split (doubly-periodic
+                    // UV-earcut; None for every non-split face).
+                    None => match self.tessellate_torus_circle_clipped(face_id, analytic_chord_tol) {
+                    Some(t) => t,
+                    None => match self.tessellate_arc_bounded_face(face_id, analytic_chord_tol) {
+                    Some(t) => t,
+                    None => match self.tessellate_sphere_clipped(face_id, analytic_chord_tol) {
+                        Some(t) => t,
+                        None => match self.tessellate_cylinder_clipped(face_id, analytic_chord_tol) {
+                            Some(t) => t,
+                            // ADR-205 β-5 — a corner band (≥2 oblique cut planes).
+                            None => match self.tessellate_cylinder_corner_clipped(face_id, analytic_chord_tol) {
+                                Some(t) => t,
+                                // ADR-205 β-2-cone — a Cone band with an oblique
+                                // elliptic boundary (tilted-plane Boolean).
+                                None => match self.tessellate_cone_clipped(face_id, analytic_chord_tol) {
+                                    Some(t) => t,
+                                    // ADR-205 cone-corner — a Cone tent band (≥2
+                                    // oblique cut planes).
+                                    None => match self.tessellate_cone_corner_clipped(face_id, analytic_chord_tol) {
+                                        Some(t) => t,
+                                        // ADR-205 β-2-torus — a Torus band clipped
+                                        // by one oblique plane (annular halfspace).
+                                        None => match self.tessellate_torus_clipped(face_id, analytic_chord_tol) {
+                                            Some(t) => t,
+                                            // ADR-205 β-3-torus — a Torus SLAB belt
+                                            // clipped between two parallel planes.
+                                            None => match self.tessellate_torus_slab_clipped(face_id, analytic_chord_tol) {
+                                                Some(t) => t,
+                                                None => render_surface.tessellate(analytic_chord_tol),
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    },
+                    },
+                    },
+                };
+                if tess.vertices.is_empty() || tess.triangles.is_empty() {
+                    stats.analytic_empty_tess += 1;
+                    continue;
+                }
+
+                // P23.5 — analytic normal 직접 evaluate per (u, v).
+                // averaging 없음 — sphere 폴 같은 degenerate 점도 정확한
+                // 단위 벡터 반환 (SurfaceOps spec 보장).
+                // ADR-198 — a CAVITY face (concave subtract bore wall / void) negates
+                // the surface normal so it faces INWARD (into the void).
+                let reversed = self.face_surface_reversed.get(&face_id).copied().unwrap_or(false);
+                let n_verts = tess.vertices.len();
+                for i in 0..n_verts {
+                    let p = tess.vertices[i];
+                    positions.push(p.x as f32);
+                    positions.push(p.y as f32);
+                    positions.push(p.z as f32);
+                    positions_f64.push(p.x);
+                    positions_f64.push(p.y);
+                    positions_f64.push(p.z);
+
+                    let uv = tess.uv.get(i).copied().unwrap_or([0.0, 0.0]);
+                    let n = render_surface.normal(uv[0], uv[1]);
+                    // Defensive: degenerate normal → fallback to face plane normal.
+                    let n = if n.length_squared() < 1e-20 { face.normal() } else { n };
+                    let n = if reversed { -n } else { n };
+                    normals.push(n.x as f32);
+                    normals.push(n.y as f32);
+                    normals.push(n.z as f32);
+                }
+
+                // Emit triangles with vertex offset.
+                for tri in &tess.triangles {
+                    indices.push(vert_offset + tri[0]);
+                    indices.push(vert_offset + tri[1]);
+                    indices.push(vert_offset + tri[2]);
+                    face_map.push(face_id.raw());  // P22.5 — 모든 삼각형이 같은 FaceId
+                }
+                vert_offset += n_verts as u32;
+                stats.emitted += 1;
+                continue;  // skip the planar polygon path below
+                }  // close inner else (curved surface branch)
+            }
+
+            let normal = face.normal();
+
+            // Skip faces with corrupted loops (graceful degradation)
+            let loop_verts = match self.collect_loop_verts(face.outer().start) {
+                Ok(verts) => verts,
+                Err(_) => { stats.corrupted_outer_loop += 1; continue; },
+            };
+            // Outer loop HEs — parallel to loop_verts (hes[i].dst() == loop_verts[i]).
+            // Used for smooth-normal computation around each vertex.
+            let loop_hes = self.collect_loop_hes(face.outer().start).unwrap_or_default();
+
+            // ADR-089 A-κ-β — closed-curve face render fast-path.
+            // Detect 1-vert anchor + Circle curve self-loop edge and
+            // emit tessellated triangle fan + analytic Plane normals.
+            // Read-only (no mesh mutation; A-θ-β handles substitution
+            // for Push-Pull). L-κ-1 / L-κ-3 / L-κ-4.
+            if loop_verts.len() == 1 {
+                let outer_start = face.outer().start;
+                let edge_id = self.hes[outer_start].edge();
+                if let Some(edge_ref) = self.edges.get(edge_id) {
+                    if let Some(crate::curves::AnalyticCurve::Circle {
+                        center,
+                        radius,
+                        normal: c_normal,
+                        basis_u,
+                    }) = edge_ref.curve().cloned()
+                    {
+                        // ADR-038 P23.2 + 2026-05-12 render refinement —
+                        // baseline (analytic_chord_tol, default 0.02mm) capped by
+                        // `radius * 0.002` (5× finer than engine ops'
+                        // `radius * 0.01`). For r=5 → 0.01mm → ~78 fan
+                        // triangles (was ~22). ADR-135 β: analytic_chord_tol
+                        // is now caller-provided (LOD-aware).
+                        let chord_tol = analytic_chord_tol.min(radius * 0.002).max(1e-6);
+                        let pts = crate::curves::circle::tessellate_full(
+                            center, radius, c_normal, basis_u, chord_tol,
+                        );
+                        if pts.len() < 4 {
+                            stats.outer_too_short += 1;
+                            continue;
+                        }
+                        let unique_pts = &pts[..pts.len() - 1];
+                        let n_seg = unique_pts.len();
+
+                        // Build vertex buffer: center + N rim verts.
+                        // Triangulate as fan from center → N triangles.
+                        let n_normal = if c_normal.length_squared() < 0.5 {
+                            face.normal()
+                        } else {
+                            c_normal.normalize_or_zero()
+                        };
+
+                        // Emit center vertex (vert_offset + 0).
+                        positions.push(center.x as f32);
+                        positions.push(center.y as f32);
+                        positions.push(center.z as f32);
+                        positions_f64.push(center.x);
+                        positions_f64.push(center.y);
+                        positions_f64.push(center.z);
+                        normals.push(n_normal.x as f32);
+                        normals.push(n_normal.y as f32);
+                        normals.push(n_normal.z as f32);
+
+                        // Emit N rim vertices (vert_offset + 1 .. vert_offset + N).
+                        for &p in unique_pts {
+                            positions.push(p.x as f32);
+                            positions.push(p.y as f32);
+                            positions.push(p.z as f32);
+                            positions_f64.push(p.x);
+                            positions_f64.push(p.y);
+                            positions_f64.push(p.z);
+                            normals.push(n_normal.x as f32);
+                            normals.push(n_normal.y as f32);
+                            normals.push(n_normal.z as f32);
+                        }
+
+                        // Emit N triangles: (center, rim[i], rim[i+1]).
+                        for i in 0..n_seg {
+                            let next = (i + 1) % n_seg;
+                            indices.push(vert_offset);
+                            indices.push(vert_offset + 1 + i as u32);
+                            indices.push(vert_offset + 1 + next as u32);
+                            face_map.push(face_id.raw());
+                        }
+                        vert_offset += (n_seg + 1) as u32;
+                        stats.emitted += 1;
+                        continue;
+                    }
+                    // ADR-089 A-ω-δ / A-Α-β / A-Β-β — closed Bezier /
+                    // BSpline / NURBS render fast-path. Tessellate control
+                    // points to polyline → fan triangulate from centroid
+                    // (analogous to Circle path).
+                    let curve_tess: Option<Vec<DVec3>> = match edge_ref.curve().cloned() {
+                        Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
+                            crate::curves::bezier::tessellate(
+                                &control_pts, analytic_chord_tol,
+                            ).ok()
+                        }
+                        Some(crate::curves::AnalyticCurve::BSpline {
+                            control_pts, knots, degree,
+                        }) => {
+                            crate::curves::bspline::tessellate(
+                                &control_pts, &knots, degree as usize,
+                                analytic_chord_tol,
+                            ).ok()
+                        }
+                        Some(crate::curves::AnalyticCurve::NURBS {
+                            control_pts, weights, knots, degree,
+                        }) => {
+                            crate::curves::nurbs::tessellate(
+                                &control_pts, &weights, &knots, degree as usize,
+                                analytic_chord_tol,
+                            ).ok()
+                        }
+                        _ => None,
+                    };
+                    if let Some(pts) = curve_tess
+                    {
+                        if pts.len() < 3 {
+                            stats.outer_too_short += 1;
+                            continue;
+                        }
+                        // Drop closing duplicate if present.
+                        let unique_pts: &[DVec3] =
+                            if (pts[0] - pts[pts.len() - 1]).length()
+                                < crate::tolerances::EPSILON_LENGTH
+                                && pts.len() >= 4
+                            {
+                                &pts[..pts.len() - 1]
+                            } else {
+                                &pts[..]
+                            };
+                        let n_seg = unique_pts.len();
+                        // Centroid for fan triangulation.
+                        let centroid = unique_pts.iter().fold(DVec3::ZERO, |a, p| a + *p)
+                            / (n_seg as f64);
+                        // Normal: face's stored normal (computed in
+                        // add_face_closed_curve via best-fit plane).
+                        let n_normal = face.normal();
+
+                        // Emit centroid + rim verts.
+                        positions.push(centroid.x as f32);
+                        positions.push(centroid.y as f32);
+                        positions.push(centroid.z as f32);
+                        positions_f64.push(centroid.x);
+                        positions_f64.push(centroid.y);
+                        positions_f64.push(centroid.z);
+                        normals.push(n_normal.x as f32);
+                        normals.push(n_normal.y as f32);
+                        normals.push(n_normal.z as f32);
+                        for &p in unique_pts {
+                            positions.push(p.x as f32);
+                            positions.push(p.y as f32);
+                            positions.push(p.z as f32);
+                            positions_f64.push(p.x);
+                            positions_f64.push(p.y);
+                            positions_f64.push(p.z);
+                            normals.push(n_normal.x as f32);
+                            normals.push(n_normal.y as f32);
+                            normals.push(n_normal.z as f32);
+                        }
+                        for i in 0..n_seg {
+                            let next = (i + 1) % n_seg;
+                            indices.push(vert_offset);
+                            indices.push(vert_offset + 1 + i as u32);
+                            indices.push(vert_offset + 1 + next as u32);
+                            face_map.push(face_id.raw());
+                        }
+                        vert_offset += (n_seg + 1) as u32;
+                        stats.emitted += 1;
+                        continue;
+                    }
+                }
+                // Not a closed-curve face — fall through to legacy
+                // < 3 skip.
+            }
+
+            if loop_verts.len() < 3 {
+                stats.outer_too_short += 1;
+                continue;
+            }
+
+            // Project to 2D for triangulation
+            let (coord1, coord2) = Self::projection_axes(normal);
+            let mut coords_2d: Vec<f64> = Vec::with_capacity(loop_verts.len() * 2);
+            let mut positions_3d: Vec<DVec3> = Vec::with_capacity(loop_verts.len());
+            // Per-vertex smooth normals (aligned with positions_3d indexing)
+            let mut vert_normals: Vec<DVec3> = Vec::with_capacity(loop_verts.len());
+
+            let mut skip_face = false;
+            for (i, &vid) in loop_verts.iter().enumerate() {
+                // ADR-186 — arc edge fill sampling. If the HE ending at this
+                // vertex carries an Arc curve, insert its interior points
+                // (origin→dst) BEFORE the endpoint so the fill follows the
+                // curve instead of a straight chord. loop_hes[i].dst() ==
+                // loop_verts[i], origin == loop_verts[i-1] (wrap). Fixes the
+                // "마름모" 회귀 — 교차 원 lens 가 직선 4변으로 보이던 문제.
+                if i < loop_hes.len() {
+                    let origin_vid = if i == 0 {
+                        *loop_verts.last().unwrap()
+                    } else {
+                        loop_verts[i - 1]
+                    };
+                    if let (Ok(o), Ok(d)) =
+                        (self.vertex_pos(origin_vid), self.vertex_pos(vid))
+                    {
+                        for p in
+                            self.he_arc_fill_points(loop_hes[i], o, d, analytic_chord_tol)
+                        {
+                            positions_3d.push(p);
+                            let arr = [p.x, p.y, p.z];
+                            coords_2d.push(arr[coord1]);
+                            coords_2d.push(arr[coord2]);
+                            vert_normals.push(normal);
+                        }
+                    }
+                }
+                match self.vertex_pos(vid) {
+                    Ok(pos) => {
+                        positions_3d.push(pos);
+                        let arr = [pos.x, pos.y, pos.z];
+                        coords_2d.push(arr[coord1]);
+                        coords_2d.push(arr[coord2]);
+
+                        // Smooth normal: average adjacent face normals within threshold
+                        // (only if we have a matching HE reference)
+                        if i < loop_hes.len() {
+                            let smooth = self.compute_smooth_normal_at(loop_hes[i], vid, normal);
+                            vert_normals.push(smooth);
+                        } else {
+                            vert_normals.push(normal);
+                        }
+                    }
+                    Err(_) => { skip_face = true; break; }
+                }
+            }
+            if skip_face { stats.vertex_pos_failed += 1; continue; }
+
+            // Inner loops (holes) 처리
+            let mut hole_indices: Vec<usize> = Vec::new();
+            let inners: Vec<_> = face.inners().to_vec();
+            for inner_ref in &inners {
+                if inner_ref.start.is_null() { continue; }
+                let inner_verts = match self.collect_loop_verts(inner_ref.start) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                // self-loop 곡선 hole (< 3 vert, 예: circle-in-rect smooth hole) →
+                // skip 대신 곡선 tessellate 해서 polygon hole 로 (render-only;
+                // engine 은 smooth self-loop edge 보존). 미처리 시 rect 가 hole
+                // 없이 full 삼각화 → "면분할 안 보임" 회귀.
+                if inner_verts.len() < 3 {
+                    let edge_id = self.hes[inner_ref.start].edge();
+                    // ADR-186 A2 — freeform closed curve hole tessellate (closing dup drop).
+                    fn dedup_closed(pts: Vec<DVec3>) -> Option<Vec<DVec3>> {
+                        if pts.len() < 4 {
+                            return None;
+                        }
+                        let uniq = if (pts[0] - pts[pts.len() - 1]).length()
+                            < crate::tolerances::EPSILON_LENGTH
+                        {
+                            pts[..pts.len() - 1].to_vec()
+                        } else {
+                            pts
+                        };
+                        if uniq.len() >= 3 {
+                            Some(uniq)
+                        } else {
+                            None
+                        }
+                    }
+                    let circ_pts: Option<Vec<DVec3>> = self.edges.get(edge_id).and_then(|e| {
+                        match e.curve().cloned() {
+                            Some(crate::curves::AnalyticCurve::Circle {
+                                center, radius, normal: c_normal, basis_u,
+                            }) => {
+                                let ct = analytic_chord_tol.min(radius * 0.002).max(1e-6);
+                                let pts = crate::curves::circle::tessellate_full(
+                                    center, radius, c_normal, basis_u, ct,
+                                );
+                                if pts.len() >= 4 { Some(pts[..pts.len() - 1].to_vec()) } else { None }
+                            }
+                            // ADR-186 A2 — Bezier/BSpline/NURBS hole (outer fast-path 답습).
+                            Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
+                                crate::curves::bezier::tessellate(&control_pts, analytic_chord_tol)
+                                    .ok()
+                                    .and_then(dedup_closed)
+                            }
+                            Some(crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree }) => {
+                                crate::curves::bspline::tessellate(
+                                    &control_pts, &knots, degree as usize, analytic_chord_tol,
+                                )
+                                .ok()
+                                .and_then(dedup_closed)
+                            }
+                            Some(crate::curves::AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
+                                crate::curves::nurbs::tessellate(
+                                    &control_pts, &weights, &knots, degree as usize, analytic_chord_tol,
+                                )
+                                .ok()
+                                .and_then(dedup_closed)
+                            }
+                            _ => None,
+                        }
+                    });
+                    if let Some(mut pts) = circ_pts {
+                        pts.reverse(); // hole 은 outer(CCW)와 반대 winding (CW)
+                        hole_indices.push(coords_2d.len() / 2);
+                        for p in &pts {
+                            positions_3d.push(*p);
+                            let arr = [p.x, p.y, p.z];
+                            coords_2d.push(arr[coord1]);
+                            coords_2d.push(arr[coord2]);
+                            vert_normals.push(normal);
+                        }
+                    }
+                    continue;
+                }
+
+                // hole 시작 인덱스 = 현재 2D 좌표 수 / 2
+                hole_indices.push(coords_2d.len() / 2);
+
+                // ADR-186 — inner loop arc edge fill 샘플링. rect 의 peanut hole 이
+                // 직선 chord(마름모)로 렌더되던 문제 (사용자 보고 2026-06-03 "외곽
+                // 사각형이 마름모"). outer loop 와 동일하게 각 Arc edge 의 내부점을
+                // origin→dst 로 삽입. inner_hes[i].dst() == inner_verts[i].
+                let inner_hes = self.collect_loop_hes(inner_ref.start).unwrap_or_default();
+                for (i, &vid) in inner_verts.iter().enumerate() {
+                    if i < inner_hes.len() {
+                        let origin_vid = if i == 0 {
+                            *inner_verts.last().unwrap()
+                        } else {
+                            inner_verts[i - 1]
+                        };
+                        if let (Ok(o), Ok(d)) =
+                            (self.vertex_pos(origin_vid), self.vertex_pos(vid))
+                        {
+                            for p in
+                                self.he_arc_fill_points(inner_hes[i], o, d, analytic_chord_tol)
+                            {
+                                positions_3d.push(p);
+                                let arr = [p.x, p.y, p.z];
+                                coords_2d.push(arr[coord1]);
+                                coords_2d.push(arr[coord2]);
+                                vert_normals.push(normal);
+                            }
+                        }
+                    }
+                    match self.vertex_pos(vid) {
+                        Ok(pos) => {
+                            positions_3d.push(pos);
+                            let arr = [pos.x, pos.y, pos.z];
+                            coords_2d.push(arr[coord1]);
+                            coords_2d.push(arr[coord2]);
+                            // Inner-loop verts: use face normal (holes rarely need smoothing)
+                            vert_normals.push(normal);
+                        }
+                        Err(_) => { skip_face = true; break; }
+                    }
+                }
+                if skip_face { break; }
+            }
+            if skip_face { stats.corrupted_inner_loop += 1; continue; }
+
+            // Triangulate with earcutr (outer + holes)
+            let mut tri_indices = match earcutr::earcut(&coords_2d, &hole_indices, 2) {
+                Ok(indices) => indices,
+                Err(_) => { stats.earcut_failed += 1; continue; },
+            };
+            // Distinguish Ok([]) — earcut accepted the polygon but
+            // produced zero triangles (degenerate / self-touching).
+            // Without this guard the face disappears from the buffer
+            // silently while `emitted` would still increment.
+            //
+            // INVARIANT (user-requested 2026-05-02):
+            //   For every active face: emitted_triangle_count > 0.
+            // We enforce by recording the offending face id; the caller's
+            // `deactivate_empty_emit_faces(&mut self)` post-pass removes
+            // them so face_count == rendered_face_count is restored.
+            if tri_indices.is_empty() {
+                stats.earcut_empty += 1;
+                stats.last_earcut_empty_fid = face_id.raw();
+                stats.last_earcut_empty_outer_n = loop_verts.len() as u32;
+                self.last_export_empty_faces.borrow_mut().push(face_id);
+                continue;
+            }
+
+            // Fix triangle winding: earcut works in 2D and may produce
+            // triangles whose 3D winding doesn't match the face normal.
+            // Check EACH triangle individually and fix if needed.
+            for chunk in tri_indices.chunks_exact_mut(3) {
+                let pa = positions_3d[chunk[0]];
+                let pb = positions_3d[chunk[1]];
+                let pc = positions_3d[chunk[2]];
+                let tri_normal = (pb - pa).cross(pc - pa);
+                if tri_normal.dot(normal) < 0.0 {
+                    chunk.swap(1, 2);
+                }
+            }
+
+            // Emit vertices (f32 for GPU + f64 for precision).
+            // Per-vertex smooth normals: averaged across adjacent faces that share a
+            // soft edge with this face (SketchUp-style, threshold EDGE_VISIBILITY_ANGLE_DEG).
+            // Falls back to face normal when there are no neighbors within threshold.
+            for (i, pos) in positions_3d.iter().enumerate() {
+                positions.push(pos.x as f32);
+                positions.push(pos.y as f32);
+                positions.push(pos.z as f32);
+
+                positions_f64.push(pos.x);
+                positions_f64.push(pos.y);
+                positions_f64.push(pos.z);
+
+                let n = vert_normals.get(i).copied().unwrap_or(normal);
+                normals.push(n.x as f32);
+                normals.push(n.y as f32);
+                normals.push(n.z as f32);
+            }
+
+            // Emit indices (offset by current vertex count)
+            let num_triangles = tri_indices.len() / 3;
+            for &idx in &tri_indices {
+                indices.push(vert_offset + idx as u32);
+            }
+
+            // Map each triangle to this face's ID
+            for _ in 0..num_triangles {
+                face_map.push(face_id.raw());
+            }
+
+            vert_offset += positions_3d.len() as u32;
+            stats.emitted += 1;
+        }
+
+        // Step 5 — snapshot stats LAST (single source of truth for
+        // diagnostic queries until the next export pass).
+        self.last_export_stats.set(stats);
+
+        // INVARIANT lock — debug builds panic if some active face
+        // contributed 0 triangles to the buffer. Release builds rely
+        // on `deactivate_empty_emit_faces` to auto-correct, so this
+        // assertion is purely defensive against future regressions.
+        // We compute emitted_face_count via face_map dedup since face
+        // ids appear once per triangle.
+        #[cfg(debug_assertions)]
+        {
+            use std::collections::HashSet;
+            let active: usize = self.faces.iter().filter(|(_, f)| f.is_active() && f.is_visible()).count();
+            let emitted_set: HashSet<u32> = face_map.iter().copied().collect();
+            // After deactivate_empty_emit_faces (called from export_buffers
+            // outer wrapper), invariant should hold. During the FIRST inner
+            // pass the empty list may not yet be drained — skip assert if
+            // any pending empty IDs remain.
+            if self.last_export_empty_faces.borrow().is_empty() {
+                debug_assert_eq!(
+                    active,
+                    emitted_set.len(),
+                    "INVARIANT VIOLATED: {} active faces but only {} emitted (zero-triangle face leaked)",
+                    active, emitted_set.len(),
+                );
+            }
+        }
+
+        Ok((positions, normals, indices, face_map, positions_f64))
+    }
+
+    /// Returns the per-face skip diagnostics from the most recent
+    /// `export_buffers()` call. Use to debug "face active in mesh but not
+    /// rendered" — non-zero counts indicate which silent-skip path triggered.
+    pub fn last_export_skip_stats(&self) -> ExportSkipStats {
+        self.last_export_stats.get()
+    }
+
+    /// Self-heal pass — deactivate any face whose triangulation in the most
+    /// recent `export_buffers` call returned `Ok([])` (zero triangles).
+    ///
+    /// **Invariant** (user-stipulated 2026-05-02): every active face must
+    /// emit ≥1 triangle. earcut Ok([]) means the polygon is degenerate
+    /// (zero area / collinear vertices / self-touching). Such a face would
+    /// otherwise stay active in mesh but invisible in render, manifesting
+    /// as the user's "wireframe-only RECT" symptom. Removing it restores
+    /// `face_count == emitted_face_count`.
+    ///
+    /// Returns the count of faces deactivated. Call after `export_buffers`.
+    pub fn deactivate_empty_emit_faces(&mut self) -> usize {
+        // Snapshot then clear — avoid holding the RefCell borrow during
+        // the mutating loop.
+        let to_remove: Vec<FaceId> = {
+            let mut list = self.last_export_empty_faces.borrow_mut();
+            std::mem::take(&mut *list)
+        };
+        let mut n = 0;
+        for fid in &to_remove {
+            // Defensive: face may have been deactivated by another path.
+            if self.faces.contains(*fid) && self.faces[*fid].is_active() {
+                let _ = self.remove_face(*fid);
+                if self.faces.contains(*fid) {
+                    self.faces.remove(*fid);
+                }
+                n += 1;
+            }
+        }
+        // Debug-only assertion: post-cleanup, NO active face should remain
+        // in the recently-recorded empty-emit list (we just cleared it).
+        // This is a smoke test that future code can't accidentally bypass
+        // the cleanup without also clearing the list.
+        debug_assert!(self.last_export_empty_faces.borrow().is_empty());
+        n
+    }
+
+    /// Choose the best 2D projection axes based on the face normal.
+    /// Drops the axis with the largest normal component.
+    fn projection_axes(normal: DVec3) -> (usize, usize) {
+        let abs_n = [normal.x.abs(), normal.y.abs(), normal.z.abs()];
+        if abs_n[0] >= abs_n[1] && abs_n[0] >= abs_n[2] {
+            (1, 2) // Drop X → project onto YZ
+        } else if abs_n[1] >= abs_n[0] && abs_n[1] >= abs_n[2] {
+            (0, 2) // Drop Y → project onto XZ
+        } else {
+            (0, 1) // Drop Z → project onto XY
+        }
+    }
+
+    // ========================================================================
+    // Edge line export (for wireframe rendering — SketchUp-style)
+    // ========================================================================
+
+    /// Export "hard edge" line segments for wireframe rendering.
+    ///
+    /// Unlike Three.js EdgesGeometry (which can't detect shared edges when
+    /// vertices are duplicated per-face), this uses DCEL topology to correctly
+    /// identify which edges should be drawn:
+    ///
+    /// - Boundary edges (only one face): ALWAYS drawn
+    /// - Edges between non-coplanar faces (angle > threshold): drawn
+    /// - Edges between coplanar faces (angle ≤ threshold): HIDDEN (soft)
+    /// - Edges with SOFT flag set: HIDDEN
+    ///
+    /// Returns flat `[x0,y0,z0, x1,y1,z1, ...]` buffer for LineSegments.
+    pub fn export_edge_lines(&self, angle_threshold_deg: f64) -> Vec<f32> {
+        let (lines, _) = self.export_edge_lines_with_map(angle_threshold_deg);
+        lines
+    }
+
+    /// Export just the centerline edge segments (flat `[x,y,z, ...]` pairs)
+    /// for separate rendering (dashed, thin, dimmer color). No edge map
+    /// returned — centerlines are not pickable as distinct entities via the
+    /// main edge-line hit path yet (they stay snap targets via vertex/midpoint
+    /// but not as mid-edge nearest hits in rendering layer).
+    pub fn export_centerline_lines(&self) -> Vec<f32> {
+        let mut lines: Vec<f32> = Vec::new();
+        for (_, edge) in self.edges.iter() {
+            if !edge.is_active() { continue; }
+            if edge.class() != EdgeClass::Centerline { continue; }
+            let p0 = match self.vertex_pos(edge.v_small()) { Ok(p) => p, Err(_) => continue };
+            let p1 = match self.vertex_pos(edge.v_large()) { Ok(p) => p, Err(_) => continue };
+            lines.extend_from_slice(&[
+                p0.x as f32, p0.y as f32, p0.z as f32,
+                p1.x as f32, p1.y as f32, p1.z as f32,
+            ]);
+        }
+        lines
+    }
+
+    /// export_edge_lines + edge ID map (segment index → EdgeId raw).
+    /// Centerline edges are excluded — render them separately via
+    /// `export_centerline_lines` to apply dashed / dimmer styling.
+    pub fn export_edge_lines_with_map(&self, angle_threshold_deg: f64) -> (Vec<f32>, Vec<u32>) {
+        let cos_threshold = angle_threshold_deg.to_radians().cos();
+        let mut lines: Vec<f32> = Vec::new();
+        let mut edge_map: Vec<u32> = Vec::new();
+
+        for (_edge_id, edge) in self.edges.iter() {
+            if !edge.is_active() {
+                continue;
+            }
+            // Centerline edges go through a separate rendering path
+            // (export_centerline_lines) so skip them here.
+            if edge.class() == EdgeClass::Centerline {
+                continue;
+            }
+
+            // ADR-089 A-κ-β — closed-curve edge wireframe fast-path.
+            // Self-loop edge with Circle curve → tessellate to N polyline
+            // segments. Each segment maps to the SAME EdgeId (LOCKED #15
+            // ADR-037 P22.5 owner-ID uniformity). L-κ-2 / L-κ-6.
+            if edge.is_self_loop() {
+                // Honour the SOFT flag here too — the self-loop fast-path
+                // previously ignored edge flags entirely, so a SOFT self-loop
+                // (e.g. the sphere equator seam between two co-spherical
+                // hemispheres) was always drawn. Skipping it mirrors the
+                // normal-edge SOFT skip below (~line 1030) and removes the
+                // structural equator line + its hover highlight. User-drawn
+                // circles are not SOFT, so they still render.
+                let self_he = edge.any_he();
+                if !self_he.is_null() && self.hes[self_he].flags().contains(HeFlags::SOFT) {
+                    continue;
+                }
+                if let Some(crate::curves::AnalyticCurve::Circle {
+                    center,
+                    radius,
+                    normal: c_normal,
+                    basis_u,
+                }) = edge.curve().cloned()
+                {
+                    // 2026-05-12 render refinement — match closed-curve
+                    // face fast-path (line ~4844) so top face boundary
+                    // and rim wireframe align in 3D. Was `radius * 0.01`,
+                    // now `min(0.02, radius * 0.002)` per render chord
+                    // tolerance policy.
+                    let chord_tol = (radius * 0.002).clamp(5e-5, 0.02);
+                    let pts = crate::curves::circle::tessellate_full(
+                        center, radius, c_normal, basis_u, chord_tol,
+                    );
+                    if pts.len() >= 2 {
+                        for w in pts.windows(2) {
+                            lines.push(w[0].x as f32);
+                            lines.push(w[0].y as f32);
+                            lines.push(w[0].z as f32);
+                            lines.push(w[1].x as f32);
+                            lines.push(w[1].y as f32);
+                            lines.push(w[1].z as f32);
+                            edge_map.push(_edge_id.raw());
+                        }
+                    }
+                    continue;
+                }
+                // ADR-089 A-ω-δ / A-Α-β / A-Β-β — Bezier / BSpline /
+                // NURBS closed self-loop wireframe.
+                let curve_pts: Option<Vec<DVec3>> = match edge.curve().cloned() {
+                    Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
+                        crate::curves::bezier::tessellate(&control_pts, 0.05).ok()
+                    }
+                    Some(crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree }) => {
+                        crate::curves::bspline::tessellate(
+                            &control_pts, &knots, degree as usize, 0.05,
+                        ).ok()
+                    }
+                    Some(crate::curves::AnalyticCurve::NURBS {
+                        control_pts, weights, knots, degree,
+                    }) => {
+                        crate::curves::nurbs::tessellate(
+                            &control_pts, &weights, &knots, degree as usize, 0.05,
+                        ).ok()
+                    }
+                    _ => None,
+                };
+                if let Some(pts) = curve_pts {
+                    if pts.len() >= 2 {
+                        for w in pts.windows(2) {
+                            lines.push(w[0].x as f32);
+                            lines.push(w[0].y as f32);
+                            lines.push(w[0].z as f32);
+                            lines.push(w[1].x as f32);
+                            lines.push(w[1].y as f32);
+                            lines.push(w[1].z as f32);
+                            edge_map.push(_edge_id.raw());
+                        }
+                    }
+                    continue;
+                }
+                // Self-loop without supported curve — skip (zero-length
+                // line otherwise).
+                continue;
+            }
+
+            // Get edge endpoint positions
+            let p0 = match self.vertex_pos(edge.v_small()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let p1 = match self.vertex_pos(edge.v_large()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Check half-edge flags (SOFT / HARD)
+            let he_start = edge.any_he();
+            if he_start.is_null() {
+                continue;
+            }
+            let he_flags = self.hes[he_start].flags();
+            if he_flags.contains(HeFlags::SOFT) {
+                continue; // soft edge — don't draw
+            }
+            let force_hard = he_flags.contains(HeFlags::HARD);
+
+            // Collect adjacent face normals + surfaces via radial chain
+            let mut face_normals: Vec<DVec3> = Vec::new();
+            let mut face_surfaces: Vec<Option<crate::surfaces::AnalyticSurface>> = Vec::new();
+            let mut he_id = he_start;
+            loop {
+                let face_id = self.hes[he_id].face();
+                if !face_id.is_null() && self.faces.contains(face_id) {
+                    let face = &self.faces[face_id];
+                    if face.is_active() && face.is_visible() {
+                        face_normals.push(face.normal());
+                        face_surfaces.push(face.surface().cloned());
+                    }
+                }
+                he_id = self.hes[he_id].next_rad();
+                if he_id == he_start {
+                    break;
+                }
+            }
+
+            // Decision: draw this edge?
+            let draw = if force_hard {
+                true // HARD flag → always draw (face split edges, user-drawn lines)
+            } else {
+                match face_normals.len() {
+                    0 => true,  // isolated edge (wireframe) — draw
+                    1 => true,  // boundary edge — draw
+                    2 => {
+                        // ADR-089 A-τ-β — smooth-group edge hide.
+                        // 두 face 가 같은 곡면 surface 인스턴스 (Cylinder/
+                        // Sphere/Cone/Torus) 면 smooth-group 내부 edge 로
+                        // 간주, hide. L-τ-1 / L-τ-2 / L-τ-6.
+                        if surfaces_in_same_smooth_group(
+                            &face_surfaces[0], &face_surfaces[1],
+                        ) {
+                            false // smooth group internal — hide
+                        } else {
+                            // Fallback: angle-based coplanar test (LOCKED #16
+                            // K-ε hotfix 답습).
+                            let dot = face_normals[0].dot(face_normals[1]).abs();
+                            dot < cos_threshold // draw only if NOT coplanar
+                        }
+                    }
+                    _ => true,  // non-manifold — draw
+                }
+            };
+
+            if draw {
+                // ADR-092 C-β extension — Arc tessellation for non-self-
+                // loop edges with AnalyticCurve::Arc attached. Mirrors the
+                // self-loop Circle fast-path (line 4986-5008) for the
+                // post-Push-Pull case where Bottom/Top face boundary edges
+                // carry Arc metadata pointing back at the original Circle.
+                // Without this branch, Arc-attached edges render as straight
+                // chord lines, leaving the polygon-rim defect (사용자 시연
+                // 2026-05-09 결함 1) un-fixed.
+                if let Some(crate::curves::AnalyticCurve::Arc {
+                    center,
+                    radius,
+                    normal: c_normal,
+                    basis_u,
+                    start_angle,
+                    end_angle,
+                }) = edge.curve().cloned()
+                {
+                    // 2026-06-16 — match the self-loop Circle wireframe chord
+                    // tolerance (line ~950, LOCKED #40). Was `radius * 0.01`
+                    // (ADR-092 C-δ), 30× coarser than the Circle path, so a
+                    // *trimmed* circle's Arc edges rendered at ~8 segments
+                    // (visible facets / "정점") while a full Circle rendered
+                    // smooth (~122 segments). Now identical.
+                    let chord_tol = (radius * 0.002).clamp(5e-5, 0.02);
+                    let pts = crate::curves::arc::tessellate(
+                        center,
+                        radius,
+                        c_normal,
+                        basis_u,
+                        start_angle,
+                        end_angle,
+                        chord_tol,
+                    );
+                    if pts.len() >= 2 {
+                        for w in pts.windows(2) {
+                            lines.push(w[0].x as f32);
+                            lines.push(w[0].y as f32);
+                            lines.push(w[0].z as f32);
+                            lines.push(w[1].x as f32);
+                            lines.push(w[1].y as f32);
+                            lines.push(w[1].z as f32);
+                            edge_map.push(_edge_id.raw());
+                        }
+                        continue;
+                    }
+                }
+                // B4b-2b — Bezier/BSpline/NURBS regular-edge wireframe
+                // (sub-bezier from lens split). Mirrors the Arc branch; else
+                // the freeform lens boundary renders as 2 chords (< B4b-2a
+                // line-seg). Each segment → same EdgeId (LOCKED #15 uniformity).
+                let ff_pts: Option<Vec<DVec3>> = match edge.curve().cloned() {
+                    Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
+                        crate::curves::bezier::tessellate(&control_pts, 0.05).ok()
+                    }
+                    Some(crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree }) => {
+                        crate::curves::bspline::tessellate(&control_pts, &knots, degree as usize, 0.05)
+                            .ok()
+                    }
+                    Some(crate::curves::AnalyticCurve::NURBS {
+                        control_pts, weights, knots, degree,
+                    }) => crate::curves::nurbs::tessellate(
+                        &control_pts, &weights, &knots, degree as usize, 0.05,
+                    )
+                    .ok(),
+                    _ => None,
+                };
+                if let Some(pts) = ff_pts {
+                    if pts.len() >= 2 {
+                        for w in pts.windows(2) {
+                            lines.push(w[0].x as f32);
+                            lines.push(w[0].y as f32);
+                            lines.push(w[0].z as f32);
+                            lines.push(w[1].x as f32);
+                            lines.push(w[1].y as f32);
+                            lines.push(w[1].z as f32);
+                            edge_map.push(_edge_id.raw());
+                        }
+                        continue;
+                    }
+                }
+                // Default: emit single straight chord segment.
+                lines.push(p0.x as f32);
+                lines.push(p0.y as f32);
+                lines.push(p0.z as f32);
+                lines.push(p1.x as f32);
+                lines.push(p1.y as f32);
+                lines.push(p1.z as f32);
+                edge_map.push(_edge_id.raw());
+            }
+        }
+
+        (lines, edge_map)
+    }
+}
+
+// ═══ ADR-135 β — Distance-based LOD chord_tol regression tests ═══
+
+#[cfg(test)]
+mod adr135_lod_tests {
+    use super::*;
+    use crate::Mesh;
+
+    // ─── lod_chord_tol formula tests ────────────────────────────────
+
+    #[test]
+    fn adr135_lod_near_camera_unchanged() {
+        // Camera ≤ 100mm threshold → returns DEFAULT_ANALYTIC_CHORD_TOL.
+        // LOCKED #40 §L1 spirit preserved (near rendering 영향 0).
+        assert_eq!(lod_chord_tol(0.0), DEFAULT_ANALYTIC_CHORD_TOL);
+        assert_eq!(lod_chord_tol(50.0), DEFAULT_ANALYTIC_CHORD_TOL);
+        assert_eq!(lod_chord_tol(100.0), DEFAULT_ANALYTIC_CHORD_TOL);
+    }
+
+    /// 2026-06-16 — a trimmed circle's Arc edge wireframe must render with the
+    /// same fine chord tolerance as a full Circle. The non-self-loop Arc branch
+    /// used `radius * 0.01` (ADR-092 C-δ), 30× coarser than the Circle path's
+    /// `radius * 0.002` (LOCKED #40), so a 90° r=60 arc rendered at ~8 segments
+    /// (visible facets / "정점") instead of ~30. Now both use radius*0.002.
+    #[test]
+    fn arc_edge_wireframe_uses_fine_chord_tol() {
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex(DVec3::new(60.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(0.0, 60.0, 0.0));
+        let (eid, _) = mesh.add_edge(v0, v1).unwrap();
+        mesh.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+            center: DVec3::ZERO,
+            radius: 60.0,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
+        }));
+        let (_lines, edge_map) = mesh.export_edge_lines_with_map(20.1);
+        let segs = edge_map.iter().filter(|&&e| e == eid.raw()).count();
+        assert!(
+            segs >= 20,
+            "Arc wireframe must use fine chord_tol (got {} segs, was ~8 with radius*0.01)",
+            segs
+        );
+    }
+
+    #[test]
+    fn adr135_lod_mid_camera_proportional() {
+        // Camera 500mm → 5× DEFAULT = 0.10mm
+        assert!((lod_chord_tol(500.0) - 0.10).abs() < 1e-9);
+        // Camera 1000mm (1m) → 10× DEFAULT = 0.20mm
+        assert!((lod_chord_tol(1000.0) - 0.20).abs() < 1e-9);
+        // Camera 2000mm (2m) → 20× DEFAULT = 0.40mm
+        assert!((lod_chord_tol(2000.0) - 0.40).abs() < 1e-9);
+    }
+
+    #[test]
+    fn adr135_lod_far_camera_capped_at_1mm() {
+        // Camera 5000mm (5m) → 50× DEFAULT = 1.00mm (cap)
+        assert!((lod_chord_tol(5000.0) - 1.0).abs() < 1e-9);
+        // Camera 10000mm (10m) → would be 2.00mm but capped at 1.00mm
+        assert_eq!(lod_chord_tol(10000.0), 1.0);
+        // Camera 100000mm (100m) → still capped at 1.00mm
+        assert_eq!(lod_chord_tol(100000.0), 1.0);
+    }
+
+    #[test]
+    fn adr135_lod_negative_distance_treated_as_zero() {
+        // Defensive: negative distance (impossible in normal use) treated
+        // as 0 → returns DEFAULT.
+        assert_eq!(lod_chord_tol(-100.0), DEFAULT_ANALYTIC_CHORD_TOL);
+    }
+
+    #[test]
+    fn adr135_lod_monotonic_non_decreasing() {
+        // Property: lod_chord_tol is monotonic non-decreasing in distance.
+        let distances = [0.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 5000.0, 10000.0];
+        let tols: Vec<f64> = distances.iter().map(|&d| lod_chord_tol(d)).collect();
+        for w in tols.windows(2) {
+            assert!(w[1] >= w[0], "monotonic violation: {} → {}", w[0], w[1]);
+        }
+    }
+
+    // ─── export_buffers_with_tol equivalence + LOD effect tests ─────
+
+    #[test]
+    fn adr135_export_buffers_default_equivalence() {
+        // Backward compat: export_buffers() == export_buffers_with_tol(0.02)
+        let mut mesh1 = Mesh::new();
+        let mut mesh2 = Mesh::new();
+        // Identical empty mesh — both should produce identical (empty) output
+        let r1 = mesh1.export_buffers().unwrap();
+        let r2 = mesh2.export_buffers_with_tol(DEFAULT_ANALYTIC_CHORD_TOL).unwrap();
+        assert_eq!(r1.0.len(), r2.0.len(), "positions f32 len mismatch");
+        assert_eq!(r1.1.len(), r2.1.len(), "normals len mismatch");
+        assert_eq!(r1.2.len(), r2.2.len(), "indices len mismatch");
+    }
+
+    #[test]
+    fn adr135_export_buffers_coarser_chord_reduces_triangles_for_analytic_surface() {
+        // For a sphere with analytic surface, coarser chord_tol must
+        // produce fewer triangles than default 0.02 mm.
+        //
+        // Build a sphere via Path B (kernel-native, surface metadata
+        // attached). Then export at 0.02 vs 1.0 chord_tol.
+        use crate::MaterialId;
+
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        // r=100, kernel-native (Path B) — Mesh has a method per LOCKED #47
+        let _ = mesh.create_sphere_kernel_native(
+            glam::DVec3::ZERO, 100.0, mat,
+        ).expect("sphere created");
+
+        // Export at default chord_tol (0.02 mm) — fine tessellation.
+        let (pos_fine, _, _, _, _) = mesh
+            .export_buffers_with_tol(DEFAULT_ANALYTIC_CHORD_TOL)
+            .expect("fine export");
+        let tri_count_fine = pos_fine.len() / 9; // 3 vertices × 3 floats per tri
+
+        // Export at coarse chord_tol (1.0 mm) — far LOD tessellation.
+        let (pos_coarse, _, _, _, _) = mesh
+            .export_buffers_with_tol(1.0)
+            .expect("coarse export");
+        let tri_count_coarse = pos_coarse.len() / 9;
+
+        // Coarse should produce strictly fewer triangles (lossy LOD).
+        assert!(
+            tri_count_coarse < tri_count_fine,
+            "coarse tol should reduce triangles: fine={}, coarse={}",
+            tri_count_fine, tri_count_coarse,
+        );
+        // Sanity: coarse should be >0 (still has a sphere, just fewer verts)
+        assert!(tri_count_coarse > 0);
+    }
+
+    #[test]
+    fn adr135_lod_chord_tol_clamp_lower_bound() {
+        // Theoretical: chord_tol < DEFAULT (0.02) impossible via lod_chord_tol
+        // (formula multiplies by max(1, ...) so result ≥ DEFAULT).
+        // Verify: any distance returns ≥ DEFAULT.
+        for &d in &[0.0, 10.0, 100.0, 1000.0, 10000.0] {
+            let tol = lod_chord_tol(d);
+            assert!(tol >= DEFAULT_ANALYTIC_CHORD_TOL,
+                "lod_chord_tol({}) = {} < DEFAULT {}",
+                d, tol, DEFAULT_ANALYTIC_CHORD_TOL);
+        }
+    }
+}

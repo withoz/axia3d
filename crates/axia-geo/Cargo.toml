@@ -1,0 +1,29 @@
+[package]
+name = "axia-geo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "AXiA 3D geometry kernel — Half-Edge DCEL topology, mesh operations, triangulation"
+
+[dependencies]
+glam = { workspace = true }
+rustc-hash = { workspace = true }
+smallvec = { workspace = true }
+bitflags = { workspace = true }
+earcutr = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+bytemuck = { workspace = true }
+axia-transaction = { workspace = true }
+# ADR-058 Phase M §A lock-in — Shewchuk robust predicates (BSD3).
+# 자체 구현 금지 (변경 시 새 ADR). FMA 비활성 prerequisite (§B).
+robust = "1.1"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[[bench]]
+name = "practicality_bench"
+harness = false

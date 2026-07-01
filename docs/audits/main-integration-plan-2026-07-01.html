@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXiA 3D — main 통합 계획 + 시뮬레이션 (2026-07-01)</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --border:#2a2f3d;
+    --text:#e6e8ee; --muted:#9aa2b4; --accent:#5b9bd5; --accent2:#7c5cff;
+    --red:#ff5c6c; --amber:#ffb84d; --green:#43c59e; --blue:#4da3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI','Malgun Gothic',system-ui,sans-serif; line-height:1.65; font-size:15.5px}
+  .wrap{max-width:1080px; margin:0 auto; padding:48px 28px 96px}
+  header.doc{border-bottom:2px solid var(--border); padding-bottom:24px; margin-bottom:32px}
+  h1{font-size:29px; margin:0 0 6px; letter-spacing:-.4px}
+  .sub{color:var(--muted); font-size:14.5px}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:20px; margin-right:6px; font-weight:600}
+  .tag.date{background:#232838; color:var(--muted)}
+  .tag.ok{background:#173029; color:var(--green)}
+  h2{font-size:22px; margin:50px 0 14px; letter-spacing:-.3px}
+  h2 .num{color:var(--accent2); font-weight:800; margin-right:10px}
+  h3{font-size:17px; margin:26px 0 10px; color:#cdd3e0}
+  p{margin:10px 0}
+  .lead{font-size:17px; color:#dfe3ee}
+  .panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 22px; margin:18px 0}
+  .panel.tip{border-left:4px solid var(--accent)}
+  .panel.warn{border-left:4px solid var(--amber)}
+  .panel.crit{border-left:4px solid var(--red)}
+  .panel.good{border-left:4px solid var(--green)}
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:22px 0}
+  .kpi{background:var(--panel2); border:1px solid var(--border); border-radius:12px; padding:16px 14px; text-align:center}
+  .kpi .v{font-size:28px; font-weight:800; letter-spacing:-1px}
+  .kpi .l{font-size:12.5px; color:var(--muted); margin-top:4px}
+  .kpi.green .v{color:var(--green)} .kpi.amber .v{color:var(--amber)}
+  .kpi.red .v{color:var(--red)} .kpi.blue .v{color:var(--blue)}
+  table{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  th,td{text-align:left; padding:11px 13px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{background:var(--panel2); color:#cdd3e0; font-weight:600; font-size:13px}
+  tr:hover td{background:#161a24}
+  code{background:#232838; padding:1.5px 6px; border-radius:5px; font-size:13px; color:#b9c2d6;
+    font-family:'Cascadia Code',Consolas,monospace}
+  pre{background:#0b0d13; border:1px solid var(--border); border-radius:10px; padding:16px 18px; overflow-x:auto;
+    font-family:'Cascadia Code',Consolas,monospace; font-size:13px; line-height:1.7; color:#c9d1e0}
+  pre .c{color:#5f6b82} pre .g{color:var(--green)} pre .a{color:var(--amber)} pre .r{color:var(--red)}
+  .badge{display:inline-block; font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:5px; white-space:nowrap}
+  .b-pass{background:#173029; color:var(--green)}
+  .b-warn{background:#3a2f1a; color:var(--amber)}
+  .b-crit{background:#3a1c22; color:var(--red)}
+  .b-ph{background:#2a2340; color:#b9a9ff}
+  ul{margin:10px 0; padding-left:22px} li{margin:6px 0}
+  .muted{color:var(--muted)}
+  .dag{display:flex; align-items:center; gap:10px; margin:18px 0; flex-wrap:wrap; font-size:13.5px}
+  .node{background:var(--panel2); border:1px solid var(--border); border-radius:9px; padding:10px 14px}
+  .node .h{font-weight:700} .node .t{color:var(--muted); font-size:12px}
+  .node.live{border-color:#3a5a4f} .node.stale{border-color:#5a3a3f} .node.base{border-color:#3a4a5f}
+  .arrow{color:var(--muted); font-size:18px}
+  .step{background:var(--panel); border:1px solid var(--border); border-left:4px solid var(--accent2);
+    border-radius:10px; padding:18px 20px; margin:16px 0}
+  .step h3{margin-top:0}
+  .gate{background:#241a1c; border:1px solid #5a3a3f; border-radius:12px; padding:20px 22px; margin:22px 0}
+  .foot{margin-top:60px; padding-top:20px; border-top:1px solid var(--border); color:var(--muted); font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>main 통합 계획 + 상세 시뮬레이션</h1>
+  <div class="sub">
+    <span class="tag date">2026-07-01</span>
+    <span class="tag ok">dry-run 완료 · 소스 무변경</span>
+  </div>
+  <p class="sub" style="margin-top:10px">
+    목표: 실제 작동 엔진 <code>adr-186/boundary-kernel-port</code>(ADR-264)를 죽어 있는 <code>main</code>(ADR-163)의
+    정식 기준선으로 승격. 아래 시뮬레이션은 전부 read-only dry-run이며 <b>어떤 브랜치도 변경/삭제/푸시하지 않았습니다.</b>
+  </p>
+</header>
+
+<!-- ===== VERDICT ===== -->
+<div class="panel good">
+  <p class="lead" style="margin:0"><b>결론 — 통합은 충돌 0, fast-forward. 예상보다 훨씬 안전합니다.</b></p>
+  <p style="margin-bottom:0">
+    <code>main</code>은 <code>adr-186</code>의 <b>직계 조상</b>입니다(merge-base = main HEAD). 따라서 병합은
+    재작성·충돌 없이 490커밋을 그대로 얹는 fast-forward입니다. 위험은 “병합” 자체가 아니라
+    <b>(1) 유실될 소수 발산 커밋의 취사선택</b>과 <b>(2) origin에 push하는 outward 행위</b> 두 곳에만 있습니다.
+  </p>
+</div>
+
+<div class="kpis">
+  <div class="kpi green"><div class="v">0</div><div class="l">병합 충돌 (merge-tree dry-run)</div></div>
+  <div class="kpi green"><div class="v">FF</div><div class="l">fast-forward 가능 (490커밋)</div></div>
+  <div class="kpi amber"><div class="v">2</div><div class="l">취사선택 필요한 발산 라인</div></div>
+  <div class="kpi blue"><div class="v">486→~5</div><div class="l">브랜치 정리 목표</div></div>
+</div>
+
+<!-- ===== SIMULATION RESULTS ===== -->
+<h2><span class="num">1</span>시뮬레이션 결과 (전부 read-only)</h2>
+
+<table>
+  <tr><th style="width:34%">검사</th><th style="width:14%">결과</th><th>세부</th></tr>
+  <tr><td><code>main</code> ⊂ <code>adr-186</code> 여부</td><td><span class="badge b-pass">YES</span></td><td><code>merge-base --is-ancestor</code> = true, merge-base = <code>9d556a4</code> (main HEAD)</td></tr>
+  <tr><td>병합 충돌 (merge-tree)</td><td><span class="badge b-pass">0건</span></td><td>fast-forward이므로 3-way 충돌 없음</td></tr>
+  <tr><td><code>adr-186</code> 작업트리</td><td><span class="badge b-pass">clean</span></td><td>uncommitted 변경 0 (kind-chatterjee 워크트리)</td></tr>
+  <tr><td>낡은 ADR-110 라인(<code>6afdbd2</code>)</td><td><span class="badge b-warn">발산</span></td><td>adr-186에 없음 (+24 커밋). merge-base <code>aacc9d6</code> = main보다 이전 → 별도 취사선택</td></tr>
+  <tr><td>ADR-142 라인(<code>5a26fdf</code>)</td><td><span class="badge b-warn">발산</span></td><td>adr-186에 없음 (+2 커밋)</td></tr>
+  <tr><td>기타 워크트리(<code>cfcf8ba/70e1730/3be91fe</code>)</td><td><span class="badge b-pass">흡수됨</span></td><td>이미 adr-186에 포함 → 안전 폐기</td></tr>
+  <tr><td>로컬 브랜치 257개 분류</td><td><span class="badge b-pass">98 / 159</span></td><td>98개 이미 adr-186에 포함(즉시 삭제 가능) · 159개는 검토(대부분 superseded α/β/γ)</td></tr>
+  <tr><td>origin 원격 브랜치</td><td><span class="badge b-warn">229개</span></td><td>정리 대상 (push 후)</td></tr>
+</table>
+
+<h3>실제 DAG 구조</h3>
+<div class="dag">
+  <div class="node base"><div class="h">aacc9d6</div><div class="t">공통 조상</div></div>
+  <span class="arrow">→</span>
+  <div class="node base"><div class="h">main · 9d556a4</div><div class="t">ADR-163 (죽음)</div></div>
+  <span class="arrow">→ 490커밋 →</span>
+  <div class="node live"><div class="h">adr-186 · 195755d</div><div class="t">ADR-264 (실제 엔진)</div></div>
+</div>
+<div class="dag">
+  <div class="node base"><div class="h">aacc9d6</div><div class="t">공통 조상</div></div>
+  <span class="arrow">→ +24 →</span>
+  <div class="node stale"><div class="h">6afdbd2</div><div class="t">ADR-108/109/110 (BVH·dirty·provenance) — 별도 라인</div></div>
+</div>
+<p class="muted">
+  즉 <code>main</code>과 <code>adr-186</code>은 한 직선 위에 있어 통합이 자명합니다. 반면 ADR-108/109/110 라인은
+  <code>main</code>보다도 이전에서 갈라진 형제 라인이라 fast-forward에 포함되지 않습니다.
+  (이 라인 = 앞서 <code>195755d</code> 감사가 “~80% 이미 대체됨, provenance만 고유, 병합 부적절”로 판정한
+  intelligent-shamir와 동일 커밋.)
+</p>
+
+<!-- ===== PLAN ===== -->
+<h2><span class="num">2</span>4단계 통합 계획</h2>
+
+<div class="step">
+  <h3><span class="badge b-ph">Phase 0</span> 안전망 (실행 전 필수, 되돌리기 보장)</h3>
+  <p>어떤 것도 바꾸기 전에 현재 상태를 태그로 봉인. 이후 모든 단계가 이 태그로 100% 복구 가능.</p>
+<pre><span class="c"># 현재 main / adr-186 / 낡은 라인을 불변 태그로 봉인</span>
+git tag backup/main-pre-integration        9d556a4
+git tag backup/adr186-snapshot             195755d
+git tag backup/adr110-line                 6afdbd2
+git tag backup/adr142-line                 5a26fdf
+<span class="c"># origin/main의 현재 위치도 기록 (push 롤백 기준)</span>
+git rev-parse origin/main &gt; .integration-origin-main.sha</pre>
+</div>
+
+<div class="step">
+  <h3><span class="badge b-ph">Phase 1</span> 핵심 — main을 adr-186으로 fast-forward <span class="badge b-pass">충돌 0</span></h3>
+  <p>이 한 단계가 “죽은 main” 문제의 90%를 해소합니다. 로컬에서만 수행 (push는 Phase 3).</p>
+<pre>git checkout main
+<span class="g"># --ff-only: 충돌/머지커밋 없이 조상→후손 직진. 실패하면 안전하게 멈춤</span>
+git merge --ff-only adr-186/boundary-kernel-port
+<span class="c"># 검증: main이 이제 195755d(ADR-264)인지</span>
+git log -1 --format="%h %s"   <span class="c"># → 195755d ... 기대</span></pre>
+  <p class="muted">roundtrip 검증: <code>cd web &amp;&amp; npm run build</code> + <code>cargo test</code>로 통합 직후 건강 재확인
+    (프로젝트 기록 기준선: Rust ~2600 pass / vitest ~2470 pass).</p>
+</div>
+
+<div class="step">
+  <h3><span class="badge b-ph">Phase 2</span> 발산 라인 취사선택 (유실 방지)</h3>
+  <p>fast-forward에 포함되지 않는 것은 실질적으로 아래 2개뿐. 나머지 157개 “not-in-adr186”은 대부분
+     adr-186이 다른 해시로 이미 포함한 <b>superseded 스택 서브브랜치</b>(대개 +1커밋).</p>
+  <table>
+    <tr><th>발산 라인</th><th>고유 내용</th><th>판정 / 조치</th></tr>
+    <tr>
+      <td><code>6afdbd2</code><br>ADR-108/109/110 (+24)</td>
+      <td>Face/Edge BVH 공간 인덱스, 세분 dirty region, 엔티티 provenance/audit</td>
+      <td><span class="badge b-warn">선별</span> ~80% 이미 adr-186에 대체됨. <b>provenance(ADR-110)만 고유</b> →
+        원하면 신규 <code>ADR-265</code>로 cherry-pick, 아니면 <code>backup/adr110-line</code> 태그로 보존 후 폐기</td>
+    </tr>
+    <tr>
+      <td><code>5a26fdf</code><br>ADR-142 (+2)</td>
+      <td>Sprint 1 ADR-142 γ+δ+ε</td>
+      <td><span class="badge b-warn">확인</span> 최신 엔진에 동등물 있는지 1분 확인 → 있으면 폐기, 없으면 cherry-pick</td>
+    </tr>
+  </table>
+<pre><span class="c"># provenance만 골라오는 예 (원할 때만)</span>
+git checkout -b adr-265/provenance-salvage main
+git cherry-pick ce8e52e cedf82d 6afdbd2   <span class="c"># provenance 3커밋</span>
+<span class="c"># 충돌 시 중단하고 재평가 — 강제 진행 금지</span></pre>
+</div>
+
+<div class="step">
+  <h3><span class="badge b-ph">Phase 3</span> origin 반영 <span class="badge b-crit">outward · 승인 필요</span></h3>
+  <p>로컬 검증 완료 후에만. origin/main을 490커밋 앞으로 이동 — <b>public 저장소를 바꾸는 되돌리기 어려운 행위</b>.</p>
+<pre><span class="a"># fast-forward이므로 --force 불필요 (일반 push)</span>
+git push origin main
+<span class="c"># 백업 태그도 원격에 (안전망 공유)</span>
+git push origin backup/main-pre-integration backup/adr186-snapshot</pre>
+  <p class="muted">이후 로컬 <code>adr-186/boundary-kernel-port</code>는 main과 동일 커밋 → 브랜치는 지우고
+    <code>backup/adr186-snapshot</code> 태그로만 보존.</p>
+</div>
+
+<div class="step">
+  <h3><span class="badge b-ph">Phase 4</span> 브랜치 대청소 (486 → ~5) + 재발 방지</h3>
+<pre><span class="c"># (a) 이미 adr-186(=main)에 포함된 로컬 98개 즉시 삭제</span>
+git branch | while read b; do b=${b#\* }; b=${b# };
+  git merge-base --is-ancestor "$b" main 2>/dev/null &amp;&amp; [ "$b" != main ] &amp;&amp; git branch -D "$b"; done
+
+<span class="c"># (b) superseded 스택 서브브랜치(adr-1xx/α·β·γ, claude/*) 일괄 삭제</span>
+<span class="c">#     — 각각 backup 태그가 없으므로, 통째 아카이브 태그 후 삭제 권장</span>
+git tag archive/pre-cleanup-branches-2026-07-01 195755d   <span class="c"># 참조점</span>
+git branch | grep -E '^(  (adr-1|claude/|audit/|ci/))' | xargs -r git branch -D
+
+<span class="c"># (c) 워크트리 정리 — 활성 1개 + main 1개만 유지</span>
+git worktree remove .claude/worktrees/objective-bassi-1e94f3
+git worktree remove .claude/worktrees/competent-kilby-0ce81f
+<span class="c"># ... 나머지 stale 워크트리 동일</span>
+
+<span class="c"># (d) origin 229개 정리 (push 후, 신중히)</span>
+<span class="c">#     git push origin --delete &lt;branch&gt;  — 배치로, main/backup 제외</span></pre>
+  <h3 style="margin-top:20px">재발 방지 규율 (핵심)</h3>
+  <ul>
+    <li><b>단일 기준선:</b> 모든 실작업은 <code>main</code>에서 분기 → 완료 시 <code>main</code>으로 복귀. 장수 로컬 브랜치 금지.</li>
+    <li><b>서브브랜치 금지:</b> α/β/γ는 <b>로컬 커밋</b>으로만 쌓고 브랜치화하지 않는다. closure 시 squash/ff.</li>
+    <li><b>브랜치 보호:</b> GitHub에서 <code>main</code> 보호 규칙(직접 push 제한, CI green 필수) 설정.</li>
+    <li><b>세션 브랜치 자동삭제:</b> merge된 <code>claude/*</code>는 주기적 prune.</li>
+  </ul>
+</div>
+
+<!-- ===== RISK ===== -->
+<h2><span class="num">3</span>위험 &amp; 롤백</h2>
+<table>
+  <tr><th>단계</th><th>위험도</th><th>롤백</th></tr>
+  <tr><td>Phase 1 (로컬 ff)</td><td><span class="badge b-pass">낮음</span></td><td><code>git reset --hard backup/main-pre-integration</code> — 완전 복구</td></tr>
+  <tr><td>Phase 2 (cherry-pick)</td><td><span class="badge b-warn">중간</span></td><td>새 브랜치에서만 작업 → 버리면 끝. main 무영향</td></tr>
+  <tr><td>Phase 3 (origin push)</td><td><span class="badge b-crit">높음·비가역</span></td><td>push 후 되돌리려면 <code>git push origin +&lt;old-sha&gt;:main</code> (force). 백업 태그로만 가능. <b>이 지점 전 승인 필수</b></td></tr>
+  <tr><td>Phase 4 (브랜치 삭제)</td><td><span class="badge b-warn">중간</span></td><td>삭제 전 <code>archive/*</code> 태그로 커밋 도달성 보존 → reflog/태그로 복구</td></tr>
+</table>
+
+<div class="gate">
+  <h3 style="margin-top:0">🚦 실행 승인 게이트</h3>
+  <p>메모리 기록에 <code>adr-186</code>은 그간 <b>“push 금지”</b>로 표시돼 있었습니다. 본 통합은 그 정책을 사용자가
+    명시적으로 뒤집는 결정입니다. 따라서 아래 두 지점은 <b>별도 확인</b>이 필요합니다:</p>
+  <ul style="margin-bottom:0">
+    <li><b>Phase 1(로컬 ff)까지</b>는 안전 — 원하시면 바로 실행 가능(모두 로컬, 태그로 복구).</li>
+    <li><b>Phase 3(origin push)</b>는 public 저장소를 490커밋 이동시키는 비가역 outward 행위 — <b>명시적 “push 진행” 승인</b> 후에만.</li>
+    <li><b>Phase 2 provenance 살리기</b> 여부 — “ADR-265로 살릴지 / 태그 보존 후 폐기할지” 결정 필요.</li>
+  </ul>
+</div>
+
+<div class="foot">
+  <p><b>시뮬레이션 무결성.</b> 본 문서의 모든 수치는 <code>git merge-base --is-ancestor</code>,
+    <code>git merge-tree --write-tree</code>, <code>git rev-list --count</code>, <code>git status --porcelain</code>의
+    read-only 실행 결과입니다. <b>어떤 브랜치·태그·커밋·원격도 생성/변경/삭제하지 않았습니다.</b>
+    위 명령 블록은 승인 시 실행할 계획일 뿐 아직 실행되지 않았습니다.</p>
+</div>
+
+</div>
+</body>
+</html>

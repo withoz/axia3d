@@ -1,0 +1,396 @@
+/**
+ * AXiA 3D — Settings Panel (단위 설정 도구)
+ *
+ * 톱니바퀴 버튼 클릭 시 드롭다운 패널 표시
+ * - 단위 선택 (mm/cm/m/in/ft)
+ * - 소수점 자릿수 (0~8)
+ * - 스냅 On/Off
+ * - 스냅 간격
+ */
+
+import { UnitSystem, UnitType } from './UnitSystem';
+import {
+  getMergeTolerance, setMergeTolerance,
+  getRespectMaterial, setRespectMaterial,
+  MERGE_TOL_MAX,
+} from '../tools/MergeSettings';
+import { getAutoIntersect, setAutoIntersect } from '../tools/AutoIntersectSettings';
+import { getDrawCurveMode, setDrawCurveMode } from '../tools/DrawCurveSettings';
+import {
+  getExtrudeMode,
+  setExtrudeMode,
+  getExtrudeDistNeg,
+  setExtrudeDistNeg,
+  type ExtrudeMode,
+} from '../tools/ExtrudeModeSettings';
+import { getText3DMode, setText3DMode } from '../tools/Text3DSettings';
+import { getNurbsPatchMode, setNurbsPatchMode } from '../tools/NurbsPatchSettings';
+import {
+  getAutoTopologyRecoveryMode,
+  setAutoTopologyRecoveryMode,
+} from '../tools/AutoTopologyRecoverySettings';
+import {
+  getAssetLibraryUserTierMode,
+  setAssetLibraryUserTierMode,
+} from '../tools/AssetLibraryUserTierSettings';
+import {
+  getAutoMaterialRecoveryMode,
+  setAutoMaterialRecoveryMode,
+} from '../tools/AutoMaterialRecoverySettings';
+
+export class SettingsPanel {
+  private panel: HTMLElement;
+  private isOpen = false;
+  private readonly _onMouseDown: (e: MouseEvent) => void;
+
+  constructor(private units: UnitSystem) {
+    this.panel = this.createPanel();
+    document.body.appendChild(this.panel);
+
+    // 패널 밖 클릭 시 닫기 (named reference for cleanup)
+    this._onMouseDown = (e: MouseEvent) => {
+      if (this.isOpen &&
+          !this.panel.contains(e.target as Node) &&
+          !(e.target as HTMLElement).closest('#settings-btn')) {
+        this.close();
+      }
+    };
+    document.addEventListener('mousedown', this._onMouseDown);
+
+    // 단위 변경 시 UI 갱신
+    units.onChange(() => this.updateDisplay());
+  }
+
+  /** Remove DOM and listeners (defensive cleanup) */
+  dispose() {
+    document.removeEventListener('mousedown', this._onMouseDown);
+    this.panel.remove();
+  }
+
+  toggle() {
+    this.isOpen ? this.close() : this.open();
+  }
+
+  open() {
+    this.updateDisplay();
+    this.panel.style.display = 'block';
+    this.isOpen = true;
+  }
+
+  close() {
+    this.panel.style.display = 'none';
+    this.isOpen = false;
+  }
+
+  private createPanel(): HTMLElement {
+    const panel = document.createElement('div');
+    panel.id = 'settings-panel';
+    panel.innerHTML = `
+      <div class="sp-header">단위 설정</div>
+
+      <div class="sp-section">
+        <label class="sp-label">단위</label>
+        <div class="sp-unit-btns" id="sp-unit-btns"></div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">소수점 자릿수</label>
+        <div class="sp-row">
+          <input type="range" id="sp-precision" min="0" max="8" step="1" />
+          <span id="sp-precision-val" class="sp-value"></span>
+        </div>
+      </div>
+
+      <div class="sp-divider"></div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-snap" />
+          그리드 스냅
+        </label>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">스냅 간격</label>
+        <div class="sp-row">
+          <input type="number" id="sp-snap-interval" step="0.1" min="0.0001" />
+          <span id="sp-snap-unit" class="sp-value"></span>
+        </div>
+      </div>
+
+      <div class="sp-divider"></div>
+
+      <div class="sp-section">
+        <label class="sp-label">면 병합 허용 각도</label>
+        <div class="sp-row">
+          <input type="range" id="sp-merge-tol" min="0" max="${MERGE_TOL_MAX}" step="0.1" />
+          <span id="sp-merge-tol-val" class="sp-value"></span>
+        </div>
+        <div class="sp-hint">작은 값(0.5°)은 CAD-grade · 큰 값은 관대한 병합</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-merge-respect-mat" />
+          재질 경계 존중 (다른 재질은 병합 안 함)
+        </label>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-auto-intersect" />
+          그릴 때 자동 교차 (Auto-intersect on draw)
+        </label>
+        <div class="sp-hint">새 면이 기존 면과 3D 교차하면 edge 로 자동 분할 (SketchUp 스타일)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-draw-curve-mode" />
+          곡선 모드 (실험) — kernel-native 닫힌 곡선
+        </label>
+        <div class="sp-hint">DrawCircle: 24-segment polygon 대신 1 self-loop edge + AnalyticCurve::Circle 로 그리기 (ADR-089)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-auto-topology-recovery" />
+          위상 손상 자동 복구 (실험)
+        </label>
+        <div class="sp-hint">토폴로지 변경 op 후 손상 감지 → 자동 복구. PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-097 Phase 4)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-asset-library-user-tier" />
+          User 라이브러리 활성화 (실험)
+        </label>
+        <div class="sp-hint">자산 라이브러리 의 User tier (사용자 재사용 재질 모음) 활성. localStorage 보존, opt-in default OFF (ADR-098 Phase 5-A)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-auto-material-recovery" />
+          재질 삭제 자동 복구 (실험)
+        </label>
+        <div class="sp-hint">Material 제거 시 owning Xia 의 자동 복구 (auto-demote → fallback Concrete). PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-100 Phase 5-C)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-text3d-sprite" />
+          3D 텍스트: 스프라이트 모드
+        </label>
+        <div class="sp-hint">체크 = 캔버스 빌보드 라벨 (한국어 즉시, 카메라 대면). 해제 = 압출 3D 텍스트 (Latin, 한국어는 자동 스프라이트 fallback) (ADR-228)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-nurbs-vault" />
+          NURBS 곡면: 볼트(반원통) 모드
+        </label>
+        <div class="sp-hint">체크 = 정확한 rational 반원통 vault (createNurbsSurface, 정확한 원호 단면). 해제 = bicubic Bezier bulge (현재) (ADR-231)</div>
+      </div>
+
+      <div class="sp-section">
+        <label class="sp-label">Push/Pull 돌출 방향 (ADR-261)</label>
+        <select id="sp-extrude-mode">
+          <option value="oneway">단방향 (OneWay) — 기존</option>
+          <option value="symmetric">대칭 (Symmetric) — 양쪽 각 거리</option>
+          <option value="twosided">비대칭 (TwoSided) — 위/아래 따로</option>
+        </select>
+        <label class="sp-label" id="sp-extrude-dist-neg-row" style="display:none">
+          아래(−) 거리 (mm)
+          <input type="number" id="sp-extrude-dist-neg" step="1" min="0" />
+        </label>
+        <div class="sp-hint">대칭 = profile 평면 기준 양쪽 각 d (총 2d). 비대칭 = +방향은 돌출 거리, −방향은 위 값. 단방향이 기본 (동작 불변).</div>
+      </div>
+
+      <div class="sp-divider"></div>
+      <div class="sp-info" id="sp-info"></div>
+    `;
+
+    // 단위 버튼 생성
+    const btnContainer = panel.querySelector('#sp-unit-btns')!;
+    for (const cfg of UnitSystem.allUnits) {
+      const btn = document.createElement('button');
+      btn.className = 'sp-ubtn';
+      btn.dataset.unit = cfg.type;
+      btn.textContent = cfg.label;
+      btn.title = cfg.labelLong;
+      btn.addEventListener('click', () => {
+        this.units.unit = cfg.type as UnitType;
+      });
+      btnContainer.appendChild(btn);
+    }
+
+    // 소수점 슬라이더
+    const precSlider = panel.querySelector('#sp-precision') as HTMLInputElement;
+    precSlider.addEventListener('input', () => {
+      this.units.precision = parseInt(precSlider.value);
+    });
+
+    // 스냅 체크박스
+    const snapCheck = panel.querySelector('#sp-snap') as HTMLInputElement;
+    snapCheck.addEventListener('change', () => {
+      this.units.gridSnap = snapCheck.checked;
+    });
+
+    // 스냅 간격
+    const snapInput = panel.querySelector('#sp-snap-interval') as HTMLInputElement;
+    snapInput.addEventListener('change', () => {
+      const val = parseFloat(snapInput.value);
+      if (!isNaN(val) && val > 0) {
+        this.units.snapInterval = this.units.toInternal(val);
+      }
+    });
+
+    // 병합 허용 각도
+    const tolSlider = panel.querySelector('#sp-merge-tol') as HTMLInputElement;
+    const tolVal = panel.querySelector('#sp-merge-tol-val')!;
+    tolSlider.addEventListener('input', () => {
+      const v = parseFloat(tolSlider.value);
+      setMergeTolerance(v);
+      tolVal.textContent = `${v.toFixed(1)}°`;
+    });
+
+    // 재질 경계 존중
+    const matCheck = panel.querySelector('#sp-merge-respect-mat') as HTMLInputElement;
+    matCheck.addEventListener('change', () => {
+      setRespectMaterial(matCheck.checked);
+    });
+
+    // Auto-intersect on draw
+    const autoIntCheck = panel.querySelector('#sp-auto-intersect') as HTMLInputElement;
+    autoIntCheck.addEventListener('change', () => {
+      setAutoIntersect(autoIntCheck.checked);
+    });
+
+    // ADR-089 A-λ-β — Draw curve mode (kernel-native closed-curve)
+    const drawCurveCheck = panel.querySelector('#sp-draw-curve-mode') as HTMLInputElement;
+    drawCurveCheck.addEventListener('change', () => {
+      setDrawCurveMode(drawCurveCheck.checked);
+    });
+
+    // ADR-097 T-ε — Auto topology recovery (Phase 4)
+    const autoRecoverCheck = panel.querySelector('#sp-auto-topology-recovery') as HTMLInputElement;
+    autoRecoverCheck.addEventListener('change', () => {
+      setAutoTopologyRecoveryMode(autoRecoverCheck.checked);
+    });
+
+    // ADR-098 S-ε — User tier asset library (Phase 5-A opt-in)
+    const userTierCheck = panel.querySelector('#sp-asset-library-user-tier') as HTMLInputElement;
+    userTierCheck.addEventListener('change', () => {
+      setAssetLibraryUserTierMode(userTierCheck.checked);
+    });
+
+    // ADR-100 R-ε — Auto material recovery (Phase 5-C)
+    const autoMaterialRecoverCheck = panel.querySelector('#sp-auto-material-recovery') as HTMLInputElement;
+    autoMaterialRecoverCheck.addEventListener('change', () => {
+      setAutoMaterialRecoveryMode(autoMaterialRecoverCheck.checked);
+    });
+
+    // ADR-228 — 3D text render mode (checked = sprite billboard, unchecked = extruded)
+    const text3dSpriteCheck = panel.querySelector('#sp-text3d-sprite') as HTMLInputElement;
+    text3dSpriteCheck.addEventListener('change', () => {
+      setText3DMode(text3dSpriteCheck.checked ? 'sprite' : 'extruded');
+    });
+
+    // ADR-231 — NURBS patch mode (checked = rational vault, unchecked = Bezier bulge)
+    const nurbsVaultCheck = panel.querySelector('#sp-nurbs-vault') as HTMLInputElement;
+    nurbsVaultCheck.addEventListener('change', () => {
+      setNurbsPatchMode(nurbsVaultCheck.checked ? 'vault' : 'bezier');
+    });
+
+    // ADR-261 — Push/Pull extrude mode (oneway / symmetric / twosided)
+    const extrudeModeSel = panel.querySelector('#sp-extrude-mode') as HTMLSelectElement;
+    const extrudeDistNegRow = panel.querySelector('#sp-extrude-dist-neg-row') as HTMLElement;
+    const extrudeDistNegInput = panel.querySelector('#sp-extrude-dist-neg') as HTMLInputElement;
+    extrudeModeSel.addEventListener('change', () => {
+      const mode = extrudeModeSel.value as ExtrudeMode;
+      setExtrudeMode(mode);
+      extrudeDistNegRow.style.display = mode === 'twosided' ? '' : 'none';
+    });
+    extrudeDistNegInput.addEventListener('change', () => {
+      const v = parseFloat(extrudeDistNegInput.value);
+      if (Number.isFinite(v) && v >= 0) setExtrudeDistNeg(v);
+    });
+
+    return panel;
+  }
+
+  private updateDisplay() {
+    // 단위 버튼 활성화
+    this.panel.querySelectorAll('.sp-ubtn').forEach(btn => {
+      btn.classList.toggle('active', (btn as HTMLElement).dataset.unit === this.units.unit);
+    });
+
+    // 소수점
+    const precSlider = this.panel.querySelector('#sp-precision') as HTMLInputElement;
+    const precVal = this.panel.querySelector('#sp-precision-val')!;
+    precSlider.value = String(this.units.precision);
+    precVal.textContent = String(this.units.precision);
+
+    // 스냅
+    const snapCheck = this.panel.querySelector('#sp-snap') as HTMLInputElement;
+    snapCheck.checked = this.units.gridSnap;
+
+    // 스냅 간격 (현재 단위로 표시)
+    const snapInput = this.panel.querySelector('#sp-snap-interval') as HTMLInputElement;
+    const snapUnit = this.panel.querySelector('#sp-snap-unit')!;
+    snapInput.value = this.units.fromInternal(this.units.snapInterval).toFixed(this.units.precision);
+    snapUnit.textContent = this.units.config.label;
+
+    // 병합 각도
+    const tolSlider = this.panel.querySelector('#sp-merge-tol') as HTMLInputElement;
+    const tolVal = this.panel.querySelector('#sp-merge-tol-val')!;
+    const tol = getMergeTolerance();
+    tolSlider.value = String(tol);
+    tolVal.textContent = `${tol.toFixed(1)}°`;
+
+    // 재질 존중
+    const matCheck = this.panel.querySelector('#sp-merge-respect-mat') as HTMLInputElement;
+    matCheck.checked = getRespectMaterial();
+
+    // 자동 교차
+    const autoIntCheck = this.panel.querySelector('#sp-auto-intersect') as HTMLInputElement;
+    autoIntCheck.checked = getAutoIntersect();
+
+    // ADR-089 A-λ-β — 곡선 모드 (kernel-native)
+    const drawCurveCheck = this.panel.querySelector('#sp-draw-curve-mode') as HTMLInputElement;
+    drawCurveCheck.checked = getDrawCurveMode();
+
+    // ADR-097 T-ε — 자동 위상 복구
+    const autoRecoverCheck = this.panel.querySelector('#sp-auto-topology-recovery') as HTMLInputElement;
+    autoRecoverCheck.checked = getAutoTopologyRecoveryMode();
+
+    // ADR-098 S-ε — User 라이브러리 활성화
+    const userTierCheck = this.panel.querySelector('#sp-asset-library-user-tier') as HTMLInputElement;
+    userTierCheck.checked = getAssetLibraryUserTierMode();
+
+    // ADR-100 R-ε — 자동 재질 복구
+    const autoMaterialRecoverCheck = this.panel.querySelector('#sp-auto-material-recovery') as HTMLInputElement;
+    autoMaterialRecoverCheck.checked = getAutoMaterialRecoveryMode();
+
+    // ADR-228 — 3D 텍스트 모드 (checked = sprite)
+    const text3dSpriteCheck = this.panel.querySelector('#sp-text3d-sprite') as HTMLInputElement;
+    text3dSpriteCheck.checked = getText3DMode() === 'sprite';
+
+    // ADR-231 — NURBS 패치 모드 (checked = vault)
+    const nurbsVaultCheck = this.panel.querySelector('#sp-nurbs-vault') as HTMLInputElement;
+    nurbsVaultCheck.checked = getNurbsPatchMode() === 'vault';
+
+    // ADR-261 — Push/Pull 돌출 방향 (oneway / symmetric / twosided)
+    const extrudeModeSel = this.panel.querySelector('#sp-extrude-mode') as HTMLSelectElement;
+    const mode = getExtrudeMode();
+    extrudeModeSel.value = mode;
+    const extrudeDistNegRow = this.panel.querySelector('#sp-extrude-dist-neg-row') as HTMLElement;
+    extrudeDistNegRow.style.display = mode === 'twosided' ? '' : 'none';
+    const extrudeDistNegInput = this.panel.querySelector('#sp-extrude-dist-neg') as HTMLInputElement;
+    extrudeDistNegInput.value = String(getExtrudeDistNeg());
+
+    // 정보
+    const info = this.panel.querySelector('#sp-info')!;
+    info.textContent = `1 ${this.units.config.label} = ${this.units.config.toMM} mm`;
+  }
+}

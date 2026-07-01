@@ -1,0 +1,16 @@
+[package]
+name = "axia-ifc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "IFC4.3 STEP-21 B-Rep exporter (ADR-203, Phase G Stage 5) — true IFC4X3 emit, deterministic"
+
+[lib]
+name = "axia_ifc"
+path = "src/lib.rs"
+
+[dependencies]
+# β-1: writer foundation + IfcFacetedBrep cube. glam for DVec3 coords.
+# axia-geo / axia-core added in β-2+ (analytic surfaces / DCEL traversal).
+glam.workspace = true

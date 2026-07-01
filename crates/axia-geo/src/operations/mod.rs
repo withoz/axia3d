@@ -1,0 +1,49 @@
+//! Geometry operations on the Mesh.
+//!
+//! Each operation corresponds to a user action (Draw, Push/Pull, etc.)
+
+pub mod draw;
+pub mod orient;
+pub mod push_pull;
+pub mod create_solid;
+pub mod boolean_geo;
+pub mod boolean;
+pub mod coplanar;
+pub mod annulus;  // ADR-145 — Circle annulus 명시 promote (β-1 validation only)
+pub mod boundary;  // ADR-148 — B-γ' Point-Localized BoundaryTool (β-1 skeleton)
+pub mod t_junction;  // ADR-149 — T-junction Sweep 명시 도구 (β-1 detection)
+pub mod face_rederive;  // ADR-186 δ-2 — 유도면 모델 DCEL bridge (rebuild_coplanar_faces)
+pub mod p7_canonical_resolver;  // ADR-151 — Connected Stacked-inner Component-Merge Resolver (β-1 skeleton)
+pub mod boolean_dispatch;
+pub mod boolean_nurbs_dcel;
+pub mod transform;
+pub mod offset;
+pub mod primitives;
+pub mod face_split;
+pub mod mirror;
+pub mod revolve;
+pub mod loft;
+pub mod sweep;
+pub mod patch_surface;
+pub mod subdivide;
+pub mod fillet;
+pub mod fillet_dispatch;
+pub mod fillet_brep;
+pub mod chamfer_brep;
+pub mod shell;
+pub mod draft;
+pub mod offset_surface_robust;
+pub mod deform;
+pub mod array_op;
+pub mod geometric_merge;
+pub mod polygon_geom;
+pub mod slice;
+pub mod repair;
+pub mod planar_walk;
+pub mod erase_resynth;
+pub mod import_mesh;
+pub mod cleave;
+pub mod plane_snap;  // ADR-168 β-1 — Face plane drift snap (Q1=a tessellation chord substitute, layered on ADR-167)
+pub mod boundary_input;  // ADR-171 β-1 — Engine absorb_boundary_input SSOT (Phase 2, 4-step routine pure helper)
+pub mod carve;  // ADR-194 β-1 — Push/Pull Phase 2 carve intent detection (read-only, no trigger)
+pub mod edit_2d;  // ADR-211 β-1 — 2D Sketch Editing: Trim + Extend (free wire edges, Pattern-12 composition)

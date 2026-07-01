@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXiA 3D — 엔진 총체 점검 보고서 (2026-07-01)</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --border:#2a2f3d;
+    --text:#e6e8ee; --muted:#9aa2b4; --accent:#5b9bd5; --accent2:#7c5cff;
+    --red:#ff5c6c; --amber:#ffb84d; --green:#43c59e; --blue:#4da3ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI','Malgun Gothic',system-ui,sans-serif;
+    line-height:1.65; font-size:15.5px;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:48px 28px 96px}
+  header.doc{border-bottom:2px solid var(--border); padding-bottom:24px; margin-bottom:36px}
+  h1{font-size:30px; margin:0 0 6px; letter-spacing:-.4px}
+  .sub{color:var(--muted); font-size:14.5px}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:20px; margin-right:6px; font-weight:600}
+  .tag.date{background:#232838; color:var(--muted)}
+  .tag.method{background:#1c2f2a; color:var(--green)}
+  h2{font-size:22px; margin:52px 0 14px; padding-top:10px; letter-spacing:-.3px}
+  h2 .num{color:var(--accent2); font-weight:800; margin-right:10px}
+  h3{font-size:17px; margin:28px 0 10px; color:#cdd3e0}
+  p{margin:10px 0}
+  .lead{font-size:17px; color:#dfe3ee}
+  .panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 22px; margin:18px 0}
+  .panel.tip{border-left:4px solid var(--accent)}
+  .panel.warn{border-left:4px solid var(--amber)}
+  .panel.crit{border-left:4px solid var(--red)}
+  .panel.good{border-left:4px solid var(--green)}
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:24px 0}
+  .kpi{background:var(--panel2); border:1px solid var(--border); border-radius:12px; padding:16px 14px; text-align:center}
+  .kpi .v{font-size:30px; font-weight:800; letter-spacing:-1px}
+  .kpi .l{font-size:12.5px; color:var(--muted); margin-top:4px}
+  .kpi.red .v{color:var(--red)} .kpi.amber .v{color:var(--amber)}
+  .kpi.green .v{color:var(--green)} .kpi.blue .v{color:var(--blue)}
+  table{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  th,td{text-align:left; padding:11px 13px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{background:var(--panel2); color:#cdd3e0; font-weight:600; font-size:13px}
+  tr:hover td{background:#161a24}
+  code{background:#232838; padding:1.5px 6px; border-radius:5px; font-size:13px; color:#b9c2d6; font-family:'Cascadia Code',Consolas,monospace}
+  .badge{display:inline-block; font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:5px; white-space:nowrap}
+  .b-false{background:#3a1c22; color:var(--red)}
+  .b-partial{background:#3a2f1a; color:var(--amber)}
+  .b-true{background:#3a1c22; color:var(--red)}
+  .b-works{background:#173029; color:var(--green)}
+  .b-p0{background:#3a1c22; color:var(--red)}
+  .b-p1{background:#3a2f1a; color:var(--amber)}
+  .b-p2{background:#1c2838; color:var(--blue)}
+  ul{margin:10px 0; padding-left:22px} li{margin:6px 0}
+  .muted{color:var(--muted)}
+  .divergence{display:flex; align-items:center; gap:14px; margin:18px 0; flex-wrap:wrap}
+  .node{background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:12px 16px; min-width:150px}
+  .node .t{font-size:13px; color:var(--muted)} .node .h{font-weight:700; font-size:15px}
+  .node.stale{border-color:#5a3a3f} .node.live{border-color:#3a5a4f}
+  .arrow{color:var(--muted); font-size:20px}
+  .foot{margin-top:64px; padding-top:20px; border-top:1px solid var(--border); color:var(--muted); font-size:13px}
+  .num-list{counter-reset:step; list-style:none; padding-left:0}
+  .num-list li{counter-increment:step; position:relative; padding-left:44px; margin:16px 0}
+  .num-list li::before{content:counter(step); position:absolute; left:0; top:-2px; width:30px; height:30px;
+    background:var(--accent2); color:#fff; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px}
+  .quote{border-left:3px solid var(--muted); padding:4px 16px; color:var(--muted); font-style:italic; margin:12px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>AXiA 3D — 엔진 총체 점검 보고서</h1>
+  <div class="sub">
+    <span class="tag date">2026-07-01</span>
+    <span class="tag method">코드 직접 검증 (2개 상태 대조 감사)</span>
+  </div>
+  <p class="sub" style="margin-top:10px">
+    요청: “엔진의 총체적 문제점 검토.” 방법: 외부 진단(‘3대 치명 결함’)을 그대로 받아쓰지 않고,
+    <b>낡은 published 계열</b>과 <b>실제 활성 브랜치(adr-186)</b> 두 상태의 실제 소스를 읽어 검증(falsify)했습니다.
+  </p>
+</header>
+
+<!-- ============ EXECUTIVE SUMMARY ============ -->
+<div class="panel crit">
+  <p class="lead" style="margin-top:0"><b>핵심 결론 — 문제는 “엔진 코드”가 아니라 “엔진의 상태·통합·검증 프로세스”다.</b></p>
+  <p>
+    엔진의 기하 커널 자체는 건강합니다(테스트 대량 통과, cut·boolean·extrude 실동작 확인). 진짜 총체적 문제는
+    <b>486개 브랜치로 파편화된 개발 상태</b>와 <b>실제 작동 엔진이 main에 한 번도 통합되지 않은 구조</b>입니다.
+    이 파편화가 심해서, 사용자님이 붙여넣은 “3대 치명 결함” 외부 진단조차 <b>어느 것도 아닌 유령 상태</b>를 겨누고 있었습니다 —
+    존재하지 않는 ADR(136·240)을 근거로 들고, cut 부재를 주장하지만 cut은 낡은 계열에서조차 이미 작동합니다.
+  </p>
+</div>
+
+<div class="kpis">
+  <div class="kpi red"><div class="v">486</div><div class="l">총 브랜치 (로컬 257)</div></div>
+  <div class="kpi red"><div class="v">490</div><div class="l">main이 현실보다 뒤처진 커밋</div></div>
+  <div class="kpi amber"><div class="v">264</div><div class="l">누적 ADR (문서 252개)</div></div>
+  <div class="kpi amber"><div class="v">10 / 5</div><div class="l">워크트리 / 서로 다른 커밋</div></div>
+</div>
+
+<!-- ============ SECTION 1: STATE FRAGMENTATION ============ -->
+<h2><span class="num">1</span>가장 치명적 문제 — 상태 파편화 <span class="badge b-p0">P0</span></h2>
+
+<p class="lead">
+  “우리 엔진”이라고 부를 <b>단일 진실 상태가 존재하지 않습니다.</b> 무엇이 최신인지, 무엇이 작동하는지를
+  git만 보고는 아무도 판단할 수 없는 상태입니다.
+</p>
+
+<div class="divergence">
+  <div class="node stale">
+    <div class="t">이 워크트리 (objective-bassi)</div>
+    <div class="h">6afdbd2 · ADR-110</div>
+    <div class="t">main +24</div>
+  </div>
+  <span class="arrow">←720 커밋→</span>
+  <div class="node live">
+    <div class="t">실제 활성 엔진 (kind-chatterjee)</div>
+    <div class="h">195755d · ADR-264</div>
+    <div class="t">main +490</div>
+  </div>
+</div>
+
+<div class="panel warn">
+  <b>main 브랜치는 사실상 죽어 있습니다.</b> 실제로 작동하는 엔진(adr-186)은 main보다 <b>490 커밋 앞서</b> 있고,
+  단 한 번도 병합된 적이 없습니다. main(9d556a4)은 ADR-163 시절에 멈춰 있습니다.
+  즉 “배포/기준선”이라 부를 브랜치와 “실제 개발”이 완전히 갈라져 있습니다.
+</div>
+
+<h3>워크트리 10개가 5개의 서로 다른 커밋에 흩어져 있음</h3>
+<table>
+  <tr><th>워크트리 HEAD</th><th>main 대비</th><th>내용</th></tr>
+  <tr><td><code>195755d</code> kind-chatterjee</td><td>+490</td><td>ADR-186 (실제 활성 · 최신)</td></tr>
+  <tr><td><code>cfcf8ba</code> derived-face-v2</td><td>+158</td><td>파생 실험 브랜치</td></tr>
+  <tr><td><code>6afdbd2</code> ×4 워크트리</td><td>+24</td><td>ADR-110 계열 (이 워크트리 포함)</td></tr>
+  <tr><td><code>5a26fdf</code> nervous-bose</td><td>+3</td><td>ADR-142 잔여</td></tr>
+  <tr><td><code>70e1730 / 3be91fe</code></td><td>+0</td><td>독립 기능 브랜치 (별도 발산)</td></tr>
+</table>
+
+<h3>브랜치 증식 패턴 — ADR 1개당 평균 ~7.7개</h3>
+<table>
+  <tr><th>지표</th><th>값</th><th>의미</th></tr>
+  <tr><td>총 브랜치</td><td>486 (원격 포함) / 257 (로컬)</td><td>정리되지 않은 누적</td></tr>
+  <tr><td>브랜치가 붙은 ADR 수</td><td>63개</td><td>63개 ADR이 486개 브랜치를 생성</td></tr>
+  <tr><td>계단식 하위 브랜치</td><td>181개</td><td><code>alpha/beta-1/beta-2/beta-3/gamma-closure/hotfix</code> 패턴</td></tr>
+  <tr><td>자동 <code>claude/*</code> 브랜치</td><td>64개</td><td>세션 워크트리 잔재</td></tr>
+  <tr><td>단일 ADR 최다 브랜치</td><td>adr-103 = 40개</td><td>adr-101=32, adr-102=22</td></tr>
+</table>
+
+<p class="muted">
+  각 ADR을 <code>α → β-1 → β-2 → β-3 → γ-closure</code>로 쪼개 브랜치를 만드는 방식(Path Z atomic)이
+  하나의 결정에 대해 5~40개의 브랜치를 남깁니다. 세밀한 추적성은 얻지만, <b>병합·정리 규율이 없어
+  브랜치가 무한히 쌓입니다.</b>
+</p>
+
+<!-- ============ SECTION 2: 3 DEFECTS RE-JUDGED ============ -->
+<h2><span class="num">2</span>외부 “3대 치명 결함” 재판정 <span class="badge b-p1">신뢰성 검증</span></h2>
+
+<p>
+  붙여넣으신 진단을 두 상태의 실제 코드로 대조 검증했습니다. 결과: <b>대부분 낡은/존재하지 않는 상태 기준</b>이며,
+  최신 엔진에서 실제로 유효한 갭은 “결함 2의 일부”뿐입니다.
+</p>
+
+<table>
+  <tr>
+    <th style="width:22%">외부 주장</th>
+    <th style="width:16%">낡은 계열<br>(ADR-110)</th>
+    <th style="width:16%">최신 엔진<br>(ADR-264)</th>
+    <th>코드 근거</th>
+  </tr>
+  <tr>
+    <td><b>① Cut 부재</b><br>음수 push-pull은 추가일 뿐, 재료 제거 경로 0, boolean 미배선</td>
+    <td><span class="badge b-false">거짓</span></td>
+    <td><span class="badge b-works">완전 작동</span></td>
+    <td>
+      음수 push-pull 지원(<code>push_pull.rs</code> 음수거리 테스트) ·
+      boolean subtract 3단계 파이프라인(<code>boolean.rs:1445</code>) ·
+      UI 배선(<code>BooleanHandler.ts:285</code>) ·
+      inward 포켓 extrude(<code>create_solid.rs:702–770</code>) ·
+      MCP Tier 2(<code>boolean_subtract.ts</code>)
+    </td>
+  </tr>
+  <tr>
+    <td><b>② 면 imprint / 면분할 미완성</b><br>내부 닫힌 도형 분할 “(future)”, auto-punch 폐기</td>
+    <td><span class="badge b-partial">부분 사실</span></td>
+    <td><span class="badge b-partial">부분 사실 (실제 갭)</span></td>
+    <td>
+      선-분할(경계↔경계)은 작동(<code>face_split.rs:265</code>).
+      <b>임의 닫힌 도형을 면 내부에 그려 구멍/섬 생성은 여전히 “(future)”</b>(<code>face_split.rs:264</code>) —
+      constrained Delaunay 필요, ADR-255에서 “수요 없음”으로 유예.
+      원형 구멍만 별도 DrawHoleTool 존재.
+    </td>
+  </tr>
+  <tr>
+    <td><b>③ 부피 op 무검증</b><br>watertight 게이트 없음(debug-only), 손상 조용히 통과</td>
+    <td><span class="badge b-partial">부분 사실</span></td>
+    <td><span class="badge b-partial">부분 개선</span></td>
+    <td>
+      검증기 존재·release에서도 호출 가능(<code>mesh_invariants.rs:100/207</code>).
+      annulus·post-extrude에 <b>실제 production assert</b>(<code>create_solid.rs:4352</code> inward_count==0).
+      단 <code>debug_verify_invariants</code>는 여전히 <code>#[cfg(debug_assertions)]</code>,
+      <b>모든 op에 걸리는 범용 post-op 게이트는 미배포</b>(ADR-264 β 예정).
+    </td>
+  </tr>
+</table>
+
+<div class="panel warn">
+  <b>외부 보고서 신뢰성 경고.</b> 진단이 근거로 든 <code>ADR-136</code>·<code>ADR-240</code>은
+  <b>어느 상태에도 존재하지 않습니다.</b> 낡은 계열의 최고 ADR은 110, 최신은 264입니다.
+  존재하지 않는 문서를 인용하고, 이미 작동하는 기능(cut)을 “부재”로 단정하는 진단은
+  <b>과거에 학습된 패턴(“회귀통과 ≠ scene 경로” · 외부 보고서 10일 stale)과 동일</b>합니다 —
+  이런 보고서는 시작점으로만 쓰고 반드시 실코드로 재검증해야 합니다.
+</div>
+
+<!-- ============ SECTION 3: REAL SYSTEMIC PROBLEMS ============ -->
+<h2><span class="num">3</span>진짜 총체적 문제점 (심각도순)</h2>
+
+<h3><span class="badge b-p0">P0</span> &nbsp;상태·통합 파편화 (§1)</h3>
+<ul>
+  <li>486 브랜치 · 10 워크트리 · main 490 커밋 뒤처짐. <b>단일 진실 상태 부재.</b></li>
+  <li>실제 작동 엔진이 배포 기준선(main)에 한 번도 도달하지 못함 → 외부인·미래의 자신조차 “무엇이 최신인가”를 판단 불가.</li>
+  <li><b>이것이 다른 모든 문제의 근원</b> — 진단 오류, 기능 연결 혼선, 검증 불신이 전부 여기서 파생.</li>
+</ul>
+
+<h3><span class="badge b-p1">P1</span> &nbsp;기능 연결 갭 (Pattern-12) + 실제 남은 기하 갭</h3>
+<ul>
+  <li><b>Pattern-12(반복 패턴):</b> Rust 엔진은 완비됐는데 WASM 래퍼·도구·카탈로그 배선만 빠져 “있는데 안 되는” 상태가 반복됨. (예: NURBS 편집 hook은 <code>set_face_surface</code>에 존재하나 WASM은 primitive만 노출.)</li>
+  <li><b>실제 유효 갭 ①:</b> 임의 닫힌 도형을 면 위에 그려 구멍/섬을 뚫는 면분할(imprint) — 여전히 미구현. “면 위 그리기 → cut” 워크플로우의 일반 케이스가 막혀 있음.</li>
+  <li><b>실제 유효 갭 ②:</b> extrude/cut 결과에 대한 <b>범용 watertight production 게이트</b>가 없어, 손상이 release 빌드에서 조용히 통과할 수 있음(ADR-264 β 미배포).</li>
+</ul>
+
+<h3><span class="badge b-p1">P1</span> &nbsp;ADR 프로세스 과부하</h3>
+<ul>
+  <li>264개 ADR + ADR당 α/β/γ 하위 브랜치 181개. 결정 하나에 문서·브랜치·회귀 세트가 대량 생성됨.</li>
+  <li>추적성은 탁월하나 <b>정리·병합·폐기 규율이 없어</b> 순 부채가 단조 증가. 새 세션이 “무엇을 읽어야 하는지” 파악하는 비용이 급증.</li>
+  <li>CLAUDE.md LOCKED 섹션이 수천 줄 — 컨텍스트 예산을 상시 잠식.</li>
+</ul>
+
+<h3><span class="badge b-p2">P2</span> &nbsp;검증·관측 신뢰 부재</h3>
+<ul>
+  <li>“회귀 통과 ≠ scene 경로 작동”이 반복 확인됨 — 단위/회귀 테스트가 실제 사용자 경로를 보장하지 못해 <b>매번 수동 라이브 시연이 필요</b>.</li>
+  <li>headless preview canvas가 0×0라 raycast 구동 드래그를 자동 검증 불가 → E2E 사각지대.</li>
+  <li>외부 진단이 유령 상태를 겨눈 것도 결국 “관측 가능한 단일 상태”가 없어서.</li>
+</ul>
+
+<!-- ============ SECTION 4: WHAT'S HEALTHY ============ -->
+<h2><span class="num">4</span>건강한 부분 (오해 방지)</h2>
+<div class="panel good">
+  <ul style="margin:0">
+    <li><b>기하 커널:</b> cut(boolean subtract + inward extrude)·slice·trim·drill·Boolean(곡면 포함)·NURBS 편집 5종 — 최신 엔진에서 실동작 확인.</li>
+    <li><b>테스트 자산:</b> 대량 Rust/vitest 회귀 통과(프로젝트 기록 기준 Rust ~2600 / vitest ~2470 pass), critical 0.</li>
+    <li><b>커널 성숙도:</b> ADR-027~264에 걸친 NURBS·SSI·surface citizenship이 상당히 깊게 구현됨. “stub이라 못 쓴다”는 재-패닉은 근거 없음.</li>
+  </ul>
+</div>
+
+<!-- ============ SECTION 5: RECOMMENDATIONS ============ -->
+<h2><span class="num">5</span>우선순위 권고</h2>
+
+<ol class="num-list">
+  <li>
+    <b>단일 진실 상태를 선언하고 main을 살린다.</b> adr-186(최신)을 정식 통합 기준선으로 승격 —
+    fast-forward 또는 squash로 main에 병합하고, 이후 “실작업은 반드시 main에서 분기 → main으로 복귀”를 규율화.
+    <span class="muted">이것 하나가 P0의 90%를 해소.</span>
+  </li>
+  <li>
+    <b>브랜치 대청소.</b> 병합 완료/폐기된 <code>claude/*</code> 64개 + 계단식 하위 181개를 일괄 정리(태그로 아카이브 후 삭제).
+    워크트리는 “활성 1 + main 1”만 남기고 나머지 제거. 목표: 486 → 30 이하.
+  </li>
+  <li>
+    <b>범용 watertight 게이트 배포(ADR-264 β).</b> extrude/cut/boolean 종료 시점에
+    <code>verify_face_invariants + coincident-position non-manifold</code>를 release에서도 강제하는 post-op assert.
+    debug-only 검증을 production 게이트로 승격.
+  </li>
+  <li>
+    <b>면분할 imprint 결단.</b> “면 위 닫힌 도형 → 구멍/섬”은 CAD 핵심 워크플로우. 수요 없음으로 유예하지 말고
+    constrained Delaunay 기반 imprint를 정식 스프린트로 배정하거나, 명시적으로 “원형 hole 도구만 지원”을 제품 결정으로 못 박기.
+  </li>
+  <li>
+    <b>scene-path E2E 스모크 도입.</b> 단위 회귀 통과에 의존하지 말고, cut/extrude/boolean/면분할의
+    <b>실제 사용자 경로 + watertight 게이트</b>를 한 번에 통과시키는 최소 E2E를 CI에 배치 → 수동 시연 의존 탈피.
+  </li>
+  <li>
+    <b>ADR 프로세스 다이어트.</b> 하위 브랜치 α/β/γ는 로컬 커밋으로 남기고 <b>브랜치화하지 않기.</b>
+    closure 시 문서만 병합. CLAUDE.md LOCKED는 요약 인덱스 + 상세는 개별 ADR 링크로 분리해 컨텍스트 예산 회복.
+  </li>
+</ol>
+
+<div class="panel tip">
+  <b>한 줄 요약.</b> AXiA 3D의 엔진은 아프지 않습니다. 아픈 것은 <b>“어느 것이 우리 엔진인가”를 답할 수 없는 상태</b>입니다.
+  main을 살려 단일 기준선을 세우고, 브랜치를 정리하고, watertight를 production 게이트로 올리는 것 —
+  이 셋이 “기능의 연결과 브랜치 과다” 문제의 핵심 처방입니다.
+</div>
+
+<div class="foot">
+  <p><b>검증 방법.</b> 두 git 상태(objective-bassi @ 6afdbd2 / kind-chatterjee @ 195755d)의 실제 소스를 병렬 코드 감사.
+  브랜치·발산 지표는 <code>git rev-list --left-right --count</code> 및 <code>git branch -a</code>로 정량 측정.
+  각 결함은 file:line 근거로 CONFIRMED/PARTIAL/FALSE 판정.</p>
+  <p class="muted">본 보고서는 코드가 보여준 것만 기술하며, 외부 진단을 사실로 전제하지 않았습니다.
+  ADR-253(외부 보고서 stale 검증) · “적대적 검증 필수” 원칙 적용.</p>
+</div>
+
+</div>
+</body>
+</html>
