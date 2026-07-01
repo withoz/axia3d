@@ -5131,6 +5131,37 @@ mod tests {
     }
 
     #[test]
+    fn adr267_beta2_extruded_box_passes_volume_integrity_gate() {
+        // ADR-267 β-2 — 실제 extrude 로 만든 box 는 watertight + crack-free 이므로
+        // verify_volume_integrity(ClosedSolid) 게이트를 통과해야 한다 (게이트가 정상
+        // op 를 오탐하지 않음). create_solid_extrude WASM wrapper 가 이 결과에 delta
+        // 게이트를 적용해 손상 유발 시에만 rollback 한다.
+        let mut mesh = Mesh::new();
+        let profile = build_unit_square_plane_face(&mut mesh);
+        mesh.create_solid(
+            profile,
+            CreateSolidMode::Extrude { distance: 2.0 },
+            MaterialId::new(0),
+        )
+        .expect("create_solid OK");
+
+        let active: Vec<FaceId> = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let report = mesh.verify_volume_integrity(crate::IntegrityScope::ClosedSolid(&active));
+        assert!(
+            report.is_valid(),
+            "extruded box must pass watertight gate: {}",
+            report.summary()
+        );
+        assert!(report.geometric_cracks.is_empty(), "no cracks in a clean box");
+        assert_eq!(report.open_boundary_edges, 0, "box is watertight");
+    }
+
+    #[test]
     fn create_solid_attaches_planes_to_new_faces() {
         let mut mesh = Mesh::new();
         let profile = build_unit_square_plane_face(&mut mesh);

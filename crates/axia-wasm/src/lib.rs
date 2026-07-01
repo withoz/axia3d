@@ -4054,6 +4054,17 @@ impl AxiaEngine {
         debug_log!("[RUST] create_solid_extrude faceId={} distance={:.3} faces_before={}",
             face_id_raw, distance, faces_before);
 
+        // ADR-267 β-2 — Watertight production gate (delta). op 전에 baseline 손상량 +
+        // snapshot 을 잡아, op 가 NEW 손상(coincident 크랙 / winding / non-manifold)을
+        // 유발하면 byte-identical rollback (ADR-190 P0.2). pre-existing 손상에는
+        // 오탐하지 않는다(delta 비교).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
+
         let cmd = Command::CreateSolid {
             face_id: fid,
             mode: axia_geo::CreateSolidMode::Extrude { distance },
@@ -4095,6 +4106,29 @@ impl AxiaEngine {
                 false
             }
         };
+
+        // ADR-267 β-2 — post-op watertight gate. op 가 새 손상을 유발했으면
+        // byte-identical rollback + phantom undo frame 제거 + lastError.
+        if ok {
+            let after = self
+                .scene
+                .mesh
+                .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh);
+            if after.damage_count() > integrity_before {
+                console_error!(
+                    "[RUST] create_solid_extrude REJECTED by integrity gate:\n{}",
+                    after.summary()
+                );
+                self.scene.restore_scene_snapshot(&integrity_snapshot);
+                self.scene.transactions.discard_last_undo();
+                self.set_error(format!(
+                    "부피 무결성 위반으로 취소됨 (extrude): {}",
+                    after.summary()
+                ));
+                self.invalidate_cache();
+                return false;
+            }
+        }
 
         if ok {
             self.mark_topology_changed();

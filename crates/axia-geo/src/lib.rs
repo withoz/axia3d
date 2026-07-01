@@ -42,7 +42,7 @@ pub mod path_b_family_verification;
 
 // Re-export main types
 pub use mesh::{Mesh, NormalizeOptions, NormalizeReport, ManifoldInfo};
-pub use mesh_invariants::{InvariantReport, OutwardReport};
+pub use mesh_invariants::{InvariantReport, IntegrityScope, OutwardReport, VolumeIntegrityReport};
 pub use topology_damage::{TopologyDamageKind, TopologyDamageReport, RecoveryOutcome};
 pub use entities::id::*;
 pub use entities::{Vertex, Edge, EdgeClass, HalfEdge, Face, LoopRef};

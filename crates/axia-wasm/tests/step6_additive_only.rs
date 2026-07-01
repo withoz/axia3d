@@ -1451,7 +1451,10 @@ fn create_solid_extrude_signature_matches_push_pull_family() {
 fn create_solid_extrude_dispatches_via_command() {
     let l = lib_src();
     let idx = l.find("pub fn create_solid_extrude").expect("create_solid_extrude");
-    let body = char_safe_slice(&l, idx, 1500);
+    // ADR-267 β-2: window widened 1500→2200 — the fn grew by the watertight
+    // gate (snapshot + verify_volume_integrity before scene.execute). The
+    // dispatch assertions below are unchanged and still valid.
+    let body = char_safe_slice(&l, idx, 2200);
     assert!(body.contains("Command::CreateSolid"),
         "W-1-β: must dispatch through Command::CreateSolid");
     assert!(body.contains("CreateSolidMode::Extrude"),

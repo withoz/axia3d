@@ -139,6 +139,12 @@ impl VolumeIntegrityReport {
             && self.open_boundary_edges == 0
     }
 
+    /// 단일 비교용 손상 총량 (op 전후 delta 판정에 사용 — pre-existing 손상에
+    /// 오탐하지 않도록 "op가 새 손상을 유발했는가"를 재는 척도).
+    pub fn damage_count(&self) -> usize {
+        self.invariant_violations.len() + self.geometric_cracks.len() + self.open_boundary_edges
+    }
+
     /// Human-readable 요약.
     pub fn summary(&self) -> String {
         if self.is_valid() {
