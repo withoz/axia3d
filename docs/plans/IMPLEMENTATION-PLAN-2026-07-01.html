@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXiA 3D — 종합 구현 계획 (2026-07-01, clean baseline)</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --border:#2a2f3d;
+    --text:#e6e8ee; --muted:#9aa2b4; --accent:#5b9bd5; --accent2:#7c5cff;
+    --red:#ff5c6c; --amber:#ffb84d; --green:#43c59e; --blue:#4da3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI','Malgun Gothic',system-ui,sans-serif; line-height:1.62; font-size:15px}
+  .wrap{max-width:1120px; margin:0 auto; padding:44px 26px 100px}
+  header.doc{border-bottom:2px solid var(--border); padding-bottom:22px; margin-bottom:30px}
+  h1{font-size:28px; margin:0 0 6px; letter-spacing:-.4px}
+  .sub{color:var(--muted); font-size:14px}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:20px; margin-right:6px; font-weight:600}
+  .tag.a{background:#232838; color:var(--muted)} .tag.b{background:#173029; color:var(--green)}
+  h2{font-size:21px; margin:48px 0 12px; letter-spacing:-.3px; padding-top:8px; border-top:1px solid var(--border)}
+  h2 .n{color:var(--accent2); font-weight:800; margin-right:8px}
+  h3{font-size:16.5px; margin:24px 0 8px; color:#cdd3e0}
+  h4{font-size:14.5px; margin:16px 0 6px; color:#aab2c4; font-weight:700}
+  p{margin:9px 0}
+  .lead{font-size:16.5px; color:#dfe3ee}
+  .panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:16px 0}
+  .panel.tip{border-left:4px solid var(--accent)} .panel.warn{border-left:4px solid var(--amber)}
+  .panel.crit{border-left:4px solid var(--red)} .panel.good{border-left:4px solid var(--green)}
+  table{width:100%; border-collapse:collapse; margin:14px 0; font-size:13.5px}
+  th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{background:var(--panel2); color:#cdd3e0; font-weight:600; font-size:12.5px}
+  tr:hover td{background:#161a24}
+  code{background:#232838; padding:1.5px 6px; border-radius:5px; font-size:12.5px; color:#b9c2d6;
+    font-family:'Cascadia Code',Consolas,monospace}
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:5px; white-space:nowrap}
+  .p0{background:#3a1c22; color:var(--red)} .p1{background:#3a2f1a; color:var(--amber)}
+  .p2{background:#1c2838; color:var(--blue)} .p3{background:#222634; color:var(--muted)}
+  .done{background:#173029; color:var(--green)}
+  ul{margin:8px 0; padding-left:20px} li{margin:5px 0}
+  .muted{color:var(--muted)}
+  .phase{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 22px; margin:20px 0}
+  .phase.pp0{border-left:5px solid var(--red)} .phase.pp1{border-left:5px solid var(--amber)}
+  .phase.pp2{border-left:5px solid var(--blue)} .phase.pp3{border-left:5px solid #55607a}
+  .step{background:var(--panel2); border:1px solid var(--border); border-radius:9px; padding:14px 16px; margin:12px 0}
+  .step .hd{font-weight:700; font-size:15px; margin-bottom:2px}
+  .step .meta{font-size:12px; color:var(--muted); margin-bottom:8px}
+  .sub{font-size:13.5px}
+  .gate{font-size:13px; background:#12161f; border:1px dashed var(--border); border-radius:8px; padding:8px 12px; margin-top:8px}
+  .gate b{color:var(--green)}
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:20px 0}
+  .kpi{background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center}
+  .kpi .v{font-size:24px; font-weight:800} .kpi .l{font-size:12px; color:var(--muted); margin-top:3px}
+  .seq{font-family:'Cascadia Code',Consolas,monospace; font-size:12.5px; background:#0b0d13; border:1px solid var(--border);
+    border-radius:8px; padding:14px 16px; color:#c9d1e0; line-height:1.7; overflow-x:auto; white-space:pre}
+  .foot{margin-top:56px; padding-top:18px; border-top:1px solid var(--border); color:var(--muted); font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>AXiA 3D — 종합 구현 계획</h1>
+  <div class="sub">
+    <span class="tag a">2026-07-01</span>
+    <span class="tag b">기준: clean repo E:\AXiA3D @ ADR-264</span>
+  </div>
+  <p class="sub" style="margin-top:9px">
+    이번 총체 점검에서 <b>코드로 검증된 실제 갭</b>만을 대상으로 한 go-forward 로드맵. 외부 보고서의 stale 주장(cut 부재 등)은
+    제외했고, 실증된 문제(면 imprint 미구현 · watertight 게이트 debug-only · 기능 연결 갭 · 프로세스 규율)에 집중합니다.
+    모든 단계는 사용자님 방법론을 따릅니다 — <b>Path Z atomic · 시연 게이트 · 회귀 자산(#[ignore] 금지) · LOCKED/메타-원칙 준수</b>.
+  </p>
+</header>
+
+<div class="panel tip">
+  <b>우선순위 한눈에.</b> Phase 0(기반)은 나머지 전부의 전제 → 먼저. Phase 1(CAD-core 갭)이 제품 가치의 핵심.
+  Phase 2·3은 병행 가능. Phase 4는 장기. 아래 순서는 권장안이며 재배치 가능합니다.
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="v" style="color:var(--red)">P0</div><div class="l">기반 안정화 · ~1주</div></div>
+  <div class="kpi"><div class="v" style="color:var(--amber)">P1</div><div class="l">CAD-core 갭 · 3~5주</div></div>
+  <div class="kpi"><div class="v" style="color:var(--blue)">P2</div><div class="l">연결·검증 · 2~3주</div></div>
+  <div class="kpi"><div class="v" style="color:var(--muted)">P3</div><div class="l">확장·정리 · 장기</div></div>
+</div>
+
+<!-- ================= METHODOLOGY ================= -->
+<h2><span class="n">§0</span>공통 방법론 (모든 단계 적용)</h2>
+<ul>
+  <li><b>Path Z atomic</b> — 각 작업을 α(spec) → β(engine) → γ(bridge) → δ(UI) → ε(E2E) → ζ(closure) sub-step으로 분해, 각 sub-step은 독립 commit + 회귀 통과 후 진행.</li>
+  <li><b>시연 게이트</b> — 회귀 통과 ≠ scene 경로 작동. 각 Phase 종료 시 브라우저 실동작 시연(fresh reload + eval)으로 최종 확인. (메모리: 시연이 4개 회귀를 잡은 전례.)</li>
+  <li><b>회귀 자산</b> — 신규 기능마다 Rust/vitest/Playwright 회귀 추가, <b>절대 <code>#[ignore]</code> 금지</b>.</li>
+  <li><b>LOCKED/메타-원칙 준수</b> — 특히 #14(면은 닫힌 경계로부터 유도), #15(headless ≡ tool path 의미 등가), ADR-007(winding), ADR-046 P31 #4(메뉴 additive only).</li>
+  <li><b>새 ADR 부여</b> — 각 트랙은 신규 ADR-265+ 번호 (구 repo와 충돌 없음, 깨끗한 연속 번호).</li>
+</ul>
+
+<!-- ================= PHASE 0 ================= -->
+<h2><span class="n">Phase 0</span>기반 안정화 <span class="badge p0">P0 · 선행 필수</span></h2>
+<p>새 repo가 “한 방에 빌드·CI·기여 가능”해야 이후 모든 작업의 마찰이 사라짐. 앞선 검증에서 드러난 마찰을 근본 제거.</p>
+
+<div class="phase pp0">
+  <div class="step">
+    <div class="hd">0.1 — fresh install 근본 수정 (ADR-265)</div>
+    <div class="meta">규모: S (1일) · 파일: <code>packages/axia-action-catalog/package.json</code>, (선택) 루트 <code>package.json</code></div>
+    <div class="sub">
+      현재 <code>cd web &amp;&amp; npm install</code>이 실패 — <code>@axia/action-catalog</code>의 <code>prepare:tsc</code>가 monorepo 루트 부재로 tsc를 못 찾음.
+      <ul>
+        <li><b>옵션 A (권장):</b> 루트 <code>package.json</code>에 npm <code>workspaces: ["web","packages/*"]</code> 선언 → 단일 <code>npm install</code>로 전 패키지 devDeps 설치 + prepare 정상.</li>
+        <li><b>옵션 B (경량):</b> catalog <code>prepare</code>를 <code>prepare: "tsc || exit 0"</code> + web <code>postinstall</code>에서 catalog 빌드 보장.</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 깨끗한 clone에서 <code>npm install &amp;&amp; npm run build:all</code> 무오류 + Windows EPERM 롤백 없음.</div>
+  </div>
+
+  <div class="step">
+    <div class="hd">0.2 — CI 되살리기 (ADR-266)</div>
+    <div class="meta">규모: S~M (1~2일) · 파일: <code>.github/workflows/{build,ci,mcp}.yml</code></div>
+    <div class="sub">
+      6개 workflow가 있으나(구 repo에서 red 이력, ADR-102 계열) 새 baseline에서 green 보장 필요.
+      <ul>
+        <li>rust-test / vitest / playwright job이 clean repo에서 통과하도록 경로·캐시·의존성 갱신 (0.1 workspace 반영).</li>
+        <li>MCP capability handler가 최신 <code>_as_shape</code> API와 정합하는지 확인(구 ADR-102 Track A 잔재 점검).</li>
+        <li>기준선 health 재측정: Rust ~2600 / vitest ~2470 (메모리 기록과 대조).</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> main push 시 3 job 전부 green. 배지 README 반영.</div>
+  </div>
+
+  <div class="step">
+    <div class="hd">0.3 — 단일 기준선 규율 확립 (프로세스)</div>
+    <div class="meta">규모: S (0.5일) · GitHub 설정 + 문서</div>
+    <div class="sub">
+      브랜치 재폭발 방지 (구 repo 486개의 교훈):
+      <ul>
+        <li>GitHub <b>branch protection</b>: main 직접 push 제한 + CI green 필수 + linear history.</li>
+        <li><b>서브브랜치 금지 규약</b>: α/β/γ는 로컬 커밋으로만, 브랜치화 안 함. closure 시 squash/ff.</li>
+        <li>세션 <code>claude/*</code> 워크트리 주기적 prune. 활성 워크트리 = “작업 1 + main 1”만.</li>
+        <li><code>CONTRIBUTING.md</code>에 규약 명문화.</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> main 보호 규칙 활성 + CONTRIBUTING.md 커밋.</div>
+  </div>
+</div>
+
+<!-- ================= PHASE 1 ================= -->
+<h2><span class="n">Phase 1</span>CAD-core 실제 갭 <span class="badge p1">P1 · 제품 핵심</span></h2>
+<p>총체 점검이 코드로 확인한 두 실증 갭 + extrude/cut 완성. 이것이 “블렌더보다 쉽고 스케치업보다 정확한” 약속의 본체.</p>
+
+<div class="phase pp1">
+  <div class="step">
+    <div class="hd">1.1 — Universal Watertight Production Gate (ADR-267)</div>
+    <div class="meta">규모: M (3~5일) · 파일: <code>mesh_invariants.rs:364</code>, <code>operations/{create_solid,boolean,face_split}.rs</code>, <code>axia-wasm</code>, Toast</div>
+    <div class="sub">
+      현재 <code>debug_verify_invariants</code>는 <code>#[cfg(debug_assertions)]</code> — release에서 손상이 조용히 통과. ADR-264 β의 미배포 게이트를 완성.
+      <h4>Path Z</h4>
+      <ul>
+        <li><b>α</b> spec: 게이트 정책(어떤 op 종료 시 무엇을 검사) + 실패 시 계약(typed error + 자동 rollback + 사용자 다이얼로그).</li>
+        <li><b>β</b> engine: <code>verify_face_invariants</code> + <b>coincident-position non-manifold 카운트</b>(ADR-264 D3 lock-in) + solid-scope post-op assert를 <b>release 경로</b>로 승격. degenerate/NaN/비-watertight 감지.</li>
+        <li><b>γ</b> bridge: <code>verifyVolumeIntegrity(faceIds) → Report</code> WASM export + 각 volume op 종료 시 자동 호출.</li>
+        <li><b>δ</b> UI: 실패 시 Toast + (ADR-097 패턴) 복구 다이얼로그 [Undo]/[강등]/[수동수정].</li>
+        <li><b>ε</b> E2E: extrude/cut/boolean/split 후 <code>getStats</code> + integrity 검사 real Chromium.</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 손상 유발 시나리오가 release에서 <b>silent pass 0건</b> + 정상 op 회귀 무영향. 시연: 실제 cut 후 watertight 확인.</div>
+  </div>
+
+  <div class="step">
+    <div class="hd">1.2 — Face Imprint: 면 위 닫힌 도형 → 구멍/섬 (ADR-268) <span class="badge p1">flagship</span></div>
+    <div class="meta">규모: L (2~3주) · 파일: <code>face_split.rs:264/1848</code>(“future” 마커), <code>mesh.rs</code>, tools, WASM</div>
+    <div class="sub">
+      실증된 최대 갭. 면 boundary 위가 아닌 <b>내부에 닫힌 도형</b>을 그렸을 때 inner face + outer ring으로 분할하는 경로가 미구현
+      (<code>face_split.rs:264 "(future)"</code>). “면 위 그리기 → cut” 워크플로우의 일반 케이스를 차단.
+      <h4>Path Z</h4>
+      <ul>
+        <li><b>α</b> spec: 메타-원칙 #14 정합 설계. closed inner loop → 1 ring(outer+hole) + 1 disk(inner) 또는 별개 sub-face (ADR-021 P7 / ADR-101 <code>mergeCoplanarContaining</code> 재사용).</li>
+        <li><b>β-1</b> engine (analytic 우선): inner loop가 원/사각 등 kernel-native면 기존 <code>punch</code>/hole 합성 경로 확장 (ADR-089 closed-curve citizenship 활용).</li>
+        <li><b>β-2</b> engine (일반): 임의 폴리곤 inner → <b>constrained Delaunay</b> 또는 combined-perimeter ring 합성. ADR-006 Phase F/G 자산 재사용.</li>
+        <li><b>γ/δ</b> bridge + DrawTool: 면 hit 시 그 면을 host로 삼아 imprint(메모리: “host from world point, no stale id” 원칙).</li>
+        <li><b>ε</b> E2E + <b>#15 의미 등가</b>: headless <code>_as_shape</code> 경로 ↔ tool 경로가 동일 hole 결과.</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 면에 원/사각/자유 폐곡선 → 구멍 생성 + invariants 0 + push/pull로 관통 가능. LOCKED #1/#12 회귀 유지.</div>
+  </div>
+
+  <div class="step">
+    <div class="hd">1.3 — Extrude/Cut 완성 + 단일화 (ADR-269 ~)</div>
+    <div class="meta">규모: M~L · 파일: <code>create_solid.rs</code>, <code>push_pull.rs</code>, tools · 메모리 “완벽한 extrude” 트랙 연속</div>
+    <div class="sub">
+      기존 트랙(#1 테이퍼 ~ #5 곡면 Phase0)은 완료. 잔여를 clean repo에서 마무리:
+      <ul>
+        <li><b>P1 곡면 cut</b> — 곡면 벽에 sketch한 영역 → pocket/관통 (현재 곡면 직접 drill 미지원, boolean 우회만).</li>
+        <li><b>P2 곡면 boss</b> — 곡면 위 돌출 (foundation 충족 후).</li>
+        <li><b>#6 separated-disk</b> — 분리된 disk extrude 갭.</li>
+        <li><b>Extrude ↔ Push/Pull 의미 단일화</b> — 두 진입점의 SSOT 정리(ADR-080 dimension-dispatch 정합).</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 각 항목 real Chromium 시연 + watertight 게이트(1.1) 통과.</div>
+  </div>
+</div>
+
+<!-- ================= PHASE 2 ================= -->
+<h2><span class="n">Phase 2</span>기능 연결 + 검증 인프라 <span class="badge p2">P2 · 병행 가능</span></h2>
+
+<div class="phase pp2">
+  <div class="step">
+    <div class="hd">2.1 — Feature-Connection 감사 (Pattern-12 해소, ADR-270)</div>
+    <div class="meta">규모: M · 산출물: 갭 인벤토리 + 우선 배선</div>
+    <div class="sub">
+      “Rust 엔진 완비, WASM/도구/카탈로그 배선만 빠짐”이 반복. 체계적 감사로 목록화 후 배선.
+      <ul>
+        <li>모든 <code>pub fn</code> engine op ↔ WASM export ↔ ActionCatalog ↔ 도구/메뉴 매핑 표 생성 → 미배선 op 목록.</li>
+        <li>예: <code>set_face_surface</code>는 NURBS 수용하나 WASM은 primitive만(메모리) → 곡면 live 배선.</li>
+        <li>우선순위: 사용자 가치 높은 것부터 (곡면 편집 live, NURBS 패널 슬라이더 등).</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 감사표 커밋 + 상위 N개 배선 + ActionCatalog SSOT 정합 회귀.</div>
+  </div>
+
+  <div class="step">
+    <div class="hd">2.2 — Scene-Path E2E Smoke (ADR-271)</div>
+    <div class="meta">규모: M · 파일: <code>web/e2e/</code> (ADR-075 인프라 재사용)</div>
+    <div class="sub">
+      단위 회귀가 scene 경로를 보장 못하는 문제(“회귀통과 ≠ 작동”)의 구조적 해소.
+      <ul>
+        <li>핵심 워크플로우 스모크: draw → extrude → cut(1.1) → imprint(1.2) → boolean, 각 단계 <b>watertight 게이트 통과</b>까지 real Chromium.</li>
+        <li>CI <code>web-e2e</code> job에 편입 → 수동 시연 의존 감소.</li>
+        <li>headless canvas 0×0 한계(메모리)는 engine lifecycle 직접 호출 + unit로 보완.</li>
+      </ul>
+    </div>
+    <div class="gate"><b>수용:</b> 스모크가 CI green + 의도적 손상 주입 시 red(게이트 작동 증명).</div>
+  </div>
+</div>
+
+<!-- ================= PHASE 3 ================= -->
+<h2><span class="n">Phase 3</span>확장 · 정리 <span class="badge p3">P3 · 장기</span></h2>
+
+<div class="phase pp3">
+  <div class="step">
+    <div class="hd">3.1 — Provenance 포팅 (ADR-272)</div>
+    <div class="meta">규모: M · 구 ADR-110의 고유 기능</div>
+    <div class="sub">구 라인에만 있던 엔티티 provenance/audit trail(“이 면을 만든 명령”)을 clean repo에 신규 구현. <code>faceProvenance/edgeProvenance/facesByCommand</code> + XiaInspector 표시.</div>
+  </div>
+  <div class="step">
+    <div class="hd">3.2 — ADR/문서 다이어트</div>
+    <div class="meta">규모: S(지속)</div>
+    <div class="sub">CLAUDE.md LOCKED(수천 줄)를 요약 인덱스 + 개별 ADR 링크로 분리 → 컨텍스트 예산 회복. <code>docs/legacy/</code> 정리 지속.</div>
+  </div>
+  <div class="step">
+    <div class="hd">3.3 — IFC Export (ADR-057 계열)</div>
+    <div class="meta">규모: XL (8~12주) · 신 crate <code>axia-ifc</code>(이미 존재)</div>
+    <div class="sub">AixxiA 대비 심화 1순위. geometry(surface8/curve/DCEL/citizenship) 준비됨, writer 미구현. MVP writer green-light 시 착수.</div>
+  </div>
+  <div class="step">
+    <div class="hd">3.4 — Boolean deep SSI</div>
+    <div class="meta">규모: XL · 메모리 Boolean track open items</div>
+    <div class="sub">torus pinched/lemniscate, cyl corner V-outside, cone/torus N-plane corner 등 심화 교차. 수요 발생 시 별도 ADR.</div>
+  </div>
+</div>
+
+<!-- ================= SEQUENCING ================= -->
+<h2><span class="n">§9</span>의존 순서 &amp; 요약</h2>
+<div class="seq">Phase 0 (기반)  ─┬─▶ Phase 1.1 watertight gate ──▶ Phase 1.2 imprint ──▶ Phase 1.3 extrude/cut
+                 │                                    (gate가 imprint/cut 안전망)
+                 ├─▶ Phase 2.1 연결 감사 (병행)
+                 └─▶ Phase 2.2 E2E smoke (1.1 이후 강화)
+
+Phase 3 (확장) ── Phase 1 안정화 후 착수</div>
+
+<table>
+  <tr><th>Phase</th><th>ADR</th><th>규모</th><th>핵심 산출</th><th>수용 게이트</th></tr>
+  <tr><td>0.1 install</td><td>265</td><td>S</td><td>1-command build</td><td>clean clone 빌드 무오류</td></tr>
+  <tr><td>0.2 CI</td><td>266</td><td>S~M</td><td>green pipeline</td><td>3 job green</td></tr>
+  <tr><td>0.3 규율</td><td>—</td><td>S</td><td>branch protection</td><td>규칙 활성</td></tr>
+  <tr><td>1.1 watertight</td><td>267</td><td>M</td><td>production gate</td><td>silent pass 0</td></tr>
+  <tr><td>1.2 imprint</td><td>268</td><td>L</td><td>면 위 구멍</td><td>invariants 0 + 관통</td></tr>
+  <tr><td>1.3 extrude/cut</td><td>269+</td><td>M~L</td><td>곡면 cut/boss</td><td>시연 + gate</td></tr>
+  <tr><td>2.1 연결</td><td>270</td><td>M</td><td>배선 감사표</td><td>SSOT 정합</td></tr>
+  <tr><td>2.2 E2E</td><td>271</td><td>M</td><td>scene smoke</td><td>손상주입 red</td></tr>
+  <tr><td>3.x 확장</td><td>272+</td><td>M~XL</td><td>provenance/IFC/SSI</td><td>개별</td></tr>
+</table>
+
+<div class="panel good">
+  <b>핵심 순서 한 줄.</b> ①기반(install+CI+규율) → ②watertight 게이트(안전망) → ③면 imprint(최대 가치) → ④extrude/cut 완성.
+  게이트를 imprint/cut보다 먼저 두는 이유: 새 기능이 손상을 만들면 <b>즉시 잡히도록</b> 안전망을 먼저 깔기 위함(메타-원칙 #6 Preventive over Curative).
+</div>
+
+<div class="foot">
+  <p><b>근거.</b> 실제 갭은 clean baseline 코드로 재확인 — imprint <code>face_split.rs:264/1848 "(future)"</code>,
+  watertight <code>mesh_invariants.rs:364 #[cfg(debug_assertions)]</code>. cut/boolean/negative-extrude는 이미 작동(총체 점검 §2 참조).
+  ADR 번호 265~는 clean repo의 새 연속 번호(구 repo와 무충돌).</p>
+</div>
+
+</div>
+</body>
+</html>
