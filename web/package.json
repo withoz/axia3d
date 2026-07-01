@@ -23,7 +23,7 @@
     "wasm:verify-simd": "node scripts/verify-simd.mjs"
   },
   "dependencies": {
-    "@axia/action-catalog": "file:../packages/axia-action-catalog",
+    "@axia/action-catalog": "*",
     "@mlightcad/libredwg-web": "^0.6.10",
     "dwgdxf": "^1.0.5",
     "dxf": "^5.3.1",
