@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
+          cache-dependency-path: 'package-lock.json'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -37,8 +37,8 @@ jobs:
         working-directory: ./crates/axia-wasm
         run: wasm-pack build --target web --out-dir ../../web/src/wasm
 
-      - name: Install dependencies
-        working-directory: ./web
+      # ADR-265 Phase 0.1 — npm workspace 루트. lock/install은 루트에서.
+      - name: Install dependencies (npm workspace root)
         run: npm ci
 
       - name: Run TypeScript typecheck (strict)
@@ -100,7 +100,7 @@ jobs:
         with:
           node-version: '22.x'
           cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
+          cache-dependency-path: 'package-lock.json'
 
       # Build WASM from source BEFORE `npm ci` so the postinstall hook
       # (ensure-wasm.mjs) sees an existing artifact and exits silently.
@@ -108,8 +108,8 @@ jobs:
         working-directory: ./crates/axia-wasm
         run: wasm-pack build --target web --out-dir ../../web/src/wasm
 
-      - name: Install dependencies
-        working-directory: ./web
+      # ADR-265 Phase 0.1 — npm workspace 루트. lock/install은 루트에서.
+      - name: Install dependencies (npm workspace root)
         run: npm ci
 
       - name: Run tests

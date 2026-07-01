@@ -94,10 +94,10 @@ jobs:
         with:
           node-version: '22.x'
           cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
+          cache-dependency-path: 'package-lock.json'
 
-      - name: npm ci (web)
-        working-directory: ./web
+      # ADR-265 Phase 0.1 — npm workspace 루트. lock/install은 루트에서.
+      - name: npm ci (npm workspace root)
         run: npm ci
 
       # E4-6-h — WASM rebuild every run (truth = source).

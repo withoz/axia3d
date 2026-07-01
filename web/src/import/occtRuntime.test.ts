@@ -27,10 +27,19 @@
 
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { StepIgesImporter } from './StepIgesImporter';
 
-const PKG_PATH = resolve('node_modules/opencascade.js/package.json');
+// ADR-265 Phase 0.2 — npm workspace 도입 후 node_modules 가 루트로 hoist 됨.
+// cwd(=web) 기준 하드코딩 대신 web/root 양쪽 node_modules 를 탐색해 위치 무관하게 찾는다.
+const _HERE = dirname(fileURLToPath(import.meta.url));
+const _PKG_CANDIDATES = [
+  resolve('node_modules/opencascade.js/package.json'),
+  resolve(_HERE, '../../node_modules/opencascade.js/package.json'),
+  resolve(_HERE, '../../../node_modules/opencascade.js/package.json'),
+];
+const PKG_PATH = _PKG_CANDIDATES.find(existsSync) ?? _PKG_CANDIDATES[0];
 const EXPECTED_NAME = 'opencascade.js';
 const EXPECTED_MAJOR_PREFIX = '2.0.0-beta';
 
