@@ -100,6 +100,78 @@ impl InvariantReport {
     }
 }
 
+/// ADR-267 Phase 1.1 — [`Mesh::verify_volume_integrity`] 검사 범위.
+///
+/// - `ClosedSolid`: extrude/cut/boolean 등 닫힌 솔리드 산출 op — watertight
+///   (열린 경계 edge 0)까지 강제.
+/// - `OpenMesh`: sheet/wire/draw/split 등 열린 결과가 정상인 op — 경계 edge 는
+///   허용, invariant + 크랙만 검사.
+#[derive(Debug, Clone, Copy)]
+pub enum IntegrityScope<'a> {
+    ClosedSolid(&'a [FaceId]),
+    OpenMesh,
+}
+
+/// ADR-267 — 부피 연산 종료 시 release production 무결성 리포트.
+///
+/// 신규 검출 알고리즘 없이 기존 3자산을 조립한다:
+/// - [`Mesh::verify_face_invariants`] (I1~I5)
+/// - [`Mesh::collect_non_manifold_edges_geometric`] (coincident 크랙, ADR-264 D3)
+/// - [`Mesh::face_set_manifold_info`] (watertight — ClosedSolid scope 에서만)
+#[derive(Debug, Clone)]
+pub struct VolumeIntegrityReport {
+    /// verify_face_invariants I1~I5 위반 (winding / null loop / 위상 non-manifold 등)
+    pub invariant_violations: Vec<String>,
+    /// coincident-position 크랙 edge (ADR-264 D3). ADR-021 P7 radial (단일
+    /// EdgeId) 은 오탐하지 않음 — geometric 검출기가 ≥2 distinct EdgeId 만 flag.
+    pub geometric_cracks: Vec<EdgeId>,
+    /// ClosedSolid scope 에서 열린(1-face) 경계 edge 수. OpenMesh 에서는 항상 0.
+    pub open_boundary_edges: usize,
+    /// 검사된 활성 face 수
+    pub checked_faces: usize,
+}
+
+impl VolumeIntegrityReport {
+    /// 모든 카테고리 clean 여부.
+    pub fn is_valid(&self) -> bool {
+        self.invariant_violations.is_empty()
+            && self.geometric_cracks.is_empty()
+            && self.open_boundary_edges == 0
+    }
+
+    /// Human-readable 요약.
+    pub fn summary(&self) -> String {
+        if self.is_valid() {
+            return format!("✓ volume integrity OK ({} faces)", self.checked_faces);
+        }
+        let mut s = String::from("✗ volume integrity violations:\n");
+        if !self.invariant_violations.is_empty() {
+            s.push_str(&format!(
+                "  invariants: {} violation(s)\n",
+                self.invariant_violations.len()
+            ));
+            for v in &self.invariant_violations {
+                s.push_str("    - ");
+                s.push_str(v);
+                s.push('\n');
+            }
+        }
+        if !self.geometric_cracks.is_empty() {
+            s.push_str(&format!(
+                "  geometric cracks: {} edge(s)\n",
+                self.geometric_cracks.len()
+            ));
+        }
+        if self.open_boundary_edges > 0 {
+            s.push_str(&format!(
+                "  open boundary edges: {} (not watertight)\n",
+                self.open_boundary_edges
+            ));
+        }
+        s
+    }
+}
+
 // ─── Mesh impl — read-only invariant verifiers ───────────────────────
 
 impl Mesh {
@@ -357,6 +429,29 @@ impl Mesh {
         }
     }
 
+    /// ADR-267 Phase 1.1 — 부피 연산 종료 시 release production 무결성 게이트.
+    ///
+    /// [`debug_verify_invariants`](Self::debug_verify_invariants) 와 달리 **release
+    /// 에서도 실행**되며, 기존 3자산을 조립한 [`VolumeIntegrityReport`] 를 반환한다.
+    /// 호출측(WASM 경계)이 `is_valid()==false` 시 snapshot rollback + lastError 처리
+    /// (ADR-190 P0.2). 신규 검출 알고리즘 없음.
+    pub fn verify_volume_integrity(&self, scope: IntegrityScope) -> VolumeIntegrityReport {
+        let inv = self.verify_face_invariants();
+        let geometric_cracks = self.collect_non_manifold_edges_geometric();
+        let open_boundary_edges = match scope {
+            IntegrityScope::ClosedSolid(faces) => {
+                self.face_set_manifold_info(faces).boundary_edge_count
+            }
+            IntegrityScope::OpenMesh => 0,
+        };
+        VolumeIntegrityReport {
+            invariant_violations: inv.violations,
+            geometric_cracks,
+            open_boundary_edges,
+            checked_faces: inv.checked_faces,
+        }
+    }
+
     /// 디버그 빌드에서만 invariants 검증. Release에서는 no-op.
     /// 편집 연산 끝에 삽입해 조기 버그 감지용.
     #[inline]
@@ -368,5 +463,86 @@ impl Mesh {
                 eprintln!("[ADR-007] Invariant violations:\n{}", report.summary());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod adr267_tests {
+    use super::{IntegrityScope, VolumeIntegrityReport};
+    use crate::entities::*;
+    use crate::mesh::Mesh;
+    use glam::DVec3;
+
+    fn tetra() -> (Mesh, Vec<FaceId>) {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(DVec3::new(5.0, 0.0, 10.0));
+        let v3 = mesh.add_vertex(DVec3::new(5.0, 10.0, 5.0));
+        let f0 = mesh.add_face(&[v0, v2, v1], MaterialId::new(0)).unwrap();
+        let f1 = mesh.add_face(&[v0, v1, v3], MaterialId::new(0)).unwrap();
+        let f2 = mesh.add_face(&[v1, v2, v3], MaterialId::new(0)).unwrap();
+        let f3 = mesh.add_face(&[v2, v0, v3], MaterialId::new(0)).unwrap();
+        (mesh, vec![f0, f1, f2, f3])
+    }
+
+    #[test]
+    fn verify_volume_integrity_clean_solid_valid() {
+        let (mesh, faces) = tetra();
+        let r = mesh.verify_volume_integrity(IntegrityScope::ClosedSolid(&faces));
+        assert!(r.is_valid(), "clean tetra should pass: {}", r.summary());
+        assert!(r.geometric_cracks.is_empty());
+        assert_eq!(r.open_boundary_edges, 0);
+    }
+
+    #[test]
+    fn verify_volume_integrity_open_sheet_valid_as_openmesh_invalid_as_closed() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(1.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(DVec3::new(0.0, 1.0, 0.0));
+        let f = mesh.add_face(&[v0, v1, v2], MaterialId::new(0)).unwrap();
+        // OpenMesh: 열린 시트는 경계가 있어도 valid.
+        let open = mesh.verify_volume_integrity(IntegrityScope::OpenMesh);
+        assert!(open.is_valid(), "open sheet ok as OpenMesh: {}", open.summary());
+        // ClosedSolid: 3 경계 edge → not watertight → invalid.
+        let closed = mesh.verify_volume_integrity(IntegrityScope::ClosedSolid(&[f]));
+        assert!(!closed.is_valid());
+        assert_eq!(closed.open_boundary_edges, 3);
+    }
+
+    #[test]
+    fn verify_volume_integrity_report_invalid_when_crack_present() {
+        let r = VolumeIntegrityReport {
+            invariant_violations: vec![],
+            geometric_cracks: vec![EdgeId::new(0)],
+            open_boundary_edges: 0,
+            checked_faces: 4,
+        };
+        assert!(!r.is_valid());
+        assert!(r.summary().contains("geometric cracks"));
+    }
+
+    #[test]
+    fn verify_volume_integrity_p7_radial_not_flagged_as_geometric_crack() {
+        // 3 faces sharing edge v0-v1 (radial / ADR-021 P7 stacked) — a SINGLE
+        // EdgeId with 3 face-bearing HEs. The geometric crack detector requires
+        // ≥2 DISTINCT EdgeIds at one location, so it must NOT flag this
+        // (LOCKED #1 P7 no false-positive, ADR-267 L5).
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        let v3 = mesh.add_vertex(DVec3::new(0.0, 0.0, 10.0));
+        let v4 = mesh.add_vertex(DVec3::new(0.0, -10.0, 0.0));
+        let _f0 = mesh.add_face(&[v0, v1, v2], MaterialId::new(0)).unwrap();
+        let _f1 = mesh.add_face(&[v0, v1, v3], MaterialId::new(0)).unwrap();
+        let _f2 = mesh.add_face(&[v0, v1, v4], MaterialId::new(0)).unwrap();
+        let r = mesh.verify_volume_integrity(IntegrityScope::OpenMesh);
+        assert!(
+            r.geometric_cracks.is_empty(),
+            "radial single-EdgeId must not be flagged as geometric crack: {:?}",
+            r.geometric_cracks
+        );
     }
 }
