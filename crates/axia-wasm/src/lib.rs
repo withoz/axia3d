@@ -8489,15 +8489,42 @@ impl AxiaEngine {
             op, fids_a.len(), fids_b.len()
         );
 
-        // 트랜잭션 래핑
+        // 트랜잭션 래핑 + ADR-267 β-3 watertight 게이트 (delta).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
 
         let mat = axia_core::FORM_MATERIAL;
         let result = self.scene.mesh.boolean(&fids_a, &fids_b, bool_op, mat);
 
         match result {
             Ok(res) => {
+                // ADR-267 β-3 — op 가 새 손상을 유발했으면 byte-identical rollback +
+                // txn cancel (phantom frame 방지).
+                let after = self
+                    .scene
+                    .mesh
+                    .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh);
+                if after.damage_count() > integrity_before {
+                    console_error!(
+                        "[RUST] boolean REJECTED by integrity gate:\n{}",
+                        after.summary()
+                    );
+                    self.scene.restore_scene_snapshot(&integrity_snapshot);
+                    self.scene.transactions.cancel();
+                    self.set_error(format!(
+                        "부피 무결성 위반으로 취소됨 (boolean): {}",
+                        after.summary()
+                    ));
+                    self.invalidate_cache();
+                    let reason = after.summary().replace('"', "'").replace('\n', " ");
+                    return format!(r#"{{"ok":false,"error":"{}"}}"#, reason);
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -10113,8 +10140,15 @@ impl AxiaEngine {
         if tol_geometric > 0.0 {
             tol.geometric = tol_geometric;
         }
+        // ADR-267 β-3 — watertight 게이트 (delta). op 전 baseline + snapshot.
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
         let result = self.scene.mesh.boolean_dispatch_dcel_multi(&fa, &fb, op, tol);
         let dispatch_result = match result {
             Ok(r) => r,
@@ -10126,6 +10160,26 @@ impl AxiaEngine {
                 );
             }
         };
+        // op 가 새 손상을 유발했으면 byte-identical rollback + txn cancel.
+        let after = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh);
+        if after.damage_count() > integrity_before {
+            console_error!(
+                "[RUST] boolean_dispatch_dcel_multi REJECTED by integrity gate:\n{}",
+                after.summary()
+            );
+            self.scene.restore_scene_snapshot(&integrity_snapshot);
+            self.scene.transactions.cancel();
+            self.set_error(format!(
+                "부피 무결성 위반으로 취소됨 (boolean multi): {}",
+                after.summary()
+            ));
+            self.invalidate_cache();
+            let reason = after.summary().replace('"', "'").replace('\n', " ");
+            return format!(r#"{{"schemaVersion":1,"ok":false,"error":"{}"}}"#, reason);
+        }
         self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
         self.scene.transactions.commit();
         self.mark_topology_changed();

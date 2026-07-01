@@ -8871,6 +8871,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adr267_beta3_box_box_subtract_passes_volume_integrity_gate() {
+        // ADR-267 β-3 — 정상 box-box subtract 결과는 watertight + crack-free 이므로
+        // verify_volume_integrity(ClosedSolid) 게이트를 통과한다 (게이트가 정상
+        // boolean 을 오탐하지 않음). boolean_op / boolean_dispatch_dcel_multi_json
+        // WASM wrapper 가 이 결과에 delta 게이트를 적용해 손상 유발 시에만 rollback.
+        let mut mesh = Mesh::default();
+        let mat = MaterialId::new(0);
+        let a = make_box(&mut mesh, DVec3::new(0., 0., 0.), DVec3::new(4., 4., 4.), mat);
+        let b = make_box(&mut mesh, DVec3::new(2., 2., 2.), DVec3::new(6., 6., 6.), mat);
+        mesh.solid_boolean(&a, &b, BoolOp::Subtract, mat)
+            .expect("solid_boolean ok");
+
+        let active: Vec<FaceId> = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let report = mesh.verify_volume_integrity(crate::IntegrityScope::ClosedSolid(&active));
+        assert!(
+            report.is_valid(),
+            "subtract result must pass watertight gate: {}",
+            report.summary()
+        );
+        assert!(report.geometric_cracks.is_empty(), "no cracks in carved solid");
+        assert_eq!(report.open_boundary_edges, 0, "carved solid is watertight");
+    }
+
     /// ADR-197 β-2 hardening — UNION A[0,4]³ ∪ B[2,6]³: the combined solid
     /// (A-outside-B + B-outside-A, overlap interior removed), watertight.
     #[test]
