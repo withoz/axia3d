@@ -7308,10 +7308,20 @@ impl Scene {
 
         // ADR-252 Amendment 2 — pocket vs THROUGH: if the inward push reaches the
         // opposite wall, drill a through-hole (window) instead of a blind pocket.
+        //
+        // ADR-269 — the slack must be unit-agnostic AND absorb f32 precision loss.
+        // The tool snaps the push to the opposite face/edge (depth ≈ wall
+        // thickness), but that snap point round-trips through Three.js (f32), so
+        // ~1e-4·|coord| of precision is lost — at a 1000-unit box that is ~0.06
+        // units, far exceeding the old fixed 1e-3 slack. The push then routed to a
+        // blind pocket leaving a paper-thin (correctly white/void-facing) floor
+        // that reads as "관통했는데 밑면이 생김". Use a relative slack (0.1% of
+        // thickness, floored at 1e-3) so pushing to the opposite-face/edge snap
+        // reliably drills through regardless of model scale. 메타-원칙 #5.
         let through = self
             .mesh
             .wall_thickness_from_source_face(source_face)
-            .map(|t| depth >= t - 1e-3)
+            .map(|t| depth >= t - (t * 1e-3).max(1e-3))
             .unwrap_or(false);
 
         let own_transaction = !self.transactions.is_recording();
@@ -14355,6 +14365,55 @@ mod tests {
         let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
         assert!(info.is_closed_solid, "circle boss closed: boundary={}", info.boundary_edge_count);
         assert_eq!(adr264_geom3(&scene.mesh), 0);
+    }
+
+    /// ADR-269 — a push whose depth is within f32-snap noise of the wall
+    /// thickness (the user snapped to the opposite face/edge) must route to a
+    /// THROUGH-hole (both caps ring-with-hole, watertight tunnel), NOT a blind
+    /// pocket leaving a paper-thin floor ("관통했는데 밑면이 생김"). Depth =
+    /// t − 0.05 exceeds the old fixed 1e-3 slack (would route blind) but is well
+    /// within the new relative slack (0.1%·2000 = 2.0).
+    #[test]
+    fn adr269_near_thickness_push_routes_through_not_blind() {
+        let mut scene = Scene::new();
+        let mat = MaterialId::new(0);
+        // 2000³ box centered at origin → top z=+1000, bottom z=-1000, thickness 2000.
+        scene.mesh.create_box(DVec3::ZERO, 2000.0, 2000.0, 2000.0, mat).unwrap();
+        // Rect drawn on the top face (overlapping Shape face at z=+1000).
+        scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(0.0, 0.0, 1000.0), normal: DVec3::Z, up: DVec3::Y,
+            width: 600.0, height: 600.0,
+        });
+        // The rect = smallest-extent simple (+Z) face at z≈1000.
+        let rect = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && f.normal().z > 0.9 && f.inners().is_empty())
+            .filter_map(|(id, f)| {
+                let verts = scene.mesh.collect_loop_verts(f.outer().start).ok()?;
+                if verts.is_empty() { return None; }
+                let cz = verts.iter().filter_map(|&v| scene.mesh.vertex_pos(v).ok())
+                    .map(|p| p.z).sum::<f64>() / verts.len() as f64;
+                if (cz - 1000.0).abs() > 1.0 { return None; }
+                let maxr = verts.iter().filter_map(|&v| scene.mesh.vertex_pos(v).ok())
+                    .map(|p| p.x.abs().max(p.y.abs())).fold(0.0_f64, f64::max);
+                Some((id, (maxr * 1000.0) as i64))
+            })
+            .min_by_key(|(_, r)| *r).map(|(id, _)| id).expect("rect");
+
+        let t = scene.mesh.wall_thickness_from_source_face(rect).expect("thickness");
+        assert!((t - 2000.0).abs() < 1.0, "thickness ≈ 2000, got {t}");
+
+        // Push to just short of the far wall (f32-noise gap 0.05 ≫ old 1e-3 slack).
+        let r = scene.carve_pocket_from_source_face(rect, t - 0.05);
+        assert!(!matches!(r, CommandResult::Error(_)), "near-thickness push: {:?}", r);
+
+        // THROUGH ⇒ BOTH walls become ring-with-hole caps (2 faces w/ inner loops)
+        // + watertight tunnel. BLIND would give only 1 ring (entry) + a solid floor.
+        let rings = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty()).count();
+        assert_eq!(rings, 2, "through-hole: entry + exit ring-with-hole caps");
+        let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
+        assert!(info.is_closed_solid, "through tunnel stays watertight: boundary={}",
+            info.boundary_edge_count);
     }
 
     /// ADR-264 D3 — the geometric detector catches a CRACK the radial detector
