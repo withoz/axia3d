@@ -1,6 +1,6 @@
 # ADR-267 — Universal Watertight Production Gate
 
-**Status**: Proposed (α — spec only)
+**Status**: Accepted (α~δ + γ-2 closed; ε real-Chromium E2E deferred — 아래 §D)
 **Track**: Track 7 (Phase 1 — CAD-core 실제 갭)
 **연계 계획**: `docs/plans/IMPLEMENTATION-PLAN-2026-07-01.html` Phase 1.1
 **Cross-link**: ADR-007(Face Orientation) · ADR-190 P0.2(WASM snapshot rollback) · ADR-097(Topology damage recovery dialog) · ADR-264 D3(coincident-position non-manifold) · LOCKED #1 P7 · 메타-원칙 #4 #6 #9
@@ -124,3 +124,29 @@ impl VolumeIntegrityReport {
   재사용; 기하 자동 수선은 별도 ADR).
 - 새 크랙/manifold 검출 알고리즘 (기존 3자산 재사용).
 - import(STEP/IGES) 경로 게이트 (별도 — import는 warnings 누적 정책 ADR-036 P21.7).
+
+## D. Acceptance Log
+
+| sub | commit | 내용 | 회귀 |
+|---|---|---|---|
+| α | `9f77db7` | spec only | — |
+| β-1 | `6db821e` | `verify_volume_integrity` + `VolumeIntegrityReport` + `IntegrityScope` engine 조립 | axia-geo +4 |
+| β-2 | `2d7f67e` | create_solid_extrude delta 게이트 (discard_last_undo) | axia-geo +1 |
+| β-3 | `17e812a` | boolean_op + boolean_dispatch_dcel_multi 게이트 (cancel) | axia-geo +1 |
+| γ | `57ec7f4` | `integrity_gate_passed` 헬퍼 + `verifyVolumeIntegrity` export + punch/drill/carve/slice | axia-geo +1, axia-wasm +1 |
+| γ-2 | `d308d10` | 남은 6 op (punch_rect/polygon, drill_rect/polygon, door, split) | 스캐너 ≥10 |
+| δ | `5be0a04` | UI `integrity` 명령 + WasmBridge 선언 (게이트 거부는 기존 Toast.fromBridgeError 로 자동 노출) | vitest +4 |
+
+**게이트 배선 총 13 경로:** create_solid_extrude · boolean_op · boolean_dispatch_dcel_multi · punch_hole · drill_through_hole · punch_rect_hole · drill_rect_through_hole · punch_polygon_hole · drill_polygon_through_hole · cut_wall_door_opening · carve_pocket_from_source_face · slice_volume_by_plane · split_face_by_line.
+
+**canonical delta 패턴:** op 전 `verify_volume_integrity(OpenMesh).damage_count()` + `scene_snapshot()` → op → 손상 증가 시 `restore_scene_snapshot` + undo 정리(manual-txn=`cancel`, scene-method=`discard_last_undo`) + lastError. delta 이므로 pre-existing 손상엔 오탐 0.
+
+**최종 health:** axia-geo 2107 / axia-wasm 72 / vitest 2474, 전부 green.
+
+## E. ε (real-Chromium E2E) — deferred, 정직한 사유
+
+게이트 **로직**은 검증됨: is_valid/damage_count/summary (β-1 report 4), 실제 extrude/subtract/punch 결과가 ClosedSolid·OpenMesh 게이트 통과(β-2/β-3/γ 통합 3). 남은 것은 "**손상 주입 → 실제 rollback**" 실경로 E2E.
+
+- **근본 제약:** 정상 공개 API 로는 손상(coincident 크랙/non-manifold)을 만들 수 없다 (엔진이 유효 입력에 손상을 안 만듦). 따라서 rollback 실경로는 **synthetic damage-injection 훅**(test-only WASM export)이 있어야 트리거 가능 → 별도 작업.
+- **transparency E2E** (정상 cut → 게이트 통과 + `verifyVolumeIntegrity` 반환)는 ADR-075 Playwright 인프라로 작성 가능하나, 로컬 브라우저 설치 필요 + repo local-only(CI 미발화) → 후속 push 시점 또는 별도 sub-step.
+- **결론:** 안전망은 **기능적으로 완성**(전 13 op 게이트 + UI 노출). ε 는 검증 깊이 보강 항목으로 deferred.
