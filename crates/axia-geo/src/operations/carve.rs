@@ -444,37 +444,87 @@ impl Mesh {
             })
             .collect();
 
-        // 6) Side walls — bridge opening → floor (ADR-249 reverse + align + quad).
+        // 6) Side walls — bridge opening → floor. ADR-268 — per-vertex nearest
+        // pairing (no twist) + a UNIFORM winding so walls face INTO the void
+        // (toward the pocket axis), mirroring the drill (bridge_through_loops) fix.
+        // The old code aligned only vertex 0 (twist on circle/polygon) and used a
+        // fixed order that left the walls facing into the MATERIAL (backside from
+        // inside the pocket).
         let seed = if inward.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
         let u = (seed - inward * seed.dot(inward)).normalize_or_zero();
         let vv = inward.cross(u);
         let proj = |p: DVec3| (p.dot(u), p.dot(vv));
+        let cnt = opening.len();
         let mut b_rev = floor.clone();
         b_rev.reverse();
-        let e0 = proj(self.vertex_pos(opening[0])?);
-        let mut k = 0usize;
-        let mut best = f64::INFINITY;
-        for (j, &bv) in b_rev.iter().enumerate() {
-            let bp = proj(self.vertex_pos(bv)?);
-            let d = (bp.0 - e0.0).powi(2) + (bp.1 - e0.1).powi(2);
-            if d < best {
-                best = d;
-                k = j;
+        // Nearest pairing: paired[i] = floor vertex nearest opening[i] in the
+        // push-perpendicular plane.
+        let o_proj: Vec<(f64, f64)> = opening
+            .iter()
+            .map(|&vtx| self.vertex_pos(vtx).map(proj))
+            .collect::<Result<_>>()?;
+        let f_proj: Vec<(f64, f64)> = b_rev
+            .iter()
+            .map(|&vtx| self.vertex_pos(vtx).map(proj))
+            .collect::<Result<_>>()?;
+        let mut paired: Vec<VertId> = Vec::with_capacity(cnt);
+        for i in 0..cnt {
+            let (ox, oy) = o_proj[i];
+            let mut best = f64::INFINITY;
+            let mut bj = 0usize;
+            for (j, &(fx, fy)) in f_proj.iter().enumerate() {
+                let d = (fx - ox).powi(2) + (fy - oy).powi(2);
+                if d < best {
+                    best = d;
+                    bj = j;
+                }
             }
+            paired.push(b_rev[bj]);
         }
-        let cnt = opening.len();
+        // Pocket axis (opening centroid) → walls must face toward it (into void).
+        let mut axis_c = DVec3::ZERO;
+        for &vtx in &opening {
+            axis_c += self.vertex_pos(vtx)?;
+        }
+        axis_c /= cnt as f64;
+        let flip = {
+            let a = self.vertex_pos(opening[0])?;
+            let a2 = self.vertex_pos(opening[1 % cnt])?;
+            let b2 = self.vertex_pos(paired[1 % cnt])?;
+            let b = self.vertex_pos(paired[0])?;
+            let nrm0 = (a2 - a).cross(b2 - a).normalize_or_zero();
+            let mid = (a + a2 + b2 + b) / 4.0;
+            let r = mid - axis_c;
+            let radial = (r - inward * r.dot(inward)).normalize_or_zero();
+            nrm0.dot(radial) > 0.0
+        };
         let material = self.faces[ring].material();
         let mut wall_faces = Vec::with_capacity(cnt);
         for i in 0..cnt {
             let a = opening[i];
             let a2 = opening[(i + 1) % cnt];
-            let b = b_rev[(k + i) % cnt];
-            let b2 = b_rev[(k + i + 1) % cnt];
-            wall_faces.push(self.add_face(&[a2, a, b, b2], material)?);
+            let b = paired[i];
+            let b2 = paired[(i + 1) % cnt];
+            let quad = if flip { [b, b2, a2, a] } else { [a, a2, b2, b] };
+            wall_faces.push(self.add_face(&quad, material)?);
         }
 
-        // 7) Floor cap (closes the bottom; faces the opening).
-        let floor_face = self.add_face(&b_rev, material)?;
+        // 7) Floor cap (closes the bottom; faces the opening = -inward, into the
+        // void). ADR-268 — flip the loop if it would face +inward (into material,
+        // backside from inside the pocket).
+        let floor_face = {
+            let mut fl = b_rev.clone();
+            if fl.len() >= 3 {
+                let p0 = self.vertex_pos(fl[0])?;
+                let p1 = self.vertex_pos(fl[1])?;
+                let p2 = self.vertex_pos(fl[2])?;
+                let fnrm = (p1 - p0).cross(p2 - p0).normalize_or_zero();
+                if fnrm.dot(inward) > 0.0 {
+                    fl.reverse();
+                }
+            }
+            self.add_face(&fl, material)?
+        };
 
         // 8) Manifold guard (ADR-190 P0.2 — the caller's snapshot rolls back).
         let report = self.verify_face_invariants();
@@ -2171,6 +2221,42 @@ mod tests {
                 dot
             );
         }
+    }
+
+    /// ADR-268 — carve_pocket walls + floor must face INTO the void (toward the
+    /// pocket axis / -inward), not the material. carve_pocket builds walls inline
+    /// (separate from bridge_through_loops), so it needed its own winding fix.
+    #[test]
+    fn adr268_pocket_walls_and_floor_face_into_void() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        let sheet = front_profile_sheet(&mut mesh); // -Y wall, centroid (0,-100,0)
+        let res = mesh
+            .carve_pocket_from_source_face(sheet, 50.0)
+            .expect("blind pocket");
+        let axis = DVec3::new(0.0, -100.0, 0.0);
+        let inward = DVec3::new(0.0, 1.0, 0.0); // -Y wall → push +Y into the solid
+        for &wf in &res.wall_faces {
+            let nrm = mesh.faces[wf].normal().normalize_or_zero();
+            let verts = mesh.collect_loop_verts(mesh.faces[wf].outer().start).unwrap();
+            let c: DVec3 = verts.iter().map(|&v| mesh.vertex_pos(v).unwrap()).sum::<DVec3>()
+                / verts.len() as f64;
+            let r = c - axis;
+            let radial = (r - inward * r.dot(inward)).normalize_or_zero();
+            assert!(
+                nrm.dot(radial) < 0.0,
+                "pocket wall {:?} must face INTO the void (toward axis), got {:.3}",
+                wf,
+                nrm.dot(radial)
+            );
+        }
+        let fnrm = mesh.faces[res.floor_face].normal().normalize_or_zero();
+        assert!(
+            fnrm.dot(inward) < 0.0,
+            "pocket floor must face the opening (-inward), got {:.3}",
+            fnrm.dot(inward)
+        );
     }
 
     /// ADR-268 — a FREEFORM closed curve (Bezier) source carves a pocket too,
