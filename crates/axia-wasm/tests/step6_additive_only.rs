@@ -1498,9 +1498,11 @@ fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
         l.contains("fn integrity_gate_passed"),
         "ADR-267 γ: shared gate helper must exist"
     );
+    // γ (4) + γ-2 (punch_rect/polygon, drill_rect/polygon, door, split = 6) = 10
+    // call sites + 1 definition. Guards against a cut op silently losing its gate.
     assert!(
-        l.matches("integrity_gate_passed(").count() >= 4,
-        "ADR-267 γ: gate helper must be called by ≥4 cut ops (punch/drill/carve/slice)"
+        l.matches("integrity_gate_passed(").count() >= 10,
+        "ADR-267 γ/γ-2: gate helper must be called by ≥10 cut ops (all punch/drill/carve/slice/door/split)"
     );
 }
 

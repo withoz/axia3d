@@ -4725,14 +4725,26 @@ impl AxiaEngine {
         let line_start = DVec3::new(x0, y0, z0);
         let line_end = DVec3::new(x1, y1, z1);
 
-        // Snapshot for undo
+        // Snapshot for undo + ADR-267 γ-2 watertight 게이트 (delta, OpenMesh).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
 
         let faces_before = self.scene.mesh.face_count();
 
         match face_split::split_face_by_line(&mut self.scene.mesh, fid, line_start, line_end) {
             Ok(result) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "split", true) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 let faces_after = self.scene.mesh.face_count();
                 debug_log!("[RUST] split_face_by_line: face {} → {} new faces, {} new verts, faces {}->{} (delta {:+})",
                     face_id_raw, result.new_faces.len(), result.new_verts.len(),
@@ -8027,10 +8039,19 @@ impl AxiaEngine {
         let a = DVec3::new(ax, ay, az);
         let b = DVec3::new(bx, by, bz);
         let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
         match self.scene.mesh.punch_rect_hole(a, b, normal) {
             Ok(new_face) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch rect", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -8063,11 +8084,19 @@ impl AxiaEngine {
         let normal = DVec3::new(nx, ny, nz);
         // Drill mutates in several steps; capture a snapshot so a partial
         // failure rolls back cleanly (mirrors drillThroughHole).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
         match self.scene.mesh.drill_rect_through_hole(a, b, normal) {
             Ok(res) => {
+                if !self.integrity_gate_passed(integrity_before, &before, "drill rect", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -8103,11 +8132,19 @@ impl AxiaEngine {
         let a = DVec3::new(ax, ay, az);
         let b = DVec3::new(bx, by, bz);
         let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
         match self.scene.mesh.cut_wall_door_opening(a, b, normal) {
             Ok(res) => {
+                if !self.integrity_gate_passed(integrity_before, &before, "door", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -8143,10 +8180,19 @@ impl AxiaEngine {
             .map(|c| DVec3::new(c[0], c[1], c[2]))
             .collect();
         let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
         match self.scene.mesh.punch_polygon_hole(&loop_pts, normal) {
             Ok(new_face) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch polygon", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -8181,11 +8227,19 @@ impl AxiaEngine {
             .map(|c| DVec3::new(c[0], c[1], c[2]))
             .collect();
         let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
         match self.scene.mesh.drill_polygon_through_hole(&loop_pts, normal) {
             Ok(res) => {
+                if !self.integrity_gate_passed(integrity_before, &before, "drill polygon", true) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
