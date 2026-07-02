@@ -193,6 +193,58 @@ impl Mesh {
         best
     }
 
+    /// ADR-269 — would drilling `profile_pts` straight through be a CROSS-DRILL
+    /// through a PRE-EXISTING hole/tube (which the straight-tube MVP cannot build)?
+    ///
+    /// The exit is punched on the nearest opposite face's plane. If that nearest
+    /// face is an INTERIOR tube wall (a pre-existing hole the axis passes through),
+    /// it is tiny and cannot contain the projected profile → cross-drill. A clean
+    /// outer wall — or the far wall of another stacked solid (legitimate
+    /// multi-solid drill) — DOES contain the projected profile. So: find the
+    /// nearest opposite face + its through-distance, project the profile onto that
+    /// plane, and if the face cannot host every projected point → cross-drill.
+    ///
+    /// Same filters + nearest pick as [`Self::carve_ray_nearest_face`]. Returns
+    /// `true` only when a valid opposite face exists but cannot host the profile.
+    fn carve_drill_is_cross_drill(&self, profile_pts: &[DVec3], n: DVec3) -> bool {
+        if profile_pts.is_empty() {
+            return false;
+        }
+        let center = profile_pts.iter().copied().sum::<DVec3>() / profile_pts.len() as f64;
+        let dir = -n;
+        let mut best: Option<(f64, DVec3, Vec<DVec3>)> = None; // (t, fn, poly)
+        for (fid, f) in self.faces.iter() {
+            if fid == FaceId::new(u32::MAX) || !f.is_active() {
+                continue;
+            }
+            let (fn_, fpt, poly) = match self.carve_face_plane(fid) {
+                Some(t) => t,
+                None => continue,
+            };
+            if fn_.dot(n).abs() > COPLANAR_DOT && (fpt - center).dot(n).abs() < COPLANAR_OFFSET {
+                continue;
+            }
+            let denom = dir.dot(fn_);
+            if denom.abs() < CARVE_EPS {
+                continue;
+            }
+            let t = (fpt - center).dot(fn_) / denom;
+            if t < CARVE_EPS {
+                continue;
+            }
+            if point_in_face(center + dir * t, &poly, fn_)
+                && best.as_ref().map_or(true, |(bt, ..)| t < *bt)
+            {
+                best = Some((t, fn_, poly));
+            }
+        }
+        let Some((t, fn_, poly)) = best else { return false };
+        // Project every profile point onto the exit plane along the drill axis and
+        // require the nearest opposite face to contain them all. A tiny interior
+        // tube wall fails this; a full outer / stacked-solid wall passes.
+        profile_pts.iter().any(|&p| !point_in_face(p + dir * t, &poly, fn_))
+    }
+
     /// ADR-194 β-2 — drill a circular **through-hole** (A "dedicated bridge").
     ///
     /// Explicit op (NOT auto-triggered — 메타-원칙 #16; the push-driven dispatch
@@ -235,6 +287,24 @@ impl Mesh {
             })?;
         if !(depth > 1e-6) {
             bail!("drill: opposite wall too close ({depth})");
+        }
+        // ADR-269 — reject cross-drilling through a pre-existing void (see
+        // drill_polygon_through_hole). Representative profile = 4 rim points.
+        let (bu, bv) = {
+            let mut t = DVec3::X;
+            if t.cross(n).length_squared() < 1e-6 { t = DVec3::Y; }
+            let u = (t - n * t.dot(n)).normalize_or_zero();
+            (u, n.cross(u).normalize_or_zero())
+        };
+        let rim = [
+            center + bu * radius, center - bu * radius,
+            center + bv * radius, center - bv * radius,
+        ];
+        if self.carve_drill_is_cross_drill(&rim, n) {
+            bail!(
+                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                 (cross-drilling through an existing hole is not supported)"
+            );
         }
 
         // 2) Punch the entry hole (near face) + grab its hole loop (HE order).
@@ -288,6 +358,14 @@ impl Mesh {
             })?;
         if !(depth > 1e-6) {
             bail!("drill rect: opposite wall too close ({depth})");
+        }
+        // ADR-269 — reject cross-drilling through a pre-existing void (see
+        // drill_polygon_through_hole). Diagonal corners span the rect extent.
+        if self.carve_drill_is_cross_drill(&[corner_a, corner_b], n) {
+            bail!(
+                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                 (cross-drilling through an existing hole is not supported)"
+            );
         }
 
         // 2) Punch the entry rect + grab its (newest) hole loop.
@@ -345,6 +423,17 @@ impl Mesh {
             })?;
         if !(depth > 1e-6) {
             bail!("drill polygon: opposite wall too close ({depth})");
+        }
+        // ADR-269 — reject cross-drilling: if the axis passes through a pre-existing
+        // void (existing hole/tube), the nearest opposite face is the tiny interior
+        // tube wall (which cannot host the profile), not the outer opposite wall. A
+        // legitimate multi-solid / thick drill hosts the profile fine. The
+        // straight-tube MVP cannot build the intersection; guide to reposition/Boolean.
+        if self.carve_drill_is_cross_drill(loop_pts, n) {
+            bail!(
+                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                 (cross-drilling through an existing hole is not supported by the straight-tube drill)"
+            );
         }
 
         // 2) Punch the entry profile + grab its (newest) hole loop.
@@ -1725,6 +1814,46 @@ mod tests {
             "drilled box must be manifold: {:?}",
             inv.violations.iter().take(5).collect::<Vec<_>>()
         );
+    }
+
+    /// ADR-269 — cross-drilling: a through-drill whose axis passes through the
+    /// void of an EXISTING through-hole is rejected cleanly (the straight-tube MVP
+    /// cannot build the intersection). Profile-drill variant originates from a real
+    /// wall (like the carve/scene path). A parallel profile that MISSES the void
+    /// still succeeds. Guards against the opposite-wall ray latching onto the
+    /// interior tube wall (user: side hole aligned with a top hole → cryptic
+    /// "extends outside" + non-drill).
+    #[test]
+    fn adr269_cross_drilling_through_existing_hole_rejected() {
+        let (mut mesh, _b, _t) = box200(); // x,y,z ∈ [-100,100] (origin-centered)
+        // Existing vertical (Z) through-hole at (x=0,y=0), r=30 (entry on +Z top).
+        mesh.drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, 30.0, 24)
+            .expect("first vertical drill");
+
+        // Triangular profile on the -X wall (x=-100) centered at (·,0,0): its +X
+        // drill axis crosses the vertical tube void (x²+y²<30² at y=0) →
+        // cross-drilling → rejected with a clear message.
+        let tri = [
+            DVec3::new(-100.0, -15.0, -15.0),
+            DVec3::new(-100.0, 15.0, -15.0),
+            DVec3::new(-100.0, 0.0, 15.0),
+        ];
+        let crossed = mesh.drill_polygon_through_hole(&tri, DVec3::new(-1.0, 0.0, 0.0));
+        assert!(crossed.is_err(), "cross-drilling must be rejected, got Ok");
+        let msg = crossed.unwrap_err().to_string();
+        assert!(msg.contains("cross-drilling") || msg.contains("교차"),
+            "clear cross-drill message, got: {msg}");
+        assert!(mesh.verify_face_invariants().is_valid(), "mesh intact after rejected cross-drill");
+
+        // Control: the same profile offset in Y (y≈60) misses the r=30 vertical
+        // void → succeeds (a clean second through-hole).
+        let tri2 = [
+            DVec3::new(-100.0, 45.0, -15.0),
+            DVec3::new(-100.0, 75.0, -15.0),
+            DVec3::new(-100.0, 60.0, 15.0),
+        ];
+        let missed = mesh.drill_polygon_through_hole(&tri2, DVec3::new(-1.0, 0.0, 0.0));
+        assert!(missed.is_ok(), "parallel drill that misses the void must succeed: {:?}", missed.err());
     }
 
     /// Both caps become ring-with-hole (each gains exactly one inner loop).

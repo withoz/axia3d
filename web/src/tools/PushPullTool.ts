@@ -199,7 +199,15 @@ export class PushPullTool implements ITool {
           this.cleanup();
           return;
         }
-        debugWarn('[PP] carvePocket declined — falling back to extrude:', this.ctx.bridge.lastError());
+        // ADR-269 — an inward push on a coplanar profile is unambiguously a
+        // pocket/through cut. If carve declines (e.g. cross-drilling through an
+        // existing hole), surface the reason and abort — do NOT fall back to an
+        // inward "boss" extrude, which produces confusing garbage geometry.
+        const why = this.ctx.bridge.lastError();
+        debugWarn('[PP] carvePocket declined:', why);
+        Toast.error(why && why.length > 0 ? why : '이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요');
+        this.cleanup();
+        return;
       }
 
       // ADR-261 — bidirectional / two-sided mode: cancel the one-way live
