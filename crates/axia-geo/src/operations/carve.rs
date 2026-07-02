@@ -2173,6 +2173,44 @@ mod tests {
         }
     }
 
+    /// ADR-268 — a FREEFORM closed curve (Bezier) source carves a pocket too,
+    /// guarding the non-Circle branch of `curve_closed_outline` / `face_outline_
+    /// points` (polygon/circle/freeform all share the carve path).
+    #[test]
+    fn adr268_carve_pocket_from_closed_bezier_source() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        // Closed cubic Bezier on the front (-Y) wall (y=-100); cp[0]==cp[last].
+        let cp = vec![
+            DVec3::new(40.0, -100.0, 0.0),
+            DVec3::new(0.0, -100.0, 40.0),
+            DVec3::new(-40.0, -100.0, 0.0),
+            DVec3::new(0.0, -100.0, -40.0),
+            DVec3::new(40.0, -100.0, 0.0),
+        ];
+        let anchor = mesh.add_vertex(cp[0]);
+        let disk = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Bezier { control_pts: cp },
+                MaterialId::new(0),
+            )
+            .expect("closed-bezier face on wall");
+        assert!(
+            mesh.face_has_larger_coplanar_container(disk),
+            "freeform closed-curve source must be detected as contained"
+        );
+        let res = mesh
+            .carve_pocket_from_source_face(disk, 40.0)
+            .expect("freeform pocket must carve");
+        assert!(res.wall_faces.len() >= 8, "freeform pocket faceted walls");
+        assert!(
+            mesh.verify_face_invariants().is_valid(),
+            "freeform pocket must be manifold"
+        );
+    }
+
     /// ADR-267 follow-up — `wall_thickness_from_source_face` works for a CLOSED-
     /// CURVE (circle) source, so the scene's through-vs-blind auto-routing fires
     /// for a drawn circle. Without this a deep circle push read as blind → carve
