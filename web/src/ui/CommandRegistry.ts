@@ -223,6 +223,34 @@ export function initCommandRegistry(deps: CommandRegistryDeps): void {
     },
   });
 
+  // ADR-267 δ — 씬 부피 무결성 검사 (watertight / 크랙 / winding). 편집 op 는
+  // 자동으로 게이트가 걸려 손상 시 롤백되지만, 이 명령은 현재 씬 전체를
+  // on-demand 로 검사한다 (verifyVolumeIntegrity export).
+  commandInput.registerHandler({
+    name: 'integrity',
+    aliases: ['무결성', 'check-integrity'],
+    help: '씬 부피 무결성 검사 (watertight / 크랙 / winding). 사용: integrity',
+    execute: () => {
+      const engine = bridge.engine as any;
+      if (!engine?.verifyVolumeIntegrity) {
+        commandInput.printError('integrity: WASM에 verifyVolumeIntegrity 미노출 — rebuild 필요');
+        return;
+      }
+      const r = JSON.parse(engine.verifyVolumeIntegrity());
+      if (r.valid) {
+        commandInput.printSuccess(`✓ 부피 무결성 OK (검사 면 ${r.checkedFaces}개)`);
+      } else {
+        commandInput.printError(
+          '✗ 부피 무결성 위반:\n' +
+          `  invariant 위반 ${r.invariantViolations}건\n` +
+          `  기하 크랙 ${r.geometricCracks}개\n` +
+          `  열린 경계 edge ${r.openBoundaryEdges}개\n` +
+          `  (검사 면 ${r.checkedFaces}개)`
+        );
+      }
+    },
+  });
+
   // 1순위 (2026-04-26) — non-manifold edge 진단 및 자동 수리.
   commandInput.registerHandler({
     name: 'repair',

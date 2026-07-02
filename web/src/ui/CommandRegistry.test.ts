@@ -39,7 +39,7 @@ describe('CommandRegistry', () => {
 
   describe('initCommandRegistry', () => {
     it('registers all Phase H+I + prior handlers', () => {
-      expect(deps.commandInput.registerHandler).toHaveBeenCalledTimes(11);
+      expect(deps.commandInput.registerHandler).toHaveBeenCalledTimes(12);
       const calls = (deps.commandInput.registerHandler as any).mock.calls;
       const names = calls.map((c: any) => c[0].name);
       expect(names).toContain('line');
@@ -53,6 +53,46 @@ describe('CommandRegistry', () => {
       expect(names).toContain('verify');
       expect(names).toContain('help');
       expect(names).toContain('repair');
+      expect(names).toContain('integrity');
+    });
+  });
+
+  describe('integrity command (ADR-267 δ)', () => {
+    function handler() {
+      const calls = (deps.commandInput.registerHandler as any).mock.calls;
+      return calls.map((c: any) => c[0]).find((h: any) => h.name === 'integrity');
+    }
+
+    it('is registered with 무결성 alias', () => {
+      const h = handler();
+      expect(h).toBeTruthy();
+      expect(h.aliases).toContain('무결성');
+    });
+
+    it('prints error when engine lacks verifyVolumeIntegrity', () => {
+      (deps.bridge as any).engine = {};
+      handler().execute([]);
+      expect(deps.commandInput.printError).toHaveBeenCalled();
+    });
+
+    it('prints success on valid integrity', () => {
+      (deps.bridge as any).engine = {
+        verifyVolumeIntegrity: vi.fn().mockReturnValue(
+          '{"valid":true,"invariantViolations":0,"geometricCracks":0,"openBoundaryEdges":0,"checkedFaces":6}'
+        ),
+      };
+      handler().execute([]);
+      expect(deps.commandInput.printSuccess).toHaveBeenCalled();
+    });
+
+    it('prints error on integrity violation', () => {
+      (deps.bridge as any).engine = {
+        verifyVolumeIntegrity: vi.fn().mockReturnValue(
+          '{"valid":false,"invariantViolations":2,"geometricCracks":1,"openBoundaryEdges":0,"checkedFaces":6}'
+        ),
+      };
+      handler().execute([]);
+      expect(deps.commandInput.printError).toHaveBeenCalled();
     });
   });
 

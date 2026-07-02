@@ -460,6 +460,8 @@ type AxiaEngineExtended = AxiaEngine & {
   findNonManifoldEdges?(): string;
   repairNonManifoldEdges?(): string;
   verifyOutwardNormals?(): string;
+  /** ADR-267 δ — on-demand 씬 부피 무결성 검사 JSON (valid/invariantViolations/geometricCracks/openBoundaryEdges/checkedFaces). */
+  verifyVolumeIntegrity?(): string;
   exportSnapshotStrict?(): Uint8Array;
   synthesizeFacesFromFreeEdges?(): number;
   countFreeEdges?(): number;
