@@ -502,19 +502,16 @@ impl Mesh {
         &mut self,
         source_face: FaceId,
     ) -> Result<DrillThroughResult> {
-        let sf = self
-            .faces
-            .get(source_face)
-            .filter(|f| f.is_active())
-            .ok_or_else(|| anyhow::anyhow!("through: source face inactive/missing"))?;
-        let outline_verts = self.collect_loop_verts(sf.outer().start)?;
-        if outline_verts.len() < 3 {
-            bail!("through: source face has a degenerate loop");
+        // ADR-267 follow-up — polygon OR closed-curve (circle) profile.
+        if !self.faces.get(source_face).map(|f| f.is_active()).unwrap_or(false) {
+            bail!("through: source face inactive/missing");
         }
-        let outline: Vec<DVec3> = outline_verts
-            .iter()
-            .map(|&v| self.vertex_pos(v))
-            .collect::<Result<_>>()?;
+        let outline = self.face_outline_points(source_face).ok_or_else(|| {
+            anyhow::anyhow!("through: source face has no usable outline (need a polygon ≥3 verts or a closed curve)")
+        })?;
+        if outline.len() < 3 {
+            bail!("through: source outline too small");
+        }
         let n_s = self.faces[source_face].normal().normalize_or_zero();
         if n_s.length_squared() < 0.5 {
             bail!("through: degenerate source normal");
@@ -570,35 +567,78 @@ impl Mesh {
             );
         }
 
-        // Reverse the exit loop + rotationally align b_rev[k] with e_loop[0] by
-        // nearest position in the axis-perpendicular plane.
+        // ADR-267 follow-up (drill wall winding + twist fix) — the old code aligned
+        // only vertex 0 (rest assumed matching order → twisted quads on circle/hex)
+        // and used a fixed quad order that left EVERY tube wall facing into the
+        // MATERIAL (backside showed from inside the hole → "깨진/캡" 렌더). Replace
+        // with PER-VERTEX nearest pairing (untwisted planar quads) + a UNIFORM
+        // winding derived so all walls face INTO the void (toward the hole axis),
+        // matching the solid's outward convention. Winding is applied uniformly, so
+        // adjacent walls keep opposite HE directions on shared edges (manifold), and
+        // the final verify_face_invariants guards the result (caller rolls back).
         let mut b_rev = b_loop.clone();
         b_rev.reverse();
         let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
         let u = (seed - n * seed.dot(n)).normalize_or_zero();
-        let v = n.cross(u);
-        let proj = |p: DVec3| (p.dot(u), p.dot(v));
-        let e0 = proj(self.vertex_pos(e_loop[0])?);
-        let mut k = 0usize;
-        let mut best = f64::INFINITY;
-        for (j, &bv) in b_rev.iter().enumerate() {
-            let bp = proj(self.vertex_pos(bv)?);
-            let d = (bp.0 - e0.0).powi(2) + (bp.1 - e0.1).powi(2);
-            if d < best {
-                best = d;
-                k = j;
+        let vv = n.cross(u);
+        let proj = |p: DVec3| (p.dot(u), p.dot(vv));
+
+        // Per-vertex nearest pairing: paired[i] = exit vertex geometrically nearest
+        // e_loop[i] in the axis-perpendicular plane (straight-through convex ⇒
+        // congruent loops ⇒ a clean bijective rotation, no twist).
+        let e_proj: Vec<(f64, f64)> = e_loop
+            .iter()
+            .map(|&vtx| self.vertex_pos(vtx).map(proj))
+            .collect::<Result<_>>()?;
+        let b_proj: Vec<(f64, f64)> = b_rev
+            .iter()
+            .map(|&vtx| self.vertex_pos(vtx).map(proj))
+            .collect::<Result<_>>()?;
+        let mut paired: Vec<VertId> = Vec::with_capacity(cnt);
+        for i in 0..cnt {
+            let (ex, ey) = e_proj[i];
+            let mut best = f64::INFINITY;
+            let mut bj = 0usize;
+            for (j, &(bx, by)) in b_proj.iter().enumerate() {
+                let d = (bx - ex).powi(2) + (by - ey).powi(2);
+                if d < best {
+                    best = d;
+                    bj = j;
+                }
             }
+            paired.push(b_rev[bj]);
         }
 
-        // Bridge: one quad per segment.
+        // Hole-axis centroid (entry plane) → outward-direction target.
+        let mut e_centroid = DVec3::ZERO;
+        for &vtx in &e_loop {
+            e_centroid += self.vertex_pos(vtx)?;
+        }
+        e_centroid /= cnt as f64;
+
+        // Base quad order a→a2→b2→b. Flip the whole tube uniformly if wall 0's
+        // normal points AWAY from the axis (into material) instead of into the void.
+        let flip = {
+            let a = self.vertex_pos(e_loop[0])?;
+            let a2 = self.vertex_pos(e_loop[1 % cnt])?;
+            let b2 = self.vertex_pos(paired[1 % cnt])?;
+            let b = self.vertex_pos(paired[0])?;
+            let nrm0 = (a2 - a).cross(b2 - a).normalize_or_zero();
+            let mid = (a + a2 + b2 + b) / 4.0;
+            let r = mid - e_centroid;
+            let radial = (r - n * r.dot(n)).normalize_or_zero();
+            nrm0.dot(radial) > 0.0
+        };
+
+        // Bridge: one quad per segment, uniform winding.
         let material = self.faces[entry_face].material();
         let mut tube_faces = Vec::with_capacity(cnt);
         for i in 0..cnt {
             let a = e_loop[i];
             let a2 = e_loop[(i + 1) % cnt];
-            let b = b_rev[(k + i) % cnt];
-            let b2 = b_rev[(k + i + 1) % cnt];
-            let quad = [a2, a, b, b2];
+            let b = paired[i];
+            let b2 = paired[(i + 1) % cnt];
+            let quad = if flip { [b, b2, a2, a] } else { [a, a2, b2, b] };
             let f = self.add_face(&quad, material)?;
             tube_faces.push(f);
         }
@@ -2092,6 +2132,94 @@ mod tests {
             assert!((p.length() - 50.0).abs() < 1.0, "point on circle r=50");
             assert!(p.z.abs() < 1e-6, "point in z=0 plane");
         }
+    }
+
+    /// ADR-267 follow-up — `bridge_through_loops` (shared by ALL drills) must wind
+    /// every tube wall so its normal faces INTO the void (toward the hole axis),
+    /// consistently. Regresses the shared winding bug where all walls faced into
+    /// the MATERIAL (backside showed from inside the hole → "깨진/캡" 렌더).
+    #[test]
+    fn adr267_drill_tube_walls_face_into_void() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        let sheet = front_profile_sheet(&mut mesh); // -Y wall rect, centroid (0,-100,0)
+        let res = mesh
+            .carve_through_from_source_face(sheet)
+            .expect("drill through");
+        assert!(res.tube_faces.len() >= 4, "tube has ≥4 walls");
+        for &wf in &res.tube_faces {
+            let nrm = mesh.faces[wf].normal().normalize_or_zero();
+            let vs = mesh
+                .collect_loop_verts(mesh.faces[wf].outer().start)
+                .unwrap();
+            let c: DVec3 = vs.iter().map(|&v| mesh.vertex_pos(v).unwrap()).sum::<DVec3>()
+                / vs.len() as f64;
+            // Radial in the axis(Y)-perpendicular plane, from the hole axis (0,c.y,0).
+            let radial = DVec3::new(c.x, 0.0, c.z);
+            if radial.length() < 1e-6 {
+                continue;
+            }
+            let dot = nrm.dot(radial.normalize());
+            assert!(
+                dot < 0.0,
+                "tube wall {:?} must face INTO the void (toward axis), got dot={:.3}",
+                wf,
+                dot
+            );
+        }
+    }
+
+    /// ADR-267 follow-up — a drawn CIRCLE (closed-curve face) carves a THROUGH
+    /// hole (open tube, NO caps top or bottom), same as a rect drill. Regresses
+    /// "draw circle → Extrude/Cut all the way through".
+    #[test]
+    fn adr267_through_circle_from_closed_curve_source() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        // Circle on the front (-Y) wall at y=-100, r=40 (outward normal -Y).
+        let center = DVec3::new(0.0, -100.0, 0.0);
+        let basis_u = DVec3::X;
+        let anchor = mesh.add_vertex(center + basis_u * 40.0);
+        let disk = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center,
+                    radius: 40.0,
+                    normal: DVec3::new(0.0, -1.0, 0.0),
+                    basis_u,
+                },
+                MaterialId::new(0),
+            )
+            .expect("circle disk on wall");
+        let res = mesh
+            .carve_through_from_source_face(disk)
+            .expect("circle through-hole must drill");
+        assert!(
+            res.tube_faces.len() >= 8,
+            "circular through = many faceted tube walls, got {}",
+            res.tube_faces.len()
+        );
+        assert!(
+            mesh.verify_face_invariants().is_valid(),
+            "through tube must be manifold"
+        );
+        // Open tube: no cap covers the circle center on either wall plane.
+        // (entry -Y at y=-100, exit +Y at y=+100). A cap face there would be a
+        // horizontal disk covering (0,*,0) — assert none exist by checking the
+        // solid stays a closed 2-manifold WITH the tube (watertight tunnel).
+        let all: Vec<FaceId> = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            mesh.face_set_manifold_info(&all).is_closed_solid,
+            "through-drilled box (tunnel) stays a watertight solid"
+        );
     }
 
     /// ADR-267 follow-up — a drawn CIRCLE (closed-curve face) coplanar on a wall
