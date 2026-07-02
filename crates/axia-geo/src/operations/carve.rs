@@ -384,20 +384,19 @@ impl Mesh {
             bail!("pocket: depth must be positive, got {depth}");
         }
 
-        // 1) Read the profile outline + its (outward) normal + boundary edges.
-        let sf = self
-            .faces
-            .get(source_face)
-            .filter(|f| f.is_active())
-            .ok_or_else(|| anyhow::anyhow!("pocket: source face inactive/missing"))?;
-        let outline_verts = self.collect_loop_verts(sf.outer().start)?;
-        if outline_verts.len() < 3 {
-            bail!("pocket: source face has a degenerate loop");
+        // 1) Read the profile outline (polygon OR closed-curve) + normal + edges.
+        // ADR-267 follow-up — a drawn circle is a closed-curve face (1 anchor +
+        // self-loop edge); face_outline_points tessellates it to a polygon so the
+        // rest of the pocket build (punch_polygon_hole + walls) is unchanged.
+        if !self.faces.get(source_face).map(|f| f.is_active()).unwrap_or(false) {
+            bail!("pocket: source face inactive/missing");
         }
-        let outline: Vec<DVec3> = outline_verts
-            .iter()
-            .map(|&v| self.vertex_pos(v))
-            .collect::<Result<_>>()?;
+        let outline = self.face_outline_points(source_face).ok_or_else(|| {
+            anyhow::anyhow!("pocket: source face has no usable outline (need a polygon ≥3 verts or a closed curve)")
+        })?;
+        if outline.len() < 3 {
+            bail!("pocket: source outline too small");
+        }
         let n_s = self.faces[source_face].normal().normalize_or_zero();
         if n_s.length_squared() < 0.5 {
             bail!("pocket: degenerate source normal");
@@ -623,6 +622,65 @@ impl Mesh {
     /// face** on the same plane (the "rect drawn on a wall" signal). Used by the
     /// Push/Pull tool to route an inward push to a pocket carve (vs a plain
     /// extrude). Read-only; the larger container is the host wall.
+    /// ADR-267 follow-up (circle cut) — a face's outline as polygon points.
+    ///
+    /// Polygon face (≥3 boundary verts) → those vertex positions. **Closed-curve
+    /// face** (ADR-089 kernel-native: 1 anchor vert + 1 self-loop edge carrying an
+    /// `AnalyticCurve`, e.g. a drawn circle) → the curve tessellated to a polygon
+    /// outline. This lets the coplanar-container detection + `carve_pocket_from_
+    /// source_face` consume a circle (or freeform closed curve) profile the same
+    /// way they consume a rect — matching `punch_circular_hole`'s faceted behavior.
+    pub fn face_outline_points(&self, face: FaceId) -> Option<Vec<DVec3>> {
+        let f = self.faces.get(face).filter(|x| x.is_active())?;
+        let verts = self.collect_loop_verts(f.outer().start).ok()?;
+        if verts.len() >= 3 {
+            let pts: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+            return if pts.len() >= 3 { Some(pts) } else { None };
+        }
+        // Closed-curve profile: 1-vert self-loop with an analytic curve.
+        if verts.len() == 1 {
+            let hes = self.collect_loop_hes(f.outer().start).ok()?;
+            if hes.len() == 1 {
+                let eid = self.hes[hes[0]].edge();
+                let curve = self.edges.get(eid).filter(|e| e.is_active())?.curve().cloned()?;
+                return Self::curve_closed_outline(&curve);
+            }
+        }
+        None
+    }
+
+    /// Tessellate a CLOSED analytic curve to a polygon outline (closing dup
+    /// dropped). Line/Arc are not closed profiles → `None`.
+    fn curve_closed_outline(curve: &crate::curves::AnalyticCurve) -> Option<Vec<DVec3>> {
+        use crate::curves::AnalyticCurve;
+        let tol = 0.1_f64;
+        let finish = |pts: Vec<DVec3>| -> Option<Vec<DVec3>> {
+            let mut pts = pts;
+            if pts.len() >= 4
+                && (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
+            {
+                pts.pop();
+            }
+            if pts.len() >= 3 { Some(pts) } else { None }
+        };
+        match curve {
+            AnalyticCurve::Circle { center, radius, normal, basis_u } => {
+                let ct = tol.min(radius * 0.02).max(1e-4);
+                finish(crate::curves::circle::tessellate_full(*center, *radius, *normal, *basis_u, ct))
+            }
+            AnalyticCurve::Bezier { control_pts } => {
+                crate::curves::bezier::tessellate(control_pts, tol).ok().and_then(finish)
+            }
+            AnalyticCurve::BSpline { control_pts, knots, degree } => {
+                crate::curves::bspline::tessellate(control_pts, knots, *degree as usize, tol).ok().and_then(finish)
+            }
+            AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
+                crate::curves::nurbs::tessellate(control_pts, weights, knots, *degree as usize, tol).ok().and_then(finish)
+            }
+            _ => None,
+        }
+    }
+
     pub fn face_has_larger_coplanar_container(&self, face: FaceId) -> bool {
         self.find_larger_coplanar_container_face(face).is_some()
     }
@@ -636,11 +694,8 @@ impl Mesh {
         if n.length_squared() < 0.5 {
             return None;
         }
-        let verts = match self.collect_loop_verts(f.outer().start) {
-            Ok(v) if v.len() >= 3 => v,
-            _ => return None,
-        };
-        let pts: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        // ADR-267 follow-up — polygon OR closed-curve (circle) outline.
+        let pts = self.face_outline_points(face)?;
         if pts.len() < 3 {
             return None;
         }
@@ -2006,6 +2061,94 @@ mod tests {
             .expect("triangle pocket");
         assert_eq!(res.wall_faces.len(), 3, "triangle pocket = 3 side walls");
         assert!(mesh.verify_face_invariants().is_valid(), "manifold");
+    }
+
+    /// ADR-267 follow-up — `face_outline_points` tessellates a CLOSED-CURVE
+    /// (circle) face into a polygon outline (the fix that lets a drawn circle
+    /// be cut). Regresses the container/carve gap ("draw circle on face → cut"
+    /// was a no-op because the 1-vert self-loop failed the ≥3-vert check).
+    #[test]
+    fn adr267_face_outline_points_tessellates_closed_curve() {
+        let mut mesh = Mesh::new();
+        let center = DVec3::ZERO;
+        let anchor = mesh.add_vertex(center + DVec3::X * 50.0); // rim, angle 0
+        let disk = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center,
+                    radius: 50.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .expect("circle closed-curve face");
+        let outline = mesh
+            .face_outline_points(disk)
+            .expect("closed-curve face must yield a tessellated outline");
+        assert!(outline.len() >= 8, "circle tessellates to ≥8 pts, got {}", outline.len());
+        for p in &outline {
+            assert!((p.length() - 50.0).abs() < 1.0, "point on circle r=50");
+            assert!(p.z.abs() < 1e-6, "point in z=0 plane");
+        }
+    }
+
+    /// ADR-267 follow-up — a drawn CIRCLE (closed-curve face) coplanar on a wall
+    /// carves into a cylindrical blind pocket, same as a rect. This is the
+    /// end-to-end regression for "draw circle on face → Extrude/Cut inward".
+    #[test]
+    fn adr267_pocket_circle_from_closed_curve_source() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        // Circle on the front (-Y) wall at y=-100, r=40 (outward normal -Y).
+        let center = DVec3::new(0.0, -100.0, 0.0);
+        let basis_u = DVec3::X;
+        let anchor = mesh.add_vertex(center + basis_u * 40.0);
+        let disk = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center,
+                    radius: 40.0,
+                    normal: DVec3::new(0.0, -1.0, 0.0),
+                    basis_u,
+                },
+                MaterialId::new(0),
+            )
+            .expect("circle disk on wall");
+
+        // The gap regression: the closed-curve disk IS now recognized as
+        // contained in the larger wall (was false → the cut was skipped).
+        assert!(
+            mesh.face_has_larger_coplanar_container(disk),
+            "closed-curve disk must be detected as contained in the larger wall"
+        );
+
+        let res = mesh
+            .carve_pocket_from_source_face(disk, 50.0)
+            .expect("circle pocket must carve");
+        assert!(
+            res.wall_faces.len() >= 8,
+            "circular pocket = many faceted side walls, got {}",
+            res.wall_faces.len()
+        );
+        assert!((res.depth - 50.0).abs() < 1e-9);
+        assert!(
+            mesh.verify_face_invariants().is_valid(),
+            "circular pocket must be manifold"
+        );
+        let all: Vec<FaceId> = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            mesh.face_set_manifold_info(&all).is_closed_solid,
+            "blind circular pocket keeps the solid watertight"
+        );
     }
 
     /// Depth reaching the opposite wall is rejected (→ use a through-hole).
