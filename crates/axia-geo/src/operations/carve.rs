@@ -786,8 +786,11 @@ impl Mesh {
         if n_host.length_squared() < 0.5 {
             return None;
         }
-        let verts = self.collect_loop_verts(self.faces.get(source_face)?.outer().start).ok()?;
-        let pts: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        // ADR-267 follow-up — polygon OR closed-curve (circle) outline, so the
+        // through-vs-blind decision fires for a drawn circle too. Without this a
+        // deep circle push always read as blind → carve bailed ("reaches opposite
+        // wall") → the tool fell back to a capped extrude instead of a through-cut.
+        let pts = self.face_outline_points(source_face)?;
         if pts.len() < 3 {
             return None;
         }
@@ -2168,6 +2171,39 @@ mod tests {
                 dot
             );
         }
+    }
+
+    /// ADR-267 follow-up — `wall_thickness_from_source_face` works for a CLOSED-
+    /// CURVE (circle) source, so the scene's through-vs-blind auto-routing fires
+    /// for a drawn circle. Without this a deep circle push read as blind → carve
+    /// bailed → the tool fell back to a capped extrude (no real through-cut).
+    #[test]
+    fn adr267_wall_thickness_works_for_circle_source() {
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        let center = DVec3::new(0.0, -100.0, 0.0);
+        let basis_u = DVec3::X;
+        let anchor = mesh.add_vertex(center + basis_u * 40.0);
+        let disk = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center,
+                    radius: 40.0,
+                    normal: DVec3::new(0.0, -1.0, 0.0),
+                    basis_u,
+                },
+                MaterialId::new(0),
+            )
+            .expect("circle disk on wall");
+        let t = mesh
+            .wall_thickness_from_source_face(disk)
+            .expect("closed-curve source must report a wall thickness");
+        assert!(
+            (t - 200.0).abs() < 1.0,
+            "front(-Y)→back(+Y) thickness ≈ 200, got {t}"
+        );
     }
 
     /// ADR-267 follow-up — a drawn CIRCLE (closed-curve face) carves a THROUGH
