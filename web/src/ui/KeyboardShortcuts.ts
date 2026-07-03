@@ -457,14 +457,8 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       }
     } else if (!e.ctrlKey && !e.altKey) {
       // 뷰 단축키 (AutoCAD 스타일) — t, b, f, k 는 여기서 걸러냄
-      if (e.key === 'h' || e.key === 'H') {
-        // ADR-270 §F amendment 3 — 'h' 도 카메라 홈이므로 드로잉 평면도
-        // 기본(z=0)으로 복귀 (F5 / 🏠 와 동일 "홈" 의미 통일).
-        viewport.resetCamera();
-        toolManager.resetDrawingPlane();
-        return;
-      }
-
+      // (2026-07-03 사용자 요청 — 'h' 카메라 홈 단축키 제거: F5 / 🏠 버튼과
+      //  중복이라 기능키 정리. 카메라 홈은 F5 + 🏠, 평면 초기화는 Home 참조.)
       const viewKeySet = new Set(['t', 'b', 'f', 'k']);
       if (viewKeySet.has(e.key.toLowerCase())) return; // 뷰 섹션에서 처리
 

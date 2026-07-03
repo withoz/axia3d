@@ -226,17 +226,8 @@ describe('KeyboardShortcuts', () => {
       expect(deps.toolManager.setTool).not.toHaveBeenCalled();
     });
 
-    it('H resets camera', () => {
-      fireKey('h');
-      expect(deps.viewport.resetCamera).toHaveBeenCalled();
-    });
-
-    // ADR-270 §F amendment 3 — "홈"(카메라 원점) = 드로잉 평면도 기본(z=0) 복귀.
-    it('H also resets the drawing plane', () => {
-      fireKey('h');
-      expect(deps.toolManager.resetDrawingPlane).toHaveBeenCalled();
-    });
-
+    // (2026-07-03 — 'h' 카메라 홈 단축키 제거됨: F5 / 🏠 와 중복. 카메라 홈은
+    //  F5 + 🏠, 평면 초기화는 Home.)
     it('F5 resets camera AND the drawing plane', () => {
       fireKey('F5');
       expect(deps.viewport.resetCamera).toHaveBeenCalled();
