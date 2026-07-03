@@ -376,10 +376,18 @@ impl Mesh {
         let f2_verts = self.collect_loop_verts(self.faces[f2].outer().start)?;
         let f3_verts = self.collect_loop_verts(self.faces[f3].outer().start)?;
 
-        // 3) Trim points on each face.
-        let p1 = compute_trim_point(self, &f1_verts, v, radius)?;
-        let p2 = compute_trim_point(self, &f2_verts, v, radius)?;
-        let p3 = compute_trim_point(self, &f3_verts, v, radius)?;
+        // 3) EDGE trim points — one per incident edge, not a per-face bisector.
+        //    (Adversarial sweep pattern #2.) The ADR-024 MVP replaced the corner
+        //    with a single per-face bisector *interior* point, so the edge (v,X)
+        //    shared by two faces got a DIFFERENT replacement point in each face →
+        //    the shared edge broke and the solid silently opened (boundary edges)
+        //    while `verify_face_invariants` still reported 0 violations. Trimming
+        //    each edge at `radius` along it yields a point identical from both
+        //    faces that share that edge (`add_vertex` dedups → same VertId), so
+        //    the shared edges stay matched and the solid stays closed.
+        let (tp1, tn1) = edge_trim_points(self, &f1_verts, v, radius)?;
+        let (tp2, tn2) = edge_trim_points(self, &f2_verts, v, radius)?;
+        let (tp3, tn3) = edge_trim_points(self, &f3_verts, v, radius)?;
 
         // 4) Capture face data + normals before mutation.
         let m1 = self.faces[f1].material();
@@ -387,15 +395,19 @@ impl Mesh {
         let m3 = self.faces[f3].material();
         let n_sum = self.faces[f1].normal() + self.faces[f2].normal() + self.faces[f3].normal();
 
-        // 5) Materialize trim point vertices.
-        let pv1 = self.add_vertex(p1);
-        let pv2 = self.add_vertex(p2);
-        let pv3 = self.add_vertex(p3);
+        // 5) Materialize edge trim vertices (dedup welds each shared edge point).
+        let a1 = self.add_vertex(tp1);
+        let b1 = self.add_vertex(tn1);
+        let a2 = self.add_vertex(tp2);
+        let b2 = self.add_vertex(tn2);
+        let a3 = self.add_vertex(tp3);
+        let b3 = self.add_vertex(tn3);
 
-        // 6) Splice each face's loop: replace v with [pv_i].
-        let f1_new = splice_vertex_replacement(&f1_verts, v, &[pv1])?;
-        let f2_new = splice_vertex_replacement(&f2_verts, v, &[pv2])?;
-        let f3_new = splice_vertex_replacement(&f3_verts, v, &[pv3])?;
+        // 6) Splice each face's loop: replace v with its two edge points
+        //    [prev-edge point, next-edge point], preserving loop order.
+        let f1_new = splice_vertex_replacement(&f1_verts, v, &[a1, b1])?;
+        let f2_new = splice_vertex_replacement(&f2_verts, v, &[a2, b2])?;
+        let f3_new = splice_vertex_replacement(&f3_verts, v, &[a3, b3])?;
 
         // 7) Tear down original faces.
         for fid in &[f1, f2, f3] {
@@ -410,12 +422,23 @@ impl Mesh {
         let new_f2 = self.add_face_with_holes(&f2_new, &[], m2)?;
         let new_f3 = self.add_face_with_holes(&f3_new, &[], m3)?;
 
-        // 9) Add chamfer triangle. Winding: must point outward (n_sum direction).
-        let tri_normal_ccw = (p2 - p1).cross(p3 - p1);
+        // 9) Chamfer triangle from the 3 UNIQUE edge trim points. Each of v's
+        //    3 edges is shared by two of the faces, so {a*, b*} collapses to
+        //    exactly 3 ids. Winding: point outward (n_sum direction).
+        let mut uniq: Vec<VertId> = Vec::with_capacity(3);
+        for x in [a1, b1, a2, b2, a3, b3] {
+            if !uniq.contains(&x) { uniq.push(x); }
+        }
+        ensure!(uniq.len() == 3,
+            "chamfer: expected 3 unique edge trim points, got {}", uniq.len());
+        let (q1, q2, q3) = (uniq[0], uniq[1], uniq[2]);
+        let (pq1, pq2, pq3) =
+            (self.vertex_pos(q1)?, self.vertex_pos(q2)?, self.vertex_pos(q3)?);
+        let tri_normal_ccw = (pq2 - pq1).cross(pq3 - pq1);
         let winding: [VertId; 3] = if tri_normal_ccw.dot(n_sum) > 0.0 {
-            [pv1, pv2, pv3]
+            [q1, q2, q3]
         } else {
-            [pv1, pv3, pv2]
+            [q1, q3, q2]
         };
         let trim_face = self.add_face_with_holes(&winding, &[], m1)?;
 
@@ -443,15 +466,17 @@ impl Mesh {
     }
 }
 
-/// Compute the trim point on a face for a 3-way chamfer.
-/// Returns `v + radius * bisector_in_face`, where bisector is the
-/// normalized sum of unit directions from v to its two loop neighbors.
-fn compute_trim_point(
+/// Returns the two trim points for face `loop_verts` at corner `v`: one on the
+/// edge (v → prev) and one on the edge (v → next), each `radius` along the edge
+/// from `v`. Using per-edge points (rather than a face bisector) keeps the point
+/// on an edge shared by two faces identical from both sides, so the shared edge
+/// survives the chamfer and the solid stays closed (adversarial sweep #2).
+fn edge_trim_points(
     mesh: &Mesh,
     loop_verts: &[VertId],
     v: VertId,
     radius: f64,
-) -> Result<DVec3> {
+) -> Result<(DVec3, DVec3)> {
     let n = loop_verts.len();
     for i in 0..n {
         if loop_verts[i] == v {
@@ -460,10 +485,9 @@ fn compute_trim_point(
             let v_pos = mesh.vertex_pos(v)?;
             let dir_prev = (mesh.vertex_pos(prev)? - v_pos).normalize();
             let dir_next = (mesh.vertex_pos(next)? - v_pos).normalize();
-            let bisector = (dir_prev + dir_next).normalize();
-            ensure!(bisector.length_squared() > 0.5,
-                "chamfer: degenerate bisector at v{} (collinear edges)", v.raw());
-            return Ok(v_pos + bisector * radius);
+            ensure!(dir_prev.length_squared() > 0.5 && dir_next.length_squared() > 0.5,
+                "chamfer: degenerate edge at v{} (zero-length)", v.raw());
+            return Ok((v_pos + dir_prev * radius, v_pos + dir_next * radius));
         }
     }
     bail!("chamfer: vertex {} not in face loop", v.raw())
@@ -701,6 +725,31 @@ mod tests {
         let report = m.verify_face_invariants();
         assert_eq!(report.violations.len(), 0,
             "invariants after 3-way chamfer:\n{}", report.summary());
+    }
+
+    /// Adversarial sweep (pattern #2 — chamfer must not silently open the solid).
+    /// The ADR-024 MVP replaced the corner with a per-face bisector interior
+    /// point, breaking the shared edges → the cube opened (boundary edges) even
+    /// though `verify_face_invariants` still passed. Edge-based trim keeps it
+    /// watertight.
+    #[test]
+    fn chamfer_3way_keeps_cube_closed() {
+        let (mut m, v) = cube_mesh();
+        let active: Vec<_> = m.faces.iter()
+            .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        assert!(m.face_set_manifold_info(&active).is_closed_solid, "cube starts closed");
+
+        m.chamfer_vertex_3way(v[0], 2.0).unwrap();
+
+        let active: Vec<_> = m.faces.iter()
+            .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info = m.face_set_manifold_info(&active);
+        assert!(info.is_closed_solid,
+            "REGRESSION: chamfer opened the solid (boundary={}, non_manifold={})",
+            info.boundary_edge_count, info.non_manifold_edge_count);
+        assert_eq!(info.boundary_edge_count, 0, "no boundary edges after chamfer");
+        assert_eq!(m.collect_non_manifold_edges().len(), 0, "stays manifold");
+        assert!(m.verify_face_invariants().violations.is_empty(), "invariants hold");
     }
 
     /// ADR-207 de-risk — `chamfer_vertex_3way` (engine ALREADY exists, ADR-024 P10)
