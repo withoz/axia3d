@@ -4,8 +4,8 @@
     {
       "name": "axia-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "3002"],
-      "port": 3002,
+      "runtimeArgs": ["vite"],
+      "autoPort": true,
       "cwd": "web"
     }
   ]
