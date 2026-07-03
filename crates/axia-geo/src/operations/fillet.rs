@@ -499,10 +499,28 @@ fn edge_trim_points(
             let prev = loop_verts[(i + n - 1) % n];
             let next = loop_verts[(i + 1) % n];
             let v_pos = mesh.vertex_pos(v)?;
-            let dir_prev = (mesh.vertex_pos(prev)? - v_pos).normalize();
-            let dir_next = (mesh.vertex_pos(next)? - v_pos).normalize();
-            ensure!(dir_prev.length_squared() > 0.5 && dir_next.length_squared() > 0.5,
+            let e_prev = mesh.vertex_pos(prev)? - v_pos;
+            let e_next = mesh.vertex_pos(next)? - v_pos;
+            let l_prev = e_prev.length();
+            let l_next = e_next.length();
+            ensure!(l_prev > EPSILON_LENGTH && l_next > EPSILON_LENGTH,
                 "chamfer: degenerate edge at v{} (zero-length)", v.raw());
+            // Input-validation guard (adversarial sweep — flap class). The trim
+            // point sits `radius` along each incident edge, so `radius` must be
+            // strictly SHORTER than every incident edge — otherwise it overshoots
+            // past the neighbour and the trim triangle folds back through the
+            // adjacent faces (a self-intersection that stays manifold + closed,
+            // so no other check catches it). This also rejects chamfering a
+            // vertex that is not a clean corner — e.g. a fillet-strip vertex,
+            // whose incident edges are short arc segments (< radius). Fail loud
+            // BEFORE any destructive edit so the caller's transaction rolls back.
+            ensure!(radius < l_prev && radius < l_next,
+                "chamfer: radius {:.3} exceeds an incident edge length at v{} \
+                 (edges {:.3} / {:.3}) — not a clean corner (e.g. a filleted/curved \
+                 vertex); pick a corner or use a smaller radius",
+                radius, v.raw(), l_prev, l_next);
+            let dir_prev = e_prev / l_prev;
+            let dir_next = e_next / l_next;
             return Ok((v_pos + dir_prev * radius, v_pos + dir_next * radius));
         }
     }
@@ -884,6 +902,26 @@ mod tests {
         let (mut m, v) = cube_mesh();
         assert!(m.chamfer_vertex_3way(v[0],  0.0).is_err());
         assert!(m.chamfer_vertex_3way(v[0], -1.0).is_err());
+    }
+
+    /// Adversarial sweep (flap class — self-intersection that stays manifold).
+    /// A radius >= an incident edge length overshoots the neighbour, so the trim
+    /// triangle folds back through the adjacent faces. The result is
+    /// self-intersecting yet still passes closed/manifold/crack/winding checks
+    /// (and the closure gate) — the demo-gate found it when a fillet-strip vertex
+    /// (short arc edges) got chamfered with a large radius. The edge-length guard
+    /// rejects it BEFORE any destructive edit.
+    #[test]
+    fn chamfer_3way_rejects_radius_exceeding_edge() {
+        let (mut m, v) = cube_mesh(); // 10×10×10 → incident edges are length 10
+        let before = m.face_count();
+        assert!(m.chamfer_vertex_3way(v[0], 12.0).is_err(),
+            "radius exceeding an incident edge must be rejected (flap class)");
+        assert_eq!(m.face_count(), before, "no mutation on a rejected chamfer");
+        // A radius on the boundary (== edge length) is also rejected (degenerate).
+        assert!(m.chamfer_vertex_3way(v[0], 10.0).is_err());
+        // A valid radius still succeeds and stays closed.
+        assert!(m.chamfer_vertex_3way(v[0], 2.0).is_ok());
     }
 
     #[test]
