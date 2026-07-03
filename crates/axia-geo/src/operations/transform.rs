@@ -434,6 +434,15 @@ impl Mesh {
         let faces_vec: Vec<FaceId> = affected_faces.into_iter().collect();
         if !faces_vec.is_empty() {
             self.recompute_face_normals(&faces_vec)?;
+            // 커널 audit (2026-07-03, 패턴 #4) — negative-determinant scale
+            // (홀수 개 음수 배율 = reflection) 은 face orientation 을 뒤집어
+            // recompute 한 normal 이 안쪽을 향한다 (silent: manifold invariant 는
+            // 통과하나 시각/downstream op 가 backside). ADR-007 (winding=truth)
+            // 정합 — det < 0 이면 affected face winding 을 반전해 normal outward
+            // 유지. flip_face_safe 가 loop + normal 동시 갱신.
+            if scale.x * scale.y * scale.z < 0.0 {
+                self.flip_faces(&faces_vec);
+            }
         }
 
         // ─── ADR-060 Phase O Step 2 — Curve / Surface scaling ───
@@ -597,6 +606,12 @@ impl Mesh {
         }
 
         self.recompute_face_normals(face_ids)?;
+        // 커널 audit (2026-07-03, 패턴 #4) — scale_verts 와 동일: negative-
+        // determinant (reflection) 은 winding 을 뒤집어 normal 이 안쪽을 향한다.
+        // det < 0 이면 face winding 반전으로 outward 유지 (ADR-007).
+        if scale.x * scale.y * scale.z < 0.0 {
+            self.flip_faces(face_ids);
+        }
 
         // ADR-007 — 변환 후 invariants 검증
         self.debug_verify_invariants();
@@ -1148,5 +1163,40 @@ mod tests {
 
         assert!(m.edges[eid].curve().is_none(),
             "edges without curves should remain curveless");
+    }
+
+    /// 커널 audit (2026-07-03, 패턴 #4) — negative-determinant scale (홀수 개 음수
+    /// 배율 = reflection) 은 face orientation 을 뒤집는다. winding 보정이 없으면
+    /// normal 이 안쪽을 향하지만 manifold invariant 는 통과 (silent corruption).
+    /// scale_verts / scale_faces 가 det < 0 시 winding 을 반전해 outward 유지해야
+    /// 한다 (ADR-007 winding=truth).
+    #[test]
+    fn scale_negative_determinant_keeps_normals_outward() {
+        use crate::MaterialId;
+        let mat = MaterialId::new(0);
+
+        // reflect X (det = −1, 홀수) — winding 반전 → normal outward 유지해야.
+        let mut m = Mesh::new();
+        m.create_box(DVec3::ZERO, 100.0, 100.0, 100.0, mat).expect("box");
+        let verts: Vec<VertId> = m.verts.iter().map(|(id, _)| id).collect();
+        assert_eq!(m.verify_outward_normals().inward_count, 0, "box outward before scale");
+        m.scale_verts(&verts, DVec3::ZERO, DVec3::new(-1.0, 1.0, 1.0)).expect("scale");
+        assert_eq!(m.verify_outward_normals().inward_count, 0,
+            "reflected (det<0) box: winding flipped → normals stay OUTWARD");
+
+        // reflect XY (det = +1, 짝수) — 순 flip 없음, 그대로 outward.
+        let mut m2 = Mesh::new();
+        m2.create_box(DVec3::ZERO, 100.0, 100.0, 100.0, mat).expect("box2");
+        let v2: Vec<VertId> = m2.verts.iter().map(|(id, _)| id).collect();
+        m2.scale_verts(&v2, DVec3::ZERO, DVec3::new(-1.0, -1.0, 1.0)).expect("scale2");
+        assert_eq!(m2.verify_outward_normals().inward_count, 0,
+            "double reflection (det>0): no net flip, normals stay outward");
+
+        // scale_faces (자매 함수) 도 동일 보정.
+        let mut m3 = Mesh::new();
+        let f3 = m3.create_box(DVec3::ZERO, 100.0, 100.0, 100.0, mat).expect("box3");
+        m3.scale_faces(&f3, DVec3::ZERO, DVec3::new(-1.0, 1.0, 1.0)).expect("scale_faces");
+        assert_eq!(m3.verify_outward_normals().inward_count, 0,
+            "scale_faces reflected: normals stay OUTWARD");
     }
 }
