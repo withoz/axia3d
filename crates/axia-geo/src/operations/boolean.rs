@@ -9297,6 +9297,89 @@ mod tests {
         );
     }
 
+    /// Round-12 (adversarial SSI sweep) regression — the real curved-Boolean
+    /// SUBTRACT results (through drill / blind hole / sphere dimple / cone
+    /// countersink) must stay CLOSED solids with ZERO self-intersection.
+    /// Locks the sweep finding that no silent flap / poke-through survives in
+    /// these paths: `detect_self_intersections` (the flap-class checker) fully
+    /// covers the tessellated wall + entry/exit ring faces they emit, and
+    /// `is_closed_solid` guards the watertight/open transition the topological
+    /// invariants (I1-5) miss. A future regression that opens the solid or
+    /// folds a wall through itself breaks here instead of shipping silently.
+    #[test]
+    fn round12_boolean_subtract_results_stay_si_clean_closed_solids() {
+        let mat = MaterialId::new(0);
+
+        // Assert: current mesh is a closed, invariant-valid, SI-clean solid.
+        fn check(mesh: &Mesh, non_empty: bool, label: &str) {
+            assert!(non_empty, "{}: non-empty subtract result", label);
+            assert!(mesh.verify_face_invariants().is_valid(), "{}: invariants", label);
+            let all: Vec<FaceId> = mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(id, _)| id)
+                .collect();
+            let mi = mesh.face_set_manifold_info(&all);
+            assert!(
+                mi.is_closed_solid,
+                "{}: closed solid (bnd={} nm={})",
+                label, mi.boundary_edge_count, mi.non_manifold_edge_count
+            );
+            let si = mesh.detect_self_intersections();
+            assert!(si.is_clean(), "{}: self-intersection ({} pairs)", label, si.count());
+        }
+
+        // 1. through drill — box − cylinder that spans the full box height.
+        {
+            let mut mesh = Mesh::default();
+            let c = DVec3::new(0., 0., 0.);
+            let bx = mesh.create_box(c, 1000., 1000., 1000., mat).unwrap();
+            let cyl = mesh
+                .create_cylinder_kernel_native_clean(DVec3::new(0., 0., -501.), 200., 1002., mat)
+                .unwrap();
+            let res = mesh.boolean(&bx, &cyl, BoolOp::Subtract, mat).unwrap();
+            check(&mesh, !res.faces.is_empty(), "through drill");
+        }
+
+        // 2. blind hole — cylinder floor sits inside the box.
+        {
+            let mut mesh = Mesh::default();
+            let c = DVec3::new(0., 0., 0.);
+            let bx = mesh.create_box(c, 1000., 1000., 1000., mat).unwrap();
+            // base = box_top − depth (inside); top pokes 1 above.
+            let cyl = mesh
+                .create_cylinder_kernel_native_clean(DVec3::new(0., 0., 100.), 200., 401., mat)
+                .unwrap();
+            let res = mesh.boolean(&bx, &cyl, BoolOp::Subtract, mat).unwrap();
+            check(&mesh, !res.faces.is_empty(), "blind hole");
+        }
+
+        // 3. sphere dimple — sphere centred on the box top, lower hemisphere in.
+        {
+            let mut mesh = Mesh::default();
+            let c = DVec3::new(0., 0., 0.);
+            let bx = mesh.create_box(c, 1000., 1000., 1000., mat).unwrap();
+            let sph = mesh
+                .create_sphere_kernel_native(DVec3::new(0., 0., 500.), 300., mat)
+                .unwrap();
+            let res = mesh.boolean(&bx, &sph, BoolOp::Subtract, mat).unwrap();
+            check(&mesh, !res.faces.is_empty(), "sphere dimple");
+        }
+
+        // 4. cone countersink — apex-down cone pocket from the box top.
+        {
+            let mut mesh = Mesh::default();
+            let c = DVec3::new(0., 0., 0.);
+            let bx = mesh.create_box(c, 1000., 1000., 1000., mat).unwrap();
+            let cone = mesh
+                .create_cone_kernel_native_apex_down(DVec3::new(0., 0., 501.), 300., 301., mat)
+                .unwrap();
+            let res = mesh.boolean(&bx, &cone, BoolOp::Subtract, mat).unwrap();
+            check(&mesh, !res.faces.is_empty(), "cone countersink");
+        }
+    }
+
     /// ADR-197 β-3-β — curved SSI dispatch. A box (Plane surfaces) and a Path B
     /// sphere: every box plane within the radius must intersect the sphere in a
     /// closed circle (`plane_sphere`). The x=2 plane ∩ sphere(r=3) → circle of
