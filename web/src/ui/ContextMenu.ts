@@ -112,10 +112,18 @@ export function initContextMenu(deps: ContextMenuDeps): void {
     // 가시성: _planeLock 활성 시만. Strong cross-tool lock 의 명시
     // release path (Ctrl+Shift+P 와 동일 entry). Selection 무관.
     const planeLockItems = ctxMenu.querySelectorAll('.ctx-plane-lock-unlock-item');
-    const hasPlaneLock = typeof (toolManager as { isPlaneLocked?: () => boolean }).isPlaneLocked === 'function'
-      && (toolManager as { isPlaneLocked: () => boolean }).isPlaneLocked();
+    // ADR-270 §amendment — also offer the reset when only the sticky (not a
+    // hard lock) pins the plane, so "draw on the ground again" is reachable
+    // after drawing on a solid face.
+    const tmPlane = toolManager as {
+      hasPinnedPlane?: () => boolean;
+      isPlaneLocked?: () => boolean;
+    };
+    const hasPinnedPlane = typeof tmPlane.hasPinnedPlane === 'function'
+      ? tmPlane.hasPinnedPlane()
+      : (typeof tmPlane.isPlaneLocked === 'function' && tmPlane.isPlaneLocked());
     planeLockItems.forEach(item => {
-      (item as HTMLElement).style.display = hasPlaneLock ? '' : 'none';
+      (item as HTMLElement).style.display = hasPinnedPlane ? '' : 'none';
     });
 
     // ── ADR-074 U-2 — Boolean Group A/B 항목 가시성 ──
@@ -347,8 +355,16 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       //   4. 우클릭 → "🔓 평면 잠금 해제" → unlockPlane 호출
       //   5. 다음 first_click 이 새 plane 으로 lock 활성
       case 'unlock-plane-lock': {
-        const tm = toolManager as { unlockPlane?: () => void; isPlaneLocked?: () => boolean };
-        if (typeof tm.unlockPlane === 'function') {
+        // ADR-270 §amendment — reset both lock AND sticky so empty space
+        // returns to ground (z=0). Falls back to unlockPlane on older builds.
+        const tm = toolManager as {
+          resetDrawingPlane?: () => void;
+          unlockPlane?: () => void;
+        };
+        if (typeof tm.resetDrawingPlane === 'function') {
+          tm.resetDrawingPlane();
+          Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
+        } else if (typeof tm.unlockPlane === 'function') {
           tm.unlockPlane();
           Toast.info('평면 잠금 해제 (다음 도형이 자유 평면 선택)', 2000);
         }

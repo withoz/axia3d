@@ -2728,6 +2728,31 @@ export class ToolManager {
     this.updateLastDrawnPlaneBadge();
   }
 
+  /**
+   * ADR-270 §amendment — explicit user reset of the drawing plane (Ctrl+Shift+P
+   * / 우클릭 "평면 잠금 해제"). Clears BOTH the strong lock AND the sticky
+   * last-drawn plane, so empty space reverts to the view-mode default (ground
+   * z=0 in 3d/top). Answers "입체면에 그리다가 z=0 에 그리려면?" — after drawing
+   * on a solid face the sticky (ADR-164) kept empty space on the FACE plane
+   * (e.g. z=750), so unlocking the lock alone was not enough. This mirrors
+   * notifyViewModeChange (view change already resets both). A face still under
+   * the cursor keeps priority (face hit → face plane); only empty space returns
+   * to the ground.
+   */
+  resetDrawingPlane(): void {
+    this._planeLock = null;
+    this.clearLastDrawnPlane();
+    this.updateLastDrawnPlaneBadge();
+  }
+
+  /** True if a drawing plane is pinned away from the view default — a lock OR
+   *  a sticky last-drawn plane. Drives the Ctrl+Shift+P / context-menu "reset"
+   *  affordance so it also fires when only the sticky (not a hard lock) pins
+   *  the plane. */
+  hasPinnedPlane(): boolean {
+    return this._planeLock != null || this._lastDrawnPlane != null;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   // ADR-170 β-1 — normalizeDrawInput SSOT (Phase 1 of Phase 1-4)
   // ════════════════════════════════════════════════════════════════════

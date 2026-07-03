@@ -1124,6 +1124,38 @@ describe('ToolManager', () => {
       expect(tm.isPlaneLocked()).toBe(true);
       expect(plane.origin.z).toBeCloseTo(750, 6);
     });
+
+    it('resetDrawingPlane clears BOTH lock and sticky → empty space back to ground', async () => {
+      const THREE = await import('three');
+      // A sticky last-drawn plane on the box top (z=750) — the state after
+      // drawing on a face. No hard lock.
+      tm.setLastDrawnPlane({
+        origin: new THREE.Vector3(0, 0, 750),
+        normal: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0),
+        source: 'view',
+      });
+      expect(tm.hasPinnedPlane()).toBe(true);
+
+      // Before reset: empty space (no face hit) sticks to the face plane z=750.
+      viewport.pick.mockReturnValue(null);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stuck = (tm as any).getDrawPlane({ clientX: 100, clientY: 100 } as MouseEvent);
+      expect(stuck.origin?.z).toBeCloseTo(750, 6);
+
+      // resetDrawingPlane (= Ctrl+Shift+P / 우클릭 "평면 잠금 해제").
+      tm.resetDrawingPlane();
+      expect(tm.hasPinnedPlane()).toBe(false);
+      expect(tm.getPlaneLock()).toBeNull();
+
+      // After reset: empty space reverts to the 3d/top view default (ground z=0,
+      // normal +Z, no sticky origin).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ground = (tm as any).getDrawPlane({ clientX: 100, clientY: 100 } as MouseEvent);
+      expect(ground.onFace).toBe(false);
+      expect(ground.normal.z).toBeCloseTo(1, 6);
+      expect(ground.origin).toBeUndefined(); // no sticky → default ground (z=0)
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────

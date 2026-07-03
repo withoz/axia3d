@@ -339,12 +339,17 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     // PushPull 미배정 영역).
     if (e.ctrlKey && e.shiftKey && (e.key === 'p' || e.key === 'P')) {
       e.preventDefault();
-      if (toolManager.isPlaneLocked()) {
-        toolManager.unlockPlane();
-        Toast.info('평면 잠금 해제 (다음 도구가 자유 평면 선택)', 2000);
+      // ADR-270 §amendment — reset the drawing plane to the view default.
+      // Clears the lock AND the sticky last-drawn plane, so after drawing on a
+      // solid face empty space returns to the ground (z=0). A face still under
+      // the cursor keeps priority. Fires whenever a plane is pinned (lock OR
+      // sticky) — previously only cleared the hard lock, leaving the sticky
+      // stuck on the face plane.
+      if (toolManager.hasPinnedPlane()) {
+        toolManager.resetDrawingPlane();
+        Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
       } else {
-        // 사용자 인지 강화 — 이미 unlocked 상태 명시
-        Toast.info('평면 잠금 비활성 상태', 1500);
+        Toast.info('이미 기본 평면 (빈 공간 = 바닥)', 1500);
       }
       return;
     }

@@ -81,3 +81,48 @@ offset 이 다르면 다른 평면이다. 평면 동일성 판정에 normal 만 
 **첫 케이스가 되면 회귀 없다고 단정 금지 — 상태(락) 있는 후속 케이스를 시연.**
 첫 draw(락 없음)는 정상이라 "된다"고 보이지만, 락이 걸린 두 번째 draw 에서만
 버그가 났다. 상태 의존 버그는 상태를 만든 뒤 재현해야 잡힌다.
+
+---
+
+## F. Amendment — Reset Back to the Ground (2026-07-03, 사용자 후속 질문)
+
+### F.1 Problem
+> "입체면에 그리다가 z=0 에 그리려면 어떻게 해야 하는가?"
+
+§3 수정으로 "면 위 → 그 면에 그림"은 됐으나, 면에 그린 **뒤** 빈 바닥(empty
+space)에 그리려 하면 여전히 **면 평면(z=750)** 에 그려짐. 원인은 lock 이 아니라
+**sticky (ADR-164 `_lastDrawnPlane`)**: 마지막 그린 평면이 face hit 없는 빈 공간의
+fallback 이라, 면에 그린 뒤엔 sticky = z=750 → 빈 바닥도 z=750. `unlockPlane`
+(Ctrl+Shift+P) 은 **lock 만** 지우고 sticky 는 안 지워 → z=0 로 못 돌아감.
+(뷰 변경 `notifyViewModeChange` 은 이미 둘 다 초기화 = 유일한 탈출구였음.)
+
+### F.2 Decision
+- **F-L1 (explicit reset = lock + sticky).** `resetDrawingPlane()` 신설 —
+  `_planeLock` + `_lastDrawnPlane` 동시 clear → 빈 공간이 view 기본(3d/top =
+  ground z=0)으로 복귀. `unlockPlane` (lock only) 은 내부 auto-unlock 전용 유지.
+- **F-L2 (face 우선 보존).** reset 후에도 커서가 solid face 위면 그 면에 그림
+  (face hit priority #2). 빈 공간만 ground 로.
+- **F-L3 (discoverable trigger).** **Ctrl+Shift+P** + **우클릭 "평면 잠금 해제"**
+  둘 다 `resetDrawingPlane` 로 라우팅. `hasPinnedPlane()` (lock OR sticky) 로
+  affordance 노출 — sticky-only 상태(hard lock 없음)에서도 리셋 가능. 🔒 배지가
+  이미 단축키를 안내.
+
+### F.3 Acceptance
+| # | 내용 | 회귀 |
+|---|---|---|
+| 2 | resetDrawingPlane + hasPinnedPlane; Ctrl+Shift+P / 우클릭 라우팅 | vitest +1 |
+
+**브라우저 라이브 검증:** 박스 윗면에 rect(sticky z=750) → 빈 바닥 hover origin
+z=750(갇힘) → `resetDrawingPlane()` → 빈 바닥 rect **z=0** (cz 0) + 박스 윗면 rect
+**z=750** (onFace 유지). **무회귀:** ToolManager 142 + DrawRect + ContextMenu +
+KeyboardShortcuts 251/251 PASS.
+
+### F.4 사용법 (사용자 답)
+- **면 위에 그리기**: 그 면에 커서 → 자동으로 그 면에 그려짐 (§3).
+- **다시 바닥(z=0)에 그리기**: **Ctrl+Shift+P** (또는 **우클릭 → 평면 잠금 해제**,
+  또는 **Top 뷰 전환**) → 빈 공간은 바닥 z=0, 면 위는 여전히 그 면.
+
+### F.5 회귀 자산 (절대 #[ignore] 금지)
+- `ADR-270 … resetDrawingPlane clears BOTH lock and sticky → empty space back to
+  ground` — sticky z=750 상태에서 reset 후 빈 공간이 ground default(onFace false,
+  origin 없음, normal +Z) 로 복귀.
