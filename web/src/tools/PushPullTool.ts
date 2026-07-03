@@ -40,6 +40,9 @@ export class PushPullTool implements ITool {
    *  e.g. a rect drawn on a wall). An INWARD push carves a blind pocket (not a
    *  new box); no live preview (commit decides pocket vs boss). */
   private isSheetSource: boolean = false;
+  /** ADR-271 γ — the picked face is a curved (Cylinder) cap → an inward push
+   *  carves a radial curved pocket (not a planar pocket / extrude). */
+  private isCurvedCap: boolean = false;
 
   /** 최소 유효 거리 (mm) — 이보다 작으면 무시 (프리뷰 확정용 threshold) */
   private static readonly MIN_COMMIT_DIST = 0.5;
@@ -126,6 +129,13 @@ export class PushPullTool implements ITool {
         this.isSheetSource =
           this.ctx.bridge.faceHasLargerCoplanarContainer?.(rustFaceId) ?? false;
 
+        // ADR-271 γ — a curved (Cylinder-surface, kind ≥ 2) cap that is NOT a
+        // planar profile → an inward push carves a radial curved pocket. Like a
+        // sheet source, the live preview is suppressed and the commit dispatches
+        // to carveCurvedPocket.
+        const surfKind = this.ctx.bridge.faceSurfaceKind?.(rustFaceId) ?? 0;
+        this.isCurvedCap = surfKind >= 2 && !this.isSheetSource;
+
         this.ppFaceId = rustFaceId;
         this.ppStartX = e.clientX;
         this.ppStartY = e.clientY;
@@ -178,6 +188,32 @@ export class PushPullTool implements ITool {
       // align 스냅이 발동됐다면 currentDragDist가 그 값을 담고 있음
       const dist = this.currentDragDist !== 0 ? this.currentDragDist : this.ppRayDist(e);
       debugLog('[PP] Phase 2: confirm dist=', dist.toFixed(2));
+
+      // ── ADR-271 γ — CURVED pocket carve ──
+      // A curved (Cylinder) cap (isCurvedCap), pushed INWARD (dist < 0), is
+      // recessed radially into the wall → a curved blind pocket. Like the planar
+      // pocket, an inward push is unambiguously a cut; on decline, surface the
+      // reason and abort (no extrude fallback).
+      if (this.isCurvedCap && dist < 0 && Math.abs(dist) >= PushPullTool.MIN_COMMIT_DIST) {
+        if (this.liveActive) {
+          this.ctx.bridge.cancelLiveExtrude();
+          this.liveActive = false;
+          this.liveTopFace = -1;
+        }
+        const walls = this.ctx.bridge.carveCurvedPocket?.(this.ppFaceId, -dist) ?? -1;
+        if (walls > 0) {
+          debugLog(`[PP] Curved pocket carved → ${walls} side walls (depth ${(-dist).toFixed(1)})`);
+          Toast.success('곡면 포켓을 파냈습니다');
+          this.ctx.syncMesh();
+          this.cleanup();
+          return;
+        }
+        const why = this.ctx.bridge.lastError();
+        debugWarn('[PP] carveCurvedPocket declined:', why);
+        Toast.error(why && why.length > 0 ? why : '이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요');
+        this.cleanup();
+        return;
+      }
 
       // ── ADR-252 — POCKET carve ──
       // A coplanar profile on a larger wall (isSheetSource), pushed INWARD
@@ -302,10 +338,10 @@ export class PushPullTool implements ITool {
     // Smooth groups keep the legacy translucent ghost.
     if (this.isSmoothGroup) {
       this.updatePPGhost(dist);
-    } else if (this.isSheetSource) {
-      // ADR-252 — pocket candidate (profile on a larger wall): no live preview.
-      //   The commit decides inward → blind pocket carve, outward → boss/extrude.
-      //   Dimension label only (shown below).
+    } else if (this.isSheetSource || this.isCurvedCap) {
+      // ADR-252 / ADR-271 — pocket candidate (planar profile on a wall, or a
+      //   curved cap): no live preview. The commit decides inward → (curved)
+      //   blind pocket carve. Dimension label only (shown below).
     } else if (this.liveActive) {
       this.ctx.bridge.updateLiveExtrude(dist);
       this.ctx.syncMesh();
@@ -634,6 +670,7 @@ export class PushPullTool implements ITool {
     this.liveTopFace = -1;
     this.liveBeginFailed = false;
     this.isSheetSource = false;
+    this.isCurvedCap = false;
     this.ppActive = false;
     this.ppFaceId = -1;
     this.smoothGroupFaces = [];
