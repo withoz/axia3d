@@ -2895,6 +2895,28 @@ mod tests {
         }
     }
 
+    /// Adversarial sweep (pattern #6 — moving a vertex leaves the spatial hash
+    /// stale). `set_pos` (move_vertex, translate/rotate/scale_verts) changes a
+    /// vertex position but the insert-only spatial hash still lists it under its
+    /// OLD cell. A later `add_vertex` at the new position can't find it → creates
+    /// a duplicate coincident vertex instead of welding → broken connectivity /
+    /// gaps, silently.
+    #[test]
+    fn translate_vertex_updates_spatial_hash_for_weld() {
+        let mut m = Mesh::new();
+        let (top, _) = make_box(&mut m, 4.0, 4.0, 3.0);
+        let v = m.collect_loop_verts(m.faces[top].outer().start).unwrap()[0];
+        let p0 = m.vertex_pos(v).unwrap();
+        let delta = DVec3::new(50.0, 50.0, 50.0); // land in an empty cell
+        m.translate_verts(&[v], delta).unwrap();
+
+        // add_vertex at the moved position MUST weld to v, not duplicate it.
+        let welded = m.add_vertex(p0 + delta);
+        assert_eq!(welded, v,
+            "REGRESSION: add_vertex at a translated vertex's position must weld \
+             to it (spatial hash stale after move) — got a duplicate {:?}", welded);
+    }
+
     /// Adversarial sweep (pattern #5 — split_edge leaves the new vertex's
     /// `v_next` origin-radial fan unwired). `split_edge` wires the per-edge
     /// twin chain (`next_rad`) but never inserts the new half-edges into their

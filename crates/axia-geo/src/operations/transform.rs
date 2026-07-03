@@ -45,6 +45,7 @@ impl Mesh {
                 let new_pos = vert.pos() + delta;
                 vert.set_pos(new_pos);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
         }
 
         // normal 재계산
@@ -87,6 +88,7 @@ impl Mesh {
                 let new_pos = vert.pos() + delta;
                 vert.set_pos(new_pos);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
 
             // Walk vertex v-ring to find all faces touching this vertex
             let start_he = match self.verts.get(vid).and_then(|v| v.outgoing()) {
@@ -293,6 +295,7 @@ impl Mesh {
                 let rotated = rot * rel;
                 vert.set_pos(center + rotated);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
             let start_he = match self.verts.get(vid).and_then(|v| v.outgoing()) {
                 Some(h) if !h.is_null() && self.hes.contains(h) => h,
                 _ => continue,
@@ -412,6 +415,7 @@ impl Mesh {
                 let scaled = DVec3::new(rel.x * scale.x, rel.y * scale.y, rel.z * scale.z);
                 vert.set_pos(center + scaled);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
             let start_he = match self.verts.get(vid).and_then(|v| v.outgoing()) {
                 Some(h) if !h.is_null() && self.hes.contains(h) => h,
                 _ => continue,
@@ -505,6 +509,7 @@ impl Mesh {
                 let rotated = rot * p;
                 vert.set_pos(rotated + center);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
         }
 
         self.recompute_face_normals(face_ids)?;
@@ -603,6 +608,7 @@ impl Mesh {
                 let scaled = DVec3::new(p.x * scale.x, p.y * scale.y, p.z * scale.z);
                 vert.set_pos(scaled + center);
             }
+            self.reindex_vertex_pos(vid); // spatial hash consistency (sweep #6)
         }
 
         self.recompute_face_normals(face_ids)?;

@@ -669,6 +669,32 @@ impl Mesh {
         vid
     }
 
+    /// Re-register `vid` in the spatial hash under its CURRENT position's cell.
+    ///
+    /// ## Why (adversarial sweep, pattern #6 — stale spatial hash after move)
+    /// The spatial hash is insert-only. Vertex-moving ops (`move_vertex`,
+    /// `translate_verts` / `rotate_verts` / `scale_verts` and their face
+    /// variants) change a vertex position via `set_pos` but never re-hash it, so
+    /// the vertex stays listed only under its OLD cell. A later `add_vertex` at
+    /// the NEW position can't find it → it creates a *duplicate coincident
+    /// vertex* instead of welding → broken connectivity / gaps, with no error.
+    ///
+    /// Adding the vertex to its current cell fixes weld lookups. The stale
+    /// old-cell entry is harmless — `add_vertex` filters candidates by
+    /// `is_active()` and by actual distance to the vertex's live position, so a
+    /// query near the old cell won't match a vertex that has moved away.
+    pub(crate) fn reindex_vertex_pos(&mut self, vid: VertId) {
+        let pos = match self.verts.get(vid) {
+            Some(v) if v.is_active() => v.pos(),
+            _ => return,
+        };
+        let key = spatial_key(pos);
+        let bucket = self.spatial_hash.entry(key).or_default();
+        if !bucket.contains(&vid) {
+            bucket.push(vid);
+        }
+    }
+
     /// Rebuild the spatial hash from existing vertices.
     /// Call after `restore_snapshot()` since spatial_hash is not serialized.
     pub fn rebuild_spatial_hash(&mut self) {
@@ -878,6 +904,8 @@ impl Mesh {
             anyhow::bail!("move_vertex: vertex {:?} is inactive", vid);
         }
         v.set_pos(new_pos);
+        // Keep the spatial hash consistent with the new position (sweep #6).
+        self.reindex_vertex_pos(vid);
 
         // 2. Collect incident edges + faces (radial v_next walk).
         let mut edges: Vec<EdgeId> = Vec::new();
