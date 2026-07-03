@@ -8780,6 +8780,20 @@ impl Mesh {
         self.hes[he_fwd_id].set_next_rad(he_bwd_id);
         self.hes[he_bwd_id].set_next_rad(next);
 
+        // Wire the new half-edges into their ORIGIN vertex's v_next ring
+        // (adversarial sweep pattern #5). This Pass-2 path (a new face reusing an
+        // edge whose half-edges are all assigned — e.g. push_pull's side wall
+        // sharing a base edge) previously wired only the radial (twin) chain, so
+        // the origin vertices' v_next fans stayed incomplete. Every fan-walk
+        // consumer (move_vertex cache invalidation, translate/rotate/scale_verts,
+        // fillet's third_face_at_vert, offset, deform) then silently missed a
+        // face at those vertices — e.g. filleting a push_pull box's base edges
+        // dropped F3 and opened the solid.
+        //   he_fwd points to `dst`  → origin is `other`.
+        //   he_bwd points to `other`→ origin is `dst`.
+        self.insert_into_v_ring(other, he_fwd_id);
+        self.insert_into_v_ring(dst, he_bwd_id);
+
         // Return the one pointing to dst (he_fwd)
         Ok(he_fwd_id)
     }

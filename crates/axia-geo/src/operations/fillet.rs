@@ -761,6 +761,46 @@ mod tests {
     /// fillet strip landed on an unmodified face → the solid opened (bnd=8) while
     /// `verify_face_invariants` still passed. The loop-scan `third_face_at_vert`
     /// fixes it: every edge of the extruded box now fillets closed.
+    /// Root fix (find_halfedge Pass 2 wires new half-edges into their origin
+    /// vertex's v_next ring). Every vertex of a push_pull box must have a v_next
+    /// fan that enumerates ALL its incident faces — before the fix the 4
+    /// base-face verts had fan=2 vs truth=3, breaking every fan-walk consumer.
+    #[test]
+    fn pushpull_box_vnext_fan_enumerates_all_faces() {
+        use std::collections::HashSet;
+        let m = pushpull_box(10.0, 10.0, 10.0);
+        for (v, vert) in m.verts.iter() {
+            if !vert.is_active() {
+                continue;
+            }
+            let mut fan: HashSet<FaceId> = HashSet::new();
+            if let Some(start) = vert.outgoing() {
+                let mut h = start;
+                for _ in 0..64 {
+                    if !m.hes.contains(h) {
+                        break;
+                    }
+                    let f = m.hes[h].face();
+                    if !f.is_null() && m.faces.get(f).map(|x| x.is_active()).unwrap_or(false) {
+                        fan.insert(f);
+                    }
+                    let nx = m.hes[h].v_next();
+                    if nx == start || nx.is_null() {
+                        break;
+                    }
+                    h = nx;
+                }
+            }
+            let truth: HashSet<FaceId> = m.faces.iter()
+                .filter(|(_, f)| f.is_active())
+                .filter(|(_, f)| m.collect_loop_verts(f.outer().start).map(|vs| vs.contains(&v)).unwrap_or(false))
+                .map(|(id, _)| id)
+                .collect();
+            assert_eq!(fan, truth,
+                "REGRESSION: vertex {:?} v_next fan must enumerate all incident faces", v);
+        }
+    }
+
     #[test]
     fn fillet_pushpull_box_all_edges_stay_closed() {
         let active = |m: &Mesh| -> Vec<FaceId> {
