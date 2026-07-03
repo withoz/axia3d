@@ -6,6 +6,7 @@
 import { ToolContext } from '../tools/ITool';
 import { BasePrimitiveTool } from './BasePrimitiveTool';
 import { debugLog } from '../utils/debug';
+import { getCylinderSegments } from '../tools/CylinderSegmentsSettings';
 
 export class CylinderTool extends BasePrimitiveTool {
   readonly name = 'cylinder';
@@ -41,7 +42,7 @@ export class CylinderTool extends BasePrimitiveTool {
         anchor.z,
         radius,
         height,
-        16  // segments
+        getCylinderSegments()  // 설정 패널에서 조정 (기본 16)
       );
 
       if (baseFaceId < 0) {

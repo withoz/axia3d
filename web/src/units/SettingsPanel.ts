@@ -17,6 +17,10 @@ import {
 import { getAutoIntersect, setAutoIntersect } from '../tools/AutoIntersectSettings';
 import { getDrawCurveMode, setDrawCurveMode } from '../tools/DrawCurveSettings';
 import {
+  getCylinderSegments, setCylinderSegments,
+  CYLINDER_SEGMENTS_MIN, CYLINDER_SEGMENTS_MAX,
+} from '../tools/CylinderSegmentsSettings';
+import {
   getExtrudeMode,
   setExtrudeMode,
   getExtrudeDistNeg,
@@ -116,6 +120,17 @@ export class SettingsPanel {
           <input type="number" id="sp-snap-interval" step="0.1" min="0.0001" />
           <span id="sp-snap-unit" class="sp-value"></span>
         </div>
+      </div>
+
+      <div class="sp-divider"></div>
+
+      <div class="sp-section">
+        <label class="sp-label">원통 세그먼트 (원주 분할 수)</label>
+        <div class="sp-row">
+          <input type="range" id="sp-cyl-seg" min="${CYLINDER_SEGMENTS_MIN}" max="${CYLINDER_SEGMENTS_MAX}" step="1" />
+          <span id="sp-cyl-seg-val" class="sp-value"></span>
+        </div>
+        <div class="sp-hint">많을수록 매끈하지만 면·정점 증가 (기본 16)</div>
       </div>
 
       <div class="sp-divider"></div>
@@ -245,6 +260,15 @@ export class SettingsPanel {
       }
     });
 
+    // 원통 세그먼트
+    const cylSegSlider = panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
+    const cylSegVal = panel.querySelector('#sp-cyl-seg-val')!;
+    cylSegSlider.addEventListener('input', () => {
+      const v = parseInt(cylSegSlider.value, 10);
+      setCylinderSegments(v);
+      cylSegVal.textContent = `${v}`;
+    });
+
     // 병합 허용 각도
     const tolSlider = panel.querySelector('#sp-merge-tol') as HTMLInputElement;
     const tolVal = panel.querySelector('#sp-merge-tol-val')!;
@@ -340,6 +364,13 @@ export class SettingsPanel {
     const snapUnit = this.panel.querySelector('#sp-snap-unit')!;
     snapInput.value = this.units.fromInternal(this.units.snapInterval).toFixed(this.units.precision);
     snapUnit.textContent = this.units.config.label;
+
+    // 원통 세그먼트
+    const cylSegSlider = this.panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
+    const cylSegVal = this.panel.querySelector('#sp-cyl-seg-val')!;
+    const cylSeg = getCylinderSegments();
+    cylSegSlider.value = String(cylSeg);
+    cylSegVal.textContent = `${cylSeg}`;
 
     // 병합 각도
     const tolSlider = this.panel.querySelector('#sp-merge-tol') as HTMLInputElement;
