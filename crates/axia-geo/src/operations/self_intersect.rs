@@ -82,34 +82,96 @@ impl Mesh {
             .filter_map(|(fid, _)| self.tessellate_face_geom(fid))
             .collect();
 
-        let mut pairs = Vec::new();
-        for i in 0..geoms.len() {
-            for j in (i + 1)..geoms.len() {
-                let a = &geoms[i];
-                let b = &geoms[j];
+        if geoms.len() < 2 {
+            return SelfIntersectionReport::default();
+        }
 
-                // Broad phase: AABB reject.
-                if a.hi.x < b.lo.x - AABB_EPS
-                    || b.hi.x < a.lo.x - AABB_EPS
-                    || a.hi.y < b.lo.y - AABB_EPS
-                    || b.hi.y < a.lo.y - AABB_EPS
-                    || a.hi.z < b.lo.z - AABB_EPS
-                    || b.hi.z < a.lo.z - AABB_EPS
-                {
-                    continue;
-                }
+        // ── Broad phase: uniform spatial grid ──────────────────────────────
+        // Cell size = mean face AABB extent, so a typical face occupies ~1 cell.
+        // Two AABBs that overlap always share ≥1 cell (their overlap contains a
+        // point whose cell both faces inserted), so the grid never misses a
+        // candidate. A face whose AABB spans more than `CELL_CAP` cells (a large
+        // face on a fine grid) is put in `big` and tested against everyone —
+        // avoids memory blow-up while staying exhaustive.
+        let mut ext_sum = 0.0f64;
+        for g in &geoms {
+            ext_sum += (g.hi - g.lo).max_element().max(AABB_EPS);
+        }
+        let cell = (ext_sum / geoms.len() as f64).max(AABB_EPS);
+        let key = |p: DVec3| -> (i64, i64, i64) {
+            (
+                (p.x / cell).floor() as i64,
+                (p.y / cell).floor() as i64,
+                (p.z / cell).floor() as i64,
+            )
+        };
 
-                // Adjacency: faces sharing a vertex legitimately touch — skip.
-                if a.verts.iter().any(|v| b.verts.contains(v)) {
-                    continue;
-                }
-
-                // Narrow phase: any triangle pair properly intersects?
-                if tris_intersect(&a.tris, &b.tris) {
-                    pairs.push((a.fid, b.fid));
+        const CELL_CAP: i64 = 512;
+        let mut grid: rustc_hash::FxHashMap<(i64, i64, i64), Vec<usize>> =
+            rustc_hash::FxHashMap::default();
+        let mut big: Vec<usize> = Vec::new();
+        for (idx, g) in geoms.iter().enumerate() {
+            let (lo, hi) = (key(g.lo), key(g.hi));
+            let span = (hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1) * (hi.2 - lo.2 + 1);
+            if span > CELL_CAP {
+                big.push(idx);
+                continue;
+            }
+            for cx in lo.0..=hi.0 {
+                for cy in lo.1..=hi.1 {
+                    for cz in lo.2..=hi.2 {
+                        grid.entry((cx, cy, cz)).or_default().push(idx);
+                    }
                 }
             }
         }
+
+        // Candidate index pairs (i < j), deduplicated across shared cells.
+        let mut cand: rustc_hash::FxHashSet<(usize, usize)> = rustc_hash::FxHashSet::default();
+        for bucket in grid.values() {
+            for a in 0..bucket.len() {
+                for b in (a + 1)..bucket.len() {
+                    let (i, j) = (bucket[a], bucket[b]);
+                    cand.insert((i.min(j), i.max(j)));
+                }
+            }
+        }
+        for &bi in &big {
+            for j in 0..geoms.len() {
+                if j != bi {
+                    cand.insert((bi.min(j), bi.max(j)));
+                }
+            }
+        }
+
+        // ── Narrow phase over candidates ───────────────────────────────────
+        let mut pairs = Vec::new();
+        for &(i, j) in &cand {
+            let a = &geoms[i];
+            let b = &geoms[j];
+
+            // Exact AABB reject (a shared grid cell doesn't guarantee overlap).
+            if a.hi.x < b.lo.x - AABB_EPS
+                || b.hi.x < a.lo.x - AABB_EPS
+                || a.hi.y < b.lo.y - AABB_EPS
+                || b.hi.y < a.lo.y - AABB_EPS
+                || a.hi.z < b.lo.z - AABB_EPS
+                || b.hi.z < a.lo.z - AABB_EPS
+            {
+                continue;
+            }
+            // Adjacency: faces sharing a vertex legitimately touch — skip.
+            if a.verts.iter().any(|v| b.verts.contains(v)) {
+                continue;
+            }
+            if tris_intersect(&a.tris, &b.tris) {
+                pairs.push((a.fid, b.fid));
+            }
+        }
+
+        // Deterministic order (candidate set iteration is unordered).
+        pairs.sort_by_key(|(a, b)| (a.raw(), b.raw()));
+        pairs.dedup();
 
         SelfIntersectionReport { intersecting_pairs: pairs }
     }
@@ -309,6 +371,35 @@ mod tests {
         let r = m.detect_self_intersections();
         assert!(!r.is_clean(), "crossing quads must be detected");
         assert_eq!(r.count(), 1, "exactly one intersecting pair");
+    }
+
+    #[test]
+    fn grid_scales_and_finds_planted_intersection() {
+        // Many well-separated quads spread across space (exercises the spatial
+        // grid's many buckets) plus exactly one planted crossing pair. The grid
+        // broad phase must still find precisely that one pair.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        for gx in 0..8 {
+            for gy in 0..8 {
+                let ox = gx as f64 * 100.0;
+                let oy = gy as f64 * 100.0;
+                let a = m.add_vertex(DVec3::new(ox, oy, 0.0));
+                let b = m.add_vertex(DVec3::new(ox + 10.0, oy, 0.0));
+                let c = m.add_vertex(DVec3::new(ox + 10.0, oy + 10.0, 0.0));
+                let d = m.add_vertex(DVec3::new(ox, oy + 10.0, 0.0));
+                m.add_face(&[a, b, c, d], mat).unwrap();
+            }
+        }
+        // Planted crossing quad piercing the tile at grid (3,3) ≈ (300..310).
+        let q0 = m.add_vertex(DVec3::new(303.0, 303.0, -4.0));
+        let q1 = m.add_vertex(DVec3::new(307.0, 303.0, 4.0));
+        let q2 = m.add_vertex(DVec3::new(307.0, 307.0, 4.0));
+        let q3 = m.add_vertex(DVec3::new(303.0, 307.0, -4.0));
+        m.add_face(&[q0, q1, q2, q3], mat).unwrap();
+
+        let r = m.detect_self_intersections();
+        assert_eq!(r.count(), 1, "exactly one planted intersection among 64+ tiles: {:?}", r.intersecting_pairs);
     }
 
     #[test]
