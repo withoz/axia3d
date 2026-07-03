@@ -82,8 +82,21 @@ impl Mesh {
             "fillet: edge must be shared by exactly 2 active faces, got {}",
             active_shared.len(),
         );
-        let f1 = active_shared[0];
-        let f2 = active_shared[1];
+        // `get_faces_sharing_edge` returns the two faces in an arbitrary order,
+        // but every step below assumes F1 traverses the shared edge v_a → v_b
+        // (and F2 the reverse v_b → v_a). On a manifold edge exactly one face
+        // has each orientation, so pick F1 explicitly. Without this, ~half of
+        // all edges failed with "F1 loop doesn't contain the edge" (the arbitrary
+        // order put the v_b → v_a face first) — fillet silently no-op'd.
+        let (f1, f2) = {
+            let f0 = active_shared[0];
+            let f0_loop = self.collect_loop_verts(self.faces[f0].outer().start)?;
+            if loop_neighbors(&f0_loop, v_a, v_b).is_some() {
+                (f0, active_shared[1])
+            } else {
+                (active_shared[1], f0)
+            }
+        };
 
         // ─── Gather face geometry ────────────────────────────────
         let n1 = self.faces[f1].normal().normalize();
@@ -735,7 +748,9 @@ mod tests {
                 .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
             m.face_set_manifold_info(&active)
         }
-        // Every cube edge that fillets successfully must stay a closed solid.
+        // EVERY cube edge must fillet successfully and stay a closed solid.
+        // (The f1/f2 orientation fix means no edge fails with "F1 loop doesn't
+        // contain the edge" any more — previously ~half the edges no-op'd.)
         let mut filleted = 0;
         for i in 0..12 {
             let (mut m, _) = cube_mesh();
@@ -743,7 +758,8 @@ mod tests {
             let edges: Vec<_> = m.edges.iter()
                 .filter(|(_, e)| e.is_active()).map(|(id, _)| id).collect();
             let eid = edges[i];
-            if m.fillet_edge(eid, 2.0, 4).is_err() { continue; } // direction-limited edge
+            m.fillet_edge(eid, 2.0, 4)
+                .unwrap_or_else(|e| panic!("REGRESSION: fillet of edge #{} failed: {}", i, e));
             filleted += 1;
             let info = manifold(&m);
             assert!(info.is_closed_solid,
@@ -753,7 +769,7 @@ mod tests {
             assert_eq!(info.boundary_edge_count, 0, "no boundary edges");
             assert!(m.verify_face_invariants().violations.is_empty());
         }
-        assert!(filleted >= 1, "at least one edge should fillet successfully");
+        assert_eq!(filleted, 12, "all 12 cube edges must fillet (orientation fix)");
     }
 
     #[test]
