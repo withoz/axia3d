@@ -5698,11 +5698,12 @@ impl AxiaEngine {
         let before_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.set_before_snapshot(before_snapshot.clone());
         let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.fillet_edge(eid, radius, segments) {
             Ok(res) => {
                 if !self.closure_preserving_gate_passed(
-                    before_boundary, &before_snapshot, "fillet", true,
+                    before_boundary, before_si, &before_snapshot, "fillet", true,
                 ) {
                     return -1;
                 }
@@ -5740,11 +5741,12 @@ impl AxiaEngine {
         let before_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.set_before_snapshot(before_snapshot.clone());
         let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.chamfer_vertex_3way(vid, radius) {
             Ok(res) => {
                 if !self.closure_preserving_gate_passed(
-                    before_boundary, &before_snapshot, "chamfer", true,
+                    before_boundary, before_si, &before_snapshot, "chamfer", true,
                 ) {
                     return -1;
                 }
@@ -7822,11 +7824,12 @@ impl AxiaEngine {
         let before_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.set_before_snapshot(before_snapshot.clone());
         let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.merge_faces_by_edge(eid) {
             Ok(new_face) => {
                 if !self.closure_preserving_gate_passed(
-                    before_boundary, &before_snapshot, "merge", true,
+                    before_boundary, before_si, &before_snapshot, "merge", true,
                 ) {
                     return -1;
                 }
@@ -7992,6 +7995,7 @@ impl AxiaEngine {
     fn closure_preserving_gate_passed(
         &mut self,
         before_boundary: usize,
+        before_self_intersect: usize,
         snapshot: &[u8],
         label: &str,
         manual_txn: bool,
@@ -8010,16 +8014,26 @@ impl AxiaEngine {
             .verify_volume_integrity(axia_geo::IntegrityScope::ClosedSolid(&active));
         // Only enforce closure when the input was genuinely closed.
         let opened = before_boundary == 0 && after.open_boundary_edges > 0;
+        // Self-intersection (flap / poke-through) — no topological check sees it.
+        // Compare before→after so an input that already self-intersects is not
+        // rejected; only a NEW self-intersection the op introduced is caught.
+        let after_si = self.scene.mesh.detect_self_intersections().count();
+        let self_intersected = after_si > before_self_intersect;
         if opened
+            || self_intersected
             || !after.invariant_violations.is_empty()
             || !after.geometric_cracks.is_empty()
         {
             console_error!(
-                "[RUST] {} REJECTED by closure gate: opened={} (boundary {}→{}), cracks={}, inv={}",
+                "[RUST] {} REJECTED by closure gate: opened={} (boundary {}→{}), \
+                 self_intersect={} ({}→{}), cracks={}, inv={}",
                 label,
                 opened,
                 before_boundary,
                 after.open_boundary_edges,
+                self_intersected,
+                before_self_intersect,
+                after_si,
                 after.geometric_cracks.len(),
                 after.invariant_violations.len()
             );
@@ -8029,10 +8043,15 @@ impl AxiaEngine {
             } else {
                 self.scene.transactions.discard_last_undo();
             }
-            self.set_error(format!(
-                "면 재구성이 solid 를 여는 결과가 되어 취소됨 ({}): 경계 {}→{}",
-                label, before_boundary, after.open_boundary_edges
-            ));
+            let reason = if self_intersected {
+                format!("면 재구성이 자기교차(self-intersection)를 만들어 취소됨 ({label})")
+            } else {
+                format!(
+                    "면 재구성이 solid 를 여는 결과가 되어 취소됨 ({label}): 경계 {before_boundary}→{}",
+                    after.open_boundary_edges
+                )
+            };
+            self.set_error(reason);
             self.invalidate_cache();
             false
         } else {
