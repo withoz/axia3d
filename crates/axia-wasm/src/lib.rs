@@ -8300,6 +8300,45 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-271 γ — carve a blind radial POCKET into a curved (Cylinder) wall from
+    /// a sketched cap face (ADR-263). Returns the side-wall count, or -1 on
+    /// rejection (non-Cylinder cap / depth ≥ radius / non-manifold). Integrity
+    /// gate (ADR-267) enforced like `carvePocketFromSourceFace`.
+    #[wasm_bindgen(js_name = "carveCurvedPocket")]
+    pub fn carve_curved_pocket(&mut self, cap_face_raw: u32, depth: f64) -> i32 {
+        let fid = FaceId::new(cap_face_raw);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
+        match self.scene.carve_curved_pocket_from_cap(fid, depth) {
+            CommandResult::PushPullDone { sides_created, .. } => {
+                if !self.integrity_gate_passed(
+                    integrity_before,
+                    &integrity_snapshot,
+                    "carve curved pocket",
+                    false,
+                ) {
+                    return -1;
+                }
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                sides_created as i32
+            }
+            CommandResult::Error(e) => {
+                self.set_error(e);
+                self.invalidate_cache();
+                -1
+            }
+            _ => {
+                self.invalidate_cache();
+                -1
+            }
+        }
+    }
+
     /// ADR-252 — `true` if the face is a coplanar profile contained in a LARGER
     /// face on the same plane (the "rect drawn on a wall" signal). The Push/Pull
     /// tool uses this to route an inward push to a pocket carve. Read-only.

@@ -514,6 +514,8 @@ type AxiaEngineExtended = AxiaEngine & {
   drillPolygonThroughHole?(points: Float64Array, nx: number, ny: number, nz: number): number;
   /** ADR-252 — carve a blind pocket from a coplanar profile sheet on a solid wall. Returns wall count or -1. */
   carvePocketFromSourceFace?(sourceFaceRaw: number, depth: number): number;
+  /** ADR-271 — carve a blind radial pocket into a curved (Cylinder) wall from a sketched cap. */
+  carveCurvedPocket?(capFaceRaw: number, depth: number): number;
   /** ADR-252 — true if the face is a coplanar profile contained in a LARGER face (pocket candidate). */
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** 2026-04-24 — 크기 다른 coplanar 면들의 geometric merge */
@@ -4203,6 +4205,19 @@ export class WasmBridge {
       return this.engine.carvePocketFromSourceFace(sourceFace, depth) ?? -1;
     } catch (e) {
       this.recordBridgeError('carvePocketFromSourceFace', e);
+      return -1;
+    }
+  }
+
+  /** ADR-271 γ — carve a blind radial pocket into a curved (Cylinder) wall from a
+   *  sketched cap face. Returns the side-wall count, or -1 on rejection. */
+  carveCurvedPocket(capFace: number, depth: number): number {
+    if (!this.engine?.carveCurvedPocket) return -1;
+    this.markDirty();
+    try {
+      return this.engine.carveCurvedPocket(capFace, depth) ?? -1;
+    } catch (e) {
+      this.recordBridgeError('carveCurvedPocket', e);
       return -1;
     }
   }
