@@ -611,6 +611,31 @@ mod tests {
     }
 
     #[test]
+    fn detect_scales_to_many_disjoint_faces() {
+        // 30×30 = 900 disjoint quads. Exercises the spatial grid across many
+        // cells and guards against a quadratic regression in detection (a
+        // brute-force O(F²) would do ~400k pair tests; the grid keeps it
+        // near-linear). Must be clean. (Debug-build add_face invariant checks
+        // dominate the wall time here, not detection.)
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let n = 30;
+        for i in 0..n {
+            for j in 0..n {
+                let ox = i as f64 * 30.0;
+                let oy = j as f64 * 30.0;
+                let a = m.add_vertex(DVec3::new(ox, oy, 0.0));
+                let b = m.add_vertex(DVec3::new(ox + 10.0, oy, 0.0));
+                let c = m.add_vertex(DVec3::new(ox + 10.0, oy + 10.0, 0.0));
+                let d = m.add_vertex(DVec3::new(ox, oy + 10.0, 0.0));
+                m.add_face(&[a, b, c, d], mat).unwrap();
+            }
+        }
+        let r = m.detect_self_intersections();
+        assert!(r.is_clean(), "1600 disjoint quads must be self-intersection free");
+    }
+
+    #[test]
     fn separated_faces_not_flagged() {
         // Two parallel quads far apart — must NOT be flagged.
         let mut m = Mesh::new();
