@@ -462,6 +462,8 @@ type AxiaEngineExtended = AxiaEngine & {
   verifyOutwardNormals?(): string;
   /** ADR-267 δ — on-demand 씬 부피 무결성 검사 JSON (valid/invariantViolations/geometricCracks/openBoundaryEdges/checkedFaces). */
   verifyVolumeIntegrity?(): string;
+  /** 자기교차(self-intersection) 검사 JSON ({clean,count,pairs}). 위상 검사가 못 잡는 flap/poke-through. */
+  detectSelfIntersections?(): string;
   exportSnapshotStrict?(): Uint8Array;
   synthesizeFacesFromFreeEdges?(): number;
   countFreeEdges?(): number;
@@ -4422,6 +4424,22 @@ export class WasmBridge {
       return JSON.parse(this.engine.verifyInvariants());
     } catch (e) {
       console.error('[WasmBridge] verifyInvariants failed:', e);
+      return empty;
+    }
+  }
+
+  /**
+   * 자기교차(self-intersection) 검사 — manifold/watertight/crack/winding 를 전부
+   * 통과하지만 기하가 겹치는 flap/poke-through class 를 검출. 위상 검사가 못 보는
+   * 최종 방어선(engine `detectSelfIntersections`).
+   */
+  detectSelfIntersections(): { clean: boolean; count: number; pairs: [number, number][] } {
+    const empty = { clean: true, count: 0, pairs: [] as [number, number][] };
+    if (!this.engine?.detectSelfIntersections) return empty;
+    try {
+      return JSON.parse(this.engine.detectSelfIntersections());
+    } catch (e) {
+      console.error('[WasmBridge] detectSelfIntersections failed:', e);
       return empty;
     }
   }

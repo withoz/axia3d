@@ -23,11 +23,25 @@ export interface InvariantReport {
   violations: string[];
 }
 
+/** 자기교차(self-intersection) 검사 결과. */
+export interface SelfIntersectReport {
+  clean: boolean;
+  count: number;
+  pairs: [number, number][];
+}
+
 export interface InvariantVerifierPanelCallbacks {
   /** Invoke WASM verifyInvariants and return parsed report. */
   runVerify: () => InvariantReport;
+  /**
+   * 자기교차 검사 (engine detectSelfIntersections). 선택적 — 미제공 시 SI
+   * 섹션 미표시. 위상 검사가 못 잡는 flap/poke-through 를 검출.
+   */
+  runSelfIntersect?: () => SelfIntersectReport;
   /** ADR-068 Step 4 — Jump-to-id: focus on a face by id. */
   jumpToFace?: (faceId: number) => void;
+  /** 자기교차 pair 두 face 를 함께 선택. */
+  jumpToFaces?: (faceIds: number[]) => void;
 }
 
 export class InvariantVerifierPanel {
@@ -39,6 +53,7 @@ export class InvariantVerifierPanel {
   private statusEl: HTMLElement;
   private visible = false;
   private lastReport: InvariantReport | null = null;
+  private lastSelfIntersect: SelfIntersectReport | null = null;
   private lastRunAt: number | null = null;
 
   constructor(container: HTMLElement, callbacks: InvariantVerifierPanelCallbacks) {
@@ -50,14 +65,14 @@ export class InvariantVerifierPanel {
     this.panelEl.className = 'invariant-verifier';
     this.panelEl.innerHTML = `
       <div class="iv-header">
-        <span class="iv-title">🛡️ Invariant Verifier (ADR-007)</span>
+        <span class="iv-title">🛡️ 씬 무결성 검사</span>
         <span class="iv-meta" data-role="meta">미실행</span>
       </div>
       <div class="iv-toolbar">
         <button class="iv-btn iv-btn-run" data-role="run">▶ Run Verify</button>
         <span class="iv-hint" data-role="hint">
-          ADR-007 invariants (winding / loop / HE / manifold) 검증.
-          큰 mesh 에서 비싸므로 명시 실행.
+          ADR-007 invariants (winding / loop / HE / manifold) +
+          자기교차(self-intersection) 검증. 큰 mesh 에서 비싸므로 명시 실행.
         </span>
       </div>
       <div class="iv-status" data-role="status"></div>
@@ -105,6 +120,15 @@ export class InvariantVerifierPanel {
       return;
     }
     this.lastReport = report;
+    // 자기교차 검사 (선택적 콜백).
+    this.lastSelfIntersect = null;
+    if (this.callbacks.runSelfIntersect) {
+      try {
+        this.lastSelfIntersect = this.callbacks.runSelfIntersect();
+      } catch (e) {
+        console.error('[InvariantVerifierPanel] self-intersect check failed:', e);
+      }
+    }
     this.lastRunAt = Date.now();
     this.renderReport();
   }
@@ -126,22 +150,77 @@ export class InvariantVerifierPanel {
       metaEl.textContent = `${t.toLocaleTimeString()} · ${r.checkedFaces} faces`;
     }
 
-    if (r.valid && r.violationCount === 0) {
-      // Clean — green status.
+    const si = this.lastSelfIntersect;
+    const siDirty = !!si && !si.clean;
+
+    if (r.valid && r.violationCount === 0 && !siDirty) {
+      // Clean — green status (invariants pass AND no self-intersection).
       this.statusEl.className = 'iv-status iv-status-ok';
-      this.statusEl.textContent = `✓ All ${r.checkedFaces} faces pass invariants.`;
+      const siNote = si ? ' · 자기교차 0' : '';
+      this.statusEl.textContent = `✓ All ${r.checkedFaces} faces pass invariants${siNote}.`;
       this.bodyEl.innerHTML = '';
       return;
     }
 
-    // Violations — red status + list.
+    // Something is wrong — red status summarising both checks.
     this.statusEl.className = 'iv-status iv-status-err';
-    this.statusEl.textContent = `✗ ${r.violationCount} violation${r.violationCount === 1 ? '' : 's'} detected.`;
+    const parts: string[] = [];
+    if (r.violationCount > 0) {
+      parts.push(`invariant 위반 ${r.violationCount}`);
+    }
+    if (siDirty) {
+      parts.push(`자기교차 ${si!.count} pair`);
+    }
+    this.statusEl.textContent = `✗ ${parts.join(' · ')} 발견.`;
 
     this.bodyEl.innerHTML = '';
     for (const violation of r.violations) {
       this.bodyEl.appendChild(this.buildViolationRow(violation));
     }
+    if (siDirty) {
+      this.bodyEl.appendChild(this.buildSelfIntersectHeader(si!.count));
+      for (const [fa, fb] of si!.pairs) {
+        this.bodyEl.appendChild(this.buildSelfIntersectRow(fa, fb));
+      }
+    }
+  }
+
+  /** Public accessor (test/telemetry). */
+  getLastSelfIntersect(): SelfIntersectReport | null {
+    return this.lastSelfIntersect;
+  }
+
+  private buildSelfIntersectHeader(count: number): HTMLElement {
+    const h = document.createElement('div');
+    h.className = 'iv-si-header';
+    h.textContent = `⚠ 자기교차 (self-intersection) ${count} pair — 위상은 valid 이나 기하가 겹침`;
+    return h;
+  }
+
+  private buildSelfIntersectRow(fa: number, fb: number): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'iv-violation';
+
+    const text = document.createElement('span');
+    text.className = 'iv-violation-text';
+    text.textContent = `Face ${fa} ⨯ Face ${fb} 교차`;
+    row.appendChild(text);
+
+    const jumpBtn = document.createElement('button');
+    jumpBtn.className = 'iv-jump-btn';
+    jumpBtn.dataset.faceA = String(fa);
+    jumpBtn.dataset.faceB = String(fb);
+    jumpBtn.textContent = `→ Jump (${fa}, ${fb})`;
+    jumpBtn.addEventListener('click', () => {
+      if (this.callbacks.jumpToFaces) {
+        this.callbacks.jumpToFaces([fa, fb]);
+      } else if (this.callbacks.jumpToFace) {
+        this.callbacks.jumpToFace(fa);
+      }
+    });
+    row.appendChild(jumpBtn);
+
+    return row;
   }
 
   /** ADR-068 Step 4 — Build a violation row with Jump-to-id button.
@@ -258,6 +337,13 @@ export class InvariantVerifierPanel {
         white-space: nowrap;
       }
       .invariant-verifier .iv-jump-btn:hover { background: #904040; }
+      .invariant-verifier .iv-si-header {
+        padding: 6px 12px; margin-top: 4px;
+        font-size: 11px; font-weight: 600; color: #e0c090;
+        background: rgba(200, 150, 60, 0.12);
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
     `;
     document.head.appendChild(style);
   }

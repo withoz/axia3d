@@ -961,11 +961,17 @@ async function main() {
   {
     const invariantVerifierPanel = new InvariantVerifierPanel(viewportEl, {
       runVerify: () => bridge.verifyInvariants(),
+      // 자기교차(self-intersection) 검사 — 위상 검사가 못 잡는 flap/poke-through.
+      runSelfIntersect: () => bridge.detectSelfIntersections(),
       jumpToFace: (faceId: number) => {
         // ADR-068 §D #4 lock-in: jump = SelectionManager.selectFaces only.
         // Camera 이동은 Phase 2 enhancement.
         toolManager.selection.clearSelection?.();
         toolManager.selection.selectFaces([faceId]);
+      },
+      jumpToFaces: (faceIds: number[]) => {
+        toolManager.selection.clearSelection?.();
+        toolManager.selection.selectFaces(faceIds);
       },
     });
     (window as unknown as { __axia_invariantVerifier?: InvariantVerifierPanel })

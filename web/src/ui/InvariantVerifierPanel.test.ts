@@ -84,7 +84,7 @@ describe('ADR-068 Phase 1 Path Y B — Invariant Verifier pilot', () => {
 
     const status = container.querySelector('[data-role="status"]') as HTMLElement;
     expect(status.classList.contains('iv-status-err')).toBe(true);
-    expect(status.textContent).toContain('3 violation');
+    expect(status.textContent).toContain('위반 3');
 
     const rows = container.querySelectorAll('.iv-violation');
     expect(rows.length).toBe(3);
@@ -119,6 +119,57 @@ describe('ADR-068 Phase 1 Path Y B — Invariant Verifier pilot', () => {
     jumpBtn.click();
 
     expect(jumpedTo).toEqual([42]);
+
+    panel.dispose();
+    container.remove();
+  });
+
+  it('self_intersect_clean_shows_zero_note', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new InvariantVerifierPanel(container, {
+      runVerify: () => ({ checkedFaces: 8, valid: true, violationCount: 0, violations: [] }),
+      runSelfIntersect: () => ({ clean: true, count: 0, pairs: [] }),
+    });
+    panel.show();
+    panel.runVerify();
+
+    const status = container.querySelector('[data-role="status"]') as HTMLElement;
+    expect(status.classList.contains('iv-status-ok')).toBe(true);
+    expect(status.textContent).toContain('자기교차 0');
+    expect(panel.getLastSelfIntersect()?.clean).toBe(true);
+
+    panel.dispose();
+    container.remove();
+  });
+
+  it('self_intersect_dirty_shows_pairs_and_jump', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const jumped: number[][] = [];
+    const panel = new InvariantVerifierPanel(container, {
+      // Invariants clean, but geometry self-intersects — the panel must still flag it.
+      runVerify: () => ({ checkedFaces: 25, valid: true, violationCount: 0, violations: [] }),
+      runSelfIntersect: () => ({ clean: false, count: 2, pairs: [[3, 7], [9, 12]] }),
+      jumpToFaces: (ids: number[]) => { jumped.push(ids); },
+    });
+    panel.show();
+    panel.runVerify();
+
+    const status = container.querySelector('[data-role="status"]') as HTMLElement;
+    expect(status.classList.contains('iv-status-err')).toBe(true);
+    expect(status.textContent).toContain('자기교차 2 pair');
+
+    const rows = container.querySelectorAll('.iv-violation');
+    expect(rows.length).toBe(2); // two self-intersecting pairs
+    expect(rows[0].textContent).toContain('Face 3');
+    expect(rows[0].textContent).toContain('Face 7');
+
+    const jumpBtn = container.querySelector('.iv-jump-btn') as HTMLButtonElement;
+    expect(jumpBtn.dataset.faceA).toBe('3');
+    expect(jumpBtn.dataset.faceB).toBe('7');
+    jumpBtn.click();
+    expect(jumped).toEqual([[3, 7]]);
 
     panel.dispose();
     container.remove();
