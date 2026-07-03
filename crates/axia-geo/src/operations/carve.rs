@@ -631,6 +631,130 @@ impl Mesh {
         })
     }
 
+    /// ADR-271 β — carve a blind POCKET into a CURVED wall from a sketched cap
+    /// (ADR-263 `draw_circle_on_cylinder` → cap). **MVP: Cylinder host.** The cap
+    /// (a curved patch on the cylinder side) is recessed radially inward by
+    /// `depth`: its boundary stays as the opening, a smaller cap (radius r−depth)
+    /// becomes the floor, and radial side walls bridge the two → a watertight
+    /// dimple.
+    ///
+    /// Unlike the planar pocket ([`Mesh::carve_pocket_from_source_face`]),
+    /// `inward` is **per-vertex radial** (toward the cylinder axis), not a single
+    /// plane normal (ADR-271 L2). The cap's boundary edges are SHARED with the
+    /// remainder (annulus), so the walls weld to the freed cap-side half-edges in
+    /// cap-loop order (no free re-punch — ADR-271 §3). `depth` must stay inside
+    /// the solid (`< radius`).
+    pub fn carve_curved_pocket(
+        &mut self,
+        cap_face: FaceId,
+        depth: f64,
+    ) -> Result<PocketResult> {
+        use crate::surfaces::AnalyticSurface as S;
+        use std::f64::consts::TAU;
+        if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
+            bail!("curved pocket: cap face inactive/missing");
+        }
+        // MVP — Cylinder surface only. Sphere/Cone/Torus mirror is ADR-271 ε.
+        let (axis_o, axis_d, radius, ref_dir, v_range) = match self.faces[cap_face].surface() {
+            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
+                (*axis_origin, axis_dir.normalize_or_zero(), *radius, *ref_dir, *v_range)
+            }
+            _ => bail!("curved pocket MVP: cap must be a Cylinder-surface face"),
+        };
+        if !(depth > 1e-6) {
+            bail!("curved pocket: depth must be positive, got {depth}");
+        }
+        if depth >= radius - 1e-6 {
+            bail!("curved pocket: depth {depth} reaches the axis (radius {radius})");
+        }
+
+        // Opening = cap boundary loop (verts on the cylinder at `radius`).
+        let opening = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
+        let cnt = opening.len();
+        if cnt < 3 {
+            bail!("curved pocket: cap boundary too small ({cnt} verts)");
+        }
+        let material = self.faces[cap_face].material();
+
+        // Host (remainder/annulus) = the face on the twin side of the cap
+        // boundary, captured BEFORE removing the cap (returned for XIA reconcile).
+        let first_he = self.faces[cap_face].outer().start;
+        let host = {
+            // Manifold edge → the radial-next half-edge is the twin (annulus side).
+            let tw = self.hes[first_he].next_rad();
+            if tw.is_null() || tw == first_he {
+                FaceId::new(u32::MAX)
+            } else {
+                self.hes[tw].face()
+            }
+        };
+
+        // Per-vertex radial-inward (toward the axis).
+        let radial_inward = |p: DVec3| -> DVec3 {
+            let rel = p - axis_o;
+            let radial_out = rel - axis_d * rel.dot(axis_d);
+            -radial_out.normalize_or_zero()
+        };
+        // Floor verts = opening pushed radially inward by `depth` (radius−depth).
+        let floor: Vec<VertId> = opening
+            .iter()
+            .map(|&v| {
+                let p = self.vertex_pos(v).unwrap();
+                self.add_vertex(p + radial_inward(p) * depth)
+            })
+            .collect();
+
+        // Remove the cap face — its boundary becomes the recess opening (the
+        // remainder's hole loop stays; the walls weld to the freed half-edges).
+        self.remove_face(cap_face);
+
+        // Side walls — bridge opening[i] → floor[i], traversing the opening edge in
+        // cap-loop order to reuse the freed cap-side half-edge (welds to the
+        // remainder). floor[i] ↔ opening[i] 1:1 (same angle, pushed inward) → no
+        // twist. The floor edge (b2→b) is a NEW edge twinned by the floor cap.
+        let mut wall_faces = Vec::with_capacity(cnt);
+        for i in 0..cnt {
+            let a = opening[i];
+            let a2 = opening[(i + 1) % cnt];
+            let b = floor[i];
+            let b2 = floor[(i + 1) % cnt];
+            wall_faces.push(self.add_face(&[a, a2, b2, b], material)?);
+        }
+
+        // Floor cap (curved patch on the inner cylinder, radius−depth). Forward
+        // `floor` order → its edges (floor[i]→floor[i+1]) twin the walls'
+        // (floor[i+1]→floor[i]).
+        let floor_face = self.add_face(&floor, material)?;
+        // Inherit the Cylinder surface at the recessed radius so the floor renders
+        // curved (ADR-263 surface inheritance).
+        let _ = self.set_face_surface(
+            floor_face,
+            Some(S::Cylinder {
+                axis_origin: axis_o,
+                axis_dir: axis_d,
+                radius: radius - depth,
+                ref_dir,
+                u_range: (0.0, TAU),
+                v_range,
+            }),
+        );
+
+        // Manifold guard (ADR-190 P0.2 — the caller's snapshot rolls back).
+        let report = self.verify_face_invariants();
+        if !report.is_valid() {
+            bail!(
+                "curved pocket: result not manifold ({} violations)",
+                report.violations.len()
+            );
+        }
+        Ok(PocketResult {
+            ring_face: host,
+            floor_face,
+            wall_faces,
+            depth,
+        })
+    }
+
     /// ADR-252 Amendment 2 — drill a THROUGH-hole from a coplanar profile sheet
     /// drawn on a solid wall (the pocket's "push all the way through" sibling).
     /// The sheet is consumed (face + edges) so the punch host-search hits the
@@ -1854,6 +1978,74 @@ mod tests {
         ];
         let missed = mesh.drill_polygon_through_hole(&tri2, DVec3::new(-1.0, 0.0, 0.0));
         assert!(missed.is_ok(), "parallel drill that misses the void must succeed: {:?}", missed.err());
+    }
+
+    /// ADR-271 β — carve a blind radial pocket into a Cylinder side from a sketched
+    /// cap (ADR-263 split). The recess must stay a watertight manifold solid, add
+    /// N side walls + 1 floor, and the floor must sit at radius (r − depth).
+    #[test]
+    fn adr271_carve_curved_pocket_cylinder_blind() {
+        use crate::surfaces::{cylinder, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let faces = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 24, mat).expect("cylinder");
+        let annulus = faces[2];
+        let (ax_o, ax_d, rad, refd, vlo, vhi) = match mesh.face_surface(annulus).cloned().expect("surf") {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (axis_origin, axis_dir, radius, ref_dir, v_range.0, v_range.1),
+            other => panic!("Cylinder, got {other:?}"),
+        };
+        let vmid = 0.5 * (vlo + vhi);
+        let cp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.0, vmid);
+        let rp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.4, vmid);
+        let samples = cylinder::circle_on_cylinder(ax_o, ax_d, rad, refd, cp, rp, 0.05).expect("circle");
+        let (cap, _host) = mesh.split_cylinder_face_by_circle(annulus, &samples).expect("split");
+
+        let n_wall_expect = mesh.collect_loop_verts(mesh.faces[cap].outer().start).unwrap().len();
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let closed_before = mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid;
+
+        let depth = 3.0;
+        let res = mesh.carve_curved_pocket(cap, depth).expect("curved pocket must carve");
+
+        // N walls + 1 floor.
+        assert_eq!(res.wall_faces.len(), n_wall_expect, "one wall per cap boundary edge");
+        assert!((res.depth - depth).abs() < 1e-9);
+
+        // Manifold (carve_curved_pocket bails if not) + still a closed watertight solid.
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after curved pocket");
+        assert!(closed_before, "cylinder was a closed solid before");
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid,
+            "recessed cylinder stays a watertight closed solid");
+
+        // Floor sits at the recessed radius (r − depth): every floor vertex is
+        // `radius − depth` from the axis.
+        let floor_vs = mesh.collect_loop_verts(mesh.faces[res.floor_face].outer().start).unwrap();
+        for &v in &floor_vs {
+            let p = mesh.vertex_pos(v).unwrap();
+            let rel = p - ax_o;
+            let r = (rel - ax_d * rel.dot(ax_d)).length();
+            assert!((r - (rad - depth)).abs() < 1e-6, "floor vert at radius {r}, want {}", rad - depth);
+        }
+
+        // depth ≥ radius is rejected (would reach/cross the axis).
+        let mut m2 = Mesh::new();
+        m2.set_cylinder_path_b_default(true);
+        let f2 = m2.create_cylinder(DVec3::ZERO, 10.0, 20.0, 24, mat).expect("cyl2");
+        let (a2o, a2d, r2, rd2, vl2, vh2) = match m2.face_surface(f2[2]).cloned().unwrap() {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (axis_origin, axis_dir, radius, ref_dir, v_range.0, v_range.1),
+            _ => unreachable!(),
+        };
+        let vm2 = 0.5 * (vl2 + vh2);
+        let s2 = cylinder::circle_on_cylinder(a2o, a2d, r2, rd2,
+            cylinder::evaluate(a2o, a2d, r2, rd2, 0.0, vm2),
+            cylinder::evaluate(a2o, a2d, r2, rd2, 0.4, vm2), 0.05).unwrap();
+        let (cap2, _) = m2.split_cylinder_face_by_circle(f2[2], &s2).unwrap();
+        assert!(m2.carve_curved_pocket(cap2, 10.0).is_err(), "depth reaching the axis must be rejected");
     }
 
     /// Both caps become ring-with-hole (each gains exactly one inner loop).
