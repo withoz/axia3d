@@ -2726,10 +2726,11 @@
       <div class="ctx-item ctx-p7-resolver-item" data-action="enforce-p7-canonical">🔗 Connected Inner Merge (P7 canonical, container + inners → ring-with-hole)</div>
       <!-- ADR-164 β-3 — Sticky last drawn plane reset (메타-원칙 #16 보완) -->
       <!-- 가시성: ctx-plane-reset-item — _lastDrawnPlane 활성 시만 표시. -->
-      <div class="ctx-item ctx-plane-reset-item" data-action="reset-last-drawn-plane">📐 기본 평면으로 (sticky 해제)</div>
-      <!-- ADR-166 β-3 — Plane lock unlock (strong cross-tool lock 명시 release) -->
-      <!-- 가시성: ctx-plane-lock-unlock-item — _planeLock 활성 시만 표시. -->
-      <div class="ctx-item ctx-plane-lock-unlock-item" data-action="unlock-plane-lock">🔓 평면 잠금 해제 <span class="ctx-key">Ctrl+Shift+P</span></div>
+      <!-- ADR-270 §amendment — 단일 "평면 초기화": lock + sticky 모두 해제 →
+           빈 공간은 바닥(z=0), 면 위는 그 면. (이전 "sticky 해제" + "평면 잠금
+           해제" 두 항목을 통합.) 가시성: ctx-plane-reset-item — lock 또는 sticky
+           활성 시. -->
+      <div class="ctx-item ctx-plane-reset-item" data-action="reset-last-drawn-plane">📐 기본 평면으로 (평면 초기화) <span class="ctx-key">Ctrl+Shift+P</span></div>
       <!-- ADR-074 U-2 — Boolean Group A/B selection (E.3 트랙) -->
       <!-- selection 있을 때 set A/B; group tag 있을 때 clear -->
       <!-- ADR-074 §E.5-4 단축키 (Alt+A / Alt+B / Alt+0) — KeyboardShortcuts 통합 -->

@@ -98,31 +98,21 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       (item as HTMLElement).style.display = selected.length >= 2 ? '' : 'none';
     });
 
-    // ── ADR-164 β-3 — Sticky last drawn plane reset 항목 가시성 ──
-    // 가시성: _lastDrawnPlane 활성 시만. Selection 무관 (도형 그리기 전
-    // 사용자가 sticky 해제 의도).
+    // ── ADR-270 §amendment — 단일 "평면 초기화" 항목 가시성 ──
+    // 가시성: lock 또는 sticky 가 평면을 pin 한 상태일 때만 (hasPinnedPlane).
+    // 이전 두 항목("sticky 해제" + "평면 잠금 해제")을 하나로 통합 — 클릭 시
+    // lock + sticky 모두 해제 → 빈 공간은 바닥(z=0). Selection 무관.
     const planeResetItems = ctxMenu.querySelectorAll('.ctx-plane-reset-item');
-    const hasStickyPlane = typeof (toolManager as { getLastDrawnPlane?: () => unknown }).getLastDrawnPlane === 'function'
-      && (toolManager as { getLastDrawnPlane: () => unknown }).getLastDrawnPlane() !== null;
-    planeResetItems.forEach(item => {
-      (item as HTMLElement).style.display = hasStickyPlane ? '' : 'none';
-    });
-
-    // ── ADR-166 β-3 — Plane lock unlock 항목 가시성 ──
-    // 가시성: _planeLock 활성 시만. Strong cross-tool lock 의 명시
-    // release path (Ctrl+Shift+P 와 동일 entry). Selection 무관.
-    const planeLockItems = ctxMenu.querySelectorAll('.ctx-plane-lock-unlock-item');
-    // ADR-270 §amendment — also offer the reset when only the sticky (not a
-    // hard lock) pins the plane, so "draw on the ground again" is reachable
-    // after drawing on a solid face.
     const tmPlane = toolManager as {
       hasPinnedPlane?: () => boolean;
       isPlaneLocked?: () => boolean;
+      getLastDrawnPlane?: () => unknown;
     };
     const hasPinnedPlane = typeof tmPlane.hasPinnedPlane === 'function'
       ? tmPlane.hasPinnedPlane()
-      : (typeof tmPlane.isPlaneLocked === 'function' && tmPlane.isPlaneLocked());
-    planeLockItems.forEach(item => {
+      : ((typeof tmPlane.isPlaneLocked === 'function' && tmPlane.isPlaneLocked())
+        || (typeof tmPlane.getLastDrawnPlane === 'function' && tmPlane.getLastDrawnPlane() !== null));
+    planeResetItems.forEach(item => {
       (item as HTMLElement).style.display = hasPinnedPlane ? '' : 'none';
     });
 
@@ -332,41 +322,28 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         }
         break;
       }
-      // ─ ADR-164 β-3 — Sticky last drawn plane reset (메타-원칙 #16 보완) ─
+      // ─ ADR-270 §amendment — 단일 "평면 초기화" (Ctrl+Shift+P 와 동일 entry) ─
       // 사용자 워크플로우:
-      //   1. Draw 도구로 도형 그림 → sticky 활성 (β-2)
-      //   2. 의도 변경: 다른 평면으로 그리고 싶음
-      //   3. 우클릭 → "📐 기본 평면으로" → clearLastDrawnPlane 호출
-      //   4. 다음 도형은 view-mode default plane 으로 fallback
-      case 'reset-last-drawn-plane': {
-        const tm = toolManager as { clearLastDrawnPlane?: () => void };
-        if (typeof tm.clearLastDrawnPlane === 'function') {
-          tm.clearLastDrawnPlane();
-          Toast.info('기본 평면으로 복귀 (sticky 해제)', 2000);
-        }
-        break;
-      }
-      // ─ ADR-166 β-3 — Plane lock 명시 release (Ctrl+Shift+P 와 동일 entry) ─
-      // 사용자 워크플로우:
-      //   1. Draw 도구 first_click → plane lock 자동 활성 (β-2)
-      //   2. 후속 도구 (다른 Draw / 후속 click) 가 strong cross-tool lock
-      //      유지 (priority #1)
-      //   3. 의도 변경: 다른 평면으로 그리고 싶음
-      //   4. 우클릭 → "🔓 평면 잠금 해제" → unlockPlane 호출
-      //   5. 다음 first_click 이 새 plane 으로 lock 활성
-      case 'unlock-plane-lock': {
-        // ADR-270 §amendment — reset both lock AND sticky so empty space
-        // returns to ground (z=0). Falls back to unlockPlane on older builds.
+      //   1. Draw 도구로 면/평면에 도형 그림 → lock/sticky 활성
+      //   2. 의도 변경: 다시 바닥(z=0) 또는 다른 면에 그리고 싶음
+      //   3. 우클릭 → "📐 기본 평면으로 (평면 초기화)" → resetDrawingPlane
+      //   4. 빈 공간은 view 기본(바닥 z=0), 면 위는 그 면(face 우선순위 보존)
+      // (이전 "sticky 해제" + "평면 잠금 해제" 두 case 를 통합.)
+      case 'reset-last-drawn-plane':
+      case 'unlock-plane-lock': { // 'unlock-plane-lock' — 구 alias, backward compat
         const tm = toolManager as {
           resetDrawingPlane?: () => void;
           unlockPlane?: () => void;
+          clearLastDrawnPlane?: () => void;
         };
         if (typeof tm.resetDrawingPlane === 'function') {
           tm.resetDrawingPlane();
           Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
-        } else if (typeof tm.unlockPlane === 'function') {
-          tm.unlockPlane();
-          Toast.info('평면 잠금 해제 (다음 도형이 자유 평면 선택)', 2000);
+        } else {
+          // Older builds: best-effort partial reset.
+          tm.unlockPlane?.();
+          tm.clearLastDrawnPlane?.();
+          Toast.info('기본 평면으로 복귀', 2000);
         }
         break;
       }
