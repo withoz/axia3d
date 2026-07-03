@@ -85,5 +85,32 @@ cap 바깥 돌출(P2)은 별도 ADR. 본 ADR 은 **안쪽 cut(pocket/through)만
 - cross-drill 정합 (ADR-269) — 곡면 through 도 기존 구멍 교차 시 명확 거부.
 
 ## 6. α scope
-**본 커밋 = spec only, 코드 0.** β(Cylinder blind pocket engine) 착수는 사용자
-명시 결재. 메타-원칙 #10 (ADR 게이트) + #9 (회귀 없음) 준수.
+**α 커밋 = spec only, 코드 0.** β 이후는 사용자 결재 게이트. 메타-원칙 #10 + #9.
+
+## D. Acceptance Log (β ~ δ, 2026-07-03)
+
+| sub | commit | 내용 | 회귀 |
+|---|---|---|---|
+| α | `304be66` | spec + 로드맵 | — |
+| β | `188bab6` | `carve_curved_pocket` — Cylinder radial blind pocket (per-vertex radial inward, floor r−depth 곡면 상속, watertight) | axia-geo +1 |
+| γ-core | `6065a2a` | scene `carve_curved_pocket_from_cap` + WASM `carveCurvedPocket` + TS bridge + ADR-267 gate | — |
+| γ-tool | `00c8432` | PushPullTool 곡면 cap 감지(kind≥2) → dispatch. 브라우저 E2E (Phase1 faceId / dist=−90 / 55 walls) | vitest 37/37 |
+| δ 엔진 | `893da32` | `carve_curved_through` — 지름 관통 tunnel (exit closed-form 투영 + annulus split + tube bridge, genus-1 watertight) | axia-geo +1 |
+| δ-wiring | `f15ab3f` | scene pocket↔through depth 자동 라우팅 (depth ≥ radius → through). 기존 export/tool 그대로 through 지원 | — |
+
+**핵심 성과:** de-risk 에서 "carve planar 전용 → 곡면 cut 불가" 였던 것을
+**작동하는 곡면 pocket + 지름 관통** 으로 (엔진→bridge→도구 전 계층). 위험했던
+**winding(void-facing) + edge welding** 은 첫 구현에 성공. 브라우저 실측:
+곡면 pocket recess 흰색(front) + 관통 구멍 watertight.
+
+**교훈:** ① per-vertex radial 일반화가 곡면 cut 의 핵심. ② cap 경계가 annulus 와
+공유 edge → welding 방향 강제(free re-punch 불가). ③ exit closed-form
+`exit = entry − 2(a·rout)rout` + split_cylinder_face_by_circle 재사용으로 through.
+④ **브라우저 wasm HTTP 캐시 함정** — node 는 정상인데 브라우저가 옛 wasm 캐시 →
+결과 불일치. 하드리로드/nocache 필수 (node ≡ web 동일 로직).
+
+## 7. 남은 sub-step (별도 결재)
+- **ε** — Sphere/Cone/Torus pocket+through mirror (surface normal per-kind, ADR-263
+  sketch foundation 완비). Cylinder MVP 검증 완료로 패턴 확립.
+- cross-drill(ADR-269) 곡면 through 정합 회귀 자산 보강.
+- 곡면 through 실브라우저 E2E (Playwright).
