@@ -141,11 +141,15 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       return;
     }
 
-    // ── F5: 카메라 원점 복귀 (View Home) ──
+    // ── F5: 카메라 원점 복귀 (View Home) + 기본 평면(z=0) 복귀 ──
+    // ADR-270 §F amendment 3 (사용자 요청 2026-07-03) — "홈" = 카메라 + 드로잉
+    // 평면 모두 기본값 복귀. 면에 그린 뒤 F5 로도 바닥(z=0)에 다시 그릴 수 있음.
     if (e.key === 'F5') {
       e.preventDefault();
       viewport.resetCamera();
-      Toast.info('뷰 원점 복귀');
+      const hadPlane = toolManager.hasPinnedPlane();
+      toolManager.resetDrawingPlane();
+      Toast.info(hadPlane ? '뷰 원점 · 기본 평면(z=0) 복귀' : '뷰 원점 복귀');
       return;
     }
 
@@ -454,7 +458,10 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     } else if (!e.ctrlKey && !e.altKey) {
       // 뷰 단축키 (AutoCAD 스타일) — t, b, f, k 는 여기서 걸러냄
       if (e.key === 'h' || e.key === 'H') {
+        // ADR-270 §F amendment 3 — 'h' 도 카메라 홈이므로 드로잉 평면도
+        // 기본(z=0)으로 복귀 (F5 / 🏠 와 동일 "홈" 의미 통일).
         viewport.resetCamera();
+        toolManager.resetDrawingPlane();
         return;
       }
 
@@ -506,6 +513,10 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
   if (homeBtn) {
     homeBtn.addEventListener('click', () => {
       viewport.resetCamera();
+      // ADR-270 §F amendment 3 — 🏠 도 드로잉 평면을 기본(z=0)으로 복귀.
+      const hadPlane = toolManager.hasPinnedPlane();
+      toolManager.resetDrawingPlane();
+      if (hadPlane) Toast.info('뷰 원점 · 기본 평면(z=0) 복귀', 1800);
     });
     // Draggable (reposition + persist). A real drag suppresses the trailing
     // click so it doesn't also reset the camera; a plain click still resets.

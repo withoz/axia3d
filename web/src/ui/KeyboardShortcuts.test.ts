@@ -32,6 +32,11 @@ function mockDeps(): KeyboardShortcutsDeps {
       cancelCurrentTool: vi.fn(),
       isToolBusy: vi.fn().mockReturnValue(false),
       currentTool: 'select',
+      // ADR-270 — plane reset (Home / F5 / 🏠) targets
+      isPlaneLocked: vi.fn().mockReturnValue(false),
+      hasPinnedPlane: vi.fn().mockReturnValue(false),
+      resetDrawingPlane: vi.fn(),
+      unlockPlane: vi.fn(),
       snap: { toggle: vi.fn(), enabled: true },
       setAxisLock: vi.fn(),
       selection: {
@@ -225,6 +230,26 @@ describe('KeyboardShortcuts', () => {
       fireKey('h');
       expect(deps.viewport.resetCamera).toHaveBeenCalled();
     });
+
+    // ADR-270 §F amendment 3 — "홈"(카메라 원점) = 드로잉 평면도 기본(z=0) 복귀.
+    it('H also resets the drawing plane', () => {
+      fireKey('h');
+      expect(deps.toolManager.resetDrawingPlane).toHaveBeenCalled();
+    });
+
+    it('F5 resets camera AND the drawing plane', () => {
+      fireKey('F5');
+      expect(deps.viewport.resetCamera).toHaveBeenCalled();
+      expect(deps.toolManager.resetDrawingPlane).toHaveBeenCalled();
+    });
+
+    // ADR-270 §F amendment 2 — Home 키 = 평면 초기화 (Ctrl+Shift+P 는 Command
+    // Palette 로 이전). 평면이 pin 된 상태에서만 reset 호출.
+    it('Home key resets the drawing plane when a plane is pinned', () => {
+      (deps.toolManager.hasPinnedPlane as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      fireKey('Home');
+      expect(deps.toolManager.resetDrawingPlane).toHaveBeenCalled();
+    });
   });
 
   describe('axis lock', () => {
@@ -296,6 +321,12 @@ describe('KeyboardShortcuts', () => {
     it('clicking home button resets camera', () => {
       document.getElementById('home-btn')!.click();
       expect(deps.viewport.resetCamera).toHaveBeenCalled();
+    });
+
+    // ADR-270 §F amendment 3 — 🏠 도 드로잉 평면을 기본(z=0)으로 복귀.
+    it('clicking home button also resets the drawing plane', () => {
+      document.getElementById('home-btn')!.click();
+      expect(deps.toolManager.resetDrawingPlane).toHaveBeenCalled();
     });
   });
 
