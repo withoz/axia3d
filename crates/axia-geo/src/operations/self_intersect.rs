@@ -611,6 +611,35 @@ mod tests {
     }
 
     #[test]
+    fn ring_with_hole_plus_filling_inner_not_flagged() {
+        // A frame (outer ±500 with a ±250 hole) + an inner face (±250) that
+        // fills the hole — coplanar, sharing the ±250 loop. They are
+        // complementary (inner exactly fills the hole), NOT overlapping. This is
+        // the ADR-021 P7 ring-with-hole + sub-face pattern. The checker MUST NOT
+        // flag it (else the gate would false-reject legitimate hole operations).
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        // outer ±500
+        let o0 = m.add_vertex(DVec3::new(-500.0, 0.0, -500.0));
+        let o1 = m.add_vertex(DVec3::new(500.0, 0.0, -500.0));
+        let o2 = m.add_vertex(DVec3::new(500.0, 0.0, 500.0));
+        let o3 = m.add_vertex(DVec3::new(-500.0, 0.0, 500.0));
+        // hole ±250 (CW for hole convention)
+        let h0 = m.add_vertex(DVec3::new(-250.0, 0.0, -250.0));
+        let h1 = m.add_vertex(DVec3::new(-250.0, 0.0, 250.0));
+        let h2 = m.add_vertex(DVec3::new(250.0, 0.0, 250.0));
+        let h3 = m.add_vertex(DVec3::new(250.0, 0.0, -250.0));
+        m.add_face_with_holes(&[o0, o1, o2, o3], &[&[h0, h1, h2, h3]], mat).unwrap();
+        // inner face filling the hole (±250, same 4 verts, outward winding)
+        m.add_face(&[h0, h3, h2, h1], mat).unwrap();
+
+        let r = m.detect_self_intersections();
+        assert!(r.is_clean(),
+            "ring-with-hole + filling inner must NOT be flagged (complementary, not overlapping): {}",
+            r.summary());
+    }
+
+    #[test]
     fn detect_scales_to_many_disjoint_faces() {
         // 30×30 = 900 disjoint quads. Exercises the spatial grid across many
         // cells and guards against a quadratic regression in detection (a

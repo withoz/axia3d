@@ -1688,8 +1688,18 @@ impl Mesh {
             .map(|&pos| self.add_vertex(pos))
             .collect();
 
-        // 5) offset face 생성 (동일 winding)
-        let inner_face = self.add_face(&offset_vids, material)?;
+        // 5) inner face — 역할은 dist 부호가 아닌 실제 중첩(면적)으로 결정.
+        //    compute_offset_polygon 의 inward/outward 방향이 면 orientation 에
+        //    따라 dist 부호와 항상 일치하진 않아, 고정 dist>0 분기는 큰 polygon
+        //    을 frame 의 hole 로 넣을 수 있음(hole > outer → degenerate frame →
+        //    inner 가 frame 을 덮어 self-intersection, SI 검사기 검출). 작은
+        //    polygon 이 항상 inner(hole 채움), 큰 쪽이 frame outer.
+        let orig_area = planar_polygon_area(&positions, normal);
+        let off_area = planar_polygon_area(&offset_positions, normal);
+        let offset_is_inner = off_area <= orig_area;
+        let inner_vids: Vec<VertId> =
+            if offset_is_inner { offset_vids.clone() } else { loop_vids.to_vec() };
+        let inner_face = self.add_face(&inner_vids, material)?;
 
         // 6) 2026-04-27 — 사용자 요청: "offset 명령시 offset 된 라인과 모서리선이
         //    연결되면 안됨. 모서리 연결선을 지워서 완성".
@@ -1707,7 +1717,7 @@ impl Mesh {
         //      add_face_with_holes 가 내부 winding 을 적절히 정규화).
         //    Outset (dist < 0): outer 가 offset polygon, 원본은 hole. → 두
         //      loop 의 역할이 바뀜.
-        let (frame_outer, frame_hole): (Vec<VertId>, Vec<VertId>) = if dist > 0.0 {
+        let (frame_outer, frame_hole): (Vec<VertId>, Vec<VertId>) = if offset_is_inner {
             (loop_vids.to_vec(), offset_vids.clone())
         } else {
             (offset_vids.clone(), loop_vids.to_vec())
@@ -2270,6 +2280,21 @@ fn derive_free_wire_plane(
 ///
 /// 각 변을 face 법선 기준으로 inward 방향으로 dist만큼 이동하고,
 /// 인접 이동 선분의 교점을 구함.
+/// Planar polygon area (magnitude) via the Newell sum projected onto `normal`.
+/// Used to decide inner/outer nesting for the offset frame independent of the
+/// `dist` sign.
+fn planar_polygon_area(pts: &[DVec3], normal: DVec3) -> f64 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut acc = DVec3::ZERO;
+    for i in 0..n {
+        acc += pts[i].cross(pts[(i + 1) % n]);
+    }
+    (acc.dot(normal.normalize_or_zero()) * 0.5).abs()
+}
+
 fn compute_offset_polygon(
     positions: &[DVec3],
     face_normal: DVec3,
@@ -2357,6 +2382,26 @@ mod tests {
         let v2 = mesh.add_vertex(DVec3::new(size, 0.0, size));
         let v3 = mesh.add_vertex(DVec3::new(0.0, 0.0, size));
         mesh.add_face(&[v0, v1, v2, v3], MaterialId::new(0)).unwrap()
+    }
+
+    /// Adversarial sweep (found via the self-intersection checker). offset_face
+    /// chose the inner/frame roles by the sign of `dist`, but
+    /// compute_offset_polygon's inward/outward direction doesn't always match
+    /// that sign — so the LARGER polygon could become the frame's hole (hole >
+    /// outer → degenerate frame → the inner face overlaps it → self-intersection,
+    /// while closed/manifold/invariant checks all passed). Now the roles are
+    /// chosen by actual area nesting; the result must be self-intersection free
+    /// in either direction.
+    #[test]
+    fn offset_face_no_self_intersection_either_direction() {
+        for &d in &[100.0_f64, -100.0, 300.0, -300.0] {
+            let mut mesh = Mesh::new();
+            let fid = make_square_face(&mut mesh, 1000.0);
+            mesh.offset_face(fid, d).expect("offset should succeed");
+            let r = mesh.detect_self_intersections();
+            assert!(r.is_clean(),
+                "offset_face(dist={}) must not self-intersect: {}", d, r.summary());
+        }
     }
 
     #[test]
