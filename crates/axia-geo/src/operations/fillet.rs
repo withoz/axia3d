@@ -665,28 +665,40 @@ fn third_face_at_vert(
     exclude_f1: FaceId,
     exclude_f2: FaceId,
 ) -> Result<Option<FaceId>> {
-    let mut seen: HashMap<FaceId, usize> = HashMap::new();
-    // Walk vertex outgoing HEs and collect unique incident face ids.
-    let anchor = match mesh.verts.get(v).and_then(|vt| vt.outgoing()) {
-        Some(h) if !h.is_null() => h,
-        _ => return Ok(None),
-    };
-    let mut cur = anchor;
-    for _ in 0..128 {
-        if !mesh.hes.contains(cur) { break; }
-        let f = mesh.hes[cur].face();
-        if !f.is_null() && mesh.faces.contains(f) && mesh.faces[f].is_active() {
-            *seen.entry(f).or_insert(0) += 1;
+    // Robust incident-face scan (do NOT walk the v_next fan). Ops that add faces
+    // to a pre-existing vertex — push_pull's side walls, split_edge — can leave
+    // that vertex's v_next ring incomplete (adversarial sweep pattern #5), so a
+    // fan walk silently drops F3. Missing F3 means the fillet strip's endpoint
+    // is never spliced into the third face → it lands on an unmodified face
+    // (T-junction) → the solid opens (bnd>0) while verify_face_invariants still
+    // passes. e.g. all four base-face edges of a push_pull box failed this way.
+    let mut seen: Vec<FaceId> = Vec::new();
+    for (fid, face) in mesh.faces.iter() {
+        if !face.is_active() || fid == exclude_f1 || fid == exclude_f2 {
+            continue;
         }
-        let nxt = mesh.hes[cur].v_next();
-        if nxt.is_null() || nxt == anchor { break; }
-        cur = nxt;
+        let mut has = mesh
+            .collect_loop_verts(face.outer().start)
+            .map(|vs| vs.contains(&v))
+            .unwrap_or(false);
+        if !has {
+            for inner in face.inners() {
+                if inner.start.is_null() {
+                    continue;
+                }
+                if mesh.collect_loop_verts(inner.start).map(|vs| vs.contains(&v)).unwrap_or(false) {
+                    has = true;
+                    break;
+                }
+            }
+        }
+        if has {
+            seen.push(fid);
+        }
     }
-    seen.remove(&exclude_f1);
-    seen.remove(&exclude_f2);
     match seen.len() {
         0 => Ok(None),
-        1 => Ok(Some(*seen.keys().next().unwrap())),
+        1 => Ok(Some(seen[0])),
         n => bail!("fillet: vertex has {} faces beyond the filleted edge; \
                     MVP supports ≤ 1 additional face", n),
     }
@@ -725,6 +737,50 @@ mod tests {
         m.add_face_with_holes(&[v000, v001, v011, v010], &[], mat).unwrap();
         m.add_face_with_holes(&[v100, v110, v111, v101], &[], mat).unwrap();
         (m, [v000, v100, v110, v010, v001, v101, v111, v011])
+    }
+
+    /// A box built the way a user extrudes a sketch: a base `add_face` (source
+    /// face, pre-existing verts) + `push_pull`. Distinct topology from
+    /// `cube_mesh` (6 explicit faces) — its base-face verts have an incomplete
+    /// v_next fan, which used to break `third_face_at_vert`.
+    fn pushpull_box(w: f64, d: f64, h: f64) -> Mesh {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let v0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = m.add_vertex(DVec3::new(w, 0.0, 0.0));
+        let v2 = m.add_vertex(DVec3::new(w, 0.0, d));
+        let v3 = m.add_vertex(DVec3::new(0.0, 0.0, d));
+        let base = m.add_face(&[v0, v3, v2, v1], mat).unwrap();
+        m.push_pull(base, h, mat).unwrap();
+        m
+    }
+
+    /// Adversarial sweep (pattern #5 downstream). A push_pull box's base-face
+    /// verts have an incomplete v_next fan (push_pull doesn't re-ring them), so
+    /// `third_face_at_vert`'s old fan walk dropped F3 for the 4 base edges → the
+    /// fillet strip landed on an unmodified face → the solid opened (bnd=8) while
+    /// `verify_face_invariants` still passed. The loop-scan `third_face_at_vert`
+    /// fixes it: every edge of the extruded box now fillets closed.
+    #[test]
+    fn fillet_pushpull_box_all_edges_stay_closed() {
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let edges: Vec<(VertId, VertId)> = {
+            let m = pushpull_box(10.0, 10.0, 10.0);
+            m.edges.iter().filter(|(_, e)| e.is_active())
+                .map(|(_, e)| (e.v_small(), e.v_large())).collect()
+        };
+        assert_eq!(edges.len(), 12, "extruded box has 12 edges");
+        for (vs, vl) in edges {
+            let mut m = pushpull_box(10.0, 10.0, 10.0);
+            let eid = m.find_edge(vs, vl).expect("edge exists");
+            m.fillet_edge(eid, 2.0, 4).expect("fillet must succeed");
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(info.is_closed_solid,
+                "REGRESSION: fillet of push_pull box edge {:?}-{:?} opened the solid (bnd={})",
+                vs, vl, info.boundary_edge_count);
+        }
     }
 
     #[test]
