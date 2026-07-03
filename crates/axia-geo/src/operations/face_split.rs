@@ -2895,6 +2895,53 @@ mod tests {
         }
     }
 
+    /// Adversarial sweep (pattern #2 — silent T-junction on merge).
+    /// Splitting a solid's top face then merging the two halves back MUST keep
+    /// the box a closed solid. The merge's collinear-simplify used to drop the
+    /// two cut-endpoint vertices, but those verts are still referenced by the
+    /// side faces → T-junction → the closed solid silently opened while every
+    /// invariant check still passed. `simplify_collinear_loop_preserving` keeps
+    /// load-bearing verts. Reachable via `erase_edge_resynthesize` too.
+    #[test]
+    fn merge_after_split_keeps_solid_closed_tjunction() {
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+
+        let mut m = Mesh::new();
+        let (top_face, _) = make_box(&mut m, 4.0, 4.0, 3.0);
+        assert!(m.face_set_manifold_info(&active(&m)).is_closed_solid,
+            "box must start as a closed solid");
+
+        // Split the top face edge-to-edge (cut endpoints land on the side
+        // faces' top edges → those become load-bearing T-junction verts).
+        let r = split_face_by_line(
+            &mut m, top_face,
+            DVec3::new(2.0, 3.0, 0.0),
+            DVec3::new(2.0, 3.0, 4.0),
+        ).expect("split should succeed");
+        assert_eq!(r.new_faces.len(), 2, "split makes two faces");
+        assert!(m.face_set_manifold_info(&active(&m)).is_closed_solid,
+            "still closed right after split");
+
+        // The cut edge joins the two new boundary verts — it is the edge the
+        // two halves share.
+        let cut = m.find_edge(r.new_verts[0], r.new_verts[1])
+            .expect("cut edge between the split endpoints");
+
+        let merged = m.merge_faces_by_edge(cut).expect("merge should succeed");
+        assert!(!merged.is_null());
+
+        let info = m.face_set_manifold_info(&active(&m));
+        assert!(info.is_closed_solid,
+            "REGRESSION: merge silently opened the solid \
+             (boundary_edge_count={}, non_manifold={})",
+            info.boundary_edge_count, info.non_manifold_edge_count);
+        assert_eq!(info.boundary_edge_count, 0, "no boundary edges after merge");
+        // And the DCEL is still internally valid.
+        assert!(m.verify_face_invariants().violations.is_empty(), "face invariants hold");
+    }
+
     #[test]
     fn box_face_split_interior_points() {
         // Simulate what happens when Three.js raycast gives interior points

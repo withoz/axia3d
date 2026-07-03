@@ -211,7 +211,10 @@ impl Mesh {
         let outer_vids: Vec<VertId> = merged_positions.iter()
             .map(|&p| self.add_vertex(p))
             .collect();
-        let simplified = self.simplify_collinear_loop(&outer_vids);
+        // Preserve load-bearing T-junction verts a neighbour still uses (sweep
+        // pattern #2). f1/f2 already removed above → any active incident face is
+        // a genuine external neighbour, so it is kept.
+        let simplified = self.simplify_collinear_loop_preserving(&outer_vids, &[f1, f2]);
         if simplified.len() < 3 {
             bail!("merged loop degenerate after collinear simplification");
         }
@@ -380,8 +383,9 @@ impl Mesh {
             bail!("cycle walk overflow");
         }
 
-        // 6. simplify collinear.
-        let simplified = self.simplify_collinear_loop(&walked);
+        // 6. simplify collinear — preserve T-junction verts a neighbour uses
+        // (sweep pattern #2). Owner set = the two faces being merged.
+        let simplified = self.simplify_collinear_loop_preserving(&walked, &[f1, f2]);
         if simplified.len() < 3 {
             bail!("merged loop degenerate after simplify");
         }

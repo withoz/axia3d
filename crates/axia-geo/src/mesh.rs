@@ -10977,8 +10977,10 @@ impl Mesh {
             merged_verts.reverse();
         }
 
-        // F6: Remove collinear vertices (T-junction cleanup)
-        merged_verts = self.simplify_collinear_loop(&merged_verts);
+        // F6: Remove collinear vertices — but PRESERVE T-junction vertices that
+        // a neighbour face still uses (adversarial sweep pattern #2). Dropping
+        // them silently opens the solid. Owner set = the two faces being merged.
+        merged_verts = self.simplify_collinear_loop_preserving(&merged_verts, &[f1, f2]);
         if merged_verts.len() < 3 {
             bail!("Merged loop degenerate after collinear simplification");
         }
@@ -11989,6 +11991,85 @@ impl Mesh {
                 out.push(curr);
             }
             // else: drop curr (collinear with neighbors)
+        }
+        out
+    }
+
+    /// Collinear-simplify a loop like [`simplify_collinear_loop`], but PRESERVE
+    /// any vertex that is topologically **load-bearing** — still referenced by an
+    /// active face outside `owner_faces` (the faces being merged/rebuilt).
+    ///
+    /// ## Why (adversarial sweep, pattern #2 — silent T-junction)
+    /// `simplify_collinear_loop` drops a vertex purely on geometry. When two
+    /// coplanar faces are merged, a shared-boundary vertex that a *neighbor*
+    /// face still uses (e.g. the split point on a solid's side-face top edge)
+    /// looks collinear on the merged loop, so it was dropped — the merged face
+    /// then carries one straight edge while the neighbour keeps two split edges.
+    /// The half-edges no longer pair → the closed solid silently opens
+    /// (boundary edges appear) while `verify_face_invariants` / `verify_volume_
+    /// integrity` both still pass. Reachable through `erase_edge_resynthesize`
+    /// (erasing a split line on a solid face).
+    ///
+    /// A vertex is safe to collapse only when every active face incident to it
+    /// is one of `owner_faces` (or none survive). Passing already-removed
+    /// owner ids is harmless — they simply never match an active incident face.
+    pub(crate) fn simplify_collinear_loop_preserving(
+        &self,
+        verts: &[VertId],
+        owner_faces: &[FaceId],
+    ) -> Vec<VertId> {
+        let n = verts.len();
+        if n < 3 { return verts.to_vec(); }
+
+        // Build the set of vertices referenced by any active face OUTSIDE
+        // `owner_faces`. Scanning the loops is robust — it does not rely on the
+        // per-vertex radial half-edge chain being intact (which `split_edge`
+        // may leave partial, sweep pattern #5). A vertex in this set is
+        // load-bearing: straightening it out of the merged loop while a
+        // neighbour keeps its split edges creates a T-junction (open solid).
+        let mut external: rustc_hash::FxHashSet<VertId> = rustc_hash::FxHashSet::default();
+        for (fid, face) in self.faces.iter() {
+            if !face.is_active() || owner_faces.contains(&fid) { continue; }
+            let start = face.outer().start;
+            if !start.is_null() {
+                if let Ok(vs) = self.collect_loop_verts(start) {
+                    external.extend(vs);
+                }
+            }
+            for inner in face.inners() {
+                if inner.start.is_null() { continue; }
+                if let Ok(vs) = self.collect_loop_verts(inner.start) {
+                    external.extend(vs);
+                }
+            }
+        }
+
+        let mut out: Vec<VertId> = Vec::with_capacity(n);
+        for i in 0..n {
+            let prev = verts[(i + n - 1) % n];
+            let curr = verts[i];
+            let next = verts[(i + 1) % n];
+            let (p, c, q) = match (self.vertex_pos(prev), self.vertex_pos(curr), self.vertex_pos(next)) {
+                (Ok(a), Ok(b), Ok(cc)) => (a, b, cc),
+                _ => { out.push(curr); continue; },
+            };
+            let e1 = c - p;
+            let e2 = q - c;
+            let l1 = e1.length();
+            let l2 = e2.length();
+            if l1 < 1e-9 || l2 < 1e-9 {
+                out.push(curr);
+                continue;
+            }
+            if e1.dot(e2) / (l1 * l2) < 0.9999999 {
+                out.push(curr); // not collinear → keep
+                continue;
+            }
+            // Collinear — keep iff a neighbour face still references it.
+            if external.contains(&curr) {
+                out.push(curr);
+            }
+            // else: drop (genuinely internal collinear vertex)
         }
         out
     }
