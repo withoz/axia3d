@@ -302,7 +302,7 @@ impl Mesh {
         ];
         if self.carve_drill_is_cross_drill(&rim, n) {
             bail!(
-                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                "관통 축이 기존 구멍과 교차합니다 — 구멍 위치를 옮겨 주세요 \
                  (cross-drilling through an existing hole is not supported)"
             );
         }
@@ -363,7 +363,7 @@ impl Mesh {
         // drill_polygon_through_hole). Diagonal corners span the rect extent.
         if self.carve_drill_is_cross_drill(&[corner_a, corner_b], n) {
             bail!(
-                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                "관통 축이 기존 구멍과 교차합니다 — 구멍 위치를 옮겨 주세요 \
                  (cross-drilling through an existing hole is not supported)"
             );
         }
@@ -431,7 +431,7 @@ impl Mesh {
         // straight-tube MVP cannot build the intersection; guide to reposition/Boolean.
         if self.carve_drill_is_cross_drill(loop_pts, n) {
             bail!(
-                "관통 축이 기존 구멍/빈 공간과 교차합니다 — 위치를 옮기거나 Boolean(빼기)을 사용하세요 \
+                "관통 축이 기존 구멍과 교차합니다 — 구멍 위치를 옮겨 주세요 \
                  (cross-drilling through an existing hole is not supported by the straight-tube drill)"
             );
         }
