@@ -1064,6 +1064,68 @@ describe('ToolManager', () => {
     });
   });
 
+  // ADR-270 — plane lock is (normal, OFFSET). A same-normal face at a
+  // DIFFERENT height must auto-unlock so drawing lands ON the hovered face
+  // (사용자: "입체면 윗면에 도형이 안 그려짐" — box top +Z at z=750 was treated
+  // as the same plane as a locked ground +Z at z=0, so shapes drew on the
+  // ground). A same-normal face at the SAME height keeps the lock (ADR-188
+  // coplanar repeated-draw value).
+  describe('ADR-270 — plane lock offset-aware auto-unlock on different-height face', () => {
+    function mockHitPt(faceIndex: number, p: { x: number; y: number; z: number }) {
+      return {
+        faceIndex,
+        point: { x: p.x, y: p.y, z: p.z, clone: () => ({ x: p.x, y: p.y, z: p.z, clone: () => null }) },
+      };
+    }
+
+    it('same normal, DIFFERENT offset (box top z=750 vs locked ground z=0) → auto-unlock, onFace', async () => {
+      const THREE = await import('three');
+      // Lock to the ground plane: +Z at z=0.
+      tm.lockPlane({
+        origin: new THREE.Vector3(0, 0, 0),
+        normal: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0),
+        source: 'first_click',
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tm as any).faceMap = new Uint32Array([7]);
+      // Cursor over the box TOP face: +Z normal, but hit point at z=750.
+      viewport.pick.mockReturnValue(mockHitPt(0, { x: 0, y: 0, z: 750 }));
+      bridge.getFaceNormal.mockReturnValue([0, 0, 1]);
+      bridge.faceSurfaceKind.mockReturnValue(1);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const plane = (tm as any).getDrawPlane({ clientX: 100, clientY: 100 } as MouseEvent);
+
+      // FIXED: the different-height face auto-unlocks the lock and is used.
+      expect(plane.onFace).toBe(true);
+      expect(tm.isPlaneLocked()).toBe(false);
+    });
+
+    it('same normal, SAME offset (repeat draw on same face) → keeps lock (ADR-188 coplanar)', async () => {
+      const THREE = await import('three');
+      tm.lockPlane({
+        origin: new THREE.Vector3(0, 0, 750),
+        normal: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0),
+        source: 'first_click',
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tm as any).faceMap = new Uint32Array([7]);
+      // Cursor over the SAME box top (z=750) again.
+      viewport.pick.mockReturnValue(mockHitPt(0, { x: 100, y: 100, z: 750 }));
+      bridge.getFaceNormal.mockReturnValue([0, 0, 1]);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const plane = (tm as any).getDrawPlane({ clientX: 100, clientY: 100 } as MouseEvent);
+
+      // Same plane (offset 0) → lock kept, shapes stay coplanar for hole-forming.
+      expect(plane.onFace).toBe(false);
+      expect(tm.isPlaneLocked()).toBe(true);
+      expect(plane.origin.z).toBeCloseTo(750, 6);
+    });
+  });
+
   // ────────────────────────────────────────────────────────────────────
   // ADR-175 — get3DPoint face-hit drawing plane (LOCKED #63 amendment)
   //

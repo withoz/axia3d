@@ -3464,9 +3464,25 @@ export class ToolManager {
             // Anti-parallel safe: use |dot| (L-167-10).
             const dotMag = Math.abs(faceNormal.dot(lockNormal));
             const SAME_PLANE_COS_THRESHOLD = 0.9999;
-            if (dotMag < SAME_PLANE_COS_THRESHOLD) {
-              // Different plane — auto-unlock and fall through to face
-              // hit logic below.
+            // ADR-270 — a plane is (normal, OFFSET), not just a normal. The
+            // original check only compared normals, so a solid's top face at
+            // z=750 was treated as "same plane" as a locked ground plane at z=0
+            // (both +Z) → the lock stayed on z=0 and shapes drew on the ground
+            // instead of ON the hovered face (사용자: "입체면 윗면에 안 그려짐").
+            // Also require the hit point to lie ON the locked plane (same offset
+            // along the normal); a same-normal face at a DIFFERENT height is a
+            // different plane → auto-unlock and draw on it. Faces are ≥ mm apart
+            // so 0.5 mm cleanly separates "same face, repeated draw" (offset ~0,
+            // keep lock — ADR-188 coplanar value) from "a different-height face".
+            const OFFSET_TOL = 0.5;
+            const lockOffset = lockNormal.dot(this._planeLock.origin);
+            const faceOffset = lockHit.point ? lockNormal.dot(lockHit.point) : lockOffset;
+            const differentPlane =
+              dotMag < SAME_PLANE_COS_THRESHOLD ||
+              Math.abs(faceOffset - lockOffset) > OFFSET_TOL;
+            if (differentPlane) {
+              // Different plane (normal OR offset) — auto-unlock and fall
+              // through to the face-hit logic below.
               this.unlockPlane();
               lockOverriddenByFaceHit = true;
             }
