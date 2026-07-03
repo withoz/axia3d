@@ -38,6 +38,7 @@ pub mod array_op;
 pub mod geometric_merge;
 pub mod polygon_geom;
 pub mod slice;
+pub mod self_intersect;  // 자기교차(self-intersection) 검사기 — face-rebuild op 최종 방어선
 pub mod repair;
 pub mod planar_walk;
 pub mod erase_resynth;

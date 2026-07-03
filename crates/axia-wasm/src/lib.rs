@@ -7615,6 +7615,27 @@ impl AxiaEngine {
         )
     }
 
+    /// Self-intersection check (adversarial-sweep "flap" class). Detects
+    /// geometric overlap of non-adjacent faces that passes every topological
+    /// check (manifold / watertight / cracks / winding) yet renders as a fold
+    /// or poke-through. Read-only. Returns JSON
+    /// `{"clean":bool,"count":N,"pairs":[[fa,fb],...]}`.
+    #[wasm_bindgen(js_name = "detectSelfIntersections")]
+    pub fn detect_self_intersections_json(&self) -> String {
+        let report = self.scene.mesh.detect_self_intersections();
+        let pairs: Vec<String> = report
+            .intersecting_pairs
+            .iter()
+            .map(|(a, b)| format!("[{},{}]", a.raw(), b.raw()))
+            .collect();
+        format!(
+            r#"{{"clean":{},"count":{},"pairs":[{}]}}"#,
+            report.is_clean(),
+            report.count(),
+            pairs.join(","),
+        )
+    }
+
     /// ADR-021 P7 + ADR-025 P11 — user-triggered "Resynthesize Faces".
     ///
     /// Sweeps free orphan edges for closed simple cycles and synthesizes a
