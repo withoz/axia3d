@@ -755,6 +755,124 @@ impl Mesh {
         })
     }
 
+    /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
+    /// straight bore along the cap-center radial, entering at the cap and exiting
+    /// the opposite side of the cylinder. The cap + a mirrored exit patch are
+    /// consumed; N tube walls bridge the two holes → a watertight genus-1 tunnel.
+    ///
+    /// Exit point (closed form): with `rout` = radial-outward at the cap center and
+    /// `a_i` = the radial vector of entry vert `i`, the far intersection along
+    /// `-rout` is `exit_i = entry_i − 2(a_i·rout)·rout`. Cross-drill (ADR-269) is
+    /// honoured — if the bore crosses a pre-existing void the exit points miss the
+    /// cylinder and the exit split fails (rejected).
+    pub fn carve_curved_through(&mut self, cap_face: FaceId) -> Result<DrillThroughResult> {
+        use crate::surfaces::AnalyticSurface as S;
+        if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
+            bail!("curved through: cap face inactive/missing");
+        }
+        let (axis_o, axis_d) = match self.faces[cap_face].surface() {
+            Some(S::Cylinder { axis_origin, axis_dir, .. }) => {
+                (*axis_origin, axis_dir.normalize_or_zero())
+            }
+            _ => bail!("curved through MVP: cap must be a Cylinder-surface face"),
+        };
+        let entry = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
+        let cnt = entry.len();
+        if cnt < 3 {
+            bail!("curved through: cap boundary too small ({cnt} verts)");
+        }
+
+        // Radial vector (perpendicular to axis) of a point, + radial-outward unit
+        // at the cap center.
+        let radial_vec = |p: DVec3| -> DVec3 {
+            let rel = p - axis_o;
+            rel - axis_d * rel.dot(axis_d)
+        };
+        let center: DVec3 = entry.iter().filter_map(|&v| self.vertex_pos(v).ok()).sum::<DVec3>()
+            / cnt as f64;
+        let rout = radial_vec(center).normalize_or_zero();
+        if rout.length_squared() < 0.5 {
+            bail!("curved through: cap center on the axis (degenerate radial)");
+        }
+
+        // Exit points on the opposite surface (straight bore along −rout).
+        let exit_pts: Vec<DVec3> = entry
+            .iter()
+            .map(|&v| {
+                let p = self.vertex_pos(v).unwrap();
+                p - rout * (2.0 * radial_vec(p).dot(rout))
+            })
+            .collect();
+
+        // Host (remainder/annulus) = the twin-side face of the cap boundary.
+        let host = {
+            let tw = self.hes[self.faces[cap_face].outer().start].next_rad();
+            if tw.is_null() { bail!("curved through: cap boundary is a free edge"); }
+            self.hes[tw].face()
+        };
+
+        // Split the annulus at the exit ring (ADR-269 — a bore crossing a void →
+        // exit points off-cylinder → split fails → rejected).
+        let (exit_cap, _rem) = self
+            .split_cylinder_face_by_circle(host, &exit_pts)
+            .ok_or_else(|| anyhow::anyhow!(
+                "curved through: exit split failed — 관통 축이 기존 구멍/특징과 교차하거나 반대면에 닿지 않습니다"
+            ))?;
+        let exit = self.collect_loop_verts(self.faces[exit_cap].outer().start)?;
+        if exit.len() != cnt {
+            // Re-pair handles minor count drift; a large mismatch is unsupported.
+            if exit.is_empty() {
+                bail!("curved through: exit ring empty");
+            }
+        }
+
+        let material = self.faces[cap_face].material();
+        // Remove BOTH caps → two aligned holes in the cylinder wall.
+        self.remove_face(cap_face);
+        self.remove_face(exit_cap);
+
+        // Pair entry[i] → the exit vert nearest its straight projection exit_pts[i].
+        let paired: Vec<VertId> = (0..cnt)
+            .map(|i| {
+                let target = exit_pts[i];
+                exit.iter()
+                    .copied()
+                    .min_by(|&x, &y| {
+                        let dx = self.vertex_pos(x).unwrap().distance_squared(target);
+                        let dy = self.vertex_pos(y).unwrap().distance_squared(target);
+                        dx.partial_cmp(&dy).unwrap()
+                    })
+                    .unwrap()
+            })
+            .collect();
+
+        // Tube walls — bridge entry[i] → paired[i] in entry-loop order (welds the
+        // freed cap-side half-edges). Winding faces into the tunnel (void).
+        let mut tube_faces = Vec::with_capacity(cnt);
+        for i in 0..cnt {
+            let a = entry[i];
+            let a2 = entry[(i + 1) % cnt];
+            let b = paired[i];
+            let b2 = paired[(i + 1) % cnt];
+            tube_faces.push(self.add_face(&[a, a2, b2, b], material)?);
+        }
+
+        let report = self.verify_face_invariants();
+        if !report.is_valid() {
+            bail!(
+                "curved through: result not manifold ({} violations)",
+                report.violations.len()
+            );
+        }
+        let depth = 2.0 * radial_vec(center).dot(rout); // diametric bore length
+        Ok(DrillThroughResult {
+            entry_face: host,
+            exit_face: host,
+            tube_faces,
+            depth,
+        })
+    }
+
     /// ADR-252 Amendment 2 — drill a THROUGH-hole from a coplanar profile sheet
     /// drawn on a solid wall (the pocket's "push all the way through" sibling).
     /// The sheet is consumed (face + edges) so the punch host-search hits the
@@ -2046,6 +2164,47 @@ mod tests {
             cylinder::evaluate(a2o, a2d, r2, rd2, 0.4, vm2), 0.05).unwrap();
         let (cap2, _) = m2.split_cylinder_face_by_circle(f2[2], &s2).unwrap();
         assert!(m2.carve_curved_pocket(cap2, 10.0).is_err(), "depth reaching the axis must be rejected");
+    }
+
+    /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap:
+    /// the cap + a mirrored exit patch are consumed, N tube walls bridge them, and
+    /// the result stays a watertight genus-1 tunnel (closed solid).
+    #[test]
+    fn adr271_carve_curved_through_cylinder() {
+        use crate::surfaces::{cylinder, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let faces = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 24, mat).expect("cylinder");
+        let annulus = faces[2];
+        let (ax_o, ax_d, rad, refd, vlo, vhi) = match mesh.face_surface(annulus).cloned().unwrap() {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (axis_origin, axis_dir, radius, ref_dir, v_range.0, v_range.1),
+            _ => unreachable!(),
+        };
+        let vmid = 0.5 * (vlo + vhi);
+        let cp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.0, vmid);
+        let rp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.35, vmid);
+        let samples = cylinder::circle_on_cylinder(ax_o, ax_d, rad, refd, cp, rp, 0.05).unwrap();
+        let (cap, _) = mesh.split_cylinder_face_by_circle(annulus, &samples).unwrap();
+
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, "closed before");
+        let n_entry = mesh.collect_loop_verts(mesh.faces[cap].outer().start).unwrap().len();
+
+        let res = mesh.carve_curved_through(cap).expect("curved through must drill");
+        assert_eq!(res.tube_faces.len(), n_entry, "one tube wall per entry edge");
+        // Diametric bore: from the cap center (chord center, slightly inside the
+        // surface) through the axis → just under the full diameter (2·radius).
+        assert!(res.depth > 1.8 * rad && res.depth <= 2.0 * rad + 1e-6,
+            "bore ≈ diameter (2·{rad}), got {}", res.depth);
+
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after curved through");
+        // A through-tunnel keeps the solid watertight (genus-1, no open boundary).
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid,
+            "drilled-through cylinder stays a watertight closed solid (tunnel)");
     }
 
     /// Both caps become ring-with-hole (each gains exactly one inner loop).
