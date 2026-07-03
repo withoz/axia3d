@@ -160,11 +160,13 @@ impl Mesh {
             {
                 continue;
             }
-            // Adjacency: faces sharing a vertex legitimately touch — skip.
-            if a.verts.iter().any(|v| b.verts.contains(v)) {
-                continue;
-            }
-            if tris_intersect(&a.tris, &b.tris) {
+            // Faces sharing a vertex/edge legitimately touch there. Instead of
+            // skipping them outright (which misses folds that penetrate past the
+            // shared feature, and coplanar overlaps), we use STRICT tests below
+            // that ignore boundary/shared-feature touching but still catch real
+            // penetration and coplanar area overlap.
+            let share = a.verts.iter().any(|v| b.verts.contains(v));
+            if faces_geom_intersect(&a.tris, &b.tris, share) {
                 pairs.push((a.fid, b.fid));
             }
         }
@@ -257,18 +259,136 @@ impl Mesh {
     }
 }
 
-/// True if any triangle of `a` properly intersects any triangle of `b`.
-/// The caller guarantees the two faces share no vertex, so any intersection is
-/// a genuine crossing (not adjacency).
-fn tris_intersect(a: &[[DVec3; 3]], b: &[[DVec3; 3]]) -> bool {
+/// Relative tolerance for the strict interior/penetration predicates. Positions
+/// are in mm; these are unitless (barycentric / normalised) or relative to edge
+/// length, so they behave the same at any scale.
+const TRI_EPS: f64 = 1e-7;
+
+/// True if any triangle of face `a` intersects any triangle of face `b`.
+/// `share` = the two faces share ≥1 vertex (are locally adjacent).
+///
+/// Per triangle pair:
+/// - **Coplanar** → 2D area overlap (deep test: a vertex strictly inside the
+///   other, or edges properly crossing). Adjacent coplanar faces sit side by
+///   side (0 area overlap) so they are not flagged — this holds even when they
+///   share a vertex, so coplanar folds ARE caught.
+/// - **Non-coplanar, faces share a vertex** → strict edge-pierces-interior test.
+///   Touching at the shared edge/vertex is on the boundary (excluded); only a
+///   fold that penetrates PAST the shared feature is flagged.
+/// - **Non-coplanar, no shared vertex** → the plane-interval test
+///   (`triangle_triangle_intersection`), which already handles this case.
+fn faces_geom_intersect(a: &[[DVec3; 3]], b: &[[DVec3; 3]], share: bool) -> bool {
     for ta in a {
         for tb in b {
-            if triangle_triangle_intersection(ta[0], ta[1], ta[2], tb[0], tb[1], tb[2]).is_some() {
+            if tri_pair_intersect(ta, tb, share) {
                 return true;
             }
         }
     }
     false
+}
+
+fn tri_normal(t: &[DVec3; 3]) -> DVec3 {
+    (t[1] - t[0]).cross(t[2] - t[0])
+}
+
+fn tri_pair_intersect(ta: &[DVec3; 3], tb: &[DVec3; 3], share: bool) -> bool {
+    let na = tri_normal(ta);
+    let nb = tri_normal(tb);
+    let (la2, lb2) = (na.length_squared(), nb.length_squared());
+    if la2 < 1e-24 || lb2 < 1e-24 {
+        return false; // degenerate triangle
+    }
+    let na = na / la2.sqrt();
+    let nb = nb / lb2.sqrt();
+
+    // Coplanar? (parallel normals + same plane offset)
+    if na.cross(nb).length() < 1e-7 {
+        let off = (tb[0] - ta[0]).dot(na);
+        // Tolerance relative to triangle size.
+        let scale = (ta[1] - ta[0]).length().max((tb[1] - tb[0]).length()).max(1e-9);
+        if off.abs() < TRI_EPS * scale {
+            return coplanar_tris_overlap(ta, tb, na);
+        }
+        return false; // parallel but distinct planes
+    }
+
+    // Non-coplanar.
+    if share {
+        // Strict: an edge of one must pierce the STRICT interior of the other.
+        edges(ta).iter().any(|&(p, q)| edge_pierces_interior(p, q, tb, nb))
+            || edges(tb).iter().any(|&(p, q)| edge_pierces_interior(p, q, ta, na))
+    } else {
+        triangle_triangle_intersection(ta[0], ta[1], ta[2], tb[0], tb[1], tb[2]).is_some()
+    }
+}
+
+fn edges(t: &[DVec3; 3]) -> [(DVec3, DVec3); 3] {
+    [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]
+}
+
+/// Segment `p0→p1` crosses the plane of `tri` strictly (endpoints on opposite
+/// sides, not On) and the crossing point lies strictly inside `tri`.
+fn edge_pierces_interior(p0: DVec3, p1: DVec3, tri: &[DVec3; 3], n: DVec3) -> bool {
+    let len = (p1 - p0).length().max(1e-9);
+    let margin = TRI_EPS * len;
+    let d0 = (p0 - tri[0]).dot(n);
+    let d1 = (p1 - tri[0]).dot(n);
+    // Must strictly straddle — a shared vertex/edge sits ON the plane (d≈0).
+    if !((d0 > margin && d1 < -margin) || (d0 < -margin && d1 > margin)) {
+        return false;
+    }
+    let t = d0 / (d0 - d1);
+    let hit = p0 + (p1 - p0) * t;
+    point_strictly_in_tri(hit, tri, n)
+}
+
+/// True if `p` (assumed on `tri`'s plane) is strictly inside the triangle.
+fn point_strictly_in_tri(p: DVec3, tri: &[DVec3; 3], n: DVec3) -> bool {
+    let two_area = tri_normal(tri).dot(n).abs().max(1e-18);
+    let c0 = (tri[1] - tri[0]).cross(p - tri[0]).dot(n) / two_area;
+    let c1 = (tri[2] - tri[1]).cross(p - tri[1]).dot(n) / two_area;
+    let c2 = (tri[0] - tri[2]).cross(p - tri[2]).dot(n) / two_area;
+    c0 > TRI_EPS && c1 > TRI_EPS && c2 > TRI_EPS
+}
+
+/// Two coplanar triangles overlap in positive area: a vertex of one strictly
+/// inside the other, or two edges properly cross. (Shared-edge adjacency yields
+/// neither, so it is not flagged.)
+fn coplanar_tris_overlap(ta: &[DVec3; 3], tb: &[DVec3; 3], n: DVec3) -> bool {
+    for &p in ta {
+        if point_strictly_in_tri(p, tb, n) {
+            return true;
+        }
+    }
+    for &p in tb {
+        if point_strictly_in_tri(p, ta, n) {
+            return true;
+        }
+    }
+    for &(a0, a1) in &edges(ta) {
+        for &(b0, b1) in &edges(tb) {
+            if segments_properly_cross(a0, a1, b0, b1, n) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Strict crossing of two coplanar segments (interior intersection, not shared
+/// endpoints or collinear touch).
+fn segments_properly_cross(a0: DVec3, a1: DVec3, b0: DVec3, b1: DVec3, n: DVec3) -> bool {
+    let da = a1 - a0;
+    let db = b1 - b0;
+    let denom = da.cross(db).dot(n);
+    let scale = (da.length() * db.length()).max(1e-18);
+    if denom.abs() < TRI_EPS * scale {
+        return false; // parallel / collinear
+    }
+    let t = (b0 - a0).cross(db).dot(n) / denom;
+    let u = (b0 - a0).cross(da).dot(n) / denom;
+    t > TRI_EPS && t < 1.0 - TRI_EPS && u > TRI_EPS && u < 1.0 - TRI_EPS
 }
 
 #[cfg(test)]
@@ -400,6 +520,94 @@ mod tests {
 
         let r = m.detect_self_intersections();
         assert_eq!(r.count(), 1, "exactly one planted intersection among 64+ tiles: {:?}", r.intersecting_pairs);
+    }
+
+    #[test]
+    fn coplanar_overlapping_faces_detected() {
+        // Two coplanar quads at z=0 whose areas overlap ([5,10]²), no shared
+        // vertex. The plane-interval test misses coplanar cases; the deepened
+        // coplanar area test must catch it.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        let b0 = m.add_vertex(DVec3::new(5.0, 5.0, 0.0));
+        let b1 = m.add_vertex(DVec3::new(15.0, 5.0, 0.0));
+        let b2 = m.add_vertex(DVec3::new(15.0, 15.0, 0.0));
+        let b3 = m.add_vertex(DVec3::new(5.0, 15.0, 0.0));
+        m.add_face(&[b0, b1, b2, b3], mat).unwrap();
+
+        assert!(!m.detect_self_intersections().is_clean(), "coplanar area overlap must be detected");
+    }
+
+    #[test]
+    fn coplanar_shared_vertex_fold_detected() {
+        // A quad and a triangle that SHARE a corner vertex but the triangle lies
+        // inside the quad's area (a coplanar fold-back). Old code skipped all
+        // vertex-sharing pairs and missed this; the deepened area test catches
+        // it because adjacency (side-by-side) has zero area overlap but this has
+        // the triangle strictly inside.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        // triangle shares corner a0=(0,0,0), other verts strictly inside the
+        // quad (off both earcut diagonals y=x and y=10-x).
+        let t1 = m.add_vertex(DVec3::new(6.0, 2.0, 0.0));
+        let t2 = m.add_vertex(DVec3::new(2.0, 6.0, 0.0));
+        m.add_face(&[a0, t1, t2], mat).unwrap();
+
+        assert!(!m.detect_self_intersections().is_clean(),
+            "coplanar overlap sharing a vertex must be detected");
+    }
+
+    #[test]
+    fn vertex_sharing_fold_penetration_detected() {
+        // Two faces sharing ONE vertex; one stabs through the other's interior
+        // (non-coplanar). Old code skipped shared-vertex pairs; the deepened
+        // strict edge-pierce test catches the penetration past the shared vertex.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        // triangle shares a0; its far edge is a vertical segment at (3,6) that
+        // pierces the quad interior at (3,6,0) — off both earcut diagonals.
+        let s1 = m.add_vertex(DVec3::new(3.0, 6.0, -5.0));
+        let s2 = m.add_vertex(DVec3::new(3.0, 6.0, 5.0));
+        m.add_face(&[a0, s1, s2], mat).unwrap();
+
+        assert!(!m.detect_self_intersections().is_clean(),
+            "vertex-sharing penetration must be detected");
+    }
+
+    #[test]
+    fn coplanar_adjacent_faces_not_flagged() {
+        // Two coplanar quads side by side sharing an edge — legitimate adjacency,
+        // zero area overlap. Must NOT be flagged even though they are coplanar
+        // and share vertices.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        // shares edge a1-a2 (x=10), extends to x=20
+        let b1 = m.add_vertex(DVec3::new(20.0, 0.0, 0.0));
+        let b2 = m.add_vertex(DVec3::new(20.0, 10.0, 0.0));
+        m.add_face(&[a1, b1, b2, a2], mat).unwrap();
+
+        assert!(m.detect_self_intersections().is_clean(),
+            "coplanar side-by-side faces must not be flagged");
     }
 
     #[test]
