@@ -7437,11 +7437,71 @@ impl Scene {
         let cap_shape = self.face_to_shape.get(&cap_face).copied();
         let cap_xia = self.face_to_xia.get(&cap_face).copied();
 
+        // ADR-271 δ — route to a diametric THROUGH-hole when the inward push goes
+        // past the axis (depth ≥ cylinder radius); otherwise a blind pocket. The
+        // pocket floor must stay inside (depth < radius), so a deeper push is
+        // unambiguously "drill through". Relative slack absorbs f32 (ADR-269).
+        let cap_radius = match self.mesh.face_surface(cap_face) {
+            Some(axia_geo::surfaces::AnalyticSurface::Cylinder { radius, .. }) => Some(*radius),
+            _ => None,
+        };
+        let through = cap_radius.map_or(false, |r| depth >= r - (r * 1e-3).max(1e-3));
+
         let own_transaction = !self.transactions.is_recording();
         let before = self.scene_snapshot();
         if own_transaction {
             self.transactions.begin();
             self.transactions.set_before_snapshot(before.clone());
+        }
+
+        if through {
+            match self.mesh.carve_curved_through(cap_face) {
+                Ok(result) => {
+                    // The cap is consumed; the tube walls join the cap's owner
+                    // (the mirrored exit patch is internal — host id unchanged).
+                    let new_faces = result.tube_faces.clone();
+                    if let Some(sid) = cap_shape {
+                        if let Some(shape) = self.shapes.get_mut(&sid) {
+                            shape.face_ids.retain(|&f| f != cap_face);
+                            for &nf in &new_faces {
+                                if !shape.face_ids.contains(&nf) {
+                                    shape.face_ids.push(nf);
+                                }
+                            }
+                        }
+                        for &nf in &new_faces {
+                            self.face_to_shape.insert(nf, sid);
+                        }
+                        self.face_to_shape.remove(&cap_face);
+                    } else if let Some(xid) = cap_xia {
+                        if let Some(xia) = self.xias.get_mut(&xid) {
+                            xia.face_ids.retain(|&f| f != cap_face);
+                            xia.face_ids.extend(new_faces.iter());
+                        }
+                        for &nf in &new_faces {
+                            self.face_to_xia.insert(nf, xid);
+                        }
+                        self.face_to_xia.remove(&cap_face);
+                    }
+                    if own_transaction {
+                        self.transactions.set_after_snapshot(self.scene_snapshot());
+                        self.transactions.commit();
+                    }
+                    return CommandResult::PushPullDone {
+                        sides_created: result.tube_faces.len(),
+                        adj_splits: 0,
+                        base_removed: true,
+                        split_debug: Vec::new(),
+                    };
+                }
+                Err(e) => {
+                    self.restore_scene_snapshot(&before);
+                    if own_transaction {
+                        self.transactions.cancel();
+                    }
+                    return CommandResult::Error(e.to_string());
+                }
+            }
         }
 
         match self.mesh.carve_curved_pocket(cap_face, depth) {
