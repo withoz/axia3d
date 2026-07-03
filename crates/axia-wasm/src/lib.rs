@@ -5695,10 +5695,17 @@ impl AxiaEngine {
         }
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
 
         match self.scene.mesh.fillet_edge(eid, radius, segments) {
             Ok(res) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, &before_snapshot, "fillet", true,
+                ) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -5730,10 +5737,17 @@ impl AxiaEngine {
             return -1;
         }
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
 
         match self.scene.mesh.chamfer_vertex_3way(vid, radius) {
             Ok(res) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, &before_snapshot, "chamfer", true,
+                ) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -7784,10 +7798,17 @@ impl AxiaEngine {
         }
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
 
         match self.scene.mesh.merge_faces_by_edge(eid) {
             Ok(new_face) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, &before_snapshot, "merge", true,
+                ) {
+                    return -1;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -7912,6 +7933,84 @@ impl AxiaEngine {
                 "부피 무결성 위반으로 취소됨 ({}): {}",
                 label,
                 after.summary()
+            ));
+            self.invalidate_cache();
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Boundary-edge count over ALL active faces (ClosedSolid scope). 0 = the
+    /// whole mesh is watertight.
+    fn active_boundary_count(&self) -> usize {
+        let active: Vec<FaceId> = self
+            .scene
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        self.scene.mesh.face_set_manifold_info(&active).boundary_edge_count
+    }
+
+    /// Adversarial-sweep closure-preserving gate for hand-rolled face-rebuild
+    /// ops (merge / chamfer / fillet).
+    ///
+    /// `integrity_gate_passed` uses `IntegrityScope::OpenMesh`, which forces
+    /// `open_boundary_edges = 0` — so it CANNOT see a closed→open tear (a solid
+    /// silently opening). merge/chamfer/fillet produce exactly that: boundary
+    /// edges, not coincident cracks. This gate uses `ClosedSolid` scope and,
+    /// **only when the input was fully watertight** (`before_boundary == 0`),
+    /// rejects a result that opened it. Inputs that were already open (sheets)
+    /// are never rejected for boundary — closure is not their contract — so this
+    /// adds no false rejections; cracks / invariant violations are still caught
+    /// for every input. On rejection it restores the pre-op snapshot and rolls
+    /// back the transaction (mirrors `integrity_gate_passed`).
+    fn closure_preserving_gate_passed(
+        &mut self,
+        before_boundary: usize,
+        snapshot: &[u8],
+        label: &str,
+        manual_txn: bool,
+    ) -> bool {
+        let active: Vec<FaceId> = self
+            .scene
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let after = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::ClosedSolid(&active));
+        // Only enforce closure when the input was genuinely closed.
+        let opened = before_boundary == 0 && after.open_boundary_edges > 0;
+        if opened
+            || !after.invariant_violations.is_empty()
+            || !after.geometric_cracks.is_empty()
+        {
+            console_error!(
+                "[RUST] {} REJECTED by closure gate: opened={} (boundary {}→{}), cracks={}, inv={}",
+                label,
+                opened,
+                before_boundary,
+                after.open_boundary_edges,
+                after.geometric_cracks.len(),
+                after.invariant_violations.len()
+            );
+            self.scene.restore_scene_snapshot(snapshot);
+            if manual_txn {
+                self.scene.transactions.cancel();
+            } else {
+                self.scene.transactions.discard_last_undo();
+            }
+            self.set_error(format!(
+                "면 재구성이 solid 를 여는 결과가 되어 취소됨 ({}): 경계 {}→{}",
+                label, before_boundary, after.open_boundary_edges
             ));
             self.invalidate_cache();
             false
