@@ -2895,6 +2895,55 @@ mod tests {
         }
     }
 
+    /// Adversarial sweep (pattern #5 — split_edge leaves the new vertex's
+    /// `v_next` origin-radial fan unwired). `split_edge` wires the per-edge
+    /// twin chain (`next_rad`) but never inserts the new half-edges into their
+    /// origin vertex's v-ring. Every fan-walk consumer (move_vertex,
+    /// translate/rotate/scale_verts, fillet, deform, offset) then silently
+    /// misses incident faces of a split vertex → stale normals / partial cache
+    /// invalidation with no error.
+    #[test]
+    fn split_edge_rebuilds_vertex_fan() {
+        use std::collections::HashSet;
+        let mut m = Mesh::new();
+        let (top, _) = make_box(&mut m, 4.0, 4.0, 3.0);
+
+        // A boundary edge of the top face is shared with a side face (2 faces).
+        let loop_hes = m.collect_loop_hes(m.faces[top].outer().start).unwrap();
+        let edge = m.hes[loop_hes[0]].edge();
+        let (faces_before, _) = m.get_faces_sharing_edge(edge);
+        assert_eq!(faces_before.len(), 2, "edge shared by top + side face");
+
+        let ea = m.vertex_pos(m.edges[edge].v_small()).unwrap();
+        let eb = m.vertex_pos(m.edges[edge].v_large()).unwrap();
+        let (vp, _, _) = m.split_edge(edge, (ea + eb) * 0.5).unwrap();
+
+        // Ground truth: active faces whose loop contains vp.
+        let truth: HashSet<FaceId> = m.faces.iter()
+            .filter(|(_, f)| f.is_active())
+            .filter(|(_, f)| m.collect_loop_verts(f.outer().start)
+                .map(|vs| vs.contains(&vp)).unwrap_or(false))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(truth.len(), 2, "vp is incident to 2 faces");
+
+        // Fan walk via the v_next origin-radial ring.
+        let mut fan: HashSet<FaceId> = HashSet::new();
+        if let Some(start) = m.verts[vp].outgoing() {
+            let mut he = start;
+            for _ in 0..64 {
+                let h = &m.hes[he];
+                if h.is_active() && !h.face().is_null() { fan.insert(h.face()); }
+                let nxt = h.v_next();
+                if nxt == start || nxt.is_null() { break; }
+                he = nxt;
+            }
+        }
+        assert_eq!(fan, truth,
+            "REGRESSION: v_next fan of split vertex must enumerate ALL incident \
+             faces (found {:?}, expected {:?})", fan, truth);
+    }
+
     /// Adversarial sweep (pattern #2 — silent T-junction on merge).
     /// Splitting a solid's top face then merging the two halves back MUST keep
     /// the box a closed solid. The merge's collinear-simplify used to drop the

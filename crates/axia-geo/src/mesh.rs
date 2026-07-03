@@ -9226,29 +9226,27 @@ impl Mesh {
             self.edges[e2].set_any_he(first);
         }
 
-        // ─── 6. Set vertex outgoing for new vertex P ────────────────
-        if let Some(&he) = e1_hes.first() {
-            self.verts[vp].set_outgoing(Some(he));
+        // ─── 6. Rebuild the v_next origin-radial rings ──────────────
+        // (Adversarial sweep pattern #5.) The manual HE creation above only
+        // wired the per-edge twin chain (`next_rad`). It left the new
+        // half-edges out of their origin vertex's v-ring, so `v.outgoing()`
+        // → `v_next` no longer enumerated all incident faces of the new
+        // vertex `vp` (nor the re-anchored `va`/`vb`). Every fan-walk consumer
+        // (`move_vertex`, translate/rotate/scale_verts, fillet, deform,
+        // offset) then silently skipped incident faces → stale normals /
+        // partial cache invalidation with no error.
+        //
+        // Fix: unlink each deactivated old half-edge from its origin ring,
+        // then splice every new half-edge into its origin's ring. The helpers
+        // set `outgoing` as needed (vp starts empty → first insert self-loops
+        // and anchors; va/vb re-anchor off the removed old HE).
+        for info in &old_hes_info {
+            let origin = if info.dst == vb { va } else { vb };
+            self.remove_from_v_ring(origin, info.id);
         }
-
-        // Update outgoing for A and B if they pointed to deactivated HEs
-        if let Some(out) = self.verts[va].outgoing() {
-            if !self.hes[out].is_active() {
-                // Find a new active HE starting from A
-                for &he_id in &e1_hes {
-                    if let Ok(src) = self.he_src(he_id) {
-                        if src == va { self.verts[va].set_outgoing(Some(he_id)); break; }
-                    }
-                }
-            }
-        }
-        if let Some(out) = self.verts[vb].outgoing() {
-            if !self.hes[out].is_active() {
-                for &he_id in &e2_hes {
-                    if let Ok(src) = self.he_src(he_id) {
-                        if src == vb { self.verts[vb].set_outgoing(Some(he_id)); break; }
-                    }
-                }
+        for &he in e1_hes.iter().chain(e2_hes.iter()) {
+            if let Ok(src) = self.he_src(he) {
+                self.insert_into_v_ring(src, he);
             }
         }
 
@@ -12021,15 +12019,32 @@ impl Mesh {
         let n = verts.len();
         if n < 3 { return verts.to_vec(); }
 
-        // Build the set of vertices referenced by any active face OUTSIDE
-        // `owner_faces`. Scanning the loops is robust — it does not rely on the
-        // per-vertex radial half-edge chain being intact (which `split_edge`
-        // may leave partial, sweep pattern #5). A vertex in this set is
-        // load-bearing: straightening it out of the merged loop while a
-        // neighbour keeps its split edges creates a T-junction (open solid).
+        // Plane of the merged loop — a collinear vertex only needs preserving if
+        // a *non-coplanar* neighbour keeps it. A coplanar neighbour sharing the
+        // vertex is itself mergeable, so the T-junction it would form is
+        // transient (it collapses once that neighbour merges too); collapsing
+        // there keeps flat progressive merges (e.g. a rect grid) converging.
+        // A non-coplanar neighbour (a solid's perpendicular side face) never
+        // merges into this plane, so dropping the shared vertex would leave a
+        // permanent T-junction and silently open the solid.
+        let loop_normal = self.newell_raw(verts)
+            .map(|nv| nv.normalize_or_zero())
+            .unwrap_or(glam::DVec3::ZERO);
+
+        // Build the set of vertices referenced by a non-coplanar active face
+        // OUTSIDE `owner_faces`. Scanning the loops is robust — it does not rely
+        // on the per-vertex radial half-edge chain being intact (sweep pattern
+        // #5). Such a vertex is load-bearing for that neighbour.
         let mut external: rustc_hash::FxHashSet<VertId> = rustc_hash::FxHashSet::default();
         for (fid, face) in self.faces.iter() {
             if !face.is_active() || owner_faces.contains(&fid) { continue; }
+            // Coplanar (parallel normal) neighbours can't pin a collinear vertex.
+            let fnorm = face.normal().normalize_or_zero();
+            if loop_normal.length_squared() > 0.5
+                && fnorm.dot(loop_normal).abs() > 0.9999
+            {
+                continue;
+            }
             let start = face.outer().start;
             if !start.is_null() {
                 if let Ok(vs) = self.collect_loop_verts(start) {
