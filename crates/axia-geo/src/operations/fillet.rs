@@ -281,7 +281,9 @@ impl Mesh {
         // is chosen so that the first inserted arc vertex matches the
         // F1-side neighbor (to keep winding outward).
         if let Some((_fid, ref verts, material)) = f3_a_info {
-            let new_verts = splice_vertex_replacement(verts, v_a, &arc_a_verts)?;
+            // Orient the arc to F3_a's winding (sweep #2 — see orient_arc_for_f3).
+            let arc = orient_arc_for_f3(self, verts, v_a, &arc_a_verts, dir_f1_va)?;
+            let new_verts = splice_vertex_replacement(verts, v_a, &arc)?;
             self.add_face_with_holes(&new_verts, &[], material)?;
         }
         if let Some((f3_b_id, ref verts, material)) = f3_b_info {
@@ -293,7 +295,8 @@ impl Mesh {
                            single-ring topology not yet supported");
                 }
             }
-            let new_verts = splice_vertex_replacement(verts, v_b, &arc_b_verts)?;
+            let arc = orient_arc_for_f3(self, verts, v_b, &arc_b_verts, dir_f1_vb)?;
+            let new_verts = splice_vertex_replacement(verts, v_b, &arc)?;
             self.add_face_with_holes(&new_verts, &[], material)?;
         }
 
@@ -565,6 +568,41 @@ fn splice_edge_replacement(
 /// The arc is inserted in natural order; caller guarantees `arc_verts[0]`
 /// is the F1-side endpoint and `arc_verts[last]` is the F2-side endpoint
 /// so the result preserves the parent face's winding.
+/// Orient an endpoint arc so its F1-side end (`arc[0]`, offset along `f1_dir`)
+/// sits next to the F1-side neighbour of `v` in face `verts`.
+///
+/// (Adversarial sweep pattern #2.) The ADR-024 fillet MVP always spliced the
+/// arc forward, even though its own comment promised a direction choice. On
+/// faces whose winding places the F1-side neighbour AFTER `v`, the forward arc
+/// went in reversed → the arc edges no longer matched the fillet strip / F1'
+/// edges and the solid silently opened (boundary edges), while
+/// `verify_face_invariants` still passed. Choosing the order by which neighbour
+/// aligns with `f1_dir` keeps every shared edge matched.
+fn orient_arc_for_f3(
+    mesh: &Mesh,
+    verts: &[VertId],
+    v: VertId,
+    arc: &[VertId],
+    f1_dir: DVec3,
+) -> Result<Vec<VertId>> {
+    let n = verts.len();
+    let idx = verts.iter().position(|&x| x == v)
+        .ok_or_else(|| anyhow::anyhow!("fillet: endpoint {} not in F3 loop", v.raw()))?;
+    let prev = verts[(idx + n - 1) % n];
+    let next = verts[(idx + 1) % n];
+    let vp = mesh.vertex_pos(v)?;
+    let d_prev = (mesh.vertex_pos(prev)? - vp).normalize_or_zero();
+    let d_next = (mesh.vertex_pos(next)? - vp).normalize_or_zero();
+    // arc[0] is on the F1 side; keep it adjacent to whichever neighbour points
+    // that way. If `prev` is the F1-side neighbour, forward keeps arc[0] next to
+    // it; otherwise reverse so arc[0] ends up next to `next`.
+    if d_prev.dot(f1_dir) >= d_next.dot(f1_dir) {
+        Ok(arc.to_vec())
+    } else {
+        Ok(arc.iter().rev().copied().collect())
+    }
+}
+
 fn splice_vertex_replacement(
     loop_verts: &[VertId],
     v: VertId,
@@ -683,6 +721,39 @@ mod tests {
         let report = m.verify_face_invariants();
         assert_eq!(report.violations.len(), 0,
             "invariants after cube fillet:\n{}", report.summary());
+    }
+
+    /// Adversarial sweep (pattern #2 — fillet must not silently open the solid).
+    /// The ADR-024 MVP always spliced the endpoint arc into F3 forward, so on
+    /// half the cube edges the arc went in reversed → shared edges broke and the
+    /// cube opened (boundary edges) while `verify_face_invariants` still passed.
+    /// `orient_arc_for_f3` picks the correct direction.
+    #[test]
+    fn fillet_cube_edge_keeps_closed() {
+        fn manifold(m: &Mesh) -> crate::mesh::ManifoldInfo {
+            let active: Vec<_> = m.faces.iter()
+                .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+            m.face_set_manifold_info(&active)
+        }
+        // Every cube edge that fillets successfully must stay a closed solid.
+        let mut filleted = 0;
+        for i in 0..12 {
+            let (mut m, _) = cube_mesh();
+            assert!(manifold(&m).is_closed_solid, "cube starts closed");
+            let edges: Vec<_> = m.edges.iter()
+                .filter(|(_, e)| e.is_active()).map(|(id, _)| id).collect();
+            let eid = edges[i];
+            if m.fillet_edge(eid, 2.0, 4).is_err() { continue; } // direction-limited edge
+            filleted += 1;
+            let info = manifold(&m);
+            assert!(info.is_closed_solid,
+                "REGRESSION: fillet of edge #{} opened the solid \
+                 (boundary={}, non_manifold={})",
+                i, info.boundary_edge_count, info.non_manifold_edge_count);
+            assert_eq!(info.boundary_edge_count, 0, "no boundary edges");
+            assert!(m.verify_face_invariants().violations.is_empty());
+        }
+        assert!(filleted >= 1, "at least one edge should fillet successfully");
     }
 
     #[test]
