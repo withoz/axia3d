@@ -119,8 +119,17 @@ KeyboardShortcuts 251/251 PASS.
 
 ### F.4 사용법 (사용자 답)
 - **면 위에 그리기**: 그 면에 커서 → 자동으로 그 면에 그려짐 (§3).
-- **다시 바닥(z=0)에 그리기**: **Ctrl+Shift+P** (또는 **우클릭 → 평면 잠금 해제**,
+- **다시 바닥(z=0)에 그리기**: **Home 키** (또는 **우클릭 → 기본 평면으로**,
   또는 **Top 뷰 전환**) → 빈 공간은 바닥 z=0, 면 위는 여전히 그 면.
+
+### F.6 Amendment 2 — 단축키 Ctrl+Shift+P → Home (2026-07-03)
+`Ctrl+Shift+P` 는 **Command Palette (명령어 찾기, `main.ts` Ctrl+K /
+Ctrl+Shift+P)** 와 충돌 → 평면 초기화 단축키를 **Home** 으로 이전 (사용자 요청).
+Home 은 keydown 미배정(카메라 홈은 F5 + 🏠 버튼)이라 충돌 없음. `view-home` 의
+팔레트 표시 단축키는 실제 값 `F5` 로 정정(이전 stale `Home`). UI 힌트 3곳(우클릭
+메뉴 key badge / 🔒 배지 툴팁 / DrawPlaneTool Toast) 모두 Home 으로 통일. 브라우저
+검증: Home → 평면 초기화 동작, Ctrl+Shift+P → 평면 리셋 안 함(팔레트 전용).
+회귀 무손상 124/124 (KeyboardShortcuts + AxiaCommands + MenuBar + ContextMenu).
 
 ### F.5 회귀 자산 (절대 #[ignore] 금지)
 - `ADR-270 … resetDrawingPlane clears BOTH lock and sticky → empty space back to

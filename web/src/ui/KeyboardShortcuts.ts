@@ -333,18 +333,13 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       toolManager.executeAction('ungroup');
       return;
     }
-    // Ctrl+Shift+P: ADR-166 β-3 — 평면 잠금 해제 (Plane lock unlock).
-    // Strong cross-tool plane lock 의 명시 release 단축키.
-    // Mnemonic: P = Plane. 단축키 충돌 audit 통과 (P 단독 = Polygon /
-    // PushPull 미배정 영역).
-    if (e.ctrlKey && e.shiftKey && (e.key === 'p' || e.key === 'P')) {
+    // Home: 작업 평면 초기화 (Plane reset — lock + sticky 해제 → 빈 공간 바닥 z=0).
+    // ADR-270 §amendment 2 (사용자 요청 2026-07-03) — 기존 Ctrl+Shift+P 는
+    // Command Palette(명령어 찾기, main.ts Ctrl+K / Ctrl+Shift+P)와 충돌하여
+    // Home 키로 이전. Home 은 keydown 미배정(카메라 홈은 F5 + 🏠 버튼)이라 충돌
+    // 없음. 면에 그린 뒤 커서가 면 위면 그 면 우선, 빈 공간만 바닥으로 복귀.
+    if (e.key === 'Home' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
-      // ADR-270 §amendment — reset the drawing plane to the view default.
-      // Clears the lock AND the sticky last-drawn plane, so after drawing on a
-      // solid face empty space returns to the ground (z=0). A face still under
-      // the cursor keeps priority. Fires whenever a plane is pinned (lock OR
-      // sticky) — previously only cleared the hard lock, leaving the sticky
-      // stuck on the face plane.
       if (toolManager.hasPinnedPlane()) {
         toolManager.resetDrawingPlane();
         Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);

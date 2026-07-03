@@ -2923,7 +2923,7 @@ export class ToolManager {
       const lock = this._planeLock;
       badge.textContent = `🔒 평면 잠금 (${axisLabel(lock.normal)})`;
       badge.style.color = '#d94545';  // 빨강 — strong lock 표시
-      badge.title = 'Ctrl+Shift+P 또는 우클릭 → 기본 평면으로 (평면 초기화)';
+      badge.title = 'Home 또는 우클릭 → 기본 평면으로 (평면 초기화)';
       badge.style.display = '';
       return;
     }

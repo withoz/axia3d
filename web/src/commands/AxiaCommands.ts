@@ -250,7 +250,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-back',   'view', '배면도',        '배면',   undefined, false, deps));
   cmds.push(action('view-left',   'view', '좌측면도',      '좌',     undefined, false, deps));
   cmds.push(action('view-right',  'view', '우측면도',      '우',     undefined, false, deps));
-  cmds.push(action('view-home',   'view', '홈 뷰',         'Home',   undefined, false, deps));
+  cmds.push(action('view-home',   'view', '홈 뷰',         'F5',     undefined, false, deps));
   cmds.push(action('view-axis',   'view', '축 표시 토글',   '축',     undefined, false, deps));
   cmds.push(action('view-grid',   'view', '그리드 토글',    'Grid',   undefined, false, deps));
   cmds.push(action('view-history','view', '작업 기록 패널', 'History','⇧H',     false, deps));

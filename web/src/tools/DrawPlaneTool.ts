@@ -96,7 +96,7 @@ export class DrawPlaneTool implements ITool {
     normal.normalize();
     const up = u.clone().normalize(); // in-plane reference (perpendicular to normal)
     this.ctx.lockPlane?.({ origin: a.clone(), normal, up, source: 'manual' });
-    Toast.info('작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Ctrl+Shift+P 로 해제)', 4000);
+    Toast.info('작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Home 키로 해제)', 4000);
     debugLog(`[Plane] normal=(${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)})`);
   }
 
