@@ -2653,8 +2653,61 @@ impl Mesh {
         const DEFAULT_REVOLVE_SEGMENTS: u32 = 32;
 
         if is_full {
-            // FULL 360° — original open-polyline surface of revolution (no caps;
-            // a closed/axis-touching profile wraps into a closed surface).
+            // FULL 360°. A profile CLEAR of the axis sweeps into a CLOSED SOLID
+            // ring (torus-like). Build it as a section loft with a seamless 2π
+            // wrap (section[segments] coincides with section[0], so add_vertex
+            // dedup welds the seam), NO end caps, and REMOVE the profile — it is
+            // an interior cross-section, not a boundary. Previously this reused
+            // the open-polyline `Mesh::revolve`, which left the profile as an
+            // internal membrane → open (bnd>0) + non-manifold seam, even though
+            // every per-face invariant passed. (Adversarial sweep, Round-11.)
+            //
+            // An axis-touching profile (pole) keeps the legacy open-polyline
+            // surface path — the pole would collapse the section loft.
+            let clear_of_axis = profile_points.iter().all(|&p| {
+                let rel = p - axis_origin;
+                let axial = rel.dot(axis_unit);
+                (rel - axis_unit * axial).length() >= EPSILON_LENGTH * 10.0
+            });
+            if clear_of_axis {
+                let segments = DEFAULT_REVOLVE_SEGMENTS;
+                let step = two_pi / segments as f64;
+                let sections: Vec<Vec<DVec3>> = (0..=segments)
+                    .map(|k| {
+                        let theta = k as f64 * step; // k=segments → 2π ≡ section[0]
+                        profile_points
+                            .iter()
+                            .map(|&p| {
+                                crate::operations::revolve::rotate_around_axis(
+                                    p, axis_origin, axis_unit, theta,
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let side_faces = self
+                    .loft(&sections, /* closed_sections */ true, material)
+                    .map_err(|e| anyhow::anyhow!("Full revolve loft failed: {}", e))?;
+                // The profile is an interior cross-section of the ring — remove it.
+                let _ = self.remove_face(profile_face);
+                if self.faces.contains(profile_face) {
+                    self.faces.remove(profile_face);
+                }
+                let _ = self.reconcile_face_normals();
+                let top_face = side_faces.first().copied().unwrap_or(profile_face);
+                let all_solid_faces = side_faces.clone();
+                return Ok(CreateSolidResult {
+                    profile_face,
+                    solid_kind: SolidKind::RevolutionSolid,
+                    top_face,
+                    side_faces,
+                    all_solid_faces,
+                    adjacent_splits: 0,
+                    split_debug: Vec::new(),
+                });
+            }
+
+            // Axis-touching profile — legacy open-polyline surface of revolution.
             let side_faces = self
                 .revolve(
                     &profile_points,
@@ -6612,19 +6665,25 @@ mod tests {
 
         assert_eq!(result.solid_kind, SolidKind::RevolutionSolid);
         assert_eq!(result.profile_face, profile);
-        // top_face = profile_face sentinel.
-        assert_eq!(result.top_face, profile);
-        // Mesh::revolve generates 32 segments × (n_profile - 1) side faces
-        // for a triangle with no poles (3 verts, 2 edges → 2 strips).
-        // Profile (1,0,0), (2,0,0), (1,1,0): no point on +Y axis, so all
-        // edges produce ring-of-quads (32 quads each).
-        // Specifically: 3 edges × 32 segments = 96 side faces (closed loop).
-        assert!(
-            result.side_faces.len() > 0,
-            "revolve must produce side faces"
-        );
-        // mesh.face_count() should grow by at least the side face count.
+        assert!(result.side_faces.len() > 0, "revolve must produce side faces");
         assert!(mesh.face_count() > face_count_before);
+
+        // Round-11: a full-360 revolve of a profile CLEAR of the axis now yields
+        // a CLOSED SOLID ring (seamless 2π wrap, no caps, profile removed as an
+        // interior cross-section) — previously it left an open, non-manifold
+        // surface with the profile as an internal membrane.
+        let active: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info = mesh.face_set_manifold_info(&active);
+        assert!(info.is_closed_solid,
+            "full-360 revolve of a clear-of-axis profile must be a closed solid \
+             (bnd={}, nm={})", info.boundary_edge_count, info.non_manifold_edge_count);
+        assert_eq!(info.boundary_edge_count, 0, "no open boundary");
+        assert_eq!(info.non_manifold_edge_count, 0, "no non-manifold seam");
+        assert!(mesh.detect_self_intersections().is_clean(), "no self-intersection");
+        // The profile face is consumed (interior cross-section).
+        assert!(!mesh.faces.contains(profile) || !mesh.faces[profile].is_active(),
+            "profile face removed (interior)");
     }
 
     #[test]
