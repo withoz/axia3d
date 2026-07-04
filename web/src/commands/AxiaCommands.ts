@@ -141,6 +141,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(tool('tool-rotate',   'rotate',   'modify', '회전 (Rotate)',   '회전',   'Q', false, undefined, deps));
   cmds.push(tool('tool-scale',    'scale',    'modify', '크기 (Scale)',    '크기',   'S', false, undefined, deps));
   cmds.push(tool('tool-offset',   'offset',   'modify', '오프셋 (Offset)', '오프셋', 'O', true, 'modify', deps));
+  cmds.push(tool('tool-recess',   'recess',   'modify', '홈파기 (Recess · Pocket)', '홈파기', undefined, true, 'modify', deps));
   cmds.push(tool('tool-erase',    'erase',    'modify', '삭제 (Erase)',    '삭제',   'E', true, 'modify', deps));
   cmds.push(tool('tool-chamfer',  'chamfer',  'modify', '꼭짓점 모따기 (Vertex Chamfer)', '모따기', undefined, false, undefined, deps));
   cmds.push(tool('tool-copy',     'copy',     'modify', '복제 (Copy · 2-click offset)', '복제', undefined, false, undefined, deps));

@@ -261,6 +261,31 @@ describe('WasmBridge', () => {
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    it('recessPreview forwards and parses inset/floor loops (read-only, no Toast)', () => {
+      const captured: number[] = [];
+      const warnSpy = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        recess_preview: (f: number, i: number, d: number) => {
+          captured.push(f, i, d);
+          return JSON.stringify({ ok: true, insetLoop: [0, 0, 0, 1, 0, 0], floorLoop: [0, -1, 0, 1, -1, 0] });
+        },
+      };
+      const p = bridge.recessPreview(3, 200, 150);
+      expect(captured).toEqual([3, 200, 150]);
+      expect(p?.ok).toBe(true);
+      expect(p?.insetLoop).toEqual([0, 0, 0, 1, 0, 0]);
+      expect(p?.floorLoop).toEqual([0, -1, 0, 1, -1, 0]);
+      expect(warnSpy).not.toHaveBeenCalled(); // preview is silent
+      warnSpy.mockRestore();
+    });
+
+    it('recessPreview returns null when engine lacks recess_preview', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {};
+      expect(bridge.recessPreview(0, 200, 150)).toBeNull();
+    });
   });
 
   // ════════════════════════════════════════════════════════════════════════

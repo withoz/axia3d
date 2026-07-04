@@ -23,6 +23,7 @@ export class RecessTool implements ITool {
   private ctx: ToolContext;
   private phase: 0 | 1 = 0; // 0 = awaiting face pick, 1 = face picked, awaiting VCB
   private faceId: number = -1;
+  private previewGhost: THREE.Group | null = null;
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx;
@@ -106,6 +107,21 @@ export class RecessTool implements ITool {
     this.cleanup();
   }
 
+  /** Live per-keystroke ghost — renders the pending pocket as the user types. */
+  previewVCBValue(inset: number, depth?: number): void {
+    if (this.phase !== 1 || this.faceId < 0) return;
+    if (depth === undefined || !(inset > 0) || !(depth > 0)) {
+      this.removePreviewGhost();
+      return;
+    }
+    const preview = this.ctx.bridge.recessPreview(this.faceId, inset, depth);
+    if (!preview || !preview.ok || !preview.insetLoop || !preview.floorLoop) {
+      this.removePreviewGhost();
+      return;
+    }
+    this.buildPreviewGhost(preview.insetLoop, preview.floorLoop);
+  }
+
   isBusy(): boolean {
     return this.phase > 0;
   }
@@ -113,11 +129,72 @@ export class RecessTool implements ITool {
   cleanup(): void {
     this.phase = 0;
     this.faceId = -1;
+    this.removePreviewGhost();
     this.ctx.selection.clearSelection();
     this.ctx.dimLabel.clear();
   }
 
   // ── helpers ──────────────────────────────────────────────────────────
+
+  /** Build (or replace) the pocket ghost from flat [x,y,z,...] loops. */
+  private buildPreviewGhost(insetFlat: number[], floorFlat: number[]): void {
+    this.removePreviewGhost();
+    const n = Math.min(insetFlat.length, floorFlat.length) / 3 | 0;
+    if (n < 3) return;
+
+    const inset: THREE.Vector3[] = [];
+    const floor: THREE.Vector3[] = [];
+    for (let i = 0; i < n; i++) {
+      inset.push(new THREE.Vector3(insetFlat[i * 3], insetFlat[i * 3 + 1], insetFlat[i * 3 + 2]));
+      floor.push(new THREE.Vector3(floorFlat[i * 3], floorFlat[i * 3 + 1], floorFlat[i * 3 + 2]));
+    }
+
+    const group = new THREE.Group();
+
+    // Wireframe: inset rim + floor rim + vertical connectors.
+    const linePts: THREE.Vector3[] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      linePts.push(inset[i], inset[j]);   // rim
+      linePts.push(floor[i], floor[j]);   // floor
+      linePts.push(inset[i], floor[i]);   // vertical
+    }
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(linePts);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0xff9f43, depthTest: false, transparent: true, opacity: 0.95,
+    });
+    const lines = new THREE.LineSegments(lineGeo, lineMat);
+    lines.renderOrder = 1000;
+    group.add(lines);
+
+    // Translucent floor fill (triangle fan) for depth cue.
+    const fanIdx: number[] = [];
+    for (let i = 1; i < n - 1; i++) fanIdx.push(0, i, i + 1);
+    const floorGeo = new THREE.BufferGeometry().setFromPoints(floor);
+    floorGeo.setIndex(fanIdx);
+    const floorMat = new THREE.MeshBasicMaterial({
+      color: 0xff9f43, transparent: true, opacity: 0.22,
+      side: THREE.DoubleSide, depthTest: false,
+    });
+    const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+    floorMesh.renderOrder = 999;
+    group.add(floorMesh);
+
+    this.previewGhost = group;
+    this.ctx.viewport.scene.add(group);
+  }
+
+  private removePreviewGhost(): void {
+    if (!this.previewGhost) return;
+    for (const child of this.previewGhost.children) {
+      if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) child.material.dispose();
+      }
+    }
+    this.ctx.viewport.scene.remove(this.previewGhost);
+    this.previewGhost = null;
+  }
 
   private pickFace(e: MouseEvent): number {
     const hit = this.ctx.viewport.pick(e.clientX, e.clientY);

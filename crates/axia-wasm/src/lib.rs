@@ -10043,6 +10043,30 @@ impl AxiaEngine {
         }
     }
 
+    /// Read-only recess preview geometry for the UI ghost (no mutation).
+    /// Returns JSON `{ ok, insetLoop:[x,y,z,...], floorLoop:[x,y,z,...] }` —
+    /// the inset boundary flush with the surface and the recessed floor loop.
+    pub fn recess_preview(&self, face_id_raw: u32, inset: f64, depth: f64) -> String {
+        let fid = FaceId::new(face_id_raw);
+        match self.scene.mesh.recess_preview(fid, inset, depth) {
+            Ok((inset_loop, floor_loop)) => {
+                let flat = |pts: &[DVec3]| -> String {
+                    pts.iter()
+                        .flat_map(|p| [p.x, p.y, p.z])
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                format!(
+                    r#"{{"ok":true,"insetLoop":[{}],"floorLoop":[{}]}}"#,
+                    flat(&inset_loop),
+                    flat(&floor_loop),
+                )
+            }
+            Err(e) => format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'")),
+        }
+    }
+
     /// Edge(line)를 평행하게 offset하여 새 edge 생성 (선만 복사, 면은 만들지 않음)
     /// plane_normal: 참조 평면 법선 (Y-up = 0,1,0)
     pub fn offset_edge(

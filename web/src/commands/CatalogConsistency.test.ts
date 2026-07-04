@@ -74,7 +74,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (176, per ADR-249 P5)', () => {
+  it('CommandCatalog count matches expected total (177, incl. tool-recess)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -89,9 +89,10 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // plane + wall + nurbs → 169; ADR-225 added rotrect + pie + spline
     // (draw-tool drift sweep) → 172; ADR-233 added nurbs-edit → 173;
     // ADR-247 added loft-selected-faces → 174; ADR-248 added revolve-face-solid
-    // → 175; ADR-249 P5 added tool-polygon-hole → 176. The matching ActionCatalog
-    // entries are kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
-    expect(count).toBe(176);
+    // → 175; ADR-249 P5 added tool-polygon-hole → 176; recess UI added
+    // tool-recess (3D pocket) → 177. The matching ActionCatalog entries are
+    // kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
+    expect(count).toBe(177);
   });
 
   it('ActionCatalog count is at least 161 (82 shared + 13 AC-only + 66 ADR-133 added)', () => {

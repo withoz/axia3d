@@ -168,6 +168,23 @@ export function initVCB(deps: VCBDeps): void {
       }
     });
 
+    // Live preview — per-keystroke ghost for tools that support
+    // previewVCBValue (RecessTool). Parse "여유 깊이" (comma/space) and forward
+    // on each input so the pocket ghost updates as the user types.
+    cmdInput.addEventListener('input', () => {
+      if (toolManager.currentTool !== 'recess') return;
+      const raw = cmdInput.value.trim();
+      if (!raw) return;
+      const parts = raw.split(/[,\s]+/).map((s) => units.parseInput(s.trim()));
+      if (
+        parts.length === 2
+        && parts[0] !== null && parts[1] !== null
+        && parts[0]! > 0 && parts[1]! > 0
+      ) {
+        toolManager.previewVCBValue(parts[0]!, parts[1]!);
+      }
+    });
+
     // placeholder
     const updatePlaceholder = () => {
       if (!cmdInput) return;

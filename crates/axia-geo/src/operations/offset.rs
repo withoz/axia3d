@@ -1800,6 +1800,39 @@ impl Mesh {
         })
     }
 
+    /// Read-only preview geometry for a recess (no mutation): the inset
+    /// boundary loop (flush with the surface) and the recessed floor loop
+    /// (inset displaced −normal·depth). The UI renders a ghost wireframe from
+    /// these so the user sees the pocket before committing. Uses the same
+    /// orientation-correct inset sign as `create_recess`.
+    pub fn recess_preview(
+        &self,
+        face_id: FaceId,
+        inset: f64,
+        depth: f64,
+    ) -> Result<(Vec<DVec3>, Vec<DVec3>)> {
+        if !(inset > 0.0) {
+            bail!("recess inset must be positive, got {}", inset);
+        }
+        if !(depth > 0.0) {
+            bail!("recess depth must be positive, got {}", depth);
+        }
+        let face = self
+            .faces
+            .get(face_id)
+            .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?;
+        let normal = face.normal();
+        let loop_vids = self.collect_loop_verts(face.outer().start)?;
+        let positions: Vec<DVec3> = loop_vids
+            .iter()
+            .map(|&v| self.vertex_pos(v))
+            .collect::<Result<Vec<_>>>()?;
+        let signed = self.inset_signed_distance(face_id, inset)?;
+        let inset_loop = compute_offset_polygon(&positions, normal, signed)?;
+        let floor_loop: Vec<DVec3> = inset_loop.iter().map(|p| *p - normal * depth).collect();
+        Ok((inset_loop, floor_loop))
+    }
+
     pub fn offset_face(
         &mut self,
         face_id: FaceId,
@@ -2680,6 +2713,25 @@ mod tests {
         assert!(mesh.create_recess(face, 200.0, -1.0, mat).is_err(), "negative depth rejected");
         // mesh untouched by the rejected calls.
         assert_eq!(mesh.face_count(), 6, "rejected recess leaves the box unchanged");
+    }
+
+    /// recess_preview returns the inset + recessed-floor loops WITHOUT mutating
+    /// the mesh (UI ghost). Floor = inset displaced −normal·depth.
+    #[test]
+    fn recess_preview_returns_inset_and_recessed_floor() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::default();
+        let face = mesh.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+        let normal = mesh.faces.get(face).unwrap().normal();
+        let (inset_loop, floor_loop) = mesh.recess_preview(face, 200.0, 150.0).unwrap();
+        assert_eq!(inset_loop.len(), 4, "square face → 4-vert inset loop");
+        assert_eq!(floor_loop.len(), 4);
+        for (a, b) in inset_loop.iter().zip(floor_loop.iter()) {
+            let d = (*b - *a).dot(normal);
+            assert!((d - (-150.0)).abs() < 1e-6, "floor recessed by depth along -normal, got {d}");
+        }
+        assert_eq!(mesh.face_count(), 6, "preview is read-only (no mutation)");
+        assert!(mesh.recess_preview(face, 0.0, 150.0).is_err(), "invalid inset rejected");
     }
 
     /// Adversarial sweep (found via the self-intersection checker). offset_face

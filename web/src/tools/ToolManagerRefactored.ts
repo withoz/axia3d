@@ -575,6 +575,12 @@ export class ToolManager {
     }
   }
 
+  /** Live VCB preview (per-keystroke) — forwards to the active tool's ghost. */
+  previewVCBValue(value: number, value2?: number, value3?: number): void {
+    const tool = this.tools.get(this._currentTool);
+    tool?.previewVCBValue?.(value, value2, value3);
+  }
+
   /**
    * 도구가 작업 중일 때 실행하면 안 되는 파괴적/구조적 명령어들.
    * `undo`는 예외 — busy 시 "현재 도구 취소"로 해석 (CAD 관례).

@@ -251,6 +251,14 @@ export interface ITool {
   /** Apply VCB input. Optional 2~3 values (rect width/height, scale x/y/z, etc.) */
   applyVCBValue?(value: number, value2?: number, value3?: number): void;
 
+  /**
+   * Live VCB preview — called on every keystroke while the user types (before
+   * they commit with Enter). Tools use it to render a non-destructive ghost
+   * of the pending result (e.g. RecessTool's pocket wireframe). Same value
+   * shape as `applyVCBValue`. Optional — most tools don't preview.
+   */
+  previewVCBValue?(value: number, value2?: number, value3?: number): void;
+
   /** Check if tool is in the middle of an operation (drawing, dragging, etc.) */
   isBusy(): boolean;
 

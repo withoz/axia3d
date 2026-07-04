@@ -540,6 +540,7 @@ type AxiaEngineExtended = AxiaEngine & {
   // Offset
   offset_face?(faceId: number, dist: number): string;
   create_recess?(faceId: number, inset: number, depth: number): string;
+  recess_preview?(faceId: number, inset: number, depth: number): string;
   offset_edge?(edgeId: number, dist: number, nx: number, ny: number, nz: number): string;
   // XIA
   get_xia_info?(ids: Uint32Array): string;
@@ -5828,6 +5829,20 @@ export class WasmBridge {
     }
   }
 
+  /** Read-only recess preview geometry (inset + floor loops) for the UI ghost.
+   *  No mutation, no Toast (silent — the tool decides how to surface). */
+  recessPreview(faceId: number, inset: number, depth: number): RecessPreview | null {
+    if (!this.engine) return null;
+    try {
+      const json = this.engine.recess_preview?.(faceId, inset, depth);
+      if (!json) return null;
+      return JSON.parse(json) as RecessPreview;
+    } catch (e) {
+      console.error('[WasmBridge] recessPreview failed:', e);
+      return null;
+    }
+  }
+
   /** Edge(line)를 평행 offset → 새 edge + 사각형 face 생성 */
   offsetEdge(edgeId: number, dist: number, planeNormal: [number, number, number]): OffsetEdgeResult | null {
     if (!this.engine) return null;
@@ -6772,6 +6787,15 @@ export interface RecessResult {
   /** 표면에 남는 coplanar 링(frame) */
   frameFaces?: number[];
   totalFaces?: number;
+}
+
+export interface RecessPreview {
+  ok: boolean;
+  error?: string;
+  /** inset 경계 loop (표면), flat [x,y,z,...] */
+  insetLoop?: number[];
+  /** recessed floor loop, flat [x,y,z,...] */
+  floorLoop?: number[];
 }
 
 export interface OffsetEdgeResult {
