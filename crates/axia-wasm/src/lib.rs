@@ -8584,6 +8584,20 @@ impl AxiaEngine {
             .face_has_larger_coplanar_container(FaceId::new(face_raw))
     }
 
+    /// ADR-252 — wall thickness under a profile sheet drawn on a solid wall (the
+    /// distance the inward push travels before it reaches the opposite wall =
+    /// the pocket↔through threshold). Returns `-1` if `face` is not a source-on-
+    /// wall sheet (no larger coplanar container / no opposite wall). Read-only —
+    /// the Push/Pull tool uses it to color the live cut ghost (pocket vs through)
+    /// and clamp its depth.
+    #[wasm_bindgen(js_name = "wallThicknessFromSourceFace")]
+    pub fn wall_thickness_from_source_face(&self, face_raw: u32) -> f64 {
+        self.scene
+            .mesh
+            .wall_thickness_from_source_face(FaceId::new(face_raw))
+            .unwrap_or(-1.0)
+    }
+
     /// Tolerance 지정 단일 엣지 병합 (B1).
     /// `angle_tol_deg` — 허용 각도 (°). 기본 0.5° (strict). 관대하게는 2~5°.
     #[wasm_bindgen(js_name = "mergeFacesByEdgeTol")]

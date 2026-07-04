@@ -432,6 +432,27 @@ describe('PushPullTool', () => {
       expect(tool.isBusy()).toBe(true);
     });
 
+    // ADR-252 — a rect drawn on a wall (sheet source) captures the wall
+    // thickness on pick (for the pocket↔through ghost color) and never begins a
+    // live extrude — the drag previews a ghost box and the commit carves.
+    it('sheet source captures wall thickness and does not begin a live extrude', () => {
+      ctx.viewport.pick.mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(0, 100, 0) });
+      ctx.getFaceId.mockReturnValue(7);
+      ctx.bridge.getFaceNormal.mockReturnValue(new Float32Array([0, 1, 0]));
+      ctx.selection.getSmoothGroup.mockReturnValue([]);
+      ctx.bridge.faceHasLargerCoplanarContainer = vi.fn().mockReturnValue(true);
+      ctx.bridge.wallThicknessFromSourceFace = vi.fn().mockReturnValue(300);
+      ctx.extractFaceBoundary = vi.fn().mockReturnValue([
+        new THREE.Vector3(-50, 100, -50), new THREE.Vector3(50, 100, -50),
+        new THREE.Vector3(50, 100, 50), new THREE.Vector3(-50, 100, 50),
+      ]);
+      tool.onMouseDown({ clientX: 400, clientY: 300 } as MouseEvent, null);
+      expect(ctx.bridge.wallThicknessFromSourceFace).toHaveBeenCalledWith(7);
+      // dragging (held button) previews a ghost — never a live extrude.
+      tool.onMouseMove({ clientX: 400, clientY: 420, buttons: 1 } as MouseEvent, null);
+      expect(ctx.bridge.beginLiveExtrude).not.toHaveBeenCalled();
+    });
+
     it('ESC cancels the live session (rollback)', () => {
       startSingleFaceDrag();
       tool.onMouseMove({ clientX: 400, clientY: 200 } as MouseEvent, null); // begin

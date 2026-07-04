@@ -43,6 +43,13 @@ export class PushPullTool implements ITool {
   /** ADR-271 γ — the picked face is a curved (Cylinder) cap → an inward push
    *  carves a radial curved pocket (not a planar pocket / extrude). */
   private isCurvedCap: boolean = false;
+  /** ADR-252 live cut ghost — wall thickness under the source sheet (the
+   *  pocket↔through depth threshold), captured on face pick. -1 = unknown. */
+  private sheetThickness: number = -1;
+  /** ADR-252 live cut ghost fill/line colors (amber = pocket, red = through).
+   *  Read by rebuildPPGhost so the same box builder serves add + cut previews. */
+  private ghostFillColor: number = 0x5b9bd5;
+  private ghostLineColor: number = 0x2a6cb8;
 
   /** 최소 유효 거리 (mm) — 이보다 작으면 무시 (프리뷰 확정용 threshold) */
   private static readonly MIN_COMMIT_DIST = 0.5;
@@ -131,10 +138,15 @@ export class PushPullTool implements ITool {
 
         // ADR-252 — pocket candidate: the face is a coplanar profile contained in
         //   a LARGER wall (e.g. a rect drawn on a wall). An INWARD push carves a
-        //   blind pocket (not a new box); the live preview is suppressed and the
-        //   commit dispatches to carvePocketFromSourceFace.
+        //   blind pocket (not a new box); the commit dispatches to
+        //   carvePocketFromSourceFace. A live GHOST box (the removed volume)
+        //   previews the cut — amber for a blind pocket, red once it reaches the
+        //   far wall (through). The wall thickness is the pocket↔through depth.
         this.isSheetSource =
           this.ctx.bridge.faceHasLargerCoplanarContainer?.(rustFaceId) ?? false;
+        this.sheetThickness = this.isSheetSource
+          ? (this.ctx.bridge.wallThicknessFromSourceFace?.(rustFaceId) ?? -1)
+          : -1;
 
         // ADR-271 γ — a curved (Cylinder-surface, kind ≥ 2) cap that is NOT a
         // planar profile → an inward push carves a radial curved pocket. Like a
@@ -367,10 +379,27 @@ export class PushPullTool implements ITool {
     // Smooth groups keep the legacy translucent ghost.
     if (this.isSmoothGroup) {
       this.updatePPGhost(dist);
-    } else if (this.isSheetSource || this.isCurvedCap) {
-      // ADR-252 / ADR-271 — pocket candidate (planar profile on a wall, or a
-      //   curved cap): no live preview. The commit decides inward → (curved)
-      //   blind pocket carve. Dimension label only (shown below).
+    } else if (this.isSheetSource) {
+      // ADR-252 — planar profile on a wall. An INWARD drag (dist < 0) previews
+      //   the removed volume as a ghost box growing into the solid: AMBER for a
+      //   blind pocket, RED once it reaches the far wall (through). An outward
+      //   drag is not a cut → no ghost. The real carve runs on commit.
+      if (dist < 0) {
+        const t = this.sheetThickness;
+        const through = t > 0 && Math.abs(dist) >= t - 0.001;
+        this.ghostFillColor = through ? 0xff3b30 : 0xff9f0a; // red / amber
+        this.ghostLineColor = through ? 0xcc0000 : 0xcc6a00;
+        if (!this.ppGhost) this.createPPGhost(this.ppFaceId, this.ppHitPoint);
+        // Clamp the ghost depth to the wall so it doesn't overshoot wildly past
+        //   through (the commit clamps too — the drag can pass the far wall).
+        const ghostDist = t > 0 ? Math.max(dist, -t) : dist;
+        this.rebuildPPGhost(ghostDist);
+      } else {
+        this.removePPGhost();
+      }
+    } else if (this.isCurvedCap) {
+      // ADR-271 — curved cap: no live geometry preview yet (radial carve is not
+      //   a slidable box). Dimension label only; commit dispatches the carve.
     } else if (this.liveActive) {
       this.ctx.bridge.updateLiveExtrude(dist);
       this.ctx.syncMesh();
@@ -397,10 +426,17 @@ export class PushPullTool implements ITool {
       const absDist = Math.abs(dist);
       const sign = dist >= 0 ? '' : '-';
       const alignPrefix = isAligned ? (alignedTargetType === 'face' ? '⊡ ' : alignedTargetType === 'edge' ? '／ ' : '■ ') : '';
-      const text = alignPrefix + sign + this.ctx.units.format(absDist);
-      const labelColor = isAligned ? '#66ff99' : '#ffd43b';
-      // 저장: dim label 렌더에서 사용하도록
-      const _labelColor = labelColor; void _labelColor;
+      // ADR-252 — for an inward cut on a wall sheet the label turns amber
+      //   (blind pocket) then red + "관통" once it reaches the far wall.
+      let labelColor = isAligned ? '#66ff99' : '#ffd43b';
+      let cutTag = '';
+      if (this.isSheetSource && dist < 0) {
+        const t = this.sheetThickness;
+        const through = t > 0 && absDist >= t - 0.001;
+        labelColor = through ? '#ff3b30' : '#ff9f0a';
+        cutTag = through ? ' 관통' : '';
+      }
+      const text = alignPrefix + sign + this.ctx.units.format(absDist) + cutTag;
       const offset = this.ppNormal.clone().multiplyScalar(dist);
 
       // Find closest vertex to mouse
@@ -428,7 +464,7 @@ export class PushPullTool implements ITool {
       const edgeTo = edgeFrom.clone().add(offset);
 
       this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
-        { from: edgeFrom, to: edgeTo, text, color: isAligned ? '#66ff99' : '#ffd43b' },
+        { from: edgeFrom, to: edgeTo, text, color: labelColor },
       ]);
     } else {
       this.ctx.dimLabel.clear();
@@ -700,6 +736,9 @@ export class PushPullTool implements ITool {
     this.liveBeginFailed = false;
     this.isSheetSource = false;
     this.isCurvedCap = false;
+    this.sheetThickness = -1;
+    this.ghostFillColor = 0x5b9bd5; // reset to the add-extrude blue for next session
+    this.ghostLineColor = 0x2a6cb8;
     this.ppActive = false;
     this.ppDidDrag = false;
     this.ppFaceId = -1;
@@ -767,7 +806,7 @@ export class PushPullTool implements ITool {
       topGeo.setIndex(localIdx);
       topGeo.computeVertexNormals();
       const topMesh = new THREE.Mesh(topGeo, new THREE.MeshBasicMaterial({
-        color: 0x5b9bd5, side: THREE.FrontSide,
+        color: this.ghostFillColor, side: THREE.FrontSide,
         transparent: true, opacity: 0.3,
         depthWrite: false,
       }));
@@ -790,7 +829,7 @@ export class PushPullTool implements ITool {
       wallGeo.setIndex(wallIdx);
       wallGeo.computeVertexNormals();
       const wallMesh = new THREE.Mesh(wallGeo, new THREE.MeshBasicMaterial({
-        color: 0x5b9bd5, side: THREE.FrontSide,
+        color: this.ghostFillColor, side: THREE.FrontSide,
         transparent: true, opacity: 0.2,
         depthWrite: false,
       }));
@@ -815,7 +854,7 @@ export class PushPullTool implements ITool {
       lineGeo.setAttribute('position', new THREE.BufferAttribute(
         new Float32Array(allLinePositions), 3));
       const lineSegs = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({
-        color: 0x2a6cb8, depthTest: false,
+        color: this.ghostLineColor, depthTest: false,
       }));
       lineSegs.renderOrder = 1000;
       this.ppGhost.add(lineSegs);

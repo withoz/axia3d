@@ -520,6 +520,8 @@ type AxiaEngineExtended = AxiaEngine & {
   carveCurvedPocket?(capFaceRaw: number, depth: number): number;
   /** ADR-252 — true if the face is a coplanar profile contained in a LARGER face (pocket candidate). */
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
+  /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
+  wallThicknessFromSourceFace?(faceRaw: number): number;
   /** 2026-04-24 — 크기 다른 coplanar 면들의 geometric merge */
   mergeCoplanarFacesGeometric?(f1: number, f2: number, angleTolDeg: number): number;
   tryMergeAdjacentFaces?(faceIds: Uint32Array): number;
@@ -4233,6 +4235,12 @@ export class WasmBridge {
    */
   faceHasLargerCoplanarContainer(face: number): boolean {
     return this.engine?.faceHasLargerCoplanarContainer?.(face) ?? false;
+  }
+
+  /** ADR-252 — wall thickness under a profile sheet drawn on a solid wall (the
+   *  pocket↔through depth threshold), or -1 if not a source-on-wall face. */
+  wallThicknessFromSourceFace(face: number): number {
+    return this.engine?.wallThicknessFromSourceFace?.(face) ?? -1;
   }
 
   /** Flatten a loop of xyz triplets into a Float64Array (ADR-249 P5). */
