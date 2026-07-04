@@ -1300,9 +1300,25 @@ export class SnapManager {
       );
     };
 
-    /** signed distance from startHitPoint to p along startNormal */
+    // ADR-273 — measure alignment from the SOURCE face's EXACT plane, not the
+    // raycast hit point (which is sub-μm off the true plane). Projecting the hit
+    // onto the source plane makes a snap land the moved face bit-exactly on the
+    // target feature (same height / plane / line), which the engine then
+    // recognizes as coincident (dedup / coplanar) instead of leaving a tiny
+    // fp-drift gap. Falls back to the raw hit if the source face has no plane
+    // data (e.g. a not-yet-registered sheet).
+    const srcData = this.faceData.get(startFaceId);
+    const refPt = srcData
+      ? startHitPoint.clone().sub(
+          srcData.normal.clone().multiplyScalar(
+            srcData.normal.dot(startHitPoint) + srcData.planeD,
+          ),
+        )
+      : startHitPoint.clone();
+
+    /** signed distance from the source plane (via refPt) to p along startNormal */
     const alignDist = (p: THREE.Vector3): number => {
-      return p.clone().sub(startHitPoint).dot(startNormal);
+      return p.clone().sub(refPt).dot(startNormal);
     };
 
     type Candidate = {
@@ -1370,9 +1386,11 @@ export class SnapManager {
       // plane: n·x + d = 0  →  t = -(n·hit + d) / (n·normal)
       const nDotN = data.normal.dot(startNormal);
       if (Math.abs(nDotN) < 1e-6) continue;
-      const tParam = -(data.normal.dot(startHitPoint) + data.planeD) / nDotN;
+      // Measure from the EXACT source plane (refPt), not the raycast hit — so
+      // the moved face lands bit-exactly on this target plane (ADR-273).
+      const tParam = -(data.normal.dot(refPt) + data.planeD) / nDotN;
       if (Math.abs(tParam) < MIN_ALIGN_DIST) continue;
-      const intersectPt = startHitPoint.clone().add(startNormal.clone().multiplyScalar(tParam));
+      const intersectPt = refPt.clone().add(startNormal.clone().multiplyScalar(tParam));
       const s = toScreenPx(intersectPt);
       if (!s) continue;
       const sd = mousePx.distanceTo(s);
