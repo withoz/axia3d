@@ -70,6 +70,7 @@ import { MoveTool } from './MoveTool';
 import { RotateTool } from './RotateTool';
 import { ScaleTool } from './ScaleTool';
 import { OffsetTool } from './OffsetTool';
+import { RecessTool } from './RecessTool';
 import { EraseTool } from './EraseTool';
 import { SplitTool } from './SplitTool';
 import { GroupTool } from './GroupTool';
@@ -164,7 +165,7 @@ export class ToolManager {
   private toolContext!: ToolContext;
 
   // ═══ Hover tools (static sets) ═══
-  private static readonly HOVER_TOOLS = new Set(['select', 'pushpull', 'offset', 'move', 'rotate', 'scale', 'group', 'erase']);
+  private static readonly HOVER_TOOLS = new Set(['select', 'pushpull', 'offset', 'recess', 'move', 'rotate', 'scale', 'group', 'erase']);
   // 2026-04-27 — select / move 도 엣지 hover 표시 (사용자 요청 "선택관련
   //   명령에 모두 적용 — 이동·지우개 등"). pickEdgeOrFace 가 적절한 우선
   //   순위로 face vs edge 를 구분하므로 두 모드 모두 안전하게 활성.
@@ -436,6 +437,7 @@ export class ToolManager {
     this.tools.set('rotate', new RotateTool(this.toolContext));
     this.tools.set('scale', new ScaleTool(this.toolContext));
     this.tools.set('offset', new OffsetTool(this.toolContext));
+    this.tools.set('recess', new RecessTool(this.toolContext));
     this.tools.set('erase', new EraseTool(this.toolContext));
     this.tools.set('split', new SplitTool(this.toolContext));
     this.tools.set('group', new GroupTool(this.toolContext));
@@ -481,7 +483,7 @@ export class ToolManager {
   }
 
   setTool(name: string): void {
-    const keepSelection = new Set(['pushpull', 'offset', 'move', 'rotate', 'scale', 'nurbs-edit']);
+    const keepSelection = new Set(['pushpull', 'offset', 'recess', 'move', 'rotate', 'scale', 'nurbs-edit']);
     const selectedBefore = keepSelection.has(name) ? this.selection.getSelectedFaces() : [];
 
     // Deactivate current tool

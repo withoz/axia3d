@@ -17,6 +17,7 @@ export interface VCBDeps {
 /** 도구별 VCB 라벨 */
 const vcbLabels: Record<string, string> = {
   offset: '오프셋 거리:',
+  recess: '홈파기 — 여유(inset), 깊이:',
   pushpull: '돌출 거리 (,각도° = 테이퍼 / ,비율% = 콘):',
   line: '길이:',
   rect: '가로, 세로:',
@@ -29,7 +30,7 @@ const vcbLabels: Record<string, string> = {
 
 /** VCB에 숫자 입력이 가능한 도구 Set — KeyboardShortcuts에서도 참조 */
 export const vcbTools = new Set([
-  'offset', 'pushpull', 'line', 'rect', 'circle', 'move', 'rotate', 'scale',
+  'offset', 'recess', 'pushpull', 'line', 'rect', 'circle', 'move', 'rotate', 'scale',
 ]);
 
 export function initVCB(deps: VCBDeps): void {
@@ -67,7 +68,9 @@ export function initVCB(deps: VCBDeps): void {
     // (rect는 "가로 세로" 형식이므로 Spacebar를 공백으로 유지)
     cmdInput.addEventListener('keydown', (e) => {
       const isConfirmKey = e.key === 'Enter'
-        || (e.key === ' ' && toolManager.currentTool !== 'rect');
+        || (e.key === ' '
+          && toolManager.currentTool !== 'rect'
+          && toolManager.currentTool !== 'recess');
       if (isConfirmKey) {
         e.preventDefault();
         const raw = cmdInput.value.trim();
@@ -80,6 +83,17 @@ export function initVCB(deps: VCBDeps): void {
           const parts = raw.split(/[,\s]+/).map(s => units.parseInput(s.trim()));
           if (parts.length === 2 && parts[0] !== null && parts[1] !== null) {
             debugLog(`[VCB] rect: ${parts[0]}×${parts[1]} mm`);
+            toolManager.applyVCBValue(parts[0]!, parts[1]!);
+            deactivateVCB();
+            return;
+          }
+        }
+
+        // recess: "여유,깊이" 또는 "여유 깊이" → (inset, depth) 두 값
+        if (tool === 'recess' && (raw.includes(',') || raw.includes(' '))) {
+          const parts = raw.split(/[,\s]+/).map(s => units.parseInput(s.trim()));
+          if (parts.length === 2 && parts[0] !== null && parts[1] !== null) {
+            debugLog(`[VCB] recess: inset=${parts[0]}, depth=${parts[1]} mm`);
             toolManager.applyVCBValue(parts[0]!, parts[1]!);
             deactivateVCB();
             return;
@@ -160,6 +174,8 @@ export function initVCB(deps: VCBDeps): void {
       const tool = toolManager.currentTool;
       if (tool === 'rect') {
         cmdInput.placeholder = `가로, 세로 (${units.config.label})`;
+      } else if (tool === 'recess') {
+        cmdInput.placeholder = `여유, 깊이 (${units.config.label})`;
       } else {
         cmdInput.placeholder = `숫자 입력 후 Enter (${units.config.label})`;
       }

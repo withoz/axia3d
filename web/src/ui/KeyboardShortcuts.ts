@@ -25,7 +25,7 @@ export interface KeyboardShortcutsDeps {
 const toolNames: Record<string, string> = {
   select: 'Select', line: 'Line', rect: 'Rectangle',
   circle: 'Circle', pushpull: 'Extrude/Cut', move: 'Move',
-  rotate: 'Rotate', scale: 'Scale', offset: 'Offset',
+  rotate: 'Rotate', scale: 'Scale', offset: 'Offset', recess: 'Recess',
   erase: 'Erase', sphere: 'Sphere', cylinder: 'Cylinder', cone: 'Cone',
   torus: 'Torus',
 };

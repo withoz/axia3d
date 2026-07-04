@@ -672,6 +672,14 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     aliases: { bridge: 'offset_face', wasm: 'offset_face', mcp: 'offset_face' },
   },
   {
+    id: 'tool-recess',
+    label: '홈파기',
+    description: 'Recess tool — inset a face then push it inward into a pocket.',
+    tier: 2,
+    surfaces: ['menu'],
+    aliases: { bridge: 'create_recess', wasm: 'create_recess', mcp: 'create_recess' },
+  },
+  {
     id: 'tool-erase',
     label: '삭제',
     description: 'Erase tool — topology-aware delete with merge fallback.',

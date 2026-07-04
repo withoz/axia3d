@@ -37,7 +37,7 @@ const toolNames: Record<string, string> = {
   select: 'Select', line: 'Line', rect: 'Rectangle',
   circle: 'Circle', hole: 'Hole', pushpull: 'Extrude/Cut', move: 'Move',
   sphere: 'Sphere', cylinder: 'Cylinder', cone: 'Cone',
-  torus: 'Torus',
+  torus: 'Torus', recess: 'Recess',
 };
 
 export function initMenuBar(deps: MenuBarDeps): void {
@@ -417,6 +417,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-rotate': setActiveTool('rotate'); break;
       case 'tool-scale': setActiveTool('scale'); break;
       case 'tool-offset': setActiveTool('offset'); break;
+      case 'tool-recess': setActiveTool('recess'); break;
       case 'tool-erase': setActiveTool('erase'); break;
       // Mirror (world-axis) — 메뉴에서 직접 X/Y/Z 반전 선택. tool-mirror alias는
       // 레거시 진입점 (x축 기본값).
