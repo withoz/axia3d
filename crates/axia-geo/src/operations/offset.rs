@@ -1777,7 +1777,6 @@ impl Mesh {
             .faces
             .get(face_id)
             .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?;
-        let normal = face.normal();
         let rim_vids = self.collect_loop_verts(face.outer().start)?;
         let n = rim_vids.len();
         if n < 3 {
@@ -1787,6 +1786,31 @@ impl Mesh {
             .iter()
             .map(|&v| self.vertex_pos(v))
             .collect::<Result<Vec<_>>>()?;
+
+        // ADR-273 — derive the extrude direction from the ACTUAL rim winding
+        // (Newell), NOT the cached `face.normal()`. The cache can go stale /
+        // inconsistent with the winding after a prior snap / move / degenerate
+        // collapse; using it then sends the cap the wrong way while the walls
+        // (which reuse the rim's manifold half-edges) follow the winding — the 4
+        // walls come out inverted and the closure gate rejects with inv=N
+        // ("extrude REJECTED … inv=4"). The winding normal keeps cap + walls
+        // consistent. For a well-formed face it equals face.normal(), so the
+        // boss/pocket direction is unchanged. ADR-007 (winding is truth).
+        let normal = {
+            let mut nrm = DVec3::ZERO;
+            for i in 0..n {
+                let a = rim_pos[i];
+                let b = rim_pos[(i + 1) % n];
+                nrm.x += (a.y - b.y) * (a.z + b.z);
+                nrm.y += (a.z - b.z) * (a.x + b.x);
+                nrm.z += (a.x - b.x) * (a.y + b.y);
+            }
+            let nn = nrm.normalize_or_zero();
+            if nn.length_squared() < 0.5 {
+                bail!("degenerate face — cannot derive a winding normal for extrude");
+            }
+            nn
+        };
         let cap_pos: Vec<DVec3> = rim_pos.iter().map(|p| *p + normal * distance).collect();
 
         // Free the face so its boundary half-edges can be reused by the walls.

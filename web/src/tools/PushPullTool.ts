@@ -380,10 +380,11 @@ export class PushPullTool implements ITool {
     if (this.isSmoothGroup) {
       this.updatePPGhost(dist);
     } else if (this.isSheetSource) {
-      // ADR-252 — planar profile on a wall. An INWARD drag (dist < 0) previews
-      //   the removed volume as a ghost box growing into the solid: AMBER for a
-      //   blind pocket, RED once it reaches the far wall (through). An outward
-      //   drag is not a cut → no ghost. The real carve runs on commit.
+      // ADR-252 — planar profile on a wall, previewed as a ghost box either way:
+      //   • INWARD (dist < 0) = a CUT — the removed volume grows into the solid:
+      //     AMBER for a blind pocket, RED once it reaches the far wall (through).
+      //   • OUTWARD (dist > 0) = a BOSS — a raised block added on the wall (blue).
+      //   The real carve / boss runs on commit.
       if (dist < 0) {
         const t = this.sheetThickness;
         const through = t > 0 && Math.abs(dist) >= t - 0.001;
@@ -394,6 +395,12 @@ export class PushPullTool implements ITool {
         //   through (the commit clamps too — the drag can pass the far wall).
         const ghostDist = t > 0 ? Math.max(dist, -t) : dist;
         this.rebuildPPGhost(ghostDist);
+      } else if (dist > 0) {
+        // Outward boss — blue "adding material" ghost growing out of the wall.
+        this.ghostFillColor = 0x5b9bd5;
+        this.ghostLineColor = 0x2a6cb8;
+        if (!this.ppGhost) this.createPPGhost(this.ppFaceId, this.ppHitPoint);
+        this.rebuildPPGhost(dist);
       } else {
         this.removePPGhost();
       }
