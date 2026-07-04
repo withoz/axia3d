@@ -592,7 +592,9 @@ fn boolean_dispatch_dcel_multi_json_uses_transactions() {
     let l = lib_src();
     let needle = "pub fn boolean_dispatch_dcel_multi_json";
     let idx = l.find(needle).expect("method must exist");
-    let window_end = (idx + 3500).min(l.len());
+    // Window widened for the defense-in-depth closure-preserving + SI gate
+    // (adversarial sweep) inserted before commit — pushes commit() further down.
+    let window_end = (idx + 4500).min(l.len());
     let body = &l[idx..window_end];
     assert!(body.contains("self.scene.transactions.begin()"),
         "method must call transactions.begin() before dispatch");
@@ -1779,5 +1781,44 @@ fn adr152_beta3_json_schema_locked() {
                 "euler_characteristic", "genus", "boundary_loop_count", "is_closed"] {
         assert!(c_body.contains(key),
             "ADR-152 β-3: computeTopology JSON must include {key}");
+    }
+}
+
+/// Defense-in-depth (adversarial sweep, 2026-07-04) — the closure-preserving
+/// + self-intersection gate must stay wired into every face-rebuild entry
+/// point that produces a solid. `integrity_gate_passed` (OpenMesh scope) and
+/// I1-5 both miss a closed→open tear and a self-intersecting flap; only
+/// `closure_preserving_gate_passed` catches those. This locks the wiring so a
+/// future refactor cannot silently drop it, re-opening the silent-corruption
+/// class the sweep closed. Each method body (bounded at the next `pub fn`)
+/// must call the gate.
+#[test]
+fn face_rebuild_ops_wire_closure_preserving_gate() {
+    let l = lib_src();
+    let method_body = |sig: &str| -> String {
+        let start = l.find(sig).unwrap_or_else(|| panic!("method not found: {sig}"));
+        let rest = &l[start + sig.len()..];
+        let end = rest.find("\n    pub fn ").map(|e| e + sig.len()).unwrap_or(l.len() - start);
+        l[start..start + end].to_string()
+    };
+    // (signature, gate label expected in the call) — push_pull / offset /
+    // boolean (legacy + live) / revolve / loft.
+    for (sig, label) in [
+        ("fn create_solid_extrude(", "extrude"),
+        ("fn create_solid_revolve(", "revolve"),
+        ("fn create_solid_loft(", "loft"),
+        ("fn offset_face(", "offset"),
+        ("fn boolean_dispatch_json(", "boolean"),
+        ("fn boolean_dispatch_dcel_multi_json(", "boolean multi"),
+    ] {
+        let body = method_body(sig);
+        assert!(
+            body.contains("closure_preserving_gate_passed"),
+            "{sig} must call closure_preserving_gate_passed (defense-in-depth)"
+        );
+        assert!(
+            body.contains(&format!("\"{label}\"")),
+            "{sig} must label its gate call \"{label}\""
+        );
     }
 }

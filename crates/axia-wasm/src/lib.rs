@@ -4064,6 +4064,11 @@ impl AxiaEngine {
             .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
             .damage_count();
         let integrity_snapshot = self.scene.scene_snapshot();
+        // Defense-in-depth (adversarial sweep): the OpenMesh gate below cannot
+        // see a closed→open tear or a self-intersection (flap). Capture the
+        // watertight/self-intersect baseline for the closure-preserving gate.
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         let cmd = Command::CreateSolid {
             face_id: fid,
@@ -4128,6 +4133,19 @@ impl AxiaEngine {
                 self.invalidate_cache();
                 return false;
             }
+        }
+
+        // Defense-in-depth closure-preserving + self-intersection gate. Catches
+        // the classes the OpenMesh damage gate misses: a watertight solid torn
+        // open, and a wall folded through itself (flap). No false rejection —
+        // closure is enforced only when the input was fully closed, and only a
+        // NEW self-intersection is rejected (verified-good extrudes pass R5/6).
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &integrity_snapshot, "extrude", false,
+            )
+        {
+            return false;
         }
 
         if ok {
@@ -4305,6 +4323,10 @@ impl AxiaEngine {
     pub fn create_solid_loft(&mut self, profile_face_raw: u32, other_profile_raw: u32) -> bool {
         let profile = FaceId::new(profile_face_raw);
         let other = FaceId::new(other_profile_raw);
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        let gate_snapshot = self.scene.scene_snapshot();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let cmd = Command::CreateSolid {
             face_id: profile,
             mode: axia_geo::CreateSolidMode::Loft { other_profile: other },
@@ -4328,6 +4350,13 @@ impl AxiaEngine {
                 false
             }
         };
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &gate_snapshot, "loft", false,
+            )
+        {
+            return false;
+        }
         if ok {
             self.mark_topology_changed();
         }
@@ -4348,6 +4377,10 @@ impl AxiaEngine {
         angle_rad: f64,
     ) -> bool {
         let profile = FaceId::new(profile_face_raw);
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        let gate_snapshot = self.scene.scene_snapshot();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let cmd = Command::CreateSolid {
             face_id: profile,
             mode: axia_geo::CreateSolidMode::Revolve {
@@ -4375,6 +4408,13 @@ impl AxiaEngine {
                 false
             }
         };
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &gate_snapshot, "revolve", false,
+            )
+        {
+            return false;
+        }
         if ok {
             self.mark_topology_changed();
         }
@@ -9878,10 +9918,22 @@ impl AxiaEngine {
 
         // 트랜잭션 시작
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        // Defense-in-depth: closure-preserving + self-intersection baseline
+        // (offset R10 fixed a real SI bug — this keeps future regressions
+        // fail-loud). A sheet input is open (before_boundary>0) so closure is
+        // not enforced; only a NEW self-intersection or a closed→open tear is.
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.offset_face(fid, dist) {
             Ok(result) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "offset", true,
+                ) {
+                    return r#"{"ok":false,"error":"offset 가 solid 를 열거나 자기교차(self-intersection)를 만들어 취소됨"}"#.to_string();
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9900,6 +9952,7 @@ impl AxiaEngine {
                 )
             }
             Err(e) => {
+                self.scene.transactions.cancel();
                 console_error!("[RUST] offset ERROR: {}", e);
                 format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'"))
             }
@@ -10406,7 +10459,14 @@ impl AxiaEngine {
         let fb: Vec<FaceId> = faces_b.iter().map(|&i| FaceId::new(i)).collect();
         let mat = axia_geo::MaterialId::new(material_id);
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        // Solid-solid boolean must stay a closed solid; a sheet input is open
+        // (before_boundary>0) so closure is not enforced. Only a NEW self-
+        // intersection or a closed→open tear is rejected (R12 verified clean).
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let result = self.scene.mesh.boolean_dispatch(&fa, &fb, op, mat);
         let dispatch_result = match result {
             Ok(r) => r,
@@ -10418,6 +10478,11 @@ impl AxiaEngine {
                 );
             }
         };
+        if !self.closure_preserving_gate_passed(
+            before_boundary, before_si, &before_snapshot, "boolean", true,
+        ) {
+            return r#"{"schemaVersion":1,"ok":false,"error":"boolean 이 solid 를 열거나 자기교차(self-intersection)를 만들어 취소됨"}"#.to_string();
+        }
         self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
         self.scene.transactions.commit();
         self.mark_topology_changed();
@@ -10489,6 +10554,10 @@ impl AxiaEngine {
             .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
             .damage_count();
         let integrity_snapshot = self.scene.scene_snapshot();
+        // Defense-in-depth: the OpenMesh gate below misses a closed→open tear
+        // and a self-intersection (flap). Capture the watertight/SI baseline.
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
         let result = self.scene.mesh.boolean_dispatch_dcel_multi(&fa, &fb, op, tol);
@@ -10521,6 +10590,15 @@ impl AxiaEngine {
             self.invalidate_cache();
             let reason = after.summary().replace('"', "'").replace('\n', " ");
             return format!(r#"{{"schemaVersion":1,"ok":false,"error":"{}"}}"#, reason);
+        }
+        // Defense-in-depth closure-preserving + SI gate — catches the classes
+        // the OpenMesh damage gate misses (watertight solid torn open, wall
+        // folded through itself). No false rejection: the two-box no-op path
+        // preserves closure + SI count, so it passes (R12 + acceptance sweep).
+        if !self.closure_preserving_gate_passed(
+            before_boundary, before_si, &integrity_snapshot, "boolean multi", true,
+        ) {
+            return r#"{"schemaVersion":1,"ok":false,"error":"boolean 이 solid 를 열거나 자기교차(self-intersection)를 만들어 취소됨"}"#.to_string();
         }
         self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
         self.scene.transactions.commit();
