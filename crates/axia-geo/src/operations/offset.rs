@@ -1708,6 +1708,108 @@ impl Mesh {
         Ok(if off_area <= orig_area { magnitude } else { -magnitude })
     }
 
+    /// True if `face_id` is a COPLANAR INTERIOR face: every outer-boundary edge
+    /// is shared with another active face that is COPLANAR with it (same plane,
+    /// parallel normal). This is the shape `offset_face` leaves behind (an inner
+    /// face bounded by the coplanar frame ring), and the one push_pull cannot
+    /// extrude without 3-sharing the boundary. A normal solid face (box top) is
+    /// bounded by PERPENDICULAR walls → not coplanar-interior → returns false.
+    pub fn is_coplanar_interior_face(&self, face_id: FaceId) -> bool {
+        let face = match self.faces.get(face_id) {
+            Some(f) if f.is_active() => f,
+            _ => return false,
+        };
+        let normal = face.normal();
+        let start = face.outer().start;
+        if start.is_null() {
+            return false;
+        }
+        let mut he = start;
+        let mut any_neighbor = false;
+        loop {
+            // Does this edge have a COPLANAR active neighbour?
+            let mut edge_coplanar = false;
+            let mut r = self.hes[he].next_rad();
+            while r != he {
+                let rf = self.hes[r].face();
+                if !rf.is_null() && rf != face_id {
+                    if let Some(nf) = self.faces.get(rf) {
+                        if nf.is_active() {
+                            any_neighbor = true;
+                            if nf.normal().dot(normal).abs() > 0.999 {
+                                edge_coplanar = true;
+                            }
+                        }
+                    }
+                }
+                r = self.hes[r].next_rad();
+            }
+            if !edge_coplanar {
+                return false; // a non-coplanar (or free) boundary edge → not interior
+            }
+            he = self.hes[he].next();
+            if he == start || he.is_null() {
+                break;
+            }
+        }
+        any_neighbor
+    }
+
+    /// Extrude a COPLANAR INTERIOR face (one whose boundary is shared with a
+    /// coplanar neighbour — e.g. the inner face left by `offset_face`) by
+    /// `distance` along its outward normal: **negative → INTO the solid
+    /// (pocket)**, **positive → OUT of the solid (boss)**. push_pull cannot do
+    /// this — its CreateFace keeps the old face and 3-shares the boundary. Here
+    /// the boundary becomes the rim, a displaced copy becomes the cap, and N
+    /// quads bridge them. Manifold-by-construction: each rim edge reuses the
+    /// freed boundary half-edge (twin of the coplanar neighbour) so it stays
+    /// shared by exactly 2 faces. Returns (cap_face, wall_faces).
+    pub fn extrude_coplanar_interior_face(
+        &mut self,
+        face_id: FaceId,
+        distance: f64,
+        material: MaterialId,
+    ) -> Result<(FaceId, Vec<FaceId>)> {
+        if distance.abs() < 1e-9 {
+            bail!("extrude distance too small: {}", distance);
+        }
+        let face = self
+            .faces
+            .get(face_id)
+            .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?;
+        let normal = face.normal();
+        let rim_vids = self.collect_loop_verts(face.outer().start)?;
+        let n = rim_vids.len();
+        if n < 3 {
+            bail!("face has fewer than 3 vertices");
+        }
+        let rim_pos: Vec<DVec3> = rim_vids
+            .iter()
+            .map(|&v| self.vertex_pos(v))
+            .collect::<Result<Vec<_>>>()?;
+        let cap_pos: Vec<DVec3> = rim_pos.iter().map(|p| *p + normal * distance).collect();
+
+        // Free the face so its boundary half-edges can be reused by the walls.
+        self.soft_remove_face(face_id)?;
+        let cap_vids: Vec<VertId> = cap_pos.iter().map(|&p| self.add_vertex(p)).collect();
+
+        // Walls: quad [rim[i], rim[j], cap[j], cap[i]] for BOTH directions —
+        // the rim edge rim[i]→rim[j] must reuse the freed half-edge (same
+        // direction) to stay manifold, so the winding is fixed regardless of
+        // sign; ADR-007 post-pipeline winding enforcement orients the normals.
+        let mut wall_faces = Vec::with_capacity(n);
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let w = self.add_face(
+                &[rim_vids[i], rim_vids[j], cap_vids[j], cap_vids[i]],
+                material,
+            )?;
+            wall_faces.push(w);
+        }
+        let cap_face = self.add_face(&cap_vids, material)?;
+        Ok((cap_face, wall_faces))
+    }
+
     /// Create a recessed pocket in a solid face: inset the boundary by `inset`
     /// (> 0) → a smaller inner face flush with the surface + a coplanar ring
     /// (frame), then push that inner face INTO the solid by `depth` (> 0) so it
@@ -1732,64 +1834,18 @@ impl Mesh {
             bail!("recess depth must be positive, got {}", depth);
         }
 
-        // Capture the outward normal before offset_face consumes the face.
-        let normal = self
-            .faces
-            .get(face_id)
-            .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?
-            .normal();
-
-        // 1) Inset the boundary (shrink) with the orientation-correct sign.
-        //    This creates the coplanar ring (frame) + an inner face flush with
-        //    the surface, and keeps the solid closed.
+        // 1) Inset the boundary (shrink) with the orientation-correct sign →
+        //    a coplanar frame ring + an inner face flush with the surface,
+        //    keeping the solid closed.
         let signed = self.inset_signed_distance(face_id, inset)?;
         let off = self.offset_face(face_id, signed)?;
         let inner = off.inner_face;
 
-        // 2) Turn the flush inner face into a recessed floor. push_pull cannot
-        //    be used here — the inner face is a coplanar INTERIOR face (its
-        //    boundary shared with the frame ring, not free walls), so
-        //    push_pull's CreateFace keeps the old face and 3-shares the base
-        //    edges. Instead build the pocket directly: the inner face's
-        //    boundary (on the surface, shared with the frame's hole) becomes
-        //    the pocket rim; a recessed copy becomes the floor; N quads bridge
-        //    them. Manifold-by-construction (each new edge shared by exactly 2
-        //    faces via the freed inner half-edges).
-        let inner_start = self
-            .faces
-            .get(inner)
-            .ok_or_else(|| anyhow::anyhow!("inner face vanished after offset"))?
-            .outer()
-            .start;
-        let rim_vids = self.collect_loop_verts(inner_start)?;
-        let n = rim_vids.len();
-        let rim_pos: Vec<DVec3> = rim_vids
-            .iter()
-            .map(|&v| self.vertex_pos(v))
-            .collect::<Result<Vec<_>>>()?;
-        // Recessed floor = rim displaced INTO the solid (−outward normal).
-        let floor_pos: Vec<DVec3> = rim_pos.iter().map(|p| *p - normal * depth).collect();
-
-        // Free the flush inner face so its boundary half-edges can be reused by
-        // the pocket walls (keeping each rim edge shared by frame + wall = 2).
-        self.soft_remove_face(inner)?;
-        let floor_vids: Vec<VertId> = floor_pos.iter().map(|&p| self.add_vertex(p)).collect();
-
-        // Walls: quad [rim[i], rim[j], floor[j], floor[i]] — the rim edge
-        // rim[i]→rim[j] reuses the freed inner half-edge (twin of the frame
-        // hole), the floor edge twins the floor face, the verticals twin the
-        // neighbouring walls.
-        let mut wall_faces = Vec::with_capacity(n);
-        for i in 0..n {
-            let j = (i + 1) % n;
-            let w = self.add_face(
-                &[rim_vids[i], rim_vids[j], floor_vids[j], floor_vids[i]],
-                material,
-            )?;
-            wall_faces.push(w);
-        }
-        // Floor face (outward normal = +surface normal, out of the pocket).
-        let pocket_face = self.add_face(&floor_vids, material)?;
+        // 2) Push the flush inner face INTO the solid (−normal·depth) to form
+        //    the pocket floor + walls. Direct construction — push_pull cannot
+        //    extrude a coplanar interior face (see extrude_coplanar_interior_face).
+        let (pocket_face, wall_faces) =
+            self.extrude_coplanar_interior_face(inner, -depth, material)?;
 
         self.debug_verify_invariants();
 
@@ -2732,6 +2788,57 @@ mod tests {
         }
         assert_eq!(mesh.face_count(), 6, "preview is read-only (no mutation)");
         assert!(mesh.recess_preview(face, 0.0, 150.0).is_err(), "invalid inset rejected");
+    }
+
+    /// A box face is bounded by PERPENDICULAR walls → not coplanar-interior.
+    /// The inner face left by `offset_face` is bounded by the coplanar frame →
+    /// coplanar-interior. Extruding it INTO the solid makes a manifold pocket
+    /// (what push_pull cannot do directly).
+    #[test]
+    fn coplanar_interior_face_detected_and_extruded_into_pocket() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::default();
+        let base = mesh.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+        assert!(!mesh.is_coplanar_interior_face(base), "box face bounded by walls, not interior");
+
+        let inner = mesh.offset_face(base, -200.0).unwrap().inner_face;
+        assert!(mesh.is_coplanar_interior_face(inner), "offset inner face is coplanar-interior");
+
+        let (_cap, walls) = mesh.extrude_coplanar_interior_face(inner, -300.0, mat).unwrap();
+        assert_eq!(walls.len(), 4, "square inner → 4 pocket walls");
+        let all: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let mi = mesh.face_set_manifold_info(&all);
+        assert!(
+            mi.is_closed_solid,
+            "pocket extrude stays closed (bnd={} nm={})",
+            mi.boundary_edge_count, mi.non_manifold_edge_count
+        );
+        assert!(mesh.verify_face_invariants().is_valid(), "pocket invariants valid");
+        assert!(mesh.detect_self_intersections().is_clean(), "pocket SI-clean");
+    }
+
+    /// Extruding the same coplanar interior face OUT of the solid makes a
+    /// manifold boss (raised bump) — the offset+push-pull "boss" workflow.
+    #[test]
+    fn coplanar_interior_face_extruded_out_into_boss() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::default();
+        let base = mesh.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+        let inner = mesh.offset_face(base, -200.0).unwrap().inner_face;
+
+        let (_cap, walls) = mesh.extrude_coplanar_interior_face(inner, 300.0, mat).unwrap();
+        assert_eq!(walls.len(), 4, "square inner → 4 boss walls");
+        let all: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let mi = mesh.face_set_manifold_info(&all);
+        assert!(
+            mi.is_closed_solid,
+            "boss extrude stays closed (bnd={} nm={})",
+            mi.boundary_edge_count, mi.non_manifold_edge_count
+        );
+        assert!(mesh.verify_face_invariants().is_valid(), "boss invariants valid");
+        assert!(mesh.detect_self_intersections().is_clean(), "boss SI-clean");
     }
 
     /// Adversarial sweep (found via the self-intersection checker). offset_face
