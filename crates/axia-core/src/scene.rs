@@ -2652,6 +2652,15 @@ impl Scene {
         center_pt: DVec3,
         radius_pt: DVec3,
     ) -> Option<(FaceId, FaceId)> {
+        // ADR-273 — reject non-finite / degenerate input BEFORE building geometry.
+        // A bad headless/MCP/script call (e.g. NaN coords from a malformed arg)
+        // would otherwise create a NaN-vertex face that later PANICS earcut in
+        // tessellation (engine crash). 메타-원칙 #6 (preventive over curative).
+        if !center_pt.is_finite() || !radius_pt.is_finite()
+            || (radius_pt - center_pt).length() < 1e-6
+        {
+            return None;
+        }
         use axia_geo::surfaces::{sphere, AnalyticSurface};
         let (center, radius) = match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
             Some(AnalyticSurface::Sphere { center, radius, .. }) => (*center, *radius),
@@ -2707,6 +2716,15 @@ impl Scene {
         center_pt: DVec3,
         radius_pt: DVec3,
     ) -> Option<(FaceId, FaceId)> {
+        // ADR-273 — reject non-finite / degenerate input BEFORE building geometry.
+        // A bad headless/MCP/script call (e.g. NaN coords from a malformed arg)
+        // would otherwise create a NaN-vertex face that later PANICS earcut in
+        // tessellation (engine crash). 메타-원칙 #6 (preventive over curative).
+        if !center_pt.is_finite() || !radius_pt.is_finite()
+            || (radius_pt - center_pt).length() < 1e-6
+        {
+            return None;
+        }
         use axia_geo::surfaces::{cylinder, AnalyticSurface};
         let (ax_o, ax_d, rad, refd) = match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
             Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. }) => {
@@ -2777,6 +2795,15 @@ impl Scene {
         center_pt: DVec3,
         radius_pt: DVec3,
     ) -> Option<(FaceId, FaceId)> {
+        // ADR-273 — reject non-finite / degenerate input BEFORE building geometry.
+        // A bad headless/MCP/script call (e.g. NaN coords from a malformed arg)
+        // would otherwise create a NaN-vertex face that later PANICS earcut in
+        // tessellation (engine crash). 메타-원칙 #6 (preventive over curative).
+        if !center_pt.is_finite() || !radius_pt.is_finite()
+            || (radius_pt - center_pt).length() < 1e-6
+        {
+            return None;
+        }
         use axia_geo::surfaces::{cone, AnalyticSurface};
         let (apex, ax_d, half_angle, refd, v_lo, v_hi) =
             match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
@@ -2847,6 +2874,15 @@ impl Scene {
         center_pt: DVec3,
         radius_pt: DVec3,
     ) -> Option<(FaceId, FaceId)> {
+        // ADR-273 — reject non-finite / degenerate input BEFORE building geometry.
+        // A bad headless/MCP/script call (e.g. NaN coords from a malformed arg)
+        // would otherwise create a NaN-vertex face that later PANICS earcut in
+        // tessellation (engine crash). 메타-원칙 #6 (preventive over curative).
+        if !center_pt.is_finite() || !radius_pt.is_finite()
+            || (radius_pt - center_pt).length() < 1e-6
+        {
+            return None;
+        }
         use axia_geo::surfaces::{torus, AnalyticSurface};
         let (center, ax_d, refd, mr, nr) =
             match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
@@ -14823,6 +14859,36 @@ mod tests {
             "panel watertight after 2 through + 1 pocket");
         assert!(scene.mesh.detect_self_intersections().count() == 0,
             "final panel has no self-intersection");
+    }
+
+    /// ADR-273 — a malformed curved-sketch call (non-finite coords, e.g. a bad
+    /// headless/MCP/script arg) must be REJECTED, not create a NaN-vertex face
+    /// that later panics earcut in tessellation (engine crash). Both defenses:
+    /// (A) draw_circle_on_cylinder returns None on NaN input, and (B) the
+    /// tessellation path is panic-safe even if a bad face slipped through.
+    #[test]
+    fn adr273_nan_curved_sketch_rejected_no_crash() {
+        let mut scene = Scene::new();
+        let mat = MaterialId::new(0);
+        scene.mesh.create_cylinder(DVec3::ZERO, 500.0, 1000.0, 32, mat).unwrap();
+        let faces_before = scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let side = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active()
+                && matches!(f.surface(), Some(axia_geo::surfaces::AnalyticSurface::Cylinder { .. })))
+            .map(|(id, _)| id).next().expect("cylinder side face");
+
+        // (A) NaN center/radius → rejected, no face created.
+        let r = scene.draw_circle_on_cylinder(
+            side,
+            DVec3::new(f64::NAN, 0.0, 500.0),
+            DVec3::new(f64::NAN, 0.0, 600.0),
+        );
+        assert!(r.is_none(), "NaN curved-sketch input must be rejected");
+        let faces_after = scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_before, faces_after, "no NaN face may be created");
+
+        // (B) Tessellation of the (still valid) mesh must not panic.
+        let _ = scene.mesh.detect_self_intersections().count();
     }
 
     /// ADR-264 D3 — the geometric detector catches a CRACK the radial detector

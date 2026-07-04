@@ -252,7 +252,7 @@ impl Mesh {
             all_verts.extend(hv);
         }
 
-        let idx = earcutr::earcut(&coords, &hole_indices, 2).ok()?;
+        let idx = crate::mesh::earcut_safe(&coords, &hole_indices, 2)?;
         let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(idx.len() / 3);
         for c in idx.chunks(3) {
             if c.len() < 3 {

@@ -15,6 +15,27 @@ use crate::entities::*;
 use crate::storage::SlotStorage;
 use crate::tolerances::*;
 
+/// ADR-273 — panic-safe earcut. `earcutr` builds a linked list and can
+/// `unwrap()` a `None` (PANIC → engine crash in WASM) on pathological input —
+/// notably a polygon containing a non-finite (NaN/Inf) coordinate, which a bad
+/// headless/MCP/script call can produce. A non-finite or untriangulable polygon
+/// is invalid and must be SKIPPED, never crash the engine. This is the single
+/// choke point every tessellation path calls instead of `earcutr::earcut`.
+///
+/// Returns `None` when the input is non-finite, when earcut errors, or when
+/// earcut panics (caught in native builds; the pre-check already removes the
+/// known WASM-abort trigger). 메타-원칙 #6 (preventive over curative).
+pub(crate) fn earcut_safe(coords: &[f64], hole_indices: &[usize], dim: usize) -> Option<Vec<usize>> {
+    if coords.iter().any(|c| !c.is_finite()) {
+        return None;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        earcutr::earcut(coords, hole_indices, dim)
+    }))
+    .ok()
+    .and_then(|r| r.ok())
+}
+
 /// Spatial hash cell key for fast vertex coincidence queries.
 ///
 /// 셀 크기: 0.1 μm (1e-4 mm, ADR-147 Scenario B1, 2026-05-27 amendment).
@@ -1784,7 +1805,7 @@ impl Mesh {
             }
         }
         let flat: Vec<f64> = uv.iter().flat_map(|&(u, v)| [u, v]).collect();
-        let tri_flat = earcutr::earcut(&flat, &[], 2).ok()?;
+        let tri_flat = earcut_safe(&flat, &[], 2)?;
         if tri_flat.is_empty() {
             return None;
         }
@@ -2203,7 +2224,7 @@ impl Mesh {
                     flat.push(v);
                 }
             }
-            let tri = earcutr::earcut(&flat, &holes, 2).ok()?;
+            let tri = earcut_safe(&flat, &holes, 2)?;
             if tri.is_empty() {
                 return None;
             }
@@ -2311,7 +2332,7 @@ impl Mesh {
                         flat.push(u);
                         flat.push(v);
                     }
-                    let tri = earcutr::earcut(&flat, &holes, 2).ok()?;
+                    let tri = earcut_safe(&flat, &holes, 2)?;
                     if tri.is_empty() {
                         return None;
                     }
@@ -2447,7 +2468,7 @@ impl Mesh {
                     flat.push(v);
                 }
             }
-            let tri = earcutr::earcut(&flat, &holes, 2).ok()?;
+            let tri = earcut_safe(&flat, &holes, 2)?;
             if tri.is_empty() {
                 return None;
             }
@@ -2559,7 +2580,7 @@ impl Mesh {
                         flat.push(u);
                         flat.push(v);
                     }
-                    let tri = earcutr::earcut(&flat, &holes, 2).ok()?;
+                    let tri = earcut_safe(&flat, &holes, 2)?;
                     if tri.is_empty() {
                         return None;
                     }
@@ -2698,7 +2719,7 @@ impl Mesh {
                     flat.push(v);
                 }
             }
-            let tri = earcutr::earcut(&flat, &holes, 2).ok()?;
+            let tri = earcut_safe(&flat, &holes, 2)?;
             if tri.is_empty() {
                 return None;
             }
@@ -13471,6 +13492,28 @@ pub(crate) fn surfaces_in_same_smooth_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-273 — `earcut_safe` never panics on pathological input (the earcut
+    /// crash class): a non-finite coordinate returns None instead of panicking
+    /// earcut's linked-list `unwrap`. A well-formed polygon still triangulates.
+    #[test]
+    fn earcut_safe_rejects_non_finite_without_panic() {
+        // Well-formed square → triangulates (6 indices).
+        let sq = vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
+        assert_eq!(earcut_safe(&sq, &[], 2).map(|v| v.len()), Some(6));
+        // A full circle-ish loop of NaN (the malformed-curved-sketch class) must
+        // return None, NOT panic — this is what crashed the render path before.
+        let mut nan_loop = Vec::new();
+        for i in 0..32 {
+            let _ = i;
+            nan_loop.push(f64::NAN);
+            nan_loop.push(f64::NAN);
+        }
+        assert_eq!(earcut_safe(&nan_loop, &[], 2), None, "NaN loop must be skipped, not crash");
+        // A single Inf coordinate is also rejected.
+        let inf = vec![0.0, 0.0, f64::INFINITY, 0.0, 10.0, 10.0];
+        assert_eq!(earcut_safe(&inf, &[], 2), None);
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // ADR-028 Phase A — Mesh ↔ AnalyticCurve integration tests

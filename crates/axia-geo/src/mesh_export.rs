@@ -767,10 +767,13 @@ impl Mesh {
             }
             if skip_face { stats.corrupted_inner_loop += 1; continue; }
 
-            // Triangulate with earcutr (outer + holes)
-            let mut tri_indices = match earcutr::earcut(&coords_2d, &hole_indices, 2) {
-                Ok(indices) => indices,
-                Err(_) => { stats.earcut_failed += 1; continue; },
+            // Triangulate with the panic-safe earcut (ADR-273) — a non-finite /
+            // untriangulable polygon (e.g. from a malformed curved-sketch call)
+            // returns None here instead of PANICKING earcut (engine crash on the
+            // render path). None → earcut_failed stat + skip, same as an Err.
+            let mut tri_indices = match crate::mesh::earcut_safe(&coords_2d, &hole_indices, 2) {
+                Some(indices) => indices,
+                None => { stats.earcut_failed += 1; continue; },
             };
             // Distinguish Ok([]) — earcut accepted the polygon but
             // produced zero triangles (degenerate / self-touching).
