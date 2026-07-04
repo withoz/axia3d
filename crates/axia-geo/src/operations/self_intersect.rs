@@ -67,6 +67,11 @@ struct FaceGeom {
     tris: Vec<[DVec3; 3]>,
     lo: DVec3,
     hi: DVec3,
+    /// Analytic surface (Plane/Cylinder/Sphere/…) if attached. Two faces on the
+    /// SAME smooth curved surface only touch at shared edges — never truly cross
+    /// — so their flat-chord tessellations "overlapping" is an approximation
+    /// artifact, not a defect. Used to skip such pairs (see the narrow phase).
+    surface: Option<crate::surfaces::AnalyticSurface>,
 }
 
 impl Mesh {
@@ -158,6 +163,23 @@ impl Mesh {
                 || a.hi.z < b.lo.z - AABB_EPS
                 || b.hi.z < a.lo.z - AABB_EPS
             {
+                continue;
+            }
+            // Trust curved analytic surfaces. This detector tessellates every
+            // face as a FLAT chord polygon from its boundary verts (see
+            // tessellate_face_geom). For a Cylinder/Sphere/Cone/Torus face the
+            // chord bows INSIDE the true surface (by up to r·(1−cos(π/n))), so:
+            //   • two faces on the same curved surface overlap as approximations
+            //     of one non-self-intersecting surface, and
+            //   • a neighbouring carved wall attached at the TRUE surface pokes
+            //     past that inward chord.
+            // Both are approximation artifacts, not real folds — a curved
+            // analytic surface cannot self-intersect, and a genuine curved-carve
+            // defect breaks manifoldness / opens a boundary (caught by the
+            // volume-integrity + closure gate). So skip any pair that involves a
+            // curved analytic face. Planar faces keep exact chords → their folds
+            // (the chamfer/fillet flap class) are still caught below. ADR-271.
+            if is_curved_surface(&a.surface) || is_curved_surface(&b.surface) {
                 continue;
             }
             // Faces sharing a vertex/edge legitimately touch there. Instead of
@@ -255,8 +277,36 @@ impl Mesh {
             }
         }
 
-        Some(FaceGeom { fid, verts: all_verts, tris, lo, hi })
+        Some(FaceGeom {
+            fid,
+            verts: all_verts,
+            tris,
+            lo,
+            hi,
+            surface: face.surface().cloned(),
+        })
     }
+}
+
+/// True if the surface is a curved analytic primitive (Cylinder/Sphere/Cone/
+/// Torus/Bezier/BSpline/NURBS) — one whose flat-chord tessellation deviates from
+/// the true surface, so [`Mesh::detect_self_intersections`] cannot reliably test
+/// it. A `Plane` (or `None`) is flat-exact and NOT curved. See the narrow-phase
+/// skip for the rationale.
+fn is_curved_surface(s: &Option<crate::surfaces::AnalyticSurface>) -> bool {
+    use crate::surfaces::AnalyticSurface as S;
+    matches!(
+        s,
+        Some(
+            S::Cylinder { .. }
+                | S::Sphere { .. }
+                | S::Cone { .. }
+                | S::Torus { .. }
+                | S::BezierPatch { .. }
+                | S::BSplineSurface { .. }
+                | S::NURBSSurface { .. }
+        )
+    )
 }
 
 /// Relative tolerance for the strict interior/penetration predicates. Positions
@@ -467,6 +517,43 @@ mod tests {
         m.add_face(&[b0, b1, b2, b3], mat).unwrap();
 
         assert!(!m.detect_self_intersections().is_clean(), "piercing flap must be detected");
+    }
+
+    /// ADR-271 / ADR-273 — a face on a CURVED analytic surface is trusted: its
+    /// flat-chord tessellation deviates from the true surface, so a "penetration"
+    /// against it is an approximation artifact, not a real fold. The SAME
+    /// piercing geometry that is flagged when both faces are flat must be SKIPPED
+    /// once one face carries a Cylinder surface. Guards against the curved-carve
+    /// (carveCurvedPocket) phantom self-intersections while keeping planar folds
+    /// detected (the control case above).
+    #[test]
+    fn curved_analytic_face_is_trusted_and_skipped() {
+        use crate::surfaces::AnalyticSurface as S;
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(20.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(20.0, 20.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 20.0, 0.0));
+        let fa = m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        let b0 = m.add_vertex(DVec3::new(5.0, 5.0, -3.0));
+        let b1 = m.add_vertex(DVec3::new(15.0, 5.0, 3.0));
+        let b2 = m.add_vertex(DVec3::new(15.0, 15.0, 3.0));
+        let b3 = m.add_vertex(DVec3::new(5.0, 15.0, -3.0));
+        let fb = m.add_face(&[b0, b1, b2, b3], mat).unwrap();
+
+        // Control — both flat → the pierce is a real fold, flagged.
+        assert!(!m.detect_self_intersections().is_clean(),
+            "control: flat piercing flap must be detected");
+
+        // Mark ONE face as a curved (Cylinder) surface → the pair is trusted.
+        m.set_face_surface(fb, Some(S::Cylinder {
+            axis_origin: DVec3::ZERO, axis_dir: DVec3::Z,
+            radius: 100.0, ref_dir: DVec3::X,
+            u_range: (0.0, 1.0), v_range: (0.0, 200.0),
+        }));
+        assert!(m.detect_self_intersections().is_clean(),
+            "a curved analytic face must be trusted (chord artifact skipped)");
     }
 
     #[test]

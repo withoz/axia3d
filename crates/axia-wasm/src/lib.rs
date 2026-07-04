@@ -8530,11 +8530,28 @@ impl AxiaEngine {
             .mesh
             .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
             .damage_count();
+        // ADR-271 / ADR-273 — capture closure + self-intersection baseline so the
+        // curved carve gets the SAME defense-in-depth gate as the flat carve. The
+        // SI detector now trusts curved analytic faces (co-surface + chord
+        // artifacts skipped), so this no longer false-rejects a valid curved
+        // carve — it catches a REAL fold among the carved walls, a torn-open
+        // solid, or new invariant/crack.
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let integrity_snapshot = self.scene.scene_snapshot();
         match self.scene.carve_curved_pocket_from_cap(fid, depth) {
             CommandResult::PushPullDone { sides_created, .. } => {
                 if !self.integrity_gate_passed(
                     integrity_before,
+                    &integrity_snapshot,
+                    "carve curved pocket",
+                    false,
+                ) {
+                    return -1;
+                }
+                if !self.closure_preserving_gate_passed(
+                    before_boundary,
+                    before_si,
                     &integrity_snapshot,
                     "carve curved pocket",
                     false,
