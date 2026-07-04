@@ -47,6 +47,13 @@ export class PushPullTool implements ITool {
   /** 최소 유효 거리 (mm) — 이보다 작으면 무시 (프리뷰 확정용 threshold) */
   private static readonly MIN_COMMIT_DIST = 0.5;
 
+  /** 프레스-드래그-릴리즈 판정 화면 거리 (px). 이보다 많이 끌면 마우스 릴리즈
+   *  (onMouseUp) 로 커밋. 그 이하 = 단순 클릭 → click-move-click 유지. */
+  private static readonly DRAG_COMMIT_PX = 6;
+  /** 좌버튼을 누른 채로 DRAG_COMMIT_PX 이상 이동했는가 (mousemove 에서 갱신).
+   *  true 면 릴리즈 시 커밋 (SketchUp/Fusion 의 press-drag-release 제스처). */
+  private ppDidDrag: boolean = false;
+
   // ═══ 곡면 그룹 Push/Pull ═══
   private smoothGroupFaces: number[] = [];  // 곡면 그룹의 모든 faceId
   private isSmoothGroup: boolean = false;   // 곡면 그룹 모드 여부
@@ -140,6 +147,7 @@ export class PushPullTool implements ITool {
         this.ppStartX = e.clientX;
         this.ppStartY = e.clientY;
         this.ppActive = true;
+        this.ppDidDrag = false;
 
         // ── Bug D fix: 사용자가 이미 여러 면을 선택했으면 그 선택을 존중 ──
         // 단, 모든 선택면이 클릭한 면과 같은 smooth group일 때만 그룹 Push/Pull로 간주.
@@ -289,8 +297,29 @@ export class PushPullTool implements ITool {
     }
   }
 
+  /** Press-drag-release commit (SketchUp/Fusion 제스처). 좌버튼을 누른 채 면을
+   *  끌었다가 놓으면 (ppDidDrag) 릴리즈 시 커밋 — ppActive 가 아직 true 이므로
+   *  onMouseDown 의 Phase 2 를 재진입해 동일한 commit 경로(포켓/관통 carve /
+   *  live / legacy)를 그대로 탄다. 드래그가 아니면(단순 클릭) 아무것도 안 해
+   *  기존 click-move-click 이 두 번째 클릭을 기다린다. */
+  onMouseUp(e: MouseEvent): void {
+    if (this.ppActive && this.ppDidDrag) {
+      this.ppDidDrag = false;
+      this.onMouseDown(e, null);
+    }
+  }
+
   onMouseMove(e: MouseEvent, _point: THREE.Vector3 | null): void {
     if (!this.ppActive) return;
+
+    // Press-drag-release detection: the left button is held (buttons&1) AND the
+    // cursor has moved past the threshold from the initial press ⇒ a genuine
+    // drag, so the release (onMouseUp) will commit. A button-up move (the middle
+    // of a click-move-click gesture) never sets this, so both gestures coexist.
+    if ((e.buttons & 1) !== 0 &&
+        Math.hypot(e.clientX - this.ppStartX, e.clientY - this.ppStartY) >= PushPullTool.DRAG_COMMIT_PX) {
+      this.ppDidDrag = true;
+    }
 
     let dist = this.ppRayDist(e);
     let isAligned = false;
@@ -672,6 +701,7 @@ export class PushPullTool implements ITool {
     this.isSheetSource = false;
     this.isCurvedCap = false;
     this.ppActive = false;
+    this.ppDidDrag = false;
     this.ppFaceId = -1;
     this.smoothGroupFaces = [];
     this.isSmoothGroup = false;

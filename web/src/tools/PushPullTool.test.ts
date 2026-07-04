@@ -400,6 +400,38 @@ describe('PushPullTool', () => {
       expect(tool.isBusy()).toBe(false);
     });
 
+    // Press-drag-release (SketchUp/Fusion): holding the button + dragging then
+    // releasing commits on mouseUP (previously there was no onMouseUp so a drag
+    // did nothing — "커서 드래그는 안됨").
+    it('press-drag-release commits on mouseUp (held button)', () => {
+      startSingleFaceDrag();
+      // button held (buttons:1) + moved past the px threshold ⇒ live begin + drag
+      tool.onMouseMove({ clientX: 400, clientY: 200, buttons: 1 } as MouseEvent, null);
+      expect(ctx.bridge.beginLiveExtrude).toHaveBeenCalled();
+      tool.onMouseUp({ clientX: 400, clientY: 200 } as MouseEvent);
+      expect(ctx.bridge.commitLiveExtrude).toHaveBeenCalled();
+      expect(tool.isBusy()).toBe(false);
+    });
+
+    // A plain click with no drag must NOT commit on release — click-move-click
+    // still waits for the second click (both gestures coexist).
+    it('a plain click (no drag) does not commit on mouseUp', () => {
+      startSingleFaceDrag(); // Phase 1 mousedown at (400,300)
+      tool.onMouseUp({ clientX: 400, clientY: 300 } as MouseEvent); // released in place
+      expect(ctx.bridge.commitLiveExtrude).not.toHaveBeenCalled();
+      expect(tool.isBusy()).toBe(true); // still armed for the second click
+    });
+
+    // A button-up move (the middle of click-move-click) must NOT arm the drag
+    // commit — only a held-button (buttons&1) move does.
+    it('a button-up move does not arm the drag-release commit', () => {
+      startSingleFaceDrag();
+      tool.onMouseMove({ clientX: 400, clientY: 100, buttons: 0 } as MouseEvent, null);
+      tool.onMouseUp({ clientX: 400, clientY: 100 } as MouseEvent);
+      expect(ctx.bridge.commitLiveExtrude).not.toHaveBeenCalled();
+      expect(tool.isBusy()).toBe(true);
+    });
+
     it('ESC cancels the live session (rollback)', () => {
       startSingleFaceDrag();
       tool.onMouseMove({ clientX: 400, clientY: 200 } as MouseEvent, null); // begin
