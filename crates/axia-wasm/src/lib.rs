@@ -4043,44 +4043,11 @@ impl AxiaEngine {
     ) -> bool {
         let fid = FaceId::new(face_id_raw);
 
-        // 사용자 결재 2026-07-04 (방법 1) — offset 이 남긴 coplanar 안쪽 면을
-        // 돌출하면 push_pull 이 옛 면을 남겨 경계 3-share(non-manifold)로 실패한다.
-        // 이런 면은 직접 구성으로 돌출: distance<0 → 포켓(안으로), >0 → 보스(밖으로).
-        // "offset → 안쪽 면 돌출" 워크플로우를 자연 동작시켜 홈파기와 하나로 합침.
-        if self.scene.mesh.is_coplanar_interior_face(fid) {
-            let mat = axia_core::FORM_MATERIAL;
-            let snap = self.scene.scene_snapshot();
-            let before_boundary = self.active_boundary_count();
-            let before_si = self.scene.mesh.detect_self_intersections().count();
-            self.scene.transactions.begin();
-            self.scene.transactions.set_before_snapshot(snap.clone());
-            match self.scene.mesh.extrude_coplanar_interior_face(fid, distance, mat) {
-                Ok((_cap, walls)) => {
-                    if !self.closure_preserving_gate_passed(
-                        before_boundary, before_si, &snap, "extrude (interior)", true,
-                    ) {
-                        return false;
-                    }
-                    self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
-                    self.scene.transactions.commit();
-                    self.mark_topology_changed();
-                    self.invalidate_cache();
-                    debug_log!(
-                        "[RUST] create_solid_extrude (interior) faceId={} dist={:.3} walls={}",
-                        face_id_raw, distance, walls.len()
-                    );
-                    return true;
-                }
-                Err(e) => {
-                    self.scene.restore_scene_snapshot(&snap);
-                    self.scene.transactions.cancel();
-                    self.invalidate_cache();
-                    console_error!("[RUST] create_solid_extrude (interior) ERROR: {}", e);
-                    self.set_error(format!("interior extrude: {}", e));
-                    return false;
-                }
-            }
-        }
+        // NOTE: a COPLANAR INTERIOR face (offset inner) is handled inside
+        // `Mesh::create_solid` (SSOT) → routed to extrude_coplanar_interior_face
+        // (distance<0 pocket / >0 boss). This makes the interactive live
+        // Push/Pull path work too (begin/commit_live_extrude → exec_create_solid).
+        // The gates below still apply on top.
 
         // ADR-191 P1.2-a (사용자 결재 2026-06-09) — multi-loop face (ring with
         // holes) Push/Pull 활성. ADR-016 Q2 reject 를 Push/Pull 한정 해제 —

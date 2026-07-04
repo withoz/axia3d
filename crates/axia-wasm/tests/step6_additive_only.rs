@@ -1456,10 +1456,9 @@ fn create_solid_extrude_dispatches_via_command() {
     // ADR-267 β-2: window widened 1500→2200 — the fn grew by the watertight
     // gate (snapshot + verify_volume_integrity before scene.execute). The
     // dispatch assertions below are unchanged and still valid.
-    // Window widened 2200→4400 (bytes) — the coplanar-interior-face reroute
-    // branch (2026-07-04, method 1) added ~1.9k bytes (Korean comment = 3B/char)
-    // before the Command dispatch; scene.execute lands at byte ~4127.
-    let body = char_safe_slice(&l, idx, 4400);
+    // Window 2200→3200 (bytes) for the coplanar-interior-face SSOT note
+    // (2026-07-04, method 1) added before the Command dispatch.
+    let body = char_safe_slice(&l, idx, 3200);
     assert!(body.contains("Command::CreateSolid"),
         "W-1-β: must dispatch through Command::CreateSolid");
     assert!(body.contains("CreateSolidMode::Extrude"),
@@ -1477,7 +1476,7 @@ fn create_solid_extrude_dispatches_via_command() {
 fn create_solid_extrude_handles_solid_created_and_fallback() {
     let l = lib_src();
     let idx = l.find("pub fn create_solid_extrude").expect("create_solid_extrude");
-    let body = char_safe_slice(&l, idx, 5600); // widened (bytes) for interior reroute branch
+    let body = char_safe_slice(&l, idx, 4400); // for coplanar-interior SSOT note
     assert!(body.contains("SolidCreated"),
         "W-1-β: must match CommandResult::SolidCreated (W-1-α success)");
     assert!(body.contains("PushPullDone"),
@@ -1630,7 +1629,7 @@ fn offset_edge_with_reference_plane_dispatches_via_rust_core() {
 fn create_solid_extrude_handler_is_solidkind_agnostic() {
     let l = lib_src();
     let idx = l.find("pub fn create_solid_extrude").expect("create_solid_extrude");
-    let body = char_safe_slice(&l, idx, 5100); // widened for interior reroute branch
+    let body = char_safe_slice(&l, idx, 4400); // for coplanar-interior SSOT note
     // SolidCreated arm must bind generic `kind` (not match SolidKind::Box).
     // Look for the pattern `SolidCreated { kind, ` (kind as field-name binding).
     assert!(

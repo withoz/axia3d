@@ -190,6 +190,53 @@ impl Mesh {
                     return Err(SolidError::DegenerateDistance { dist: distance }.into());
                 }
 
+                // 사용자 결재 2026-07-04 (방법 1) — the OFFSET-INNER face (the
+                // inner face `offset_face` leaves, bounded by the coplanar frame
+                // ring, on a CLOSED solid) cannot be extruded by push_pull: it
+                // keeps the old face and 3-shares the boundary → non-manifold.
+                // Build the extrusion directly — distance < 0 → pocket (into the
+                // solid), > 0 → boss (out). Routing here (the SSOT create_solid
+                // entry) makes "offset → extrude the inner face" work for ALL
+                // callers incl. the interactive live Push/Pull session.
+                //
+                // Scope: (1) is_coplanar_interior_face excludes a normal solid
+                // face (perpendicular walls, → the standard extrude below);
+                // (2) the profile's connected component is a CLOSED SOLID —
+                // this is what distinguishes the offset-inner / embedded sub-face
+                // (both on a closed box) from the OPEN flat coplanar arrangement,
+                // which must keep the ADR-102 cleave (ADR-264 D1 / D3 detector).
+                // A closed coplanar interior face extrudes cleanly here for both
+                // callers, incl. the interactive live Push/Pull session.
+                if self.is_coplanar_interior_face(profile_face) {
+                    let closed_component = {
+                        let all_active: Vec<FaceId> = self
+                            .faces
+                            .iter()
+                            .filter(|(_, f)| f.is_active())
+                            .map(|(id, _)| id)
+                            .collect();
+                        self.face_connected_components(&all_active)
+                            .into_iter()
+                            .find(|c| c.contains(&profile_face))
+                            .map_or(false, |c| self.face_set_manifold_info(&c).is_closed_solid)
+                    };
+                    if closed_component {
+                        let (cap, walls) = self
+                            .extrude_coplanar_interior_face(profile_face, distance, material)?;
+                        let mut all_solid_faces = walls.clone();
+                        all_solid_faces.push(cap);
+                        return Ok(CreateSolidResult {
+                            profile_face,
+                            solid_kind: SolidKind::Box, // straight planar walls
+                            top_face: cap,
+                            side_faces: walls,
+                            all_solid_faces,
+                            adjacent_splits: 0,
+                            split_debug: Vec::new(),
+                        });
+                    }
+                }
+
                 // ─── ADR-264 — Embedded boss: FUSE vs ADR-102 cleave ──
                 //
                 // An embedded sub-face on a CLOSED SOLID (a rect drawn on a
