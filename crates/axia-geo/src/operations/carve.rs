@@ -29,6 +29,16 @@ use glam::{DVec2, DVec3};
 use crate::surfaces::AnalyticSurface;
 use crate::{mesh::Mesh, EdgeId, FaceId, MaterialId, VertId};
 
+/// ADR-273 UX — user-facing reason a straight-tube through-drill cannot proceed:
+/// the exit wall is not a parallel straight exit (a tapered / angled / non-convex
+/// far wall). Surfaced when the exit punch finds no coplanar host, or the bridge's
+/// anti-parallel guard trips — instead of a technical "no coplanar face contains
+/// the polygon hole centroid …". 메타-원칙 #5 (사용자 편의).
+const STRAIGHT_THROUGH_EXIT_MSG: &str =
+    "경사진(비평행) 벽은 곧은 관통을 지원하지 않습니다 — 반대편 벽이 입구와 평행한 \
+     곧은 벽에서 관통하거나 Boolean 빼기를 사용하세요 (a tapered / angled / non-convex \
+     exit wall is not supported by the straight-tube drill)";
+
 /// ADR-194 β-1 — what an inward extrude would mean w.r.t. existing material.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CarveIntent {
@@ -376,10 +386,14 @@ impl Mesh {
             .drill_extract_hole_loop_near(entry_face, entry_center)
             .ok_or_else(|| anyhow::anyhow!("drill rect: entry hole loop not found"))?;
 
-        // 3) Punch the exit rect on the opposite plane (projected corners).
+        // 3) Punch the exit rect on the opposite plane (projected corners). A
+        //    tapered / angled far wall lands the straight projection on no
+        //    coplanar host → surface a clear reason (ADR-273 UX).
         let exit_a = corner_a - n * depth;
         let exit_b = corner_b - n * depth;
-        let exit_face = self.punch_rect_hole(exit_a, exit_b, n)?;
+        let exit_face = self
+            .punch_rect_hole(exit_a, exit_b, n)
+            .map_err(|_| anyhow::anyhow!("{STRAIGHT_THROUGH_EXIT_MSG}"))?;
         let b_loop = self
             .drill_extract_hole_loop_near(exit_face, entry_center - n * depth)
             .ok_or_else(|| anyhow::anyhow!("drill rect: exit hole loop not found"))?;
@@ -445,9 +459,14 @@ impl Mesh {
             .drill_extract_hole_loop_near(entry_face, center)
             .ok_or_else(|| anyhow::anyhow!("drill polygon: entry hole loop not found"))?;
 
-        // 3) Punch the exit profile on the opposite plane (projected loop).
+        // 3) Punch the exit profile on the opposite plane (projected loop). If
+        //    the far wall is not a parallel straight exit (tapered / angled), the
+        //    straight-projected loop lands on no coplanar host → surface a clear
+        //    reason instead of the technical "no coplanar face …" (ADR-273 UX).
         let exit_pts: Vec<DVec3> = loop_pts.iter().map(|&p| p - n * depth).collect();
-        let exit_face = self.punch_polygon_hole(&exit_pts, n)?;
+        let exit_face = self
+            .punch_polygon_hole(&exit_pts, n)
+            .map_err(|_| anyhow::anyhow!("{STRAIGHT_THROUGH_EXIT_MSG}"))?;
         let b_loop = self
             .drill_extract_hole_loop_near(exit_face, center - n * depth)
             .ok_or_else(|| anyhow::anyhow!("drill polygon: exit hole loop not found"))?;
@@ -940,10 +959,7 @@ impl Mesh {
         // explicitly (MVP = straight through convex solids; 메타-원칙 #5).
         let exit_n = self.faces[exit_face].normal().normalize_or_zero();
         if exit_n.dot(n) > -0.5 {
-            bail!(
-                "drill: exit wall is not anti-parallel to the drill axis \
-                 (non-convex / internal feature — MVP supports straight-through convex solids)"
-            );
+            bail!("{STRAIGHT_THROUGH_EXIT_MSG}");
         }
         let cnt = e_loop.len();
         if b_loop.len() != cnt {
@@ -1632,6 +1648,57 @@ mod tests {
             .create_box(DVec3::ZERO, 200.0, 200.0, 200.0, MaterialId::new(0))
             .expect("box");
         (mesh, faces[0], faces[1]) // (bottom -Z, top +Z)
+    }
+
+    /// ADR-273 UX — a straight through-drill whose far wall is NOT a parallel
+    /// straight exit (here: a triangular prism, whose walls meet at an angle)
+    /// must fail with the CLEAR reason ("경사진 … 곧은 관통을 지원하지 않습니다"),
+    /// not the technical "no coplanar face contains the polygon hole centroid …".
+    /// A box (parallel opposite wall) still drills through — the regression guard.
+    #[test]
+    fn adr273_non_parallel_exit_drill_clear_reason() {
+        let mat = MaterialId::new(0);
+        // Triangular prism: a triangle base pushed up. Its 3 vertical side walls
+        // meet at 60°/120° angles — no wall has a parallel opposite.
+        let mut mesh = Mesh::default();
+        let v0 = mesh.add_vertex(DVec3::new(-150.0, -80.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(150.0, -80.0, 0.0));
+        let v2 = mesh.add_vertex(DVec3::new(0.0, 170.0, 0.0));
+        let base = mesh.add_face(&[v0, v1, v2], mat).expect("triangle base"); // +Z
+        let _ = mesh.push_pull(base, 200.0, mat).expect("prism");
+
+        // Drill a rect through the FRONT wall (the v0→v1 side, outward normal -Y).
+        // The +Y ray into the solid exits near the apex v2 — between the two
+        // slanted side walls, so NO coplanar exit face exists.
+        let ca = DVec3::new(-40.0, -80.0, 60.0);
+        let cb = DVec3::new(40.0, -80.0, 140.0);
+        let r = mesh.drill_rect_through_hole(ca, cb, DVec3::new(0.0, -1.0, 0.0));
+        match r {
+            Err(e) => {
+                let m = e.to_string();
+                // Must be a CLEAR user-facing reason (tapered/angled exit OR
+                // cross-drill), NOT the technical "no coplanar face contains the
+                // polygon hole centroid …" that leaked before ADR-273.
+                assert!(
+                    !m.contains("no coplanar face contains the polygon hole"),
+                    "must not surface the technical punch error, got: {m}"
+                );
+                assert!(
+                    m.contains("경사진") || m.contains("관통 축") || m.contains("tapered"),
+                    "must give a clear Korean reason, got: {m}"
+                );
+            }
+            Ok(_) => panic!("a non-parallel-exit through-drill should be rejected"),
+        }
+
+        // Regression: a box (parallel opposite wall) still drills through cleanly.
+        let (mut bx, _bot, _top) = box200();
+        let ok = bx.drill_rect_through_hole(
+            DVec3::new(-40.0, -100.0, -40.0),
+            DVec3::new(40.0, -100.0, 40.0),
+            DVec3::new(0.0, -1.0, 0.0),
+        );
+        assert!(ok.is_ok(), "box straight through-drill must still succeed: {ok:?}");
     }
 
     /// ADR-262 β-1 DETAILED SIM (먼저 시뮬) — full door notch on a box wall:
