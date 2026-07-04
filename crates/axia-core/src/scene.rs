@@ -211,6 +211,14 @@ struct LiveExtrudeSession {
     /// (no connecting walls — a fresh-box live extrude is unclamped; commit's
     /// create_solid rejects a degenerate result anyway).
     max_inward: Option<f64>,
+    /// ADR-252 live routing (사용자 결재 2026-07-04 "옵션 A — 스마트 자동 전환") —
+    /// `Some(t)` when the seed is a genuine profile sheet drawn on a solid wall
+    /// (`wall_thickness_from_source_face` = wall thickness `t`). An INWARD commit
+    /// then routes to `carve_pocket_from_source_face`, which auto-switches blind
+    /// POCKET (depth < t) ↔ THROUGH-hole (depth ≥ t). The inward slide is
+    /// clamped to `-t` (reach the opposite side so the through threshold fires).
+    /// `None` for a fresh box / MoveOnly / offset-inner (→ plain create_solid).
+    source_thickness: Option<f64>,
 }
 
 /// ADR-239 — Live NURBS control-point edit session (None when idle).
@@ -430,6 +438,14 @@ pub struct Scene {
     /// without changing the `CommandResult::SolidCreated` variant (which has
     /// 7 exhaustive match sites). Transient: NOT serialized.
     last_solid_top_face: Option<FaceId>,
+
+    /// ADR-252 SSOT routing (사용자 결재 2026-07-04 "옵션 A") — suppress the
+    /// `exec_create_solid` "inward source-face → carve pocket/through" reroute.
+    /// Set ONLY during the live-preview `begin_live_extrude`, which needs a
+    /// slidable create_solid box (carve is a committing op, not slidable). The
+    /// live COMMIT re-enters `exec_create_solid` with this clear, so the final
+    /// geometry is the correct pocket/through carve. Transient: NOT serialized.
+    suppress_source_carve: bool,
 }
 
 /// ADR-095 Phase 3-β — `Scene::create_reference` 실패 사유.
@@ -529,6 +545,7 @@ impl Scene {
             // ADR-193 — Live Push/Pull session state (idle).
             live_extrude: None,
             last_solid_top_face: None,
+            suppress_source_carve: false,
         }
     }
 
@@ -7591,6 +7608,33 @@ impl Scene {
             ));
         }
 
+        // ADR-252 SSOT routing (사용자 결재 2026-07-04 "옵션 A — 스마트 자동 전환")
+        // — an INWARD extrude of a profile sheet drawn on a solid wall is a
+        // POCKET (partial) / THROUGH-hole (reaches the far wall) cut, NOT a new
+        // box. Without this, `create_solid` builds a box that pokes through the
+        // opposite side → self-intersecting → the closure gate rejects it
+        // ("extrude REJECTED … self_intersect"). `carve_pocket_from_source_face`
+        // owns the pocket↔through decision (`wall_thickness_from_source_face`) +
+        // XIA reconciliation. This is the SSOT for EVERY committing extrude entry
+        // (createSolidExtrude / VCB / Command::CreateSolid / live commit). It is
+        // suppressed only during the live PREVIEW (`begin_live_extrude`), which
+        // needs a slidable box; that session's COMMIT re-enters here cleared.
+        if !self.suppress_source_carve {
+            if let axia_geo::CreateSolidMode::Extrude { distance } = mode {
+                if distance < 0.0
+                    && self.mesh.wall_thickness_from_source_face(face_id).is_some()
+                {
+                    let r = self.carve_pocket_from_source_face(face_id, -distance);
+                    // On decline the carve restored the pre-carve state → fall
+                    // through to the plain extrude so the gesture is never a
+                    // no-op (e.g. cross-drill through an existing hole).
+                    if !matches!(r, CommandResult::Error(_)) {
+                        return r;
+                    }
+                }
+            }
+        }
+
         // Capture fallback distance for Extrude mode (Q3 fallback uses
         // legacy push_pull which only knows about distance).
         let fallback_dist = match &mode {
@@ -7886,17 +7930,67 @@ impl Scene {
             n / len
         };
 
+        // ADR-252 live routing (사용자 결재 2026-07-04 "옵션 A") — a genuine
+        // profile sheet drawn on a solid wall reports its wall thickness `t` via
+        // `wall_thickness_from_source_face` (the SAME value the pocket-vs-through
+        // decision uses, so clamp and threshold agree). `Some(t)` ⇒ route the
+        // inward commit to `carve_pocket_from_source_face` (auto pocket ↔
+        // through) and allow the slide to reach the opposite side.
+        let source_thickness = self.mesh.wall_thickness_from_source_face(face_id);
+
         // ADR-196 follow-up — capture the original solid thickness (max inward
         // travel) BEFORE the preview move, so update_live_extrude can clamp the
         // inward slide (a MoveOnly seed face only; None for a flat profile).
-        let max_inward = axia_geo::operations::push_pull::move_only_max_inward(&self.mesh, face_id);
+        let max_inward = axia_geo::operations::push_pull::move_only_max_inward(&self.mesh, face_id)
+            .or_else(|| {
+                // A COPLANAR INTERIOR face (offset inner / drawn sub-face on a
+                // closed solid) is not a MoveOnly seed, so move_only_max_inward
+                // is None → the pocket slide would be UNCLAMPED and the mouse
+                // could drive it wildly past the opposite side (the "-7396"
+                // wild-distance bug). For a source-on-wall sheet the clamp is the
+                // wall thickness `t` (reach `-t` so the through threshold fires);
+                // for other interior faces fall back to the depth below the plane.
+                if let Some(t) = source_thickness {
+                    return (t > axia_geo::operations::push_pull::MIN_SOLID_THICKNESS)
+                        .then_some(t);
+                }
+                if !self.mesh.is_coplanar_interior_face(face_id) {
+                    return None;
+                }
+                let start = self.mesh.faces.get(face_id)?.outer().start;
+                let first_v = *self.mesh.collect_loop_verts(start).ok()?.first()?;
+                let face_pt = self.mesh.vertex_pos(first_v).ok()?;
+                let active_verts: Vec<_> = self
+                    .mesh
+                    .verts
+                    .iter()
+                    .filter(|(_, v)| v.is_active())
+                    .map(|(id, _)| id)
+                    .collect();
+                let mut depth = 0.0_f64;
+                for vid in active_verts {
+                    if let Ok(vp) = self.mesh.vertex_pos(vid) {
+                        // (face_pt − vp)·normal > 0 ⇒ vp is BELOW the face (inward).
+                        let d = (face_pt - vp).dot(normal);
+                        if d > depth {
+                            depth = d;
+                        }
+                    }
+                }
+                (depth > axia_geo::operations::push_pull::MIN_SOLID_THICKNESS).then_some(depth)
+            });
 
         let before_snapshot = self.scene_snapshot();
         self.last_solid_top_face = None;
+        // Suppress the ADR-252 carve reroute for the PREVIEW only — the live
+        // slide needs a slidable create_solid box (carve is committing). The
+        // COMMIT re-extrudes with the flag clear → correct pocket/through.
+        self.suppress_source_carve = true;
         let res = self.exec_create_solid(
             face_id,
             axia_geo::CreateSolidMode::Extrude { distance: dist },
         );
+        self.suppress_source_carve = false;
         if let CommandResult::Error(e) = res {
             // Defensive: a hard error inside exec_create_solid only `cancel()`s
             // (no mesh restore) — roll back to the pre-begin state ourselves.
@@ -7915,6 +8009,7 @@ impl Scene {
             normal,
             applied: dist,
             max_inward,
+            source_thickness,
         });
         Ok(top_face)
     }
@@ -7933,8 +8028,16 @@ impl Scene {
         // create_solid rejects a degenerate result).
         let target = match self.live_extrude.as_ref().and_then(|s| s.max_inward) {
             Some(thickness) => {
-                let floor =
-                    -(thickness - axia_geo::operations::push_pull::MIN_SOLID_THICKNESS).max(0.0);
+                // A source-on-wall sheet (ADR-252 live routing) may push the full
+                // thickness so the through-hole threshold fires on commit — its
+                // floor is exactly `-t`. Every other clamped seed stops a hair
+                // short (`-(t − MIN)`) to keep the preview solid non-degenerate.
+                let floor = if self.live_extrude.as_ref().and_then(|s| s.source_thickness).is_some()
+                {
+                    -thickness
+                } else {
+                    -(thickness - axia_geo::operations::push_pull::MIN_SOLID_THICKNESS).max(0.0)
+                };
                 target.max(floor)
             }
             None => target,
@@ -7974,7 +8077,10 @@ impl Scene {
         // Roll back the preview extrude + drop its undo frame.
         self.restore_scene_snapshot(&s.before_snapshot);
         self.transactions.discard_last_undo();
-        // Clean final extrude (single undo frame, correct surfaces).
+        // Clean final extrude (single undo frame, correct surfaces). An INWARD
+        // push of a source-on-wall sheet is rerouted to the pocket/through carve
+        // by `exec_create_solid` (ADR-252 SSOT) — the suppress flag is clear
+        // here, so the commit produces the correct pocket/through geometry.
         let res = self.exec_create_solid(
             s.seed_face,
             axia_geo::CreateSolidMode::Extrude { distance: s.applied },
@@ -14541,6 +14647,182 @@ mod tests {
         let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
         assert!(info.is_closed_solid, "through tunnel stays watertight: boundary={}",
             info.boundary_edge_count);
+    }
+
+    /// ADR-252 live routing (사용자 결재 2026-07-04 "옵션 A — 스마트 자동 전환") —
+    /// dragging a rect drawn on a solid wall INWARD via the live Push/Pull
+    /// session carves a blind POCKET when the push is partial and drills a
+    /// THROUGH-hole when it reaches the opposite side. The commit routes to
+    /// `carve_pocket_from_source_face`, NOT the plain create_solid extrude.
+    #[test]
+    fn adr252_live_source_face_partial_pocket_full_through() {
+        // box top z=1000, bottom z=0 ⇒ wall thickness = 1000; rect sub-face on top.
+        let (mut scene, rect) = adr264_box_with_top_rect();
+        let t = scene.mesh.wall_thickness_from_source_face(rect).expect("source thickness");
+        assert!((t - 1000.0).abs() < 1.0, "thickness ≈ 1000, got {t}");
+
+        // ── PARTIAL push (−400) ⇒ blind POCKET: exactly one ring-with-hole cap
+        //    (the punched host) + a solid recessed floor, still watertight. ──
+        scene.begin_live_extrude(rect, -1.0).expect("begin (pocket)");
+        scene.update_live_extrude(-400.0).expect("update (pocket)");
+        let r = scene.commit_live_extrude().expect("commit (pocket)");
+        assert!(matches!(r, CommandResult::PushPullDone { .. }), "pocket commit: {r:?}");
+        let rings = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty()).count();
+        assert_eq!(rings, 1, "blind pocket: only the entry ring-with-hole cap");
+        let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
+        assert!(info.is_closed_solid, "pocket stays watertight");
+
+        // ── FULL push (past the far wall) ⇒ THROUGH-hole: both walls become
+        //    ring-with-hole caps + a watertight tunnel (no solid floor). ──
+        let (mut scene, rect) = adr264_box_with_top_rect();
+        scene.begin_live_extrude(rect, -1.0).expect("begin (through)");
+        // Drive the drag well past the bottom; the source-face clamp caps it at
+        // −t so the through threshold (depth ≥ t − slack) fires on commit.
+        scene.update_live_extrude(-5000.0).expect("update (through)");
+        let r = scene.commit_live_extrude().expect("commit (through)");
+        assert!(matches!(r, CommandResult::PushPullDone { .. }), "through commit: {r:?}");
+        let rings = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty()).count();
+        assert_eq!(rings, 2, "through-hole: entry + exit ring-with-hole caps");
+        let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
+        assert!(info.is_closed_solid, "through tunnel stays watertight: boundary={}",
+            info.boundary_edge_count);
+        assert!(scene.mesh.collect_non_manifold_edges_geometric().is_empty(),
+            "through-hole has no coincident-edge crack");
+    }
+
+    /// ADR-252 SSOT routing (사용자 결재 2026-07-04) — the NON-live committing
+    /// extrude path (`Command::CreateSolid` / WASM `createSolidExtrude` / VCB)
+    /// must ALSO reroute an inward source-face push to the pocket/through carve.
+    /// Regression for the user report "관통이 안되는데요": a create_solid box
+    /// pushed through the far wall self-intersects → the closure gate rejects it
+    /// ("extrude REJECTED … self_intersect"). The SSOT reroute in
+    /// `exec_create_solid` turns it into a clean through-hole instead.
+    #[test]
+    fn adr252_noninteractive_createsolid_inward_source_routes_to_carve() {
+        // ── PARTIAL (−400 < thickness 1000) ⇒ blind POCKET (1 ring). ──
+        let (mut scene, rect) = adr264_box_with_top_rect();
+        let r = scene.execute(Command::CreateSolid {
+            face_id: rect,
+            mode: axia_geo::CreateSolidMode::Extrude { distance: -400.0 },
+        });
+        assert!(matches!(r, CommandResult::PushPullDone { .. }),
+            "inward source push must carve, not error: {r:?}");
+        let rings = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty()).count();
+        assert_eq!(rings, 1, "partial ⇒ blind pocket (1 ring)");
+
+        // ── FULL (−1000 = thickness) ⇒ THROUGH-hole (2 rings), NOT a rejected
+        //    self-intersecting box. ──
+        let (mut scene, rect) = adr264_box_with_top_rect();
+        let r = scene.execute(Command::CreateSolid {
+            face_id: rect,
+            mode: axia_geo::CreateSolidMode::Extrude { distance: -1000.0 },
+        });
+        assert!(matches!(r, CommandResult::PushPullDone { .. }),
+            "through push must carve a hole, not self-intersect: {r:?}");
+        let rings = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty()).count();
+        assert_eq!(rings, 2, "full ⇒ through-hole (entry + exit rings)");
+        let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
+        assert!(info.is_closed_solid, "through tunnel watertight");
+        assert!(scene.mesh.detect_self_intersections().count() == 0,
+            "carve through has NO self-intersection (closure gate would reject)");
+
+        // ── OUTWARD (+300 boss) uses the plain extrude (NOT carve — carve is
+        //    inward-only) and stays a watertight solid. ──
+        let (mut scene, rect) = adr264_box_with_top_rect();
+        let r = scene.execute(Command::CreateSolid {
+            face_id: rect,
+            mode: axia_geo::CreateSolidMode::Extrude { distance: 300.0 },
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "outward boss extrude: {r:?}");
+        let info = scene.mesh.face_set_manifold_info(&adr264_active(&scene));
+        assert!(info.is_closed_solid, "outward boss stays watertight");
+        assert!(scene.mesh.detect_self_intersections().count() == 0,
+            "outward boss has no self-intersection");
+    }
+
+    /// ADR-252 multi-feature panel (사용자 report 2026-07-04, screenshot) — a
+    /// panel with SEVERAL rects drawn on it: pushing one through must carve a
+    /// clean through-hole even though the host wall already has OTHER sub-face
+    /// holes. Regression for the geometric-match hole-loop extraction (the old
+    /// "newest VertId" heuristic welded mismatched entry/exit loops → 5
+    /// non-manifold violations → the drill bailed → "관통이 안되는데요").
+    #[test]
+    fn adr252_multi_feature_panel_through_and_pocket() {
+        let make = || {
+            let mut scene = Scene::new();
+            let mat = MaterialId::new(0);
+            // 3m × 3m panel, 500 thick (top z=500, bottom z=0).
+            scene.mesh.create_box(DVec3::new(0.0, 0.0, 250.0), 3000.0, 500.0, 3000.0, mat).unwrap();
+            for (cx, cy, wd, ht) in [
+                (-800.0, 700.0, 700.0, 700.0),
+                (-600.0, -600.0, 500.0, 900.0),
+                (700.0, 0.0, 500.0, 900.0),
+            ] {
+                scene.execute(Command::DrawRectAsShape {
+                    center: DVec3::new(cx, cy, 500.0), normal: DVec3::Z, up: DVec3::Y,
+                    width: wd, height: ht,
+                });
+            }
+            scene
+        };
+        let sub_at = |scene: &Scene, cx: f64, cy: f64| -> FaceId {
+            scene.mesh.faces.iter()
+                .filter(|(_, f)| f.is_active() && f.normal().z > 0.9 && f.inners().is_empty())
+                .filter_map(|(id, f)| {
+                    let vs = scene.mesh.collect_loop_verts(f.outer().start).ok()?;
+                    if vs.is_empty() { return None; }
+                    let c = vs.iter().filter_map(|&v| scene.mesh.vertex_pos(v).ok())
+                        .fold(DVec3::ZERO, |a, p| a + p) / vs.len() as f64;
+                    if (c.z - 500.0).abs() > 1.0 || (c.x - cx).abs() > 260.0 || (c.y - cy).abs() > 260.0 {
+                        return None;
+                    }
+                    Some(id)
+                })
+                .next().expect("sub-face")
+        };
+
+        // Push the MIDDLE rect through while the other two are still flat holes.
+        let mut scene = make();
+        let b = sub_at(&scene, -600.0, -600.0);
+        let r = scene.execute(Command::CreateSolid {
+            face_id: b, mode: axia_geo::CreateSolidMode::Extrude { distance: -500.0 },
+        });
+        assert!(matches!(r, CommandResult::PushPullDone { .. }),
+            "through a multi-hole panel must succeed: {r:?}");
+        assert!(scene.mesh.detect_self_intersections().count() == 0,
+            "multi-feature through has no self-intersection");
+        let active: Vec<_> = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        assert!(scene.mesh.face_set_manifold_info(&active).is_closed_solid,
+            "panel stays watertight after through");
+
+        // Now push a SECOND rect through the same panel (both holes present).
+        let c = sub_at(&scene, 700.0, 0.0);
+        let r2 = scene.execute(Command::CreateSolid {
+            face_id: c, mode: axia_geo::CreateSolidMode::Extrude { distance: -500.0 },
+        });
+        assert!(matches!(r2, CommandResult::PushPullDone { .. }),
+            "second through-hole on the same panel must succeed: {r2:?}");
+        assert!(scene.mesh.detect_self_intersections().count() == 0,
+            "two through-holes: still no self-intersection");
+
+        // And a blind POCKET on the remaining rect (multi-hole host, partial).
+        let a = sub_at(&scene, -800.0, 700.0);
+        let r3 = scene.execute(Command::CreateSolid {
+            face_id: a, mode: axia_geo::CreateSolidMode::Extrude { distance: -200.0 },
+        });
+        assert!(matches!(r3, CommandResult::PushPullDone { .. }),
+            "pocket on a multi-hole panel must succeed: {r3:?}");
+        let active: Vec<_> = scene.mesh.faces.iter()
+            .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        assert!(scene.mesh.face_set_manifold_info(&active).is_closed_solid,
+            "panel watertight after 2 through + 1 pocket");
+        assert!(scene.mesh.detect_self_intersections().count() == 0,
+            "final panel has no self-intersection");
     }
 
     /// ADR-264 D3 — the geometric detector catches a CRACK the radial detector

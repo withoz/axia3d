@@ -368,10 +368,12 @@ impl Mesh {
             );
         }
 
-        // 2) Punch the entry rect + grab its (newest) hole loop.
+        // 2) Punch the entry rect + grab its hole loop (match by POSITION — the
+        //    host may already have sibling holes; see drill_extract_hole_loop_near).
+        let entry_center = (corner_a + corner_b) * 0.5;
         let entry_face = self.punch_rect_hole(corner_a, corner_b, n)?;
         let e_loop = self
-            .drill_extract_new_hole_loop(entry_face)
+            .drill_extract_hole_loop_near(entry_face, entry_center)
             .ok_or_else(|| anyhow::anyhow!("drill rect: entry hole loop not found"))?;
 
         // 3) Punch the exit rect on the opposite plane (projected corners).
@@ -379,7 +381,7 @@ impl Mesh {
         let exit_b = corner_b - n * depth;
         let exit_face = self.punch_rect_hole(exit_a, exit_b, n)?;
         let b_loop = self
-            .drill_extract_new_hole_loop(exit_face)
+            .drill_extract_hole_loop_near(exit_face, entry_center - n * depth)
             .ok_or_else(|| anyhow::anyhow!("drill rect: exit hole loop not found"))?;
 
         // 4-5) Shared tube bridge + anti-parallel/manifold guards.
@@ -436,17 +438,18 @@ impl Mesh {
             );
         }
 
-        // 2) Punch the entry profile + grab its (newest) hole loop.
+        // 2) Punch the entry profile + grab its hole loop (match by POSITION — the
+        //    host may already have sibling holes; see drill_extract_hole_loop_near).
         let entry_face = self.punch_polygon_hole(loop_pts, n)?;
         let e_loop = self
-            .drill_extract_new_hole_loop(entry_face)
+            .drill_extract_hole_loop_near(entry_face, center)
             .ok_or_else(|| anyhow::anyhow!("drill polygon: entry hole loop not found"))?;
 
         // 3) Punch the exit profile on the opposite plane (projected loop).
         let exit_pts: Vec<DVec3> = loop_pts.iter().map(|&p| p - n * depth).collect();
         let exit_face = self.punch_polygon_hole(&exit_pts, n)?;
         let b_loop = self
-            .drill_extract_new_hole_loop(exit_face)
+            .drill_extract_hole_loop_near(exit_face, center - n * depth)
             .ok_or_else(|| anyhow::anyhow!("drill polygon: exit hole loop not found"))?;
 
         // 4-5) Shared tube bridge + anti-parallel/manifold guards.
@@ -505,9 +508,12 @@ impl Mesh {
         }
 
         // 3) Punch the profile into the host wall → ring-with-hole + opening loop.
+        //    Match the opening by POSITION (the host may already have sibling
+        //    holes from other sub-faces — see drill_extract_hole_loop_near).
+        let outline_center = outline.iter().copied().sum::<DVec3>() / outline.len() as f64;
         let ring = self.punch_polygon_hole(&outline, n_s)?;
         let opening = self
-            .drill_extract_new_hole_loop(ring)
+            .drill_extract_hole_loop_near(ring, outline_center)
             .ok_or_else(|| anyhow::anyhow!("pocket: opening loop not found"))?;
         let n_host = self.faces[ring].normal().normalize_or_zero();
         let inward = -n_host;
@@ -1181,14 +1187,17 @@ impl Mesh {
         self.carve_ray_nearest_face(centroid, -n_host, host, n_host, centroid)
     }
 
-    /// ADR-249 — extract the **just-punched** inner loop of `face` — the inner
-    /// loop whose vertices are the NEWEST (largest min VertId). `punch_*` creates
-    /// the new hole's verts via `add_vertex` (monotonic ids) so the newest loop
-    /// is unambiguously the one just added, even when the face already had holes
-    /// (the rect analog of the circular drill's radial-band match).
-    fn drill_extract_new_hole_loop(&self, face: FaceId) -> Option<Vec<VertId>> {
+    /// Extract the inner loop of `face` whose centroid is geometrically NEAREST
+    /// `target`. Robust variant of [`Mesh::drill_extract_new_hole_loop`] for a
+    /// host wall that ALREADY has other holes (sibling sub-faces drawn on the
+    /// same wall — the user's multi-rect panel). The "newest by VertId" heuristic
+    /// breaks there: `punch_polygon_hole` may REUSE existing dedup'd verts
+    /// (LOCKED #5) so the just-punched loop is NOT the highest-id one, and the
+    /// tube bridge then welds mismatched entry/exit loops → non-manifold. Matching
+    /// by position picks the correct loop regardless of id order.
+    fn drill_extract_hole_loop_near(&self, face: FaceId, target: DVec3) -> Option<Vec<VertId>> {
         let f = self.faces.get(face)?;
-        let mut best: Option<(u32, Vec<VertId>)> = None;
+        let mut best: Option<(f64, Vec<VertId>)> = None;
         for inner in f.inners() {
             if inner.start.is_null() {
                 continue;
@@ -1197,9 +1206,24 @@ impl Mesh {
                 Ok(v) if v.len() >= 3 => v,
                 _ => continue,
             };
-            let min_vid = verts.iter().map(|v| v.raw()).min().unwrap_or(0);
-            if best.as_ref().map(|(m, _)| min_vid > *m).unwrap_or(true) {
-                best = Some((min_vid, verts));
+            let mut c = DVec3::ZERO;
+            let mut ok = true;
+            for &v in &verts {
+                match self.vertex_pos(v) {
+                    Ok(p) => c += p,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            c /= verts.len() as f64;
+            let d = (c - target).length_squared();
+            if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+                best = Some((d, verts));
             }
         }
         best.map(|(_, v)| v)
