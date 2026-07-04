@@ -13,7 +13,7 @@ use glam::DVec3;
 use anyhow::{Result, bail};
 
 use crate::mesh::Mesh;
-use crate::{FaceId, EdgeId, VertId};
+use crate::{FaceId, EdgeId, VertId, MaterialId};
 use crate::curves::AnalyticCurve;
 use crate::surfaces::AnalyticSurface;
 
@@ -26,6 +26,17 @@ pub struct OffsetResult {
     pub strip_faces: Vec<FaceId>,
     /// 원본 face (그대로 유지 — offset 방향에 따라 outer 또는 삭제)
     pub original_face: FaceId,
+}
+
+/// Recess(3D pocket) 결과 — offset inset + inward push_pull 합성.
+#[derive(Debug)]
+pub struct RecessResult {
+    /// depth 만큼 안으로 내려간 pocket 바닥면 (원래 inset inner face).
+    pub pocket_face: FaceId,
+    /// pocket 벽면 (inner boundary ↔ 내려간 바닥을 잇는 측벽).
+    pub wall_faces: Vec<FaceId>,
+    /// 표면에 남는 coplanar 링 (frame) — offset 의 strip.
+    pub frame_faces: Vec<FaceId>,
 }
 
 /// Line Offset 결과
@@ -1676,6 +1687,119 @@ impl Mesh {
         false
     }
 
+    /// Read-only: the signed distance (±`magnitude`) that INSETS (shrinks) the
+    /// face's boundary. The geometric offset direction is orientation-dependent
+    /// (the inward normal flips with the face normal), so the sign yielding the
+    /// smaller polygon is chosen. `magnitude` must be > 0.
+    fn inset_signed_distance(&self, face_id: FaceId, magnitude: f64) -> Result<f64> {
+        let face = self
+            .faces
+            .get(face_id)
+            .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?;
+        let normal = face.normal();
+        let loop_vids = self.collect_loop_verts(face.outer().start)?;
+        let positions: Vec<DVec3> = loop_vids
+            .iter()
+            .map(|&v| self.vertex_pos(v))
+            .collect::<Result<Vec<_>>>()?;
+        let orig_area = planar_polygon_area(&positions, normal);
+        let off = compute_offset_polygon(&positions, normal, magnitude)?;
+        let off_area = planar_polygon_area(&off, normal);
+        Ok(if off_area <= orig_area { magnitude } else { -magnitude })
+    }
+
+    /// Create a recessed pocket in a solid face: inset the boundary by `inset`
+    /// (> 0) → a smaller inner face flush with the surface + a coplanar ring
+    /// (frame), then push that inner face INTO the solid by `depth` (> 0) so it
+    /// becomes the pocket floor with new side walls. The frame stays flush with
+    /// the original surface. This is the standard "offset then push/pull inward"
+    /// recess workflow as a single manifold-safe operation.
+    ///
+    /// The face must belong to a closed solid. Errors propagate from
+    /// `offset_face` / `push_pull` (e.g. a degenerate inset, or an inset larger
+    /// than the face).
+    pub fn create_recess(
+        &mut self,
+        face_id: FaceId,
+        inset: f64,
+        depth: f64,
+        material: MaterialId,
+    ) -> Result<RecessResult> {
+        if !(inset > 0.0) {
+            bail!("recess inset must be positive, got {}", inset);
+        }
+        if !(depth > 0.0) {
+            bail!("recess depth must be positive, got {}", depth);
+        }
+
+        // Capture the outward normal before offset_face consumes the face.
+        let normal = self
+            .faces
+            .get(face_id)
+            .ok_or_else(|| anyhow::anyhow!("Face {:?} not found", face_id))?
+            .normal();
+
+        // 1) Inset the boundary (shrink) with the orientation-correct sign.
+        //    This creates the coplanar ring (frame) + an inner face flush with
+        //    the surface, and keeps the solid closed.
+        let signed = self.inset_signed_distance(face_id, inset)?;
+        let off = self.offset_face(face_id, signed)?;
+        let inner = off.inner_face;
+
+        // 2) Turn the flush inner face into a recessed floor. push_pull cannot
+        //    be used here — the inner face is a coplanar INTERIOR face (its
+        //    boundary shared with the frame ring, not free walls), so
+        //    push_pull's CreateFace keeps the old face and 3-shares the base
+        //    edges. Instead build the pocket directly: the inner face's
+        //    boundary (on the surface, shared with the frame's hole) becomes
+        //    the pocket rim; a recessed copy becomes the floor; N quads bridge
+        //    them. Manifold-by-construction (each new edge shared by exactly 2
+        //    faces via the freed inner half-edges).
+        let inner_start = self
+            .faces
+            .get(inner)
+            .ok_or_else(|| anyhow::anyhow!("inner face vanished after offset"))?
+            .outer()
+            .start;
+        let rim_vids = self.collect_loop_verts(inner_start)?;
+        let n = rim_vids.len();
+        let rim_pos: Vec<DVec3> = rim_vids
+            .iter()
+            .map(|&v| self.vertex_pos(v))
+            .collect::<Result<Vec<_>>>()?;
+        // Recessed floor = rim displaced INTO the solid (−outward normal).
+        let floor_pos: Vec<DVec3> = rim_pos.iter().map(|p| *p - normal * depth).collect();
+
+        // Free the flush inner face so its boundary half-edges can be reused by
+        // the pocket walls (keeping each rim edge shared by frame + wall = 2).
+        self.soft_remove_face(inner)?;
+        let floor_vids: Vec<VertId> = floor_pos.iter().map(|&p| self.add_vertex(p)).collect();
+
+        // Walls: quad [rim[i], rim[j], floor[j], floor[i]] — the rim edge
+        // rim[i]→rim[j] reuses the freed inner half-edge (twin of the frame
+        // hole), the floor edge twins the floor face, the verticals twin the
+        // neighbouring walls.
+        let mut wall_faces = Vec::with_capacity(n);
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let w = self.add_face(
+                &[rim_vids[i], rim_vids[j], floor_vids[j], floor_vids[i]],
+                material,
+            )?;
+            wall_faces.push(w);
+        }
+        // Floor face (outward normal = +surface normal, out of the pocket).
+        let pocket_face = self.add_face(&floor_vids, material)?;
+
+        self.debug_verify_invariants();
+
+        Ok(RecessResult {
+            pocket_face,
+            wall_faces,
+            frame_faces: off.strip_faces,
+        })
+    }
+
     pub fn offset_face(
         &mut self,
         face_id: FaceId,
@@ -2498,6 +2622,64 @@ mod tests {
                 "sheet offset must work both directions (dist={dist})"
             );
         }
+    }
+
+    /// 3D pocket recess = inset + inward push. The result must be a CLOSED,
+    /// invariant-valid, SI-clean solid whose pocket floor sits INSIDE the solid
+    /// (displaced ~depth opposite the outward normal), with 4 side walls for a
+    /// square face and the coplanar frame kept flush with the surface.
+    #[test]
+    fn create_recess_makes_a_closed_inward_pocket() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::default();
+        let face = mesh.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+
+        // Surface plane (normal + a boundary point) BEFORE the recess.
+        let normal = mesh.faces.get(face).unwrap().normal();
+        let start = mesh.faces.get(face).unwrap().outer().start;
+        let p0 = mesh.vertex_pos(mesh.collect_loop_verts(start).unwrap()[0]).unwrap();
+        let before = mesh.face_count();
+
+        let r = mesh.create_recess(face, 200.0, 150.0, mat).unwrap();
+
+        let all: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let mi = mesh.face_set_manifold_info(&all);
+        assert!(
+            mi.is_closed_solid,
+            "recess keeps the solid closed (bnd={} nm={})",
+            mi.boundary_edge_count, mi.non_manifold_edge_count
+        );
+        assert!(mesh.verify_face_invariants().is_valid(), "recess invariants valid");
+        assert!(mesh.detect_self_intersections().is_clean(), "recess SI-clean");
+        assert!(mesh.face_count() > before, "recess adds faces (inner + walls + frame)");
+        assert_eq!(r.wall_faces.len(), 4, "square pocket → 4 side walls");
+        assert!(
+            mesh.faces.get(r.pocket_face).map_or(false, |f| f.is_active()),
+            "pocket floor face is active"
+        );
+
+        // Pocket floor must sit INSIDE the solid: displaced from the surface
+        // plane opposite the outward normal, by ~depth (150).
+        let fstart = mesh.faces.get(r.pocket_face).unwrap().outer().start;
+        let fp = mesh.vertex_pos(mesh.collect_loop_verts(fstart).unwrap()[0]).unwrap();
+        let signed = (fp - p0).dot(normal);
+        assert!(
+            signed < -100.0,
+            "pocket floor must be recessed inward (signed dist along outward normal = {signed:.1}, want ~-150)"
+        );
+    }
+
+    /// recess input validation — non-positive inset / depth reject cleanly.
+    #[test]
+    fn create_recess_rejects_nonpositive_params() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::default();
+        let face = mesh.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+        assert!(mesh.create_recess(face, 0.0, 150.0, mat).is_err(), "zero inset rejected");
+        assert!(mesh.create_recess(face, 200.0, -1.0, mat).is_err(), "negative depth rejected");
+        // mesh untouched by the rejected calls.
+        assert_eq!(mesh.face_count(), 6, "rejected recess leaves the box unchanged");
     }
 
     /// Adversarial sweep (found via the self-intersection checker). offset_face

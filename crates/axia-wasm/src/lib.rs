@@ -9992,6 +9992,57 @@ impl AxiaEngine {
         }
     }
 
+    /// 3D pocket recess = inset the face boundary by `inset` (> 0), then push
+    /// the flush inner face into the solid by `depth` (> 0) to form a pocket
+    /// (floor + walls) with the coplanar ring (frame) kept flush. The standard
+    /// "offset then push/pull inward" recess as one manifold-safe op. Guarded by
+    /// the closure-preserving + self-intersection gate. Returns JSON
+    /// `{ ok, pocketFace, wallFaces, frameFaces }` or `{ ok:false, error }`.
+    pub fn create_recess(&mut self, face_id_raw: u32, inset: f64, depth: f64) -> String {
+        let fid = FaceId::new(face_id_raw);
+        let mat = axia_core::FORM_MATERIAL;
+
+        self.scene.transactions.begin();
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
+
+        match self.scene.mesh.create_recess(fid, inset, depth, mat) {
+            Ok(r) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "recess", true,
+                ) {
+                    return r#"{"ok":false,"error":"recess 가 solid 를 열거나 자기교차(self-intersection)를 만들어 취소됨"}"#.to_string();
+                }
+                self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                self.mark_topology_changed();
+                self.invalidate_cache();
+
+                let walls: Vec<u32> = r.wall_faces.iter().map(|f| f.raw()).collect();
+                let frame: Vec<u32> = r.frame_faces.iter().map(|f| f.raw()).collect();
+                format!(
+                    r#"{{"ok":true,"pocketFace":{},"wallFaces":{:?},"frameFaces":{:?},"totalFaces":{}}}"#,
+                    r.pocket_face.raw(),
+                    walls,
+                    frame,
+                    self.scene.mesh.face_count(),
+                )
+            }
+            Err(e) => {
+                // Defensive: create_recess mutates (soft_remove + add_face)
+                // before it can fail — restore the pre-op snapshot so a partial
+                // build never survives, then cancel the transaction.
+                self.scene.restore_scene_snapshot(&before_snapshot);
+                self.scene.transactions.cancel();
+                self.invalidate_cache();
+                console_error!("[RUST] recess ERROR: {}", e);
+                format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'"))
+            }
+        }
+    }
+
     /// Edge(line)를 평행하게 offset하여 새 edge 생성 (선만 복사, 면은 만들지 않음)
     /// plane_normal: 참조 평면 법선 (Y-up = 0,1,0)
     pub fn offset_edge(

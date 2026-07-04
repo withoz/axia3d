@@ -539,6 +539,7 @@ type AxiaEngineExtended = AxiaEngine & {
   faces_centroid?(ids: Uint32Array): Float32Array | Float64Array;
   // Offset
   offset_face?(faceId: number, dist: number): string;
+  create_recess?(faceId: number, inset: number, depth: number): string;
   offset_edge?(edgeId: number, dist: number, nx: number, ny: number, nz: number): string;
   // XIA
   get_xia_info?(ids: Uint32Array): string;
@@ -5806,6 +5807,27 @@ export class WasmBridge {
     }
   }
 
+  /** 3D pocket recess — 면 경계를 inset 만큼 안으로 줄인 뒤 depth 만큼
+   *  솔리드 안으로 밀어 오목 포켓(바닥 + 측벽 + 표면 링)을 만든다.
+   *  closure-preserving + self-intersection 게이트로 보호됨. */
+  createRecess(faceId: number, inset: number, depth: number): RecessResult | null {
+    if (!this.engine) return null;
+    this.markDirty();
+    try {
+      const json = this.engine.create_recess?.(faceId, inset, depth);
+      if (!json) return null;
+      const result = JSON.parse(json) as RecessResult;
+      if (!result.ok) {
+        Toast.warning(`Recess 실패: ${result.error ?? '알 수 없는 오류'}`);
+      }
+      return result;
+    } catch (e) {
+      console.error('[WasmBridge] createRecess failed:', e);
+      Toast.warning('Recess 실행 실패');
+      return null;
+    }
+  }
+
   /** Edge(line)를 평행 offset → 새 edge + 사각형 face 생성 */
   offsetEdge(edgeId: number, dist: number, planeNormal: [number, number, number]): OffsetEdgeResult | null {
     if (!this.engine) return null;
@@ -6738,6 +6760,18 @@ export interface OffsetResult {
   stripFaces?: number[];
   totalFaces?: number;
   totalVerts?: number;
+}
+
+export interface RecessResult {
+  ok: boolean;
+  error?: string;
+  /** 안으로 내려간 pocket 바닥면 */
+  pocketFace?: number;
+  /** pocket 측벽 face 들 */
+  wallFaces?: number[];
+  /** 표면에 남는 coplanar 링(frame) */
+  frameFaces?: number[];
+  totalFaces?: number;
 }
 
 export interface OffsetEdgeResult {

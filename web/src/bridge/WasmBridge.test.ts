@@ -216,6 +216,54 @@ describe('WasmBridge', () => {
   });
 
   // ════════════════════════════════════════════════════════════════════════
+  // 3D pocket recess bridge wrapper (offset inset + inward push)
+  // ════════════════════════════════════════════════════════════════════════
+  describe('createRecess', () => {
+    it('forwards (faceId, inset, depth) and parses the ok result', () => {
+      const captured: number[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        create_recess: (f: number, i: number, d: number) => {
+          captured.push(f, i, d);
+          return JSON.stringify({
+            ok: true, pocketFace: 8, wallFaces: [9, 10, 11, 12], frameFaces: [6], totalFaces: 11,
+          });
+        },
+      };
+      const r = bridge.createRecess(0, 200, 150);
+      expect(captured).toEqual([0, 200, 150]);
+      expect(r?.ok).toBe(true);
+      expect(r?.pocketFace).toBe(8);
+      expect(r?.wallFaces).toEqual([9, 10, 11, 12]);
+      expect(r?.frameFaces).toEqual([6]);
+    });
+
+    it('returns null when engine is null', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = null;
+      expect(bridge.createRecess(0, 200, 150)).toBeNull();
+    });
+
+    it('returns null when engine lacks create_recess (legacy build, graceful)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {};
+      expect(bridge.createRecess(0, 200, 150)).toBeNull();
+    });
+
+    it('surfaces a Toast warning on a failed recess (fail-loud)', () => {
+      const warnSpy = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        create_recess: () => JSON.stringify({ ok: false, error: 'recess 취소됨' }),
+      };
+      const r = bridge.createRecess(0, 200, 150);
+      expect(r?.ok).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
   // ADR-207 — chamferVertex3way bridge wrapper
   // ════════════════════════════════════════════════════════════════════════
   describe('ADR-207 chamferVertex3way', () => {

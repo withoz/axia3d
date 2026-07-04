@@ -1811,6 +1811,7 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
         ("fn create_solid_revolve(", "revolve"),
         ("fn create_solid_loft(", "loft"),
         ("fn offset_face(", "offset"),
+        ("fn create_recess(", "recess"),
         ("fn boolean_dispatch_json(", "boolean"),
         ("fn boolean_dispatch_dcel_multi_json(", "boolean multi"),
     ] {
