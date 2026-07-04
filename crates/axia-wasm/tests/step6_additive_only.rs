@@ -1805,6 +1805,9 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
     // boolean (legacy + live) / revolve / loft.
     for (sig, label) in [
         ("fn create_solid_extrude(", "extrude"),
+        ("fn create_solid_extrude_tapered(", "tapered extrude"),
+        ("fn create_solid_extrude_cone(", "cone extrude"),
+        ("fn create_solid_extrude_bidirectional(", "bidirectional extrude"),
         ("fn create_solid_revolve(", "revolve"),
         ("fn create_solid_loft(", "loft"),
         ("fn offset_face(", "offset"),

@@ -1639,6 +1639,43 @@ impl Mesh {
     ///
     /// 결과: 원본 face를 inner face + strip faces로 분할.
     /// 인접 face와의 edge 연결이 보존됨.
+    /// True if the face's OUTER boundary edges are each shared with another
+    /// active face — i.e. the face is embedded in a solid (removing it would
+    /// open a boundary), not a free-floating sheet. Walks the outer loop and,
+    /// for every boundary edge, scans its radial ring for another active face.
+    /// Used by `offset_face` to reject an outset on a solid face (non-manifold
+    /// flange) while allowing sheets to offset in either direction.
+    fn outer_boundary_is_shared(&self, face_id: FaceId) -> bool {
+        let face = match self.faces.get(face_id) {
+            Some(f) if f.is_active() => f,
+            _ => return false,
+        };
+        let start = face.outer().start;
+        if start.is_null() {
+            return false;
+        }
+        let mut he = start;
+        loop {
+            // Radial ring of this edge — any OTHER active face → shared.
+            let mut r = self.hes[he].next_rad();
+            while r != he {
+                let rf = self.hes[r].face();
+                if !rf.is_null()
+                    && rf != face_id
+                    && self.faces.get(rf).map_or(false, |f| f.is_active())
+                {
+                    return true;
+                }
+                r = self.hes[r].next_rad();
+            }
+            he = self.hes[he].next();
+            if he == start || he.is_null() {
+                break;
+            }
+        }
+        false
+    }
+
     pub fn offset_face(
         &mut self,
         face_id: FaceId,
@@ -1679,6 +1716,31 @@ impl Mesh {
             bail!("Offset polygon vertex count mismatch");
         }
 
+        // Inset vs outset by ACTUAL area (R10): the offset's geometric
+        // direction depends on the face orientation, not the sign of `dist`
+        // (compute_offset_polygon's inward normal can flip). The smaller
+        // polygon is always the inner face; the larger is the frame outer.
+        let orig_area = planar_polygon_area(&positions, normal);
+        let off_area = planar_polygon_area(&offset_positions, normal);
+        let offset_is_inner = off_area <= orig_area;
+
+        // A face embedded in a solid (its boundary edges shared with walls)
+        // can only be INSET in-plane (→ inner face + coplanar ring, still a
+        // closed solid). An OUTSET grows the face past the solid into a flat
+        // flange whose hole coincides with the still-attached perimeter — an
+        // inherently non-manifold result (the perimeter edges would be shared
+        // by wall + inner + flange = 3 faces). Reject early with a clear,
+        // actionable message BEFORE any mutation, rather than emitting a
+        // non-manifold mesh the closure/SI gate can only catch generically.
+        // Sheets (free boundary) are unaffected — they offset either way.
+        if !offset_is_inner && self.outer_boundary_is_shared(face_id) {
+            bail!(
+                "Solid 면은 바깥쪽(outset)으로 offset 할 수 없습니다 — 솔리드 밖 \
+                 flange 는 non-manifold 입니다. 안쪽(inset) offset 또는 Push/Pull \
+                 을 사용하세요."
+            );
+        }
+
         // 3) 원본 face 삭제 — soft remove: face만 제거, half-edge face 참조만 해제
         //    next/prev는 보존하여 인접 face의 topology가 깨지지 않도록 함
         self.soft_remove_face(face_id)?;
@@ -1694,9 +1756,6 @@ impl Mesh {
         //    을 frame 의 hole 로 넣을 수 있음(hole > outer → degenerate frame →
         //    inner 가 frame 을 덮어 self-intersection, SI 검사기 검출). 작은
         //    polygon 이 항상 inner(hole 채움), 큰 쪽이 frame outer.
-        let orig_area = planar_polygon_area(&positions, normal);
-        let off_area = planar_polygon_area(&offset_positions, normal);
-        let offset_is_inner = off_area <= orig_area;
         let inner_vids: Vec<VertId> =
             if offset_is_inner { offset_vids.clone() } else { loop_vids.to_vec() };
         let inner_face = self.add_face(&inner_vids, material)?;
@@ -2384,6 +2443,63 @@ mod tests {
         mesh.add_face(&[v0, v1, v2, v3], MaterialId::new(0)).unwrap()
     }
 
+    /// Adversarial sweep follow-up (2026-07-04) — offset on a face embedded in
+    /// a SOLID. The INSET direction must produce a valid closed solid (the
+    /// recess outline: inner face + coplanar ring). The OUTSET direction is a
+    /// non-manifold flange (perimeter shared by wall + inner + flange = 3
+    /// faces) and must be rejected EARLY with a clear message, not emitted as
+    /// corruption. Which sign is inset depends on face orientation, so both are
+    /// tried and classified by outcome.
+    #[test]
+    fn offset_solid_face_inset_ok_outset_rejected() {
+        let mat = MaterialId::new(0);
+        let mut inset_ok = false;
+        let mut outset_rejected = false;
+        for dist in [200.0_f64, -200.0] {
+            let mut m = Mesh::default();
+            let bottom = m.create_box(DVec3::ZERO, 1000., 1000., 1000., mat).unwrap()[0];
+            match m.offset_face(bottom, dist) {
+                Ok(_) => {
+                    let all: Vec<_> =
+                        m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+                    let mi = m.face_set_manifold_info(&all);
+                    assert!(
+                        mi.is_closed_solid,
+                        "inset offset (dist={dist}) must stay a closed solid (bnd={})",
+                        mi.boundary_edge_count
+                    );
+                    assert!(m.verify_face_invariants().is_valid(), "inset offset invariants valid");
+                    assert!(m.detect_self_intersections().is_clean(), "inset offset SI-clean");
+                    inset_ok = true;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    assert!(
+                        msg.contains("outset") || msg.contains("flange") || msg.contains("바깥쪽"),
+                        "outset must be rejected with the clear flange message, got: {msg}"
+                    );
+                    outset_rejected = true;
+                }
+            }
+        }
+        assert!(inset_ok, "the inset direction must succeed as a valid closed solid");
+        assert!(outset_rejected, "the outset direction must be rejected early with a clear message");
+    }
+
+    /// A free sheet face has no shared boundary → it offsets in EITHER
+    /// direction (the solid-face outset guard must not touch sheets).
+    #[test]
+    fn offset_sheet_face_works_both_directions() {
+        let mut mesh = Mesh::default();
+        for dist in [100.0_f64, -100.0] {
+            let f = make_square_face(&mut mesh, 1000.0);
+            assert!(
+                mesh.offset_face(f, dist).is_ok(),
+                "sheet offset must work both directions (dist={dist})"
+            );
+        }
+    }
+
     /// Adversarial sweep (found via the self-intersection checker). offset_face
     /// chose the inner/frame roles by the sign of `dist`, but
     /// compute_offset_polygon's inward/outward direction doesn't always match
@@ -2490,32 +2606,42 @@ mod tests {
 
     #[test]
     fn test_offset_on_box_top() {
-        // 박스 생성 후 top face에 offset → side wall과 분리되지 않아야 함
+        // Offset the top face of a box. The INSET direction (recess outline)
+        // must produce a valid CLOSED solid (inner + coplanar ring, still
+        // attached to the walls). The OUTSET direction is a non-manifold flange
+        // and must be rejected (adversarial-sweep guard, 2026-07-04 — the
+        // previous version accepted the +100 outset because it only checked the
+        // face count, not manifoldness; that result was actually non-manifold).
         let mut mesh = Mesh::new();
         let mat = MaterialId::new(0);
 
-        // Ground rect
         let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
         let v1 = mesh.add_vertex(DVec3::new(1000.0, 0.0, 0.0));
         let v2 = mesh.add_vertex(DVec3::new(1000.0, 0.0, 1000.0));
         let v3 = mesh.add_vertex(DVec3::new(0.0, 0.0, 1000.0));
         let base = mesh.add_face(&[v0, v1, v2, v3], mat).unwrap();
-
-        // Push/Pull → box
         let pp = mesh.push_pull(base, 500.0, mat).unwrap();
-        let face_count_after_pp = mesh.face_count();
-        assert_eq!(face_count_after_pp, 6); // closed box
+        assert_eq!(mesh.face_count(), 6, "closed box");
 
-        // Offset top face
-        let _result = mesh.offset_face(pp.top_face, 100.0).unwrap();
+        // Outset (+100) → non-manifold flange → rejected BEFORE any mutation.
+        let outset = mesh.offset_face(pp.top_face, 100.0);
+        assert!(outset.is_err(), "outset on a solid face must be rejected (flange)");
+        assert_eq!(mesh.face_count(), 6, "a rejected outset leaves the box unchanged");
 
-        // box 6면 - top(삭제) + inner + frame(with hole) = 7면
-        let face_count_after_offset = mesh.face_count();
-        assert_eq!(face_count_after_offset, 7); // 5 original sides + 1 inner + 1 frame
-
-        // 모든 face가 렌더링 가능한지 (export_buffers가 크래시하지 않는지)
-        let buffers = mesh.export_buffers();
-        assert!(buffers.is_ok());
+        // Inset (−100) → valid closed recess outline (5 sides + inner + frame).
+        mesh.offset_face(pp.top_face, -100.0).unwrap();
+        assert_eq!(mesh.face_count(), 7, "5 original sides + 1 inner + 1 frame");
+        let all: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let mi = mesh.face_set_manifold_info(&all);
+        assert!(
+            mi.is_closed_solid,
+            "inset offset keeps the solid closed (bnd={})",
+            mi.boundary_edge_count
+        );
+        assert!(mesh.verify_face_invariants().is_valid(), "inset offset invariants valid");
+        assert!(mesh.detect_self_intersections().is_clean(), "inset offset SI-clean");
+        assert!(mesh.export_buffers().is_ok());
     }
 
     // ════════════════════════════════════════════════════════════════

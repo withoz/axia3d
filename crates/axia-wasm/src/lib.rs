@@ -4176,6 +4176,10 @@ impl AxiaEngine {
             "[RUST] create_solid_extrude_tapered faceId={} distance={:.3} taper_deg={:.3}",
             face_id_raw, distance, taper_deg
         );
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        let gate_snapshot = self.scene.scene_snapshot();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let cmd = Command::CreateSolid {
             face_id: fid,
             mode: axia_geo::CreateSolidMode::ExtrudeTapered { distance, taper_deg },
@@ -4200,6 +4204,13 @@ impl AxiaEngine {
                 false
             }
         };
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &gate_snapshot, "tapered extrude", false,
+            )
+        {
+            return false;
+        }
         if ok {
             self.mark_topology_changed();
         }
@@ -4229,6 +4240,10 @@ impl AxiaEngine {
             "[RUST] create_solid_extrude_cone faceId={} distance={:.3} top_scale={:.3}",
             face_id_raw, distance, top_scale
         );
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        let gate_snapshot = self.scene.scene_snapshot();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let cmd = Command::CreateSolid {
             face_id: fid,
             mode: axia_geo::CreateSolidMode::ExtrudeCone { distance, top_scale },
@@ -4253,6 +4268,13 @@ impl AxiaEngine {
                 false
             }
         };
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &gate_snapshot, "cone extrude", false,
+            )
+        {
+            return false;
+        }
         if ok {
             self.mark_topology_changed();
         }
@@ -4282,6 +4304,10 @@ impl AxiaEngine {
             "[RUST] create_solid_extrude_bidirectional faceId={} dist_pos={:.3} dist_neg={:.3}",
             face_id_raw, dist_pos, dist_neg
         );
+        // Defense-in-depth: closure-preserving + self-intersection baseline.
+        let gate_snapshot = self.scene.scene_snapshot();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
         let cmd = Command::CreateSolid {
             face_id: fid,
             mode: axia_geo::CreateSolidMode::ExtrudeBidirectional { dist_pos, dist_neg },
@@ -4307,6 +4333,13 @@ impl AxiaEngine {
                 false
             }
         };
+        if ok
+            && !self.closure_preserving_gate_passed(
+                before_boundary, before_si, &gate_snapshot, "bidirectional extrude", false,
+            )
+        {
+            return false;
+        }
         if ok {
             self.mark_topology_changed();
         }
