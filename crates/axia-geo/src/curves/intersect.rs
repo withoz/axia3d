@@ -11,7 +11,7 @@
 //!
 //! ## Tolerance
 //!
-//! - Default intersection tolerance: 1e-6 mm (LOCKED #5 의 1.5μm 보다 ~1500× 정밀)
+//! - Default intersection tolerance: 1e-6 mm (LOCKED #5 의 0.15μm dedup 보다 ~150× 정밀)
 //! - AABB padding: `2 × tol`
 //! - Newton: max 50 iter, residual < `tol` for accept
 

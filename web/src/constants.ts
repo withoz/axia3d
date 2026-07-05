@@ -11,7 +11,29 @@
 // Tolerance (허용 오차) — 좌표 비교
 // ════════════════════════════════════════════════════════════════════════
 
+/**
+ * Exact vertex-identity tolerance (`Vertex::coincident`) — two positions
+ * closer than this are the *same point* for precise-coincidence checks.
+ *
+ * ⚠️ This is NOT what decides whether a newly-created vertex merges into an
+ * existing one. That is governed by {@link DEDUP_TOLERANCE} (0.15μm), which is
+ * ~1500× looser. Use `DEDUP_TOLERANCE` when reasoning about "will the engine
+ * treat these two points as the same vertex on creation?" (snap targets, draw
+ * endpoints, imported geometry). Use `VERTEX_TOLERANCE` only for exact-identity
+ * comparisons. Measured coherence audit (2026): the two scales are both live.
+ */
 export const VERTEX_TOLERANCE = 1e-7;
+
+/**
+ * Vertex creation-dedup tolerance — the DOMINANT "same point" scale.
+ * Mirrors Rust `mesh.rs` `dedup_tol = SPATIAL_HASH_CELL(1e-4) × 1.5 = 1.5e-4`
+ * (ADR-147 Scenario B1: was 1.5μm, hardened 10× to 0.15μm). `Mesh::add_vertex`
+ * merges a new vertex into any existing one within this radius. NOTE: this only
+ * fires on CREATION — moving two existing vertices to within this distance does
+ * NOT retroactively merge them.
+ */
+export const DEDUP_TOLERANCE = 1.5e-4;
+
 export const EDGE_TOLERANCE = 1e-7;
 export const FACE_TOLERANCE = 1e-6;
 export const COPLANAR_TOLERANCE = 1e-4;

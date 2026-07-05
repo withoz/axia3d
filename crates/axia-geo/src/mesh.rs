@@ -1539,7 +1539,7 @@ impl Mesh {
     /// are Step 2's responsibility (별도 ADR).
     ///
     /// Per §C #3 lock-in: vertex dedup via existing `add_vertex`
-    /// spatial-hash (LOCKED #5 1.5μm). Coincident polyline points
+    /// spatial-hash (LOCKED #5 0.15μm). Coincident polyline points
     /// across loops merge into a single VertId automatically.
     ///
     /// Per §C #4 lock-in: chord_tol = `HOVER_CHORD_TOL` (0.01mm) by
@@ -3714,7 +3714,7 @@ impl Mesh {
         if len < 1e-9 { return Vec::new(); }
         // Relative coplanarity tolerance (line scale의 0.01%).
         let coplanar_tol = (len * 1e-4).max(1e-3);
-        // Endpoint-on-vertex 판정 tolerance — add_vertex의 dedup_tol(= SPATIAL_HASH_CELL*1.5 = 1.5μm)과 일치
+        // Endpoint-on-vertex 판정 tolerance — add_vertex의 dedup_tol(= SPATIAL_HASH_CELL*1.5 = 1.5e-4mm = 0.15μm)과 일치
         // 시켜서 vertex dedup과 crossing 판정이 서로 어긋나지 않도록 함.
         let endpoint_tol = SPATIAL_HASH_CELL * 1.5;
 
@@ -10481,7 +10481,7 @@ impl Mesh {
     pub fn collect_non_manifold_edges_geometric(&self) -> Vec<EdgeId> {
         use rustc_hash::{FxHashMap, FxHashSet};
         // Quantize to 1μm — exact-coincident crack verts share a position, well
-        // within LOCKED #5's 1.5μm spatial-hash dedup scale.
+        // within LOCKED #5's 0.15μm spatial-hash dedup scale.
         let q = |p: DVec3| -> (i64, i64, i64) {
             (
                 (p.x * 1000.0).round() as i64,
@@ -10829,11 +10829,27 @@ impl Mesh {
         let angle_based_tol = bbox_diag * tol.to_radians().sin() * 1.2; // 20% 여유
         let dist_tol = base_tol.max(angle_based_tol);
 
-        // Point-to-plane distance check against the plane defined by f1
+        // Point-to-plane distance check against the plane defined by f1.
+        //
+        // ADR-274 #8 — the face must actually TOUCH f1's plane somewhere: the
+        // NEAREST vertex offset must be within the tight, non-angle tolerance
+        // (`base_tol`). This distinguishes a genuinely coplanar face (min
+        // offset ≈ 0) from a PARALLEL face at a different height (every vertex
+        // offset ≈ gap). Without it, the angle-derived spread (`dist_tol`,
+        // = bbox·sin(tol)·1.2) merged parallel faces up to ~15mm apart on
+        // 1000mm faces — a silent "same plane" false-positive (measured). The
+        // FARTHEST vertex may still deviate up to `dist_tol` so slightly-tilted
+        // shared-edge merges (nearest verts on the plane, far verts fanned out)
+        // keep working unchanged.
         let p1 = self.vertex_pos(verts1[0])?;
-        let p2 = self.vertex_pos(verts2[0])?;
-        let distance = n1u.dot(p2 - p1).abs();
-        Ok(distance < dist_tol)
+        let mut min_off = f64::INFINITY;
+        let mut max_off: f64 = 0.0;
+        for &v in &verts2 {
+            let off = n1u.dot(self.vertex_pos(v)? - p1).abs();
+            min_off = min_off.min(off);
+            max_off = max_off.max(off);
+        }
+        Ok(min_off < base_tol && max_off < dist_tol)
     }
 
     /// Find the half-edge belonging to a specific face on a given edge.
@@ -11489,7 +11505,7 @@ impl Mesh {
             ensure!(
                 uniq.len() >= 3,
                 "hole radius {} is too small — circle vertices collapse under the \
-                 1.5μm spatial-hash dedup (raise the radius or lower the segment count)",
+                 0.15μm spatial-hash dedup (raise the radius or lower the segment count)",
                 radius
             );
         }
@@ -14579,6 +14595,60 @@ mod tests {
         assert_eq!(mesh.face_count(), 1);
     }
 
+    // ADR-274 #8 — large PARALLEL faces at a mm-scale height gap must NOT be
+    // treated as coplanar. Measured hazard: the angle-derived spread tolerance
+    // (bbox·sin(tol)·1.2) let 1000mm faces up to ~15mm apart merge silently.
+    // The nearest-vertex (min-offset) gate rejects them.
+    #[test]
+    fn test_adr274_parallel_offset_faces_rejected() {
+        let mut mesh = Mesh::new();
+        // 2000mm outer at z=0
+        let o = [
+            mesh.add_vertex(DVec3::new(-1000.0, -1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 1000.0, -1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 1000.0,  1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new(-1000.0,  1000.0, 0.0)),
+        ];
+        // 1000mm inner, PARALLEL but 1mm above (z=1.0) — clearly a different height
+        let i = [
+            mesh.add_vertex(DVec3::new(-500.0, -500.0, 1.0)),
+            mesh.add_vertex(DVec3::new( 500.0, -500.0, 1.0)),
+            mesh.add_vertex(DVec3::new( 500.0,  500.0, 1.0)),
+            mesh.add_vertex(DVec3::new(-500.0,  500.0, 1.0)),
+        ];
+        let of = mesh.add_face(&o, MaterialId::new(0)).unwrap();
+        let inf = mesh.add_face(&i, MaterialId::new(0)).unwrap();
+        assert!(
+            !mesh.are_faces_coplanar_with_tolerance(of, inf, 0.5).unwrap(),
+            "parallel faces 1mm apart must not be coplanar (was: merged up to ~15mm)"
+        );
+        assert!(mesh.merge_coplanar_containing(of, inf, 0.5).is_err());
+    }
+
+    // ADR-274 #8 companion — offset-0 coplanar containment still merges (guard
+    // against over-rejection from the new min-offset gate).
+    #[test]
+    fn test_adr274_coplanar_zero_offset_still_merges() {
+        let mut mesh = Mesh::new();
+        let o = [
+            mesh.add_vertex(DVec3::new(-1000.0, -1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 1000.0, -1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 1000.0,  1000.0, 0.0)),
+            mesh.add_vertex(DVec3::new(-1000.0,  1000.0, 0.0)),
+        ];
+        let i = [
+            mesh.add_vertex(DVec3::new(-500.0, -500.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 500.0, -500.0, 0.0)),
+            mesh.add_vertex(DVec3::new( 500.0,  500.0, 0.0)),
+            mesh.add_vertex(DVec3::new(-500.0,  500.0, 0.0)),
+        ];
+        let of = mesh.add_face(&o, MaterialId::new(0)).unwrap();
+        let inf = mesh.add_face(&i, MaterialId::new(0)).unwrap();
+        assert!(mesh.are_faces_coplanar_with_tolerance(of, inf, 0.5).unwrap());
+        assert!(mesh.merge_coplanar_containing(of, inf, 0.5).is_ok());
+        assert_eq!(mesh.face_count(), 1);
+    }
+
     // ── punch_rect_hole (Window — rectangular opening, reuses the punch body) ──
 
     #[test]
@@ -17406,7 +17476,7 @@ mod tests {
     // ════════════════════════════════════════════════════════════════
 
     /// ADR-064 Step 1 §C #3 — Mesh-level integration: trim_loops_to_dcel_polyline
-    /// dedups coincident vertices via LOCKED #5 1.5μm spatial-hash.
+    /// dedups coincident vertices via LOCKED #5 0.15μm spatial-hash.
     ///
     /// Two trim loops sharing a corner point in UV space (after
     /// surface evaluate to 3D) should produce VertIds where the shared
