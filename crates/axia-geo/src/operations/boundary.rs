@@ -89,9 +89,14 @@ impl std::fmt::Display for BoundaryError {
 
 impl std::error::Error for BoundaryError {}
 
-/// LOCKED #5 — point-plane proximity tolerance (1.5μm = 1.5e-3 mm).
-/// AxiA 의 모든 geometric proximity 의 canonical ε.
-pub const POINT_ON_PLANE_TOL_MM: f64 = 1.5e-3;
+/// Point-plane proximity tolerance (1.5μm) — "is this point ON the plane?".
+///
+/// ADR-274 — re-exports the canonical `plane::EPS_PLANE_OFFSET` (SSOT) rather
+/// than duplicating the literal, so there is one source of truth for the
+/// plane-offset ε. (Distinct from the 0.15μm vertex-dedup tolerance; the old
+/// "LOCKED #5" attribution conflated the two — dedup is 0.15μm, plane offset
+/// is 1.5μm.)
+pub const POINT_ON_PLANE_TOL_MM: f64 = crate::plane::EPS_PLANE_OFFSET;
 
 /// Default search radius (10×10×10m 작업 공간 표준).
 /// caller 가 0 또는 negative 전달 시 본 값 사용.
