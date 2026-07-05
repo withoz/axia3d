@@ -23,7 +23,9 @@
 //!   loops are NOT mutated. Only the source face's outer-loop verts
 //!   are duplicated.
 //! - **L-102-2** Coplanarity tolerance — `COPLANARITY_NORMAL_DOT_MIN`
-//!   (0.9999) AND `COPLANARITY_OFFSET_TOL` (1.5μm, LOCKED #5).
+//!   (0.9999) AND `COPLANARITY_OFFSET_TOL` (1.5nm — intentionally ~1000×
+//!   stricter than canonical `EPS_PLANE_OFFSET`/LOCKED #5 dedup, ADR-167 β-2:
+//!   intersection geometry needs numerical coincidence, not modeling slop).
 //! - **L-102-3** Edge cleave manifold safe — after cleave, every boundary
 //!   edge of the new source face is incident to exactly 1 face (the new
 //!   source). The old shared edges remain in the mesh but now belong

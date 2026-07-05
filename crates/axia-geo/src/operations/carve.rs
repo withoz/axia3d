@@ -80,9 +80,16 @@ pub struct PocketResult {
 const CARVE_EPS: f64 = 1e-6;
 /// Two planes are the SAME plane (skip the source's coplanar siblings, e.g. the
 /// ring around a punched hole): `|n·n'| > DOT` AND offset within `OFFSET`.
-const COPLANAR_DOT: f64 = 0.999;
-/// LOCKED #5 spatial-hash tolerance (mm) for "same plane offset".
-const COPLANAR_OFFSET: f64 = 1.5e-3;
+///
+/// ADR-274 — reference the canonical plane tolerances (`plane.rs` SSOT) instead
+/// of ad-hoc magic numbers. `1.0 - EPS_PLANE_NORMAL = 0.9999` (0.81°), matching
+/// every other coplanarity gate. Behavior-preserving here: the coplanar ring is
+/// exactly parallel (dot ≈ 1) and opposite walls are ~90° (dot ≈ 0), so the
+/// tight `COPLANAR_OFFSET` gate — not the normal threshold — selects the ring.
+const COPLANAR_DOT: f64 = 1.0 - crate::plane::EPS_PLANE_NORMAL;
+/// Canonical plane-offset tolerance (`plane.rs` SSOT) — 1.5μm. (Distinct from
+/// the 0.15μm vertex-dedup tolerance; this is "point lies on the plane".)
+const COPLANAR_OFFSET: f64 = crate::plane::EPS_PLANE_OFFSET;
 /// Through-vs-pocket boundary slack (a push that exactly reaches the far wall
 /// counts as Through).
 const THROUGH_SLACK: f64 = 1e-4;
