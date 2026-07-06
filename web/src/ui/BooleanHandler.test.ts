@@ -220,7 +220,7 @@ describe('BooleanHandler', () => {
       expect(deps.bridge.booleanOp).not.toHaveBeenCalled();
     });
 
-    it('Nurbs path with all-disjoint pairs shows info toast and skips syncMesh', () => {
+    it('Nurbs path with all-disjoint pairs shows ADR-275 warning and skips syncMesh', () => {
       setupMultiSelection([10, 20, 30, 40]);
       (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({
         kind: 'ok',
@@ -245,10 +245,13 @@ describe('BooleanHandler', () => {
 
       startBooleanOp(deps, 'union');
 
-      expect(toastInfo).toHaveBeenCalled();
-      const msg = toastInfo.mock.calls[0][0] as string;
-      expect(msg).toContain('교차하지 않거나');
-      expect(msg).toContain('multi');
+      // ADR-275 (c) guard — no-op is now a visible warning naming the real
+      // limitation (planar/box CSG unsupported) instead of a misleading info.
+      expect(toastWarn).toHaveBeenCalled();
+      const msg = toastWarn.mock.calls[0][0] as string;
+      expect(msg).toContain('변경 없음');
+      expect(msg).toContain('미지원');
+      expect(msg).toContain('ADR-275');
       expect(msg).toContain('합집합');
       // No syncMesh (no actual mesh change), no legacy fallback.
       expect(deps.toolManager.syncMesh).not.toHaveBeenCalled();
@@ -468,9 +471,10 @@ describe('BooleanHandler', () => {
         allNewFaces: [], allRemovedFaces: [], warnings: [],
       });
       startBooleanOp(deps, 'subtract');
-      msg = toastInfo.mock.calls[0][0] as string;
+      // ADR-275 (c) — disjoint/no-op now warns (not info); still no "NURBS".
+      msg = toastWarn.mock.calls[0][0] as string;
       expect(msg).not.toContain('NURBS');
-      toastInfo.mockClear();
+      toastWarn.mockClear();
 
       // Error path.
       (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({

@@ -93,14 +93,24 @@ function handleMultiDcelResult(
 
   // All-disjoint / no-closed-loops case — no actual mesh change.
   // (Per-pair Ok with disjoint=true OR new_faces empty due to D-H safe-only.)
+  //
+  // ADR-275 (c) guard — this branch fires both for (1) genuinely disjoint
+  // solids (correct no-op) AND (2) OVERLAPPING planar/box solids that the
+  // engine simply cannot cut (scoping matrix 2026-07-06: planar box-box CSG
+  // is unimplemented in BOTH the DCEL SSI path and classic Mesh::boolean).
+  // The old wording ("모든 pair 가 교차하지 않거나…", Toast.info) was
+  // misleading for clearly-overlapping boxes and easy to miss. Elevate to a
+  // warning and name the real limitation + what IS supported.
   if (newCount === 0 && removedCount === 0) {
-    Toast.info(
-      `${OP_NAME_KO[op]} (multi): 모든 ${totalPairs}개 pair 가 ` +
-        `교차하지 않거나 면 분할 미생성 (변경 없음).`,
-      4500,
+    Toast.warning(
+      `${OP_NAME_KO[op]}: 변경 없음 — 두 solid 가 실제로 떨어져 있거나, ` +
+        `평면(box) solid boolean 이 아직 미지원입니다. 현재 곡면 analytic ` +
+        `surface(구·원기둥·원뿔·원환) ∩ 축정렬 box 절단만 지원됩니다 (ADR-275).`,
+      6000,
     );
     debugLog(
-      `[Multi DCEL Bool] ${op} all-disjoint/no-loops: ${totalPairs} pairs ` +
+      `[Multi DCEL Bool] ${op} all-disjoint/no-loops (ADR-275: planar CSG ` +
+        `unsupported OR genuinely disjoint): ${totalPairs} pairs ` +
         `(source=${groupSource})`,
     );
     return true;
