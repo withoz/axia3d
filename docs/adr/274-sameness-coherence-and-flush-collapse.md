@@ -1,6 +1,6 @@
 # ADR-274 — Sameness Recognition Coherence + Flush-Collapse
 
-**Status**: Partially Implemented (엔진·배선 완료, 브라우저 런타임 시연 pending)
+**Status**: Accepted (엔진·배선 구현 완료; 브라우저 런타임 시연 pending — §5)
 **Track**: Kernel Robustness / UX Precision
 **Cross-link**: ADR-147(spatial-hash dedup 0.15μm) · ADR-167(plane.rs EPS SSOT) ·
 ADR-101(mergeCoplanarContaining) · ADR-193(Live Push/Pull) · ADR-049/050(Two-Layer
