@@ -21,6 +21,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
+import { Toast } from '../ui/Toast';
 
 const DEFAULT_THICKNESS_MM = 20;
 const DEFAULT_HEIGHT_MM = 250;
@@ -136,6 +137,11 @@ export class DrawWallTool implements ITool {
     }
     const ok = this.ctx.bridge.createSolidExtrude(faces[0], this.height);
     this.ctx.syncMesh();
+    // ADR-274 Phase 3 P3-A (wiring review) — surface a gate/extrude rejection
+    // instead of silently only debug-logging it (was silent like Move/Scale/Rotate).
+    if (ok === false) {
+      Toast.fromBridgeError(this.ctx.bridge, '벽 생성 실패 (형상이 유효하지 않음)');
+    }
     debugLog(`[Wall] len=${len.toFixed(1)} thick=${this.thickness} height=${this.height} → extrude=${ok}`);
   }
 

@@ -267,5 +267,23 @@ fn phase3_gate_simulation() {
         m.subdivide_catmull_clark().map(|_| ())
     });
 
+    // ═══════════════════════════════════════════════════════════════════
+    // ADVERSARIAL re-test — "SAFE"-classified UNGATED ops with EXTREME inputs.
+    // Lesson from P3-B: translate was SAFE for +z but CORRUPTS on overshoot.
+    // taper is the one ungated deform op (bend/twist corrupted → were gated).
+    // ═══════════════════════════════════════════════════════════════════
+    run_op("ADV taper_verts(pinch end=0.02)", |m, _f| {
+        let vs: Vec<VertId> = m.verts.iter().map(|(id, _)| id).collect();
+        m.taper_verts(&vs, DVec3::new(0.0, 0.0, -50.0), DVec3::Z, 1.0, 0.02, 100.0).map(|_| ())
+    });
+    run_op("ADV taper_verts(neg start=-1 end=10)", |m, _f| {
+        let vs: Vec<VertId> = m.verts.iter().map(|(id, _)| id).collect();
+        m.taper_verts(&vs, DVec3::new(0.0, 0.0, -50.0), DVec3::Z, -1.0, 10.0, 100.0).map(|_| ())
+    });
+    run_op("ADV subdivide x2", |m, _f| {
+        m.subdivide_catmull_clark()?;
+        m.subdivide_catmull_clark().map(|_| ())
+    });
+
     println!("\n=== end of simulation table ===\n");
 }
