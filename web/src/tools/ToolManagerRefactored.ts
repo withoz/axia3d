@@ -2044,6 +2044,20 @@ export class ToolManager {
           debugLog('[Action] make-component — 먼저 그룹을 선택하세요');
         }
       }
+    } else if (action === 'bool-union' || action === 'bool-subtract' || action === 'bool-intersect') {
+      // Wiring consistency (ADR-276 audit) — bool-* must reach the guarded
+      // BooleanHandler (startBooleanOp) from EVERY entry point. Menu + toolbar
+      // special-case this, but the Command Palette (AxiaCommands default
+      // execute) and keyboard (F8/F9, KeyboardShortcuts) route bool-* THROUGH
+      // executeAction — which previously had no bool-* branch, so Boolean
+      // silently did NOTHING from those two surfaces. Handle it here as the
+      // single source of truth. Dynamic import mirrors the menu/toolbar path
+      // (keeps BooleanHandler out of the main bundle + avoids a circular
+      // import: BooleanHandler imports ToolManager for its type).
+      const op = action.slice('bool-'.length) as 'union' | 'subtract' | 'intersect';
+      void import('../ui/BooleanHandler').then(({ startBooleanOp }) => {
+        startBooleanOp({ bridge: this.bridge, toolManager: this }, op);
+      });
     }
   }
 

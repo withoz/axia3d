@@ -5,6 +5,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn(), debugWarn: vi.fn() }));
 
+// ADR-276 wiring-consistency regression — executeAction('bool-*') must reach
+// the guarded BooleanHandler (dynamic import) from keyboard + Command Palette.
+vi.mock('../ui/BooleanHandler', () => ({ startBooleanOp: vi.fn() }));
+
 vi.mock('../ui/Toast', () => ({
   Toast: {
     info: vi.fn(), warning: vi.fn(), error: vi.fn(), show: vi.fn(),
@@ -201,6 +205,26 @@ describe('ToolManager', () => {
     viewport = mockViewport();
     bridge = mockBridge();
     tm = new ToolManager(viewport, bridge);
+  });
+
+  // ADR-276 audit — Boolean wiring consistency across entry points.
+  // Menu + toolbar special-case bool-* → startBooleanOp, but keyboard (F8/F9)
+  // and the Command Palette route bool-* through executeAction, which had no
+  // bool-* branch → Boolean silently did nothing from those two surfaces.
+  // executeAction now routes bool-* to the guarded BooleanHandler (SSOT).
+  describe('boolean action wiring (ADR-276)', () => {
+    it.each([
+      ['bool-union', 'union'],
+      ['bool-subtract', 'subtract'],
+      ['bool-intersect', 'intersect'],
+    ] as const)('executeAction(%s) reaches startBooleanOp(%s)', async (action, op) => {
+      const { startBooleanOp } = await import('../ui/BooleanHandler');
+      (startBooleanOp as unknown as ReturnType<typeof vi.fn>).mockClear();
+      tm.executeAction(action);
+      // executeAction dynamically imports BooleanHandler — let the microtask run.
+      await vi.waitFor(() => expect(startBooleanOp).toHaveBeenCalledTimes(1));
+      expect((startBooleanOp as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(op);
+    });
   });
 
   describe('constructor', () => {
