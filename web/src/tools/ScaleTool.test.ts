@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import * as THREE from 'three';
 import { ScaleTool } from './ScaleTool';
+import { Toast } from '../ui/Toast';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 vi.mock('../ui/Toast', () => ({
@@ -120,6 +121,27 @@ describe('ScaleTool', () => {
       tool.applyVCBValue(2);
       expect(ctx.bridge.scaleFaces).not.toHaveBeenCalled();
       expect(ctx.bridge.scaleVerts).not.toHaveBeenCalled();
+    });
+
+    // ADR-274 Phase 3 P3-A — the closure/self-intersection gate returns false
+    // when it rolls a corrupting scale back; the tool must surface that (was
+    // silent). Uses bridge.lastError() message, else a fallback.
+    it('gate rejection (scaleFaces→false) surfaces a Toast.warning', () => {
+      (ctx.bridge.scaleFaces as Mock).mockReturnValue(false);
+      (ctx.bridge as unknown as { lastError: Mock }).lastError =
+        vi.fn(() => '스케일이 solid 를 여는 결과가 되어 취소됨');
+      tool.applyVCBValue(2.5);
+      expect(Toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('취소'),
+        expect.any(Number),
+      );
+    });
+
+    it('successful scale (→true) shows NO gate Toast (no over-warn)', () => {
+      (ctx.bridge.scaleFaces as Mock).mockReturnValue(true);
+      (Toast.warning as Mock).mockClear();
+      tool.applyVCBValue(2.5);
+      expect(Toast.warning).not.toHaveBeenCalled();
     });
 
     it('does nothing when centroid is null', () => {

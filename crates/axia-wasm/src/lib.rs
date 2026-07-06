@@ -9396,7 +9396,10 @@ impl AxiaEngine {
         let delta = DVec3::new(dx, dy, dz);
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.translate_faces(&fids, delta) {
             Ok(res) => {
@@ -9412,6 +9415,17 @@ impl AxiaEngine {
                 // guarded no-op otherwise, self-rolling-back on failure) folds the
                 // cleanup into a single Undo step and covers every tool.
                 let _ = self.scene.collapse_flush_extrusion(1e-3);
+                // ADR-274 Phase 3 P3-B — a translate that folds a face through the
+                // solid (e.g. overshooting a boss cap past the base) self-intersects
+                // / breaks winding invariants (measured: closed but valid=false,
+                // violations=4) and was silently committed. Gate rejects+rolls back;
+                // a valid move (and the flush-collapse, which stays closed/valid)
+                // passes untouched.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "translate", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9419,6 +9433,7 @@ impl AxiaEngine {
                 true
             }
             Err(e) => {
+                self.scene.transactions.cancel();
                 console_error!("[RUST] translate ERROR: {}", e);
                 self.set_error(format!("translate: {}", e));
                 false
@@ -9531,7 +9546,10 @@ impl AxiaEngine {
         let delta = DVec3::new(dx, dy, dz);
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.translate_verts(&vids, delta) {
             Ok(_) => {
@@ -9542,6 +9560,13 @@ impl AxiaEngine {
                 // translate_faces). Gate-guarded no-op unless the move left
                 // degenerate walls; folded into this single Undo step.
                 let _ = self.scene.collapse_flush_extrusion(1e-3);
+                // ADR-274 Phase 3 P3-B — reject a vert move that self-intersects /
+                // breaks invariants (overshoot through the solid); valid moves pass.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "translate_verts", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();

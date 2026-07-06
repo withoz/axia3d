@@ -1825,6 +1825,10 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
         ("fn scale_verts(", "scale_verts"),
         ("fn bend_verts(", "bend"),
         ("fn twist_verts_deform(", "twist"),
+        // ADR-274 Phase 3 P3-B — translate can fold a face through the solid
+        // (overshoot); gate the flush-collapse translate paths too.
+        ("fn translate_faces(", "translate"),
+        ("fn translate_verts(", "translate_verts"),
     ] {
         let body = method_body(sig);
         assert!(

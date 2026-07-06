@@ -62,11 +62,26 @@ export class RotateTool implements ITool {
 
   private rotate(t: Target, cx: number, cy: number, cz: number,
                  ax: number, ay: number, az: number, deg: number): void {
-    if (t.kind === 'faces') {
-      this.ctx.bridge.rotateFaces(t.ids, cx, cy, cz, ax, ay, az, deg);
-    } else {
-      this.ctx.bridge.rotateVerts(t.ids, cx, cy, cz, ax, ay, az, deg);
-    }
+    const ok = t.kind === 'faces'
+      ? this.ctx.bridge.rotateFaces(t.ids, cx, cy, cz, ax, ay, az, deg)
+      : this.ctx.bridge.rotateVerts(t.ids, cx, cy, cz, ax, ay, az, deg);
+    this.reportGateResult(ok, '회전이 자기교차/무효 형상을 만들어 취소되었습니다');
+  }
+
+  /**
+   * ADR-274 Phase 3 P3-A — surface the closure/self-intersection gate rejection.
+   * rotateFaces/rotateVerts return `false` when the gate rolls back (e.g.
+   * rotating a face subset into self-intersection); without this the tool
+   * silently did nothing. Throttled to one toast per rejection streak.
+   * `ok !== false` treats mock/undefined as success (unit tests unaffected).
+   */
+  private _gateRejected = false;
+  private reportGateResult(ok: boolean | undefined, fallback: string): void {
+    if (ok !== false) { this._gateRejected = false; return; }
+    if (this._gateRejected) return;
+    this._gateRejected = true;
+    const why = (this.ctx.bridge.lastError?.() || '').trim();
+    Toast.warning(why || fallback, 3000);
   }
 
   /** 대상의 중심점 (legacy VCB용). */

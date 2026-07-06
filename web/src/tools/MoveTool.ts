@@ -90,11 +90,27 @@ export class MoveTool implements ITool {
   }
 
   private translate(t: Target, dx: number, dy: number, dz: number): void {
-    if (t.kind === 'faces') {
-      this.ctx.bridge.translateFaces(t.ids, dx, dy, dz);
-    } else {
-      this.ctx.bridge.translateVerts(t.ids, dx, dy, dz);
-    }
+    const ok = t.kind === 'faces'
+      ? this.ctx.bridge.translateFaces(t.ids, dx, dy, dz)
+      : this.ctx.bridge.translateVerts(t.ids, dx, dy, dz);
+    this.reportGateResult(ok, '이동이 자기교차/무효 형상을 만들어 취소되었습니다');
+  }
+
+  /**
+   * ADR-274 Phase 3 P3-A/B — surface the engine's closure/self-intersection
+   * gate rejection to the user. The transform bridge calls return `false` when
+   * the gate rolls the op back (e.g. a move that folds a face through the
+   * solid); without this the tool silently did nothing. Throttled: one toast
+   * per rejection streak (drag frames don't spam), reset on the next success.
+   * `ok !== false` treats mock/undefined as success so unit tests are unaffected.
+   */
+  private _gateRejected = false;
+  private reportGateResult(ok: boolean | undefined, fallback: string): void {
+    if (ok !== false) { this._gateRejected = false; return; }
+    if (this._gateRejected) return;
+    this._gateRejected = true;
+    const why = (this.ctx.bridge.lastError?.() || '').trim();
+    Toast.warning(why || fallback, 3000);
   }
 
   /**

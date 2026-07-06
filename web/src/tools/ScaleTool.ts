@@ -65,11 +65,26 @@ export class ScaleTool implements ITool {
    */
   private scale(t: Target, cx: number, cy: number, cz: number,
                 sx: number, sy: number, sz: number): void {
-    if (t.kind === 'faces') {
-      this.ctx.bridge.scaleFaces(t.ids, cx, cy, cz, sx, sy, sz);
-    } else {
-      this.ctx.bridge.scaleVerts(t.ids, cx, cy, cz, sx, sy, sz);
-    }
+    const ok = t.kind === 'faces'
+      ? this.ctx.bridge.scaleFaces(t.ids, cx, cy, cz, sx, sy, sz)
+      : this.ctx.bridge.scaleVerts(t.ids, cx, cy, cz, sx, sy, sz);
+    this.reportGateResult(ok, '스케일이 자기교차/무효 형상을 만들어 취소되었습니다');
+  }
+
+  /**
+   * ADR-274 Phase 3 P3-A — surface the closure/self-intersection gate rejection.
+   * scaleFaces/scaleVerts return `false` when the gate rolls back (e.g. a
+   * negative reflection scale flips winding); without this the tool silently
+   * did nothing. Throttled to one toast per rejection streak. `ok !== false`
+   * treats mock/undefined as success (unit tests unaffected).
+   */
+  private _gateRejected = false;
+  private reportGateResult(ok: boolean | undefined, fallback: string): void {
+    if (ok !== false) { this._gateRejected = false; return; }
+    if (this._gateRejected) return;
+    this._gateRejected = true;
+    const why = (this.ctx.bridge.lastError?.() || '').trim();
+    Toast.warning(why || fallback, 3000);
   }
 
   onMouseDown(_e: MouseEvent, point: THREE.Vector3 | null): void {
