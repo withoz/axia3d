@@ -71,6 +71,40 @@ export interface EngineInstance {
   filletEdge(edgeIdRaw: number, radius: number, segments: number): number;
   /** Translate a vertex set by (dx, dy, dz). Used by move_xia. */
   translateVerts(vertIds: Uint32Array, dx: number, dy: number, dz: number): boolean;
+  /** Rotate a vertex set about center (cx,cy,cz) around axis (ax,ay,az) by
+   *  angle_deg degrees. Used by rotate_xia. (WASM js_name "rotateVerts") */
+  rotateVerts(
+    vertIds: Uint32Array,
+    cx: number,
+    cy: number,
+    cz: number,
+    ax: number,
+    ay: number,
+    az: number,
+    angleDeg: number,
+  ): boolean;
+  /** Scale a vertex set about center (cx,cy,cz) by (sx,sy,sz) — non-uniform
+   *  supported. Used by scale_xia. (WASM js_name "scaleVerts") */
+  scaleVerts(
+    vertIds: Uint32Array,
+    cx: number,
+    cy: number,
+    cz: number,
+    sx: number,
+    sy: number,
+    sz: number,
+  ): boolean;
+  /** ADR-016 — offset a face boundary by dist mm (inward+/outward-),
+   *  returns JSON `{ ok, innerFace, stripFaces, totalFaces, totalVerts }`
+   *  or `{ ok:false, error }`. Used by offset_face. (WASM snake_case "offset_face") */
+  offset_face(faceIdRaw: number, dist: number): string;
+  /** ADR-050 P-5c — draw a polyline as a form-layer Shape from a flattened
+   *  [x0,y0,z0,x1,y1,z1,…] point buffer + optional plane normal (zero =
+   *  inferred). Returns 0 (success) or -1. (WASM js_name "drawPolylineAsShape") */
+  drawPolylineAsShape(points: Float64Array, nx: number, ny: number, nz: number): number;
+  /** Create a group from a set of faces. Returns the new GroupId (>0) or 0
+   *  on failure. (WASM snake_case "create_group") */
+  create_group(name: string, faceIds: Uint32Array): number;
   /** Vertex IDs touching a face. Used by move_xia. */
   getFaceVertices(faceIdRaw: number): Uint32Array;
   // ─── Tier 0 read additions ─────────────────────────────────────

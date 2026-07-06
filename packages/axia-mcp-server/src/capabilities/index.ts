@@ -19,6 +19,15 @@ import { moveXiaCapability } from './move_xia.js';
 import { listGroupsCapability } from './list_groups.js';
 import { getFaceInfoCapability } from './get_face_info.js';
 import { getEdgeInfoCapability } from './get_edge_info.js';
+import { getSchemaVersionCapability } from './get_schema_version.js';
+import { getXiaGeometryStateCapability } from './get_xia_geometry_state.js';
+import { drawPolylineCapability } from './draw_polyline.js';
+import { createGroupCapability } from './create_group.js';
+import { rotateXiaCapability } from './rotate_xia.js';
+import { scaleXiaCapability } from './scale_xia.js';
+import { offsetFaceCapability } from './offset_face.js';
+import { booleanUnionCapability } from './boolean_union.js';
+import { booleanIntersectCapability } from './boolean_intersect.js';
 import type { CapabilityHandler } from './types.js';
 import { isKnownCapability } from '../tiers.js';
 
@@ -29,16 +38,25 @@ export const ALL_CAPABILITY_HANDLERS: ReadonlyArray<CapabilityHandler<any, any>>
   listGroupsCapability,
   getFaceInfoCapability,
   getEdgeInfoCapability,
+  getXiaGeometryStateCapability,
+  getSchemaVersionCapability,
   // Tier 1 — constructive
   drawRectCapability,
   drawCircleCapability,
   drawLineCapability,
+  drawPolylineCapability,
+  createGroupCapability,
   exportAxiaCapability,
   // Tier 2 — modificative
   pushPullCapability,
-  booleanSubtractCapability,
-  filletEdgeCapability,
   moveXiaCapability,
+  rotateXiaCapability,
+  scaleXiaCapability,
+  offsetFaceCapability,
+  booleanUnionCapability,
+  booleanSubtractCapability,
+  booleanIntersectCapability,
+  filletEdgeCapability,
 ];
 
 const REGISTRY = new Map<string, CapabilityHandler<any, any>>();
