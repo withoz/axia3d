@@ -9382,6 +9382,14 @@ impl AxiaEngine {
                 // Level 2 auto-resolve constraints after face transform
                 // Level 3: iterative XPBD-style solve until convergence
                 let _ = resolve_iterative(&mut self.scene.mesh, &self.scene.constraints, 50, 1e-5);
+                // ADR-274 P2-1 — atomic flush-collapse INSIDE the same
+                // transaction, BEFORE any export. A face pushed flush (height→0)
+                // leaves degenerate walls; if we waited for a commit-time call the
+                // render export (deactivate_empty_emit_faces) would have already
+                // removed those walls → collapse no-op. Running it here (gate-
+                // guarded no-op otherwise, self-rolling-back on failure) folds the
+                // cleanup into a single Undo step and covers every tool.
+                let _ = self.scene.collapse_flush_extrusion(1e-3);
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9483,6 +9491,10 @@ impl AxiaEngine {
                 // Level 2: auto-resolve constraints touching any moved vertex
                 // Level 3: iterative XPBD-style solve until convergence
                 let _ = resolve_iterative(&mut self.scene.mesh, &self.scene.constraints, 50, 1e-5);
+                // ADR-274 P2-1 — atomic flush-collapse before export (see
+                // translate_faces). Gate-guarded no-op unless the move left
+                // degenerate walls; folded into this single Undo step.
+                let _ = self.scene.collapse_flush_extrusion(1e-3);
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();

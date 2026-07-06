@@ -12594,8 +12594,11 @@ impl Mesh {
             }
         }
 
-        // 2. Non-degenerate-face incidence per active vertex (survivor rank:
-        //    the rim vertex sits on the host, so on more real faces than the cap).
+        // 2. Non-degenerate-face incidence per active vertex, counting BOTH
+        //    outer AND inner (hole) loops. ADR-274 P2-2 fix: a boss extruded
+        //    into a ring (annulus) face leaves the rim on the ring's INNER
+        //    loop; the old outer-only scan gave the rim incidence 0 → wrong
+        //    survivor → collapse no-op for boss-in-ring topology.
         let nondegen: Vec<FaceId> = self
             .faces
             .iter()
@@ -12603,23 +12606,38 @@ impl Mesh {
             .map(|(fid, _)| fid)
             .collect();
         let mut incidence: HashMap<VertId, u32> = HashMap::new();
+        let mut face_verts: HashMap<FaceId, Vec<VertId>> = HashMap::new();
         for &fid in &nondegen {
-            if let Ok(vs) = self.collect_loop_verts(self.faces[fid].outer().start) {
-                for v in vs {
-                    *incidence.entry(v).or_insert(0) += 1;
+            let mut vs: Vec<VertId> = Vec::new();
+            if let Ok(o) = self.collect_loop_verts(self.faces[fid].outer().start) {
+                vs.extend(o);
+            }
+            let inner_starts: Vec<HeId> =
+                self.faces[fid].inners().iter().map(|l| l.start).collect();
+            for start in inner_starts {
+                if let Ok(iv) = self.collect_loop_verts(start) {
+                    vs.extend(iv);
                 }
             }
+            for &v in &vs {
+                *incidence.entry(v).or_insert(0) += 1;
+            }
+            face_verts.insert(fid, vs);
         }
 
-        // 3. Group wall verts by position; survivor (rim) = max incidence.
-        //    Losers (cap) → cap_to_rim map.
+        // 3. Group wall verts by position, then pick survivor (rim) per group.
+        //    ADR-274 P2-2: rim-anchoring tiebreaker. A cap face lies entirely in
+        //    the flush plane (all verts coincident-grouped); the rim's face (the
+        //    ring/host) SPANS out of it (has ≥1 vert outside every group). Prefer
+        //    the group member on a spanning face → correct for boss-in-ring where
+        //    rim and cap would otherwise tie on incidence.
         let dedup_tol = SPATIAL_HASH_CELL * 1.5;
         let verts: Vec<(VertId, DVec3)> = wall_verts
             .iter()
             .filter_map(|&v| self.verts.get(v).filter(|vt| vt.is_active()).map(|vt| (v, vt.pos())))
             .collect();
         let mut used: HashSet<VertId> = HashSet::new();
-        let mut cap_to_rim: HashMap<VertId, VertId> = HashMap::new();
+        let mut groups: Vec<Vec<VertId>> = Vec::new();
         for (i, &(vi, pi)) in verts.iter().enumerate() {
             if used.contains(&vi) {
                 continue;
@@ -12632,14 +12650,33 @@ impl Mesh {
                     used.insert(vj);
                 }
             }
-            if grp.len() < 2 {
-                continue;
+            if grp.len() >= 2 {
+                groups.push(grp);
             }
+        }
+        // All coincident verts, and which non-degen faces "span" beyond them.
+        let grouped: HashSet<VertId> = groups.iter().flatten().copied().collect();
+        let mut is_rim: HashMap<VertId, bool> = HashMap::new();
+        for (&fid, vs) in &face_verts {
+            let spans = vs.iter().any(|v| !grouped.contains(v));
+            if spans {
+                for &v in vs {
+                    is_rim.insert(v, true);
+                }
+            }
+        }
+        let mut cap_to_rim: HashMap<VertId, VertId> = HashMap::new();
+        for grp in &groups {
             let survivor = *grp
                 .iter()
-                .max_by_key(|&&v| incidence.get(&v).copied().unwrap_or(0))
+                .max_by_key(|&&v| {
+                    (
+                        u32::from(*is_rim.get(&v).unwrap_or(&false)),
+                        incidence.get(&v).copied().unwrap_or(0),
+                    )
+                })
                 .unwrap();
-            for &v in &grp {
+            for &v in grp {
                 if v != survivor {
                     cap_to_rim.insert(v, survivor);
                 }
@@ -12649,10 +12686,11 @@ impl Mesh {
             return Ok(0);
         }
 
-        // 4. Cap faces = non-degenerate faces all of whose verts are cap (losers).
+        // 4. Cap faces = non-degenerate faces all of whose verts (outer+inner)
+        //    are cap (losers). The ring/host is excluded (it spans).
         let mut cap_faces: Vec<FaceId> = Vec::new();
         for &fid in &nondegen {
-            if let Ok(vs) = self.collect_loop_verts(self.faces[fid].outer().start) {
+            if let Some(vs) = face_verts.get(&fid) {
                 if !vs.is_empty() && vs.iter().all(|v| cap_to_rim.contains_key(v)) {
                     cap_faces.push(fid);
                 }
@@ -13776,6 +13814,57 @@ mod tests {
         let after = m.verts.iter().filter(|(_, v)| v.is_active()).count();
         assert_eq!(after, before, "slice-style coincident verts NOT welded");
         assert!(m.verts.get(b0).map(|v| v.is_active()).unwrap_or(false));
+    }
+
+    /// ADR-274 P2-2 — boss extruded into a RING (annulus) face, then flushed.
+    /// The rim lives on the ring's INNER (hole) loop, so the old outer-only
+    /// incidence scan gave the rim incidence 0 → survivor mis-picked the cap →
+    /// collapse no-op (the real-runtime failure mode). Inner-loop incidence +
+    /// rim-anchoring tiebreaker weld the cap to the ring's hole rim → clean.
+    #[test]
+    fn flush_collapse_boss_in_ring_welds_to_hole_rim() {
+        use glam::DVec3 as V;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // Ring face: outer 40×40 CCW, inner 20×20 hole CW (both z=0).
+        let o: Vec<_> = [(-20., -20.), (20., -20.), (20., 20.), (-20., 20.)]
+            .iter()
+            .map(|&(x, y): &(f64, f64)| m.add_vertex(V::new(x, y, 0.0)))
+            .collect();
+        let r: Vec<_> = [(-10., -10.), (10., -10.), (10., 10.), (-10., 10.)]
+            .iter()
+            .map(|&(x, y): &(f64, f64)| m.add_vertex(V::new(x, y, 0.0)))
+            .collect();
+        let hole = [r[0], r[3], r[2], r[1]]; // CW (opposite outer)
+        m.add_face_with_holes(&o, &[&hole], mat).unwrap();
+        // Boss cap raised at z=10 (same footprint), faces up.
+        let c: Vec<_> = [(-10., -10.), (10., -10.), (10., 10.), (-10., 10.)]
+            .iter()
+            .map(|&(x, y): &(f64, f64)| m.add_vertex(V::new(x, y, 10.0)))
+            .collect();
+        m.add_face(&[c[0], c[1], c[2], c[3]], mat).unwrap();
+        // 4 walls connecting hole rim r[i] to cap c[i].
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            m.add_face(&[r[i], r[j], c[j], c[i]], mat).unwrap();
+        }
+        assert_eq!(active_face_ids(&m).len(), 6, "ring + cap + 4 walls");
+        assert_eq!(count_degenerate(&m), 0);
+
+        // Flush: cap → z=0 (coincident with rim, DISTINCT ids). Walls degenerate.
+        for &v in &c {
+            let p = m.verts.get(v).unwrap().pos();
+            m.verts.get_mut(v).unwrap().set_pos(V::new(p.x, p.y, 0.0));
+        }
+        assert_eq!(count_degenerate(&m), 4, "4 walls degenerate after flush");
+
+        let collapsed = m.collapse_flush_extrusion(1e-3).unwrap();
+        assert!(collapsed >= 4, "walls collapsed (was 0 no-op before P2-2): {collapsed}");
+        assert_eq!(count_degenerate(&m), 0, "no degenerate faces remain");
+        let info = m.face_set_manifold_info(&active_face_ids(&m));
+        assert_eq!(info.non_manifold_edge_count, 0, "no non-manifold edges");
+        // ring + welded fill face (cap gone, walls gone, hole filled).
+        assert_eq!(active_face_ids(&m).len(), 2, "ring + hole-fill face");
     }
 
     /// ADR-273 — `earcut_safe` never panics on pathological input (the earcut
