@@ -1,6 +1,6 @@
 # ADR-271 — Curved-Wall Cut (P1) · α spec
 
-**Status**: α (spec only — 코드 변경 0. β 구현은 사용자 결재 게이트)
+**Status**: Accepted (β~δ Acceptance Log 완료 2026-07-03 — Cylinder radial blind pocket + through shipped; §3 이전이 원 α spec)
 **Track**: 6 (Extrude/Cut/Punch) — "완벽한 extrude" 로드맵 **#5 곡면 Phase 1 (cut)**
 **Cross-link**: ADR-263(곡면 sketch-split Phase 0) · ADR-257(Cylinder sketch) ·
 ADR-202(Sphere sketch) · ADR-252(planar pocket carve) · ADR-249(drill) ·

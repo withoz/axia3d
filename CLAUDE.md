@@ -6625,6 +6625,79 @@ DrawCircleTool surfaceKind (Cone=4, Torus=5).
 - ADR-259/260/261/262 (#1~#4 "완벽한 extrude" 자매, LOCKED #84/#85/#86)
 - LOCKED #43 (Z-up) · #44 (Complete Meaning per Merge) · 메타-원칙 #4 #5 #6 #14
 
+### 88. ADR-264~274 문서 정합 (doc-lag 해소, 2026-07-06) — 이전 세션들이 미등재
+
+> ⚠ **중요 (재발 방지)**: LOCKED 는 한동안 #87/ADR-263 에서 멈춰 있었고, 코드는
+> baseline `155e127`(2026-07-01, adr-186@195755d = ADR-264 squash) 이후 **ADR-274
+> 까지** 진행됐다. 이 gap(~11 ADR) 때문에 새 세션이 **이미 고쳐진 기능을 broken
+> 으로 오판**했다(2026-07-06 세션, flush-collapse 사례). 본 #88 이 ADR-264~274 를
+> 등재해 그 drift 를 해소한다. **판정 전 코드/테스트/런타임으로 대조할 것** (메타-원칙
+> #4 SSOT). HEAD `cd140e8`. 건강 baseline(2026-07-06 실측): Rust ~2927 pass / 0 fail
+> / 1 ignored, vitest 2496 pass / 0 fail / 1 skipped.
+
+**ADR-259 — Tapered / Draft Extrude** — **Proposed (α spec only, β 미구현)**.
+concave-capable, fail-closed, exact-Plane sides. `docs/adr/259-*`.
+
+**ADR-264 — Embedded Boss Extrude: Fuse instead of Cleave/Preserve** —
+**Proposed (α spec only, 미구현)**. `docs/adr/264-*`.
+
+**ADR-265 / ADR-266 — Repo/CI hygiene** (ADR.md 없음, commit-only, shipped):
+npm workspace fresh-install fix (`8513ec3`) + CI workspace alignment
+(`239112e`) + CONTRIBUTING.md 브랜치 규율 (`f9fc84e`).
+
+**ADR-267 — Universal Watertight Production Gate** — **Accepted** (ε real-Chromium
+E2E deferred). cut/extrude/boolean 이 닫힌 solid 를 열면 reject + snapshot 롤백 +
+Toast. `verify_volume_integrity` export. `integrity_gate_passed`(OpenMesh scope).
+commits `9f77db7`(α)~`98eee1b`(ζ). `docs/adr/267-*`.
+
+**ADR-268 — Curved-Profile Cut + Drill Tube-Wall Winding Fix** — **Accepted**
+(browser-verified). "면에 원 그리기 → Extrude/Cut" 활성 + drill tube-wall winding/
+twist 근본 수정(`bridge_through_loops`) + blind-pocket 벽·floor void-facing.
+"topology ≠ orientation" 교훈 출처. commits `91d6fb6`/`036cb67`/`4df324f`.
+
+**ADR-269 — Through-Cut Robustness** — **Accepted** (node-WASM E2E). through 판정
+f32 snap 노이즈 흡수(상대슬랙 `t-(t*1e-3).max(1e-3)`, `90b342b`) + cross-drill(기존
+구멍 관통) 거부(`bf2398f`). `docs/adr/269-*`.
+
+**ADR-270 — Plane Lock Is (Normal, Offset)** — **Accepted** (browser live). plane
+lock 이 normal 뿐 아니라 offset 도 비교 → 띄운 면 위 그리기 활성 + reset-to-ground
+통합(Home/F5/🏠, `0a15baa`/`0249128`). **LOCKED #63/#75/#77 의 후속** (get3DPoint/
+getDrawPlane face-aware SSOT = ADR-181/188 로 통합). `docs/adr/270-*`.
+
+**ADR-271 — Curved-Wall Cut (P1 Cylinder)** — **Accepted** (β~δ Acceptance Log
+완료; ADR.md header 는 여전히 "α" 표기 — catalog status 정정 대상). Cylinder 벽
+radial blind pocket + radial through + pocket↔through auto-route. `carveCurvedPocket`.
+commits `188bab6`~`f15ab3f`. `docs/adr/271-*`.
+
+**ADR-272 — Kernel Adversarial Sweep + Closure-Preserving Gate** — **Accepted**
+(8 commits `10f428f`~`d3d1bf8`, 회귀 7건 live). **"배선과 면" 종합 수정 기록.**
+silent-corruption 6건 근본 수정: #1 scale det<0 winding(`10f428f`) / #2 merge
+collinear T-junction(`49ccdbb`) / #3 split_edge v_next fan(`fc38469`) / #4 정점 이동
+spatial_hash reindex(`9b0db8e`) / #5 chamfer edge-trim(`579a26e`) / #6 fillet arc
+방향(`891404d`) + **Closure-Preserving Gate**(`e34a1e5`, `closure_preserving_gate_
+passed`, merge/chamfer/fillet 등 9곳 배선). `docs/adr/272-*`. **이 6건은 fixed —
+재-flag 금지.**
+
+**ADR-273 — Self-Intersection Checker** — **Accepted** (5 commits `6346e48`~
+`4d7a4d1`). flap/poke-through/vertex-share/coplanar-overlap 자기교차 검출(topology
+검사가 못 잡는 최종 방어선), spatial-grid 가속. closure-gate 에 통합. `docs/adr/273-*`.
+
+**ADR-274 — Sameness Coherence + Flush-Collapse** — **Accepted (단, Part B 미완
+발견)**. Part A(tolerance SSOT 통합 + parallel-offset 오병합 게이트 #8 + snap 정밀도):
+`ea0e345`/`ce6c3ba`/`ab508e9`/`823dbbb` — 완료. Part B(flush-collapse, `07bd466`/
+`13d871f`): 엔진 op + 배선 존재하나 **실제 MoveTool 제스처에서 no-op**(2026-07-06
+런타임 실측) — export(`deactivate_empty_emit_faces`)가 퇴화 벽을 commit-time collapse
+전에 비활성화 + incidence 가 outer-loop 만 세어 boss-in-ring 오판(fail-closed = 롤백,
+corruption 아님). **fix = option A**(translate 엔진 op 안 export 전 atomic collapse,
+사용자 결재됨) — 별도 진행. `docs/adr/274-*` §5.
+
+**진행 중 안정화 계획 (2026-07-06 세션)**: Phase 0 그린 baseline ✅ / Phase 1 문서·
+메모리 정합(본 #88) / Phase 2 flush-collapse option A / Phase 3 게이트 커버리지 확장
+(transform·deform·geometric-merge·trim·split-edge·intersectWithModel 무방비 — gate
+인프라 drop-in 재사용) / Phase 4 완결성(MCP 17/30 미배선, BoundaryTool cardinal-only,
+tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]
+메모리 + 세션 감사.
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
