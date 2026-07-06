@@ -6701,12 +6701,14 @@ faces·scale_verts/faces(음수)·bend·twist, 전부 SI/winding) → closure ga
 (곡면-cut 2 SAFE/self-reject·geometric-merge 2 self-reject·translate/scale(+)/taper/
 split_edge/flip/mirror/array/subdivide/trim_volume 11 SAFE)는 실측 안전 → 게이트 불필요
 (over-engineering 회피, "측정 먼저") /
-Phase 4 완결성 (부분): BoundaryTool face-aware ✅ (`2ab95ba`, ADR-175/178 parity —
-getDrawPlane 로 hovered face plane 합성, 빈 공간 Z=0 fallback). 잔여 = **substantial
-feature 작업**(별도 세션): MCP 19 미배선 중 다수 not-ready(export_step/import_step/
-export_obj·stl 헤드리스 미지원, Tier3 consent 설계), tensor uv inversion(Path Y NURBS),
-ADR-259 tapered β / ADR-264 embedded-boss (Proposed 미구현) /
-Phase 5 repo 위생 (옛 repo dir 삭제, 브랜치 486→~5, npm install ↔ opencascade.js)
+Phase 4 완결성 (부분): BoundaryTool face-aware ✅ (`2ab95ba`, ADR-175/178 parity) +
+MCP 배선 가능 capability 9개 ✅ (`640e8a3`, get_schema_version/get_xia_geometry_state/
+boolean_union·intersect/rotate_xia·scale_xia/offset_face/draw_polyline/create_group —
+capability coverage 13→22, MCP vitest 189/0). 잔여 = **engine feature / product 결정 /
+파괴적 작업**(별도 세션): MCP create_xia(WASM export 부재)·chamfer_edge(edge-chamfer op
+부재)·not-ready(export/import/Tier3), tensor uv inversion(Path Y NURBS), ADR-259 tapered β
+/ ADR-264 embedded-boss (Proposed), tools/list 정직화(ADR-042 P27.4 product 결정) /
+Phase 5 repo 위생 (옛 repo dir 삭제·브랜치 486→~5·npm install↔opencascade — 파괴적/승인 게이트)
 (transform·deform·geometric-merge·trim·split-edge·intersectWithModel 무방비 — gate
 인프라 drop-in 재사용) / Phase 4 완결성(MCP 17/30 미배선, BoundaryTool cardinal-only,
 tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]
