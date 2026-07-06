@@ -193,9 +193,32 @@ of corrupting the mesh:
   `adr276_phase12_box_box_never_commits_open_or_invalid` — asserts every config
   is valid + (committed⇒watertight) OR (Err⇒byte-identical rollback). Audit test
   kept as the Phase 2 characterization asset.
-- **Remaining Phase 2 core (deferred):** intersection-curve rework so box-box
-  produces the true rectangular notch (watertight) — then the gate starts
-  admitting real cuts. Then through-slot robustness, Phase 3 enclosure/void.
+- **Phase 2 core — intersection-curve rework DONE + verified (2026-07-07).**
+  Added `find_intersections_polygonal` (+ `face_polygon_plane`,
+  `clip_line_to_convex_poly`): the true face-to-face intersection = the line
+  `plane_a ∩ plane_b` clipped to BOTH face polygons (no fan-triangulation).
+  For corner-poke it produces the EXACT 6-segment rectangular notch loop
+  (verified + asserted in `adr276_phase2_audit`: 6 segments, all endpoints on
+  the notch box {20,50}×{20,50}×{70,100}) — versus the tri-tri collector's
+  wrong diagonals. This is the geometric core of the fix.
+- **NEXT gap (why it is NOT yet wired live): downstream split-by-chain.**
+  `split_polygon_2d` cuts a polygon by a STRAIGHT chord only — it pairs the two
+  boundary crossings and connects them straight, IGNORING the interior corner
+  vertex a box-box notch needs (A's +y face must be cut along the L-chain
+  `(50,50,70)→(20,50,70)→(20,50,100)`). So with the correct segments it still
+  fails to split → A+B stay intact → the closed-solid gate would WRONGLY admit
+  two disjoint boxes (boundary==0). Therefore `boolean_impl` Stage 1 keeps the
+  tri-tri collector for now (open result → gate rolls back → fail-closed, no
+  wrong output); `find_intersections_polygonal` is retained as the verified,
+  `#[allow(dead_code)]` building block (exercised by the audit test).
+- **Remaining Phase 2 core (deferred): split-by-chain (planar arrangement).**
+  Enhance the split so a face is cut along the intersection SEGMENT CHAIN
+  (inserting interior corner vertices) — a proper planar subdivision, not a
+  single straight chord. Candidate: route the boolean split through the
+  existing `split_face_by_chain` (face_split.rs) instead of `split_polygon_2d`.
+  Once that lands + consumes `find_intersections_polygonal`, box-box yields the
+  watertight notch and the gate admits it. Then through-slot robustness, Phase 3
+  enclosure/void.
 
 ## Lock-ins (for the β phases)
 

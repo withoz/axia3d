@@ -1681,6 +1681,18 @@ impl Mesh {
         let general_count;
         let mut intersections: Vec<IntersectionSegment> = coplanar_intersections;
         if use_general {
+            // ADR-276 Phase 2 core (IN PROGRESS): `find_intersections_polygonal`
+            // now produces the TRUE rectangular intersection loop (verified — 6
+            // exact segments for corner-poke, no fan-tri diagonals). BUT the
+            // downstream `split_polygon_2d` only cuts by a STRAIGHT chord, not
+            // the L/corner chain a box-box notch needs (it ignores the interior
+            // corner vertex) → it fails to split, leaving A+B both intact, which
+            // the closed-solid gate would WRONGLY admit (2 disjoint boxes read
+            // as boundary==0). Until the split-by-chain (planar arrangement)
+            // lands, keep the tri-tri collector so box-box yields an OPEN result
+            // that the gate correctly ROLLS BACK (fail-closed, no wrong output).
+            // `find_intersections_polygonal` stays as the verified building block
+            // (exercised by adr276_phase2_audit).
             let general_intersections = self.find_intersections(&solid_a, &solid_b);
             general_count = general_intersections.len();
             intersections.extend(general_intersections);
@@ -1980,6 +1992,103 @@ impl Mesh {
             }
         }
 
+        segments
+    }
+
+    /// ADR-276 Phase 2 core — face polygon + its plane (normal, a point on it).
+    /// Returns the DCEL outer-loop polygon (NOT triangulated) so the boolean
+    /// intersection can be computed face-to-face (avoiding the fan-triangulation
+    /// diagonal corruption of `find_intersections`).
+    /// ADR-276 Phase 2 building block — verified via `adr276_phase2_audit`; not
+    /// yet on the live path (pending split-by-chain, see boolean_impl Stage 1).
+    #[allow(dead_code)]
+    fn face_polygon_plane(&self, fid: FaceId) -> Option<(Vec<DVec3>, DVec3, DVec3)> {
+        let face = self.faces.get(fid)?;
+        if !face.is_active() { return None; }
+        let verts = self.collect_loop_verts(face.outer().start).ok()?;
+        let poly: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        if poly.len() < 3 { return None; }
+        let n = face.normal();
+        if !n.is_finite() || n.length() < 1e-9 { return None; }
+        let p0 = poly[0];
+        Some((poly, n.normalize(), p0))
+    }
+
+    /// Clip the infinite line (origin + t·dir) to a CONVEX polygon that lies in
+    /// the plane with normal `plane_n`. `dir` must lie in that plane (it does:
+    /// dir = n_a × n_b ⊥ both normals). Returns the (min_t, max_t) arc-length
+    /// interval where the line is inside the polygon, or None (< 2 crossings).
+    #[allow(dead_code)]
+    fn clip_line_to_convex_poly(
+        poly: &[DVec3], plane_n: DVec3, line_o: DVec3, line_dir: DVec3,
+    ) -> Option<(f64, f64)> {
+        let (poly2, u_axis, v_axis, o) = project_to_2d(poly, plane_n);
+        let o2 = Pt2::new(u_axis.dot(line_o - o), v_axis.dot(line_o - o));
+        let d2 = Pt2::new(u_axis.dot(line_dir), v_axis.dot(line_dir));
+        if d2.x * d2.x + d2.y * d2.y < 1e-18 { return None; }
+        let n = poly2.len();
+        let mut ts: Vec<f64> = Vec::new();
+        for i in 0..n {
+            let a = poly2[i];
+            let b = poly2[(i + 1) % n];
+            let ex = b.x - a.x;
+            let ey = b.y - a.y;
+            // Solve  t·d2 - s·e = a - o2   (2×2). t = coeff of line_dir.
+            let det = -d2.x * ey + ex * d2.y;
+            if det.abs() < 1e-12 { continue; } // edge parallel to line
+            let rx = a.x - o2.x;
+            let ry = a.y - o2.y;
+            let t = (-rx * ey + ex * ry) / det;
+            let s = (d2.x * ry - d2.y * rx) / det;
+            if s >= -1e-9 && s <= 1.0 + 1e-9 {
+                ts.push(t);
+            }
+        }
+        if ts.len() < 2 { return None; }
+        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some((*ts.first().unwrap(), *ts.last().unwrap()))
+    }
+
+    /// ADR-276 Phase 2 core — TRUE face-to-face intersection segments.
+    ///
+    /// Replaces the tri-tri `find_intersections` for the solid-CSG path. For
+    /// each face pair, the intersection is the line `plane_a ∩ plane_b` clipped
+    /// to BOTH face polygons. This yields the exact rectangular-loop segments of
+    /// a box-box intersection (no fan-triangulation diagonals), so
+    /// `split_faces_by_intersections` produces watertight polygon sub-faces.
+    #[allow(dead_code)]
+    fn find_intersections_polygonal(
+        &self, solid_a: &SolidData, solid_b: &SolidData,
+    ) -> Vec<IntersectionSegment> {
+        let mut segments = Vec::new();
+        if !solid_aabb_overlap(solid_a, solid_b) {
+            return segments;
+        }
+        // Cache polygons/planes for A.
+        let polys_a: Vec<(FaceId, Vec<DVec3>, DVec3, DVec3)> = solid_a.face_ids.iter()
+            .filter_map(|&f| self.face_polygon_plane(f).map(|(p, n, pt)| (f, p, n, pt)))
+            .collect();
+        for &fb in &solid_b.face_ids {
+            let Some((poly_b, nb, pb)) = self.face_polygon_plane(fb) else { continue };
+            for (fa, poly_a, na, pa) in &polys_a {
+                // Line = plane_a ∩ plane_b.
+                let u = na.cross(nb);
+                let u2 = u.dot(u);
+                if u2 < 1e-14 { continue; } // parallel / coplanar (Stage 0.5 handles coplanar)
+                let da = na.dot(*pa);
+                let db = nb.dot(pb);
+                let origin = (nb.cross(u) * da + u.cross(*na) * db) / u2;
+                let dir = u / u2.sqrt();
+                let Some((ta0, ta1)) = Self::clip_line_to_convex_poly(poly_a, *na, origin, dir) else { continue };
+                let Some((tb0, tb1)) = Self::clip_line_to_convex_poly(&poly_b, nb, origin, dir) else { continue };
+                let lo = ta0.max(tb0);
+                let hi = ta1.min(tb1);
+                if hi - lo < 1e-7 { continue; } // no overlap
+                let p0 = origin + dir * lo;
+                let p1 = origin + dir * hi;
+                segments.push(IntersectionSegment { face_a: *fa, face_b: fb, p0, p1 });
+            }
+        }
         segments
     }
 
@@ -8927,6 +9036,34 @@ mod tests {
         let mut m = Mesh::new();
         let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
         let b = m.create_box(DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0, mat).unwrap();
+        // Probe the polygonal intersection segments BEFORE the op (fresh solids).
+        {
+            let sa = m.prepare_solid(&a).unwrap();
+            let sb = m.prepare_solid(&b).unwrap();
+            let segs = m.find_intersections_polygonal(&sa, &sb);
+            println!("\n[polygonal segs] count={}", segs.len());
+            for s in segs.iter().take(16) {
+                println!("  fa={:?} fb={:?}: ({:.0},{:.0},{:.0})→({:.0},{:.0},{:.0})",
+                    s.face_a, s.face_b, s.p0.x, s.p0.y, s.p0.z, s.p1.x, s.p1.y, s.p1.z);
+            }
+            // ADR-276 Phase 2 — regression guard: the polygonal intersection
+            // produces the TRUE rectangular notch loop (6 exact segments for
+            // this corner-poke), NOT the fan-triangulation diagonals. This locks
+            // in the intersection-curve rework; the remaining gap is downstream
+            // (split_polygon_2d cannot cut the corner chain — see boolean_impl).
+            assert_eq!(segs.len(), 6,
+                "polygonal intersection must yield the 6-segment notch loop, got {}", segs.len());
+            for s in &segs {
+                // every segment endpoint lies on the notch box x∈{20,50}, y∈{20,50}, z∈{70,100}
+                for p in [s.p0, s.p1] {
+                    let on_x = (p.x - 20.0).abs() < 0.5 || (p.x - 50.0).abs() < 0.5;
+                    let on_y = (p.y - 20.0).abs() < 0.5 || (p.y - 50.0).abs() < 0.5;
+                    let on_z = (p.z - 70.0).abs() < 0.5 || (p.z - 100.0).abs() < 0.5;
+                    assert!(on_x && on_y && on_z,
+                        "segment endpoint {:?} must lie on the notch loop", p);
+                }
+            }
+        }
         let _ = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
 
         // Bucket active verts by rounded position (0.01mm) → find coincident duplicates.
