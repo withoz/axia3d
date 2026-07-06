@@ -12543,6 +12543,184 @@ impl Mesh {
         count
     }
 
+    /// Collapse a "flushed" extrusion — the degenerate scaffolding left when an
+    /// extruded feature (boss / pocket) is moved back until its height reaches
+    /// ~0. Moving *existing* vertices to coincidence does NOT re-run creation
+    /// dedup (that only fires on `add_vertex`), so the mesh is left with
+    /// zero-area "wall" faces bridging pairs of coincident-but-distinct
+    /// vertices — which keeps a solid from closing (measured ground truth).
+    ///
+    /// This recognizes that pattern and rebuilds the clean flat state, using
+    /// only well-tested primitives (`remove_face` / `add_face`) rather than
+    /// hand-rolled half-edge surgery:
+    ///   1. degenerate (zero-area) faces are the collapse signature (a valid
+    ///      mesh never has them),
+    ///   2. their coincident vertex groups are welded by re-adding the collapsed
+    ///      "cap" face on the surviving "rim" loop,
+    ///   3. the orphaned cap vertices + degenerate walls are removed.
+    ///
+    /// Safety — **gate-guarded, fail-closed**: snapshots first; if the rebuild
+    /// would INCREASE the open-boundary edge count or add non-manifold edges
+    /// (a weld gone wrong that opened the geometry), it rolls back and returns
+    /// `Err` — it never ships corrupted topology (worst case = no-op, use Undo).
+    ///
+    /// Slice / knife vertices (intentionally coincident-but-distinct via
+    /// `add_vertex_force_new`) are untouched: they are not bridged by a
+    /// degenerate face, so they never enter the weld candidate set.
+    ///
+    /// `area_tol` — a face with area below this counts as a collapsed wall.
+    /// Returns the number of degenerate wall faces collapsed (0 = nothing to do).
+    pub fn collapse_flush_extrusion(&mut self, area_tol: f64) -> Result<usize> {
+        use std::collections::{HashMap, HashSet};
+
+        // 1. Degenerate (zero-area) faces = the collapse signature.
+        let walls: Vec<FaceId> = self
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| fid)
+            .filter(|&fid| self.face_area(fid) < area_tol)
+            .collect();
+        if walls.is_empty() {
+            return Ok(0);
+        }
+
+        // Weld candidates = vertices lying on a degenerate wall ONLY. This
+        // excludes slice/knife coincident-distinct verts (no degenerate bridge).
+        let mut wall_verts: HashSet<VertId> = HashSet::new();
+        for &w in &walls {
+            if let Ok(vs) = self.collect_loop_verts(self.faces[w].outer().start) {
+                wall_verts.extend(vs);
+            }
+        }
+
+        // 2. Non-degenerate-face incidence per active vertex (survivor rank:
+        //    the rim vertex sits on the host, so on more real faces than the cap).
+        let nondegen: Vec<FaceId> = self
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && self.face_area(*fid) >= area_tol)
+            .map(|(fid, _)| fid)
+            .collect();
+        let mut incidence: HashMap<VertId, u32> = HashMap::new();
+        for &fid in &nondegen {
+            if let Ok(vs) = self.collect_loop_verts(self.faces[fid].outer().start) {
+                for v in vs {
+                    *incidence.entry(v).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // 3. Group wall verts by position; survivor (rim) = max incidence.
+        //    Losers (cap) → cap_to_rim map.
+        let dedup_tol = SPATIAL_HASH_CELL * 1.5;
+        let verts: Vec<(VertId, DVec3)> = wall_verts
+            .iter()
+            .filter_map(|&v| self.verts.get(v).filter(|vt| vt.is_active()).map(|vt| (v, vt.pos())))
+            .collect();
+        let mut used: HashSet<VertId> = HashSet::new();
+        let mut cap_to_rim: HashMap<VertId, VertId> = HashMap::new();
+        for (i, &(vi, pi)) in verts.iter().enumerate() {
+            if used.contains(&vi) {
+                continue;
+            }
+            let mut grp = vec![vi];
+            used.insert(vi);
+            for &(vj, pj) in verts.iter().skip(i + 1) {
+                if !used.contains(&vj) && (pi - pj).length() < dedup_tol {
+                    grp.push(vj);
+                    used.insert(vj);
+                }
+            }
+            if grp.len() < 2 {
+                continue;
+            }
+            let survivor = *grp
+                .iter()
+                .max_by_key(|&&v| incidence.get(&v).copied().unwrap_or(0))
+                .unwrap();
+            for &v in &grp {
+                if v != survivor {
+                    cap_to_rim.insert(v, survivor);
+                }
+            }
+        }
+        if cap_to_rim.is_empty() {
+            return Ok(0);
+        }
+
+        // 4. Cap faces = non-degenerate faces all of whose verts are cap (losers).
+        let mut cap_faces: Vec<FaceId> = Vec::new();
+        for &fid in &nondegen {
+            if let Ok(vs) = self.collect_loop_verts(self.faces[fid].outer().start) {
+                if !vs.is_empty() && vs.iter().all(|v| cap_to_rim.contains_key(v)) {
+                    cap_faces.push(fid);
+                }
+            }
+        }
+        if cap_faces.is_empty() {
+            return Ok(0);
+        }
+
+        // ── snapshot + gate baseline ──
+        let snap = self.snapshot();
+        let before: Vec<FaceId> =
+            self.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info_before = self.face_set_manifold_info(&before);
+
+        // 5. Capture each cap face's rim loop (cap verts mapped to rim), then
+        //    remove cap faces + walls, deactivate cap verts, re-add rim faces.
+        let mut rim_loops: Vec<(Vec<VertId>, MaterialId)> = Vec::new();
+        for &cf in &cap_faces {
+            let mat = self.faces[cf].material();
+            let loop_v = self.collect_loop_verts(self.faces[cf].outer().start)?;
+            let rim: Vec<VertId> =
+                loop_v.iter().map(|v| *cap_to_rim.get(v).unwrap_or(v)).collect();
+            rim_loops.push((rim, mat));
+        }
+        for &cf in &cap_faces {
+            let _ = self.remove_face(cf);
+        }
+        for &w in &walls {
+            let _ = self.remove_face(w);
+        }
+        for cap in cap_to_rim.keys() {
+            if let Some(vt) = self.verts.get_mut(*cap) {
+                vt.set_active(false);
+            }
+        }
+        let mut readded = 0usize;
+        for (rim, mat) in &rim_loops {
+            if self.add_face(rim, *mat).is_ok() {
+                readded += 1;
+            }
+        }
+        self.remove_isolated_verts();
+
+        // 6. Gate — fail-closed. Boundary must not open, no new non-manifold,
+        //    and every cap face re-added; else roll back to the exact prior state.
+        let after: Vec<FaceId> =
+            self.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info_after = self.face_set_manifold_info(&after);
+        let opened = info_after.boundary_edge_count > info_before.boundary_edge_count;
+        let non_manifold =
+            info_after.non_manifold_edge_count > info_before.non_manifold_edge_count;
+        if opened || non_manifold || readded < cap_faces.len() {
+            self.restore_snapshot(&snap);
+            bail!(
+                "flush collapse would open/degrade the mesh (boundary {}→{}, \
+                 non-manifold {}→{}, re-added {}/{}) — rolled back",
+                info_before.boundary_edge_count,
+                info_after.boundary_edge_count,
+                info_before.non_manifold_edge_count,
+                info_after.non_manifold_edge_count,
+                readded,
+                cap_faces.len()
+            );
+        }
+        Ok(walls.len())
+    }
+
     /// Remove dangling edges — edges with zero half-edges referencing an
     /// active face AND not in the scene's standalone-edge list. These appear
     /// after face merges when the old shared edge's topology wasn't fully
@@ -13508,6 +13686,97 @@ pub(crate) fn surfaces_in_same_smooth_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a flat "window-pane" (center interior face + 4 coplanar borders).
+    #[cfg(test)]
+    fn build_window_pane() -> (Mesh, FaceId) {
+        use glam::DVec3 as V;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let o: Vec<_> = [(-20.,-20.),(20.,-20.),(20.,20.),(-20.,20.)]
+            .iter().map(|&(x,y): &(f64,f64)| m.add_vertex(V::new(x,y,0.0))).collect();
+        let i: Vec<_> = [(-10.,-10.),(10.,-10.),(10.,10.),(-10.,10.)]
+            .iter().map(|&(x,y): &(f64,f64)| m.add_vertex(V::new(x,y,0.0))).collect();
+        let center = m.add_face(&[i[0],i[1],i[2],i[3]], mat).unwrap();
+        m.add_face(&[o[0],o[1],i[1],i[0]], mat).unwrap();
+        m.add_face(&[o[1],o[2],i[2],i[1]], mat).unwrap();
+        m.add_face(&[o[2],o[3],i[3],i[2]], mat).unwrap();
+        m.add_face(&[o[3],o[0],i[0],i[3]], mat).unwrap();
+        (m, center)
+    }
+
+    fn active_face_ids(m: &Mesh) -> Vec<FaceId> {
+        m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+    }
+    fn count_degenerate(m: &Mesh) -> usize {
+        active_face_ids(m).iter().filter(|&&f| m.face_area(f) < 1e-6).count()
+    }
+
+    /// (d) flush-collapse — bringing an extruded boss back to height 0 leaves
+    /// degenerate walls + coincident-distinct verts; collapse rebuilds the exact
+    /// clean flat state (measured ground truth: 9 faces/4 degen → 5 faces/0).
+    #[test]
+    fn flush_collapse_restores_clean_face() {
+        use glam::DVec3 as V;
+        let mat = MaterialId::new(0);
+        let (mut m, center) = build_window_pane();
+        assert_eq!(active_face_ids(&m).len(), 5);
+
+        let (cap, _walls) = m.extrude_coplanar_interior_face(center, 10.0, mat).unwrap();
+        // bring the cap back down to z=0 (flush) — the user's "되돌리기".
+        let cap_verts = m.collect_loop_verts(m.faces[cap].outer().start).unwrap();
+        for v in &cap_verts {
+            let p = m.verts.get(*v).unwrap().pos();
+            m.verts.get_mut(*v).unwrap().set_pos(V::new(p.x, p.y, 0.0));
+        }
+        assert_eq!(count_degenerate(&m), 4, "flush leaves 4 degenerate walls");
+
+        let collapsed = m.collapse_flush_extrusion(1e-3).unwrap();
+        assert_eq!(collapsed, 4, "4 walls collapsed");
+        assert_eq!(active_face_ids(&m).len(), 5, "restored to 5 clean faces");
+        assert_eq!(count_degenerate(&m), 0, "no degenerate faces remain");
+        let info = m.face_set_manifold_info(&active_face_ids(&m));
+        assert_eq!(info.boundary_edge_count, 4, "outer boundary unchanged (not opened)");
+        assert_eq!(info.non_manifold_edge_count, 0, "no non-manifold edges");
+    }
+
+    /// A valid mesh with no degenerate faces is untouched (no-op, returns 0).
+    #[test]
+    fn flush_collapse_noop_on_valid_mesh() {
+        let (mut m, _c) = build_window_pane();
+        let before = active_face_ids(&m).len();
+        assert_eq!(m.collapse_flush_extrusion(1e-3).unwrap(), 0);
+        assert_eq!(active_face_ids(&m).len(), before, "valid mesh unchanged");
+    }
+
+    /// Slice/knife coincident-but-distinct verts (no degenerate bridge) must NOT
+    /// be welded — the trigger is a degenerate face, which slice never creates.
+    #[test]
+    fn flush_collapse_preserves_coincident_without_degenerate() {
+        use glam::DVec3 as V;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // Two separate quads sharing an edge geometrically but with DISTINCT
+        // coincident verts (slice semantics via add_vertex_force_new).
+        let a0 = m.add_vertex(V::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(V::new(10.0, 0.0, 0.0));
+        let a2 = m.add_vertex(V::new(10.0, 10.0, 0.0));
+        let a3 = m.add_vertex(V::new(0.0, 10.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        // second quad with coincident-but-forced-new verts at the same corners
+        let b0 = m.add_vertex_force_new(V::new(10.0, 0.0, 0.0));
+        let b1 = m.add_vertex_force_new(V::new(20.0, 0.0, 0.0));
+        let b2 = m.add_vertex_force_new(V::new(20.0, 10.0, 0.0));
+        let b3 = m.add_vertex_force_new(V::new(10.0, 10.0, 0.0));
+        m.add_face(&[b0, b1, b2, b3], mat).unwrap();
+        let before = m.verts.iter().filter(|(_, v)| v.is_active()).count();
+
+        // No degenerate face → collapse is a no-op, coincident verts preserved.
+        assert_eq!(m.collapse_flush_extrusion(1e-3).unwrap(), 0);
+        let after = m.verts.iter().filter(|(_, v)| v.is_active()).count();
+        assert_eq!(after, before, "slice-style coincident verts NOT welded");
+        assert!(m.verts.get(b0).map(|v| v.is_active()).unwrap_or(false));
+    }
 
     /// ADR-273 — `earcut_safe` never panics on pathological input (the earcut
     /// crash class): a non-finite coordinate returns None instead of panicking
