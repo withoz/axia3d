@@ -6685,14 +6685,17 @@ passed`, merge/chamfer/fillet 등 9곳 배선). `docs/adr/272-*`. **이 6건은 
 **ADR-274 — Sameness Coherence + Flush-Collapse** — **Accepted (단, Part B 미완
 발견)**. Part A(tolerance SSOT 통합 + parallel-offset 오병합 게이트 #8 + snap 정밀도):
 `ea0e345`/`ce6c3ba`/`ab508e9`/`823dbbb` — 완료. Part B(flush-collapse, `07bd466`/
-`13d871f`): 엔진 op + 배선 존재하나 **실제 MoveTool 제스처에서 no-op**(2026-07-06
-런타임 실측) — export(`deactivate_empty_emit_faces`)가 퇴화 벽을 commit-time collapse
-전에 비활성화 + incidence 가 outer-loop 만 세어 boss-in-ring 오판(fail-closed = 롤백,
-corruption 아님). **fix = option A**(translate 엔진 op 안 export 전 atomic collapse,
-사용자 결재됨) — 별도 진행. `docs/adr/274-*` §5.
+`13d871f`): α 는 MoveTool commit 호출이었으나 2026-07-06 실측 결과 **no-op** — export
+(`deactivate_empty_emit_faces`)가 퇴화 벽을 commit-time collapse 전에 제거 + incidence
+가 outer-loop 만 세어 boss-in-ring 오판. **option A 로 해소** (`18ae83a`): translate 엔진
+op(`translate_faces`/`translate_verts`) 안 **export 전 atomic collapse** + incidence
+outer+inner + rim-anchoring tiebreaker. 전 도구 자동 커버, 단일 Undo. 브라우저 런타임
+box+boss flush → closed solid 검증. 회귀 `flush_collapse_boss_in_ring_welds_to_hole_rim`.
+`docs/adr/274-*` §7.
 
-**진행 중 안정화 계획 (2026-07-06 세션)**: Phase 0 그린 baseline ✅ / Phase 1 문서·
-메모리 정합(본 #88) / Phase 2 flush-collapse option A / Phase 3 게이트 커버리지 확장
+**진행 중 안정화 계획 (2026-07-06 세션)**: Phase 0 그린 baseline ✅ (`b1f6513`) / Phase 1
+문서·메모리 정합 ✅ (본 #88, `2b172fc`) / Phase 2 flush-collapse option A ✅ (`18ae83a`) /
+Phase 3 게이트 커버리지 확장
 (transform·deform·geometric-merge·trim·split-edge·intersectWithModel 무방비 — gate
 인프라 drop-in 재사용) / Phase 4 완결성(MCP 17/30 미배선, BoundaryTool cardinal-only,
 tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]

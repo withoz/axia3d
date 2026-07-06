@@ -1,6 +1,8 @@
 # ADR-274 — Sameness Recognition Coherence + Flush-Collapse
 
-**Status**: Accepted (엔진·배선 구현 완료; 브라우저 런타임 시연 pending — §5)
+**Status**: Accepted (Part A 완료; Part B flush-collapse — option A 로 실제 런타임 작동
+확정 2026-07-06: `18ae83a` translate 내 atomic collapse + ring-hole rim incidence 수정,
+브라우저 box+boss flush → closed solid 검증. §5 는 원 α 시점의 pending 체크리스트, §7 참조)
 **Track**: Kernel Robustness / UX Precision
 **Cross-link**: ADR-147(spatial-hash dedup 0.15μm) · ADR-167(plane.rs EPS SSOT) ·
 ADR-101(mergeCoplanarContaining) · ADR-193(Live Push/Pull) · ADR-049/050(Two-Layer
@@ -182,6 +184,34 @@ b.collapseFlushExtrusion(0)                       // 빈 씬 → {ok:true, colla
 
 - 브라우저 런타임 시연 0건 (§5, 환경 이슈). 엔진은 Rust 회귀로 증명됐으나 scene
   ownership reconcile + tool 자동호출은 실런타임 미검증.
-- PushPull 경로 미배선 (MoveTool 만).
+- ~~PushPull 경로 미배선 (MoveTool 만).~~ → §7 option A 로 해소 (엔진 translate 내
+  atomic → 전 도구 자동 커버).
 - `area_tol` 기본값 1e-3 mm² — 모델 스케일별 튜닝 여지 (near-flush 감지 임계).
 - CLAUDE.md 교차참조 "1.5μm" 3곳 (메타 #10, 역사 기록으로 보류).
+
+---
+
+## 7. Part B option A closure (2026-07-06, `18ae83a`)
+
+원 §3~§5 (α)는 collapse 를 MoveTool commit 에서 호출했으나, 2026-07-06 세션이 실제
+런타임을 실측한 결과 **no-op** 임이 드러났다 (두 원인):
+1. **타이밍** — `translate` → `syncMesh`(export)의 `deactivate_empty_emit_faces` 가
+   퇴화 벽(0-triangle emit)을 commit-time collapse *전에* 제거 → collapse 가 활성
+   퇴화 벽을 못 찾음.
+2. **correctness** — collapse incidence 가 outer loop 만 세어, boss-in-ring(ring hole
+   rim 이 face 의 *inner* loop 에 있음) 위상에서 survivor 를 cap 으로 오판.
+
+**option A fix** (사용자 결재):
+- **P2-1** — `translate_faces`/`translate_verts`(axia-wasm) 안에서 export 전 같은
+  transaction 으로 `collapse_flush_extrusion(1e-3)` 호출. gate-guarded no-op,
+  self-rollback, 단일 Undo, **전 도구 자동 커버**(PushPull 별도 배선 불요).
+- **P2-2** — incidence 를 outer+inner loop 로 확장 + rim-anchoring tiebreaker
+  (coincidence group 밖 정점을 가진 spanning 면 = ring/host 를 survivor 로 선택).
+  window-pane 회귀 보존.
+- **P2-3** — 회귀 `flush_collapse_boss_in_ring_welds_to_hole_rim` (axia-geo, ring+boss
+  +flush → cap 이 hole rim 에 weld, clean closed). fix 전엔 collapsed=0.
+
+**검증**: axia-geo 2156 / axia-core 433 PASS. 브라우저 런타임 box+boss flush → 7 faces
+/ boundaryEdges 0 / isClosedSolid true / valid, maxVertexZ 150 (boss 흔적 0), 단일
+Undo 로 boss(z=210) 복원. (fix 전: bE=8 open, boss 잔존.) MoveTool commit-time 호출은
+redundant no-op safety net 으로 유지.
