@@ -15,6 +15,10 @@ function mockToolContext() {
       translateVerts: vi.fn(),
       getEdgeEndpoints: vi.fn().mockReturnValue([] as number[]),
       findVertexIdAt: vi.fn().mockReturnValue(-1),
+      // ADR-274 — MoveTool commit auto-invokes flush-collapse. Mock must
+      // expose it or the commit path throws (regression: 13d871f wired the
+      // call but did not update this mock).
+      collapseFlushExtrusion: vi.fn().mockReturnValue({ ok: true, collapsed: 0 }),
     },
     viewport: {
       activeCamera: new THREE.PerspectiveCamera(),
