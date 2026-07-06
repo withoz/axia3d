@@ -3734,6 +3734,35 @@ impl AxiaEngine {
         self.finish_curved_demo(before, result, "Box − Cylinder (drill)", center)
     }
 
+    /// ADR-276 Phase 1 verification harness — two overlapping BOXES via the
+    /// solid-CSG path (`Mesh::boolean_solid`: general tri-tri Stage 1 +
+    /// fail-closed validity gate). Box A = [0,0,50] 100³; box B = [bx,by,bz]
+    /// cube of side `bsize`. Returns the result face count on a valid cut, or
+    /// -1 on the fail-closed rollback (config not yet supported). Not wired to
+    /// any UI button — a building block for ADR-276 Phase 5 routing (Q2).
+    #[wasm_bindgen(js_name = "demoBooleanSolidTwoBoxes")]
+    pub fn demo_boolean_solid_two_boxes(
+        &mut self,
+        bx: f64, by: f64, bz: f64, bsize: f64,
+    ) -> f64 {
+        let center = DVec3::new(0.0, 0.0, 50.0);
+        let mat = axia_core::FORM_MATERIAL;
+        self.scene.transactions.begin();
+        let before = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before.clone());
+        let result = (|| -> anyhow::Result<Vec<FaceId>> {
+            let a = self.scene.mesh.create_box(center, 100.0, 100.0, 100.0, mat)?;
+            let b = self.scene.mesh.create_box(
+                DVec3::new(bx, by, bz), bsize, bsize, bsize, mat,
+            )?;
+            let res = self.scene.mesh.boolean_solid(
+                &a, &b, axia_geo::operations::boolean::BoolOp::Subtract, mat,
+            )?;
+            Ok(res.faces)
+        })();
+        self.finish_curved_demo(before, result, "CSG A − B (ADR-276)", center)
+    }
+
     /// ADR-198 (blind hole) — box − cylinder entering the top, floor `depth` below
     /// the box top (inside the box). Box half-size `box_half`, cylinder `cyl_radius`.
     #[wasm_bindgen(js_name = "demoBooleanBoxMinusCylinderBlind")]

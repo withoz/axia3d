@@ -1,6 +1,6 @@
 # ADR-276 — Solid CSG Kernel: Design + Phased Plan (α spec)
 
-- **Status**: Proposed
+- **Status**: Accepted (design accepted; Phase 1 β landed 2026-07-06; Phases 2–5 gated)
 - **Date**: 2026-07-06
 - **Context**: Follows ADR-275 (planar/solid box boolean is unimplemented; honest
   no-op guard shipped). User approved route **(a′) — implement the real solid-CSG
@@ -123,6 +123,43 @@ of corrupting the mesh:
   crossings and split must grow faces for surface-crossing configs). Kept as the
   Phase 0 evidence; Phase 5 replaces the print-only parts with assertion suites.
 - Existing scoping assets (ADR-275): `boolean_scoping.rs`, `boolean_planar_probe.rs`.
+
+## Acceptance Log
+
+### Phase 1 β — landed 2026-07-06 (user-approved: proceed, fail-closed / Q1)
+
+- **Separate entry, zero regression** — rather than change `Mesh::boolean`
+  universally (which broke 24 existing tests: `boolean_union_with_face_split`
+  + 13 `boolean_dispatch` routing tests that use `boolean()` as an oracle /
+  mesh-fallback and only assert routing, not geometry), the solid-CSG path is a
+  new entry. `boolean_impl(…, use_general: bool)`; `boolean()` → `false`
+  (byte-identical pre-ADR-276); **`boolean_solid()` → `true`** (general tri-tri
+  Stage 1 + fail-closed gate). All existing callers untouched.
+- **Stage 1 wiring** — `boolean_solid` unions `find_intersections` (general
+  non-coplanar) with the coplanar overlaps.
+- **Fail-closed gate** — snapshot (`self.clone()`) before mutation; after Stage 6,
+  if `verify_face_invariants().is_valid()` is false OR
+  `detect_self_intersections().is_clean()` is false → `*self = backup` +
+  `bail!` (byte-identical rollback). Closed-solid NOT required (2D/sheet operands
+  legitimately open).
+- **Measured (Rust `adr276_phase1_box_box_subtract_cuts_and_never_corrupts` +
+  browser via `demoBooleanSolidTwoBoxes`)**: corner-poke SUB → **cuts** (faces
+  12→9, verts 16→22, invariants valid, non-manifold 0); notch → cuts, valid;
+  through-slot → **fail-closed rollback** (Err, byte-identical, valid); enclosed
+  → no-op (0 segs). Browser end-to-end (Rust→WASM→bridge) confirms corner-poke =
+  9 faces, invariants valid, 0 non-manifold.
+- **HONEST limitation** — the cut result is **valid + non-corrupting but NOT yet
+  watertight** (corner-poke: `is_closed_solid=false`, 6 boundary edges — the
+  notch walls are not fully stitched). Phase 1 delivers a valid, non-corrupting
+  cut and proves the pipeline; **watertight sealing is Phase 2/3.** The gate
+  guarantees no corruption, not completeness.
+- **Regression**: axia-geo 2158 / axia-core / axia-transaction all green (0
+  regression). New: `boolean_solid` / `boolean_impl`, `demoBooleanSolidTwoBoxes`
+  (verification harness, not UI-wired), `adr276_phase0_sim_*` + `adr276_phase1_*`.
+- **Not done in Phase 1** (per plan): watertight sealing (Phase 2), through-slot
+  robustness (Phase 2), enclosure/void (Phase 3), coplanar coincidence (Phase 4),
+  UI routing + default (Phase 5, Q2/Q3). `boolean_solid` is not reachable from
+  the UI yet — the UI still shows the ADR-275 honest no-op warning.
 
 ## Lock-ins (for the β phases)
 

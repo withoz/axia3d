@@ -1437,17 +1437,53 @@ impl Mesh {
         None
     }
 
-    /// Boolean 연산 수행
+    /// Boolean 연산 수행 (기존 동작 — Stage 1 coplanar only, no fail-closed gate).
     ///
     /// `faces_a`: 솔리드 A의 face 집합
     /// `faces_b`: 솔리드 B의 face 집합
     /// `op`: Union / Subtract / Intersect
+    ///
+    /// ADR-276: this preserves the pre-ADR-276 behavior byte-for-byte
+    /// (curved dispatch + coplanar-only Stage 1). The solid-CSG path that
+    /// wires the general tri-tri collector + fail-closed gate is
+    /// [`Mesh::boolean_solid`] — a separate entry so existing callers
+    /// (demo_*, boolean_dispatch mesh fallback, regression oracles) are
+    /// unaffected until the UI is routed to it (ADR-276 Phase 5, Q2).
     pub fn boolean(
         &mut self,
         faces_a: &[FaceId],
         faces_b: &[FaceId],
         op: BoolOp,
         material: MaterialId,
+    ) -> Result<BooleanResult> {
+        self.boolean_impl(faces_a, faces_b, op, material, false)
+    }
+
+    /// ADR-276 Phase 1 — solid CSG boolean: wires the general (non-coplanar)
+    /// `find_intersections` collector into Stage 1 so box/planar solids
+    /// actually cut, and runs a fail-closed validity gate (ADR-267/272/273
+    /// spirit): if the result is not a valid, self-intersection-free mesh it
+    /// is rolled back byte-identically and an honest "not yet supported"
+    /// error is returned. Convex overlaps (corner-poke / notch) cut cleanly;
+    /// configs whose split/classify is not yet robust (through-slot) or that
+    /// need void handling (fully-enclosed, Phase 3) roll back safely.
+    pub fn boolean_solid(
+        &mut self,
+        faces_a: &[FaceId],
+        faces_b: &[FaceId],
+        op: BoolOp,
+        material: MaterialId,
+    ) -> Result<BooleanResult> {
+        self.boolean_impl(faces_a, faces_b, op, material, true)
+    }
+
+    fn boolean_impl(
+        &mut self,
+        faces_a: &[FaceId],
+        faces_b: &[FaceId],
+        op: BoolOp,
+        material: MaterialId,
+        use_general: bool,
     ) -> Result<BooleanResult> {
         let mut debug = Vec::new();
 
@@ -1551,6 +1587,17 @@ impl Mesh {
             }
         }
 
+        // ── ADR-276 Phase 1 — fail-closed snapshot (solid CSG path only) ──
+        // Wiring find_intersections into Stage 1 (below) makes box/planar
+        // solids actually cut. Some configs still produce invalid topology
+        // (e.g. through-slot). Snapshot the mesh BEFORE any mutation (the
+        // polygonize pass mutates) so the validity gate at the end can roll
+        // back byte-identically instead of committing a corrupt result.
+        // Only the solid-CSG entry (`boolean_solid`) pays this clone; the
+        // legacy `boolean()` path (use_general=false) is byte-identical to
+        // before ADR-276. (Curved-analytic operands returned early above.)
+        let fail_closed_backup = if use_general { Some(self.clone()) } else { None };
+
         // ── ADR-110 π-β — Pre-polygonize Path B closed-curve faces ──
         //
         // Path B closed-curve face (1 anchor + 1 self-loop edge with Circle
@@ -1610,9 +1657,24 @@ impl Mesh {
         let coplanar_count = coplanar_intersections.len();
 
         // ── Stage 1: 교차선 수집 ─────────────────────
-        let intersections: Vec<IntersectionSegment> = coplanar_intersections;
-        debug.push(format!("Intersections found: {} (including {} coplanar)",
-            intersections.len(), coplanar_count));
+        // ADR-276 Phase 1: the solid-CSG path (`boolean_solid`, use_general)
+        // wires `find_intersections` (general non-coplanar tri-tri via
+        // boolean_geo::triangle_triangle_intersection) — previously wired ONLY
+        // to "Intersect with Model" — and unions it with the coplanar overlaps
+        // so box/planar solids that cross non-coplanarly actually get cut
+        // (ADR-275 scoping: every planar box config was a NO-OP). The legacy
+        // `boolean()` path (use_general=false) keeps coplanar-only.
+        let general_count;
+        let mut intersections: Vec<IntersectionSegment> = coplanar_intersections;
+        if use_general {
+            let general_intersections = self.find_intersections(&solid_a, &solid_b);
+            general_count = general_intersections.len();
+            intersections.extend(general_intersections);
+        } else {
+            general_count = 0;
+        }
+        debug.push(format!("Intersections found: {} ({} coplanar + {} general)",
+            intersections.len(), coplanar_count, general_count));
 
         // ── Stage 2: Face Split — 교차선으로 face 분할 ─────
         let split_a = if !intersections.is_empty() {
@@ -1703,6 +1765,28 @@ impl Mesh {
 
         // ADR-007 — boolean 후 invariants 검증
         self.debug_verify_invariants();
+
+        // ── ADR-276 Phase 1 — fail-closed validity gate (solid CSG only) ──
+        // Verify the result is topologically sound before committing. Some
+        // operand configurations (e.g. through-slot) still produce invalid
+        // topology under the current split/classify stages; rather than commit
+        // a corrupt mesh, roll back byte-identically to the pre-op snapshot and
+        // report an honest "not yet supported" error. Gate = ADR-007 invariants
+        // valid AND no self-intersections (ADR-273). Closed-solid is NOT
+        // required here: 2D/sheet operands legitimately yield open results.
+        // Only runs for `boolean_solid` (fail_closed_backup is Some).
+        if let Some(backup) = fail_closed_backup {
+            let inv_valid = self.verify_face_invariants().is_valid();
+            let si_clean = self.detect_self_intersections().is_clean();
+            if !inv_valid || !si_clean {
+                *self = backup;
+                anyhow::bail!(
+                    "boolean_solid: result failed the ADR-276 Phase 1 validity gate \
+                     (invariants_valid={inv_valid}, self_intersection_clean={si_clean}) \
+                     — rolled back; this operand configuration is not yet supported"
+                );
+            }
+        }
 
         Ok(BooleanResult {
             faces: merged_faces,
@@ -8751,6 +8835,57 @@ mod tests {
             }
         }
         println!("=====================================================================\n");
+    }
+
+    // ADR-276 Phase 1 — box-box boolean now CUTS (Stage 1 wired to
+    // find_intersections) and is fail-closed: every config leaves the mesh
+    // VALID (either a valid cut, or a byte-identical rollback), never corrupt.
+    #[test]
+    fn adr276_phase1_box_box_subtract_cuts_and_never_corrupts() {
+        let mat = MaterialId::new(0);
+        let configs: [(&str, DVec3, f64, f64, f64); 4] = [
+            ("corner-poke", DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0),
+            ("top-center notch", DVec3::new(0.0, 0.0, 90.0), 40.0, 40.0, 40.0),
+            ("through-slot", DVec3::new(0.0, 0.0, 50.0), 200.0, 30.0, 30.0),
+            ("enclosed cavity", DVec3::new(0.0, 0.0, 50.0), 40.0, 40.0, 40.0),
+        ];
+        let mut any_cut = false;
+        println!("\n===== ADR-276 Phase 1: box-box boolean end-to-end =====");
+        for (label, bpos, bw, bh, bd) in configs {
+            let mut m = Mesh::new();
+            let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let b = m.create_box(bpos, bw, bh, bd, mat).unwrap();
+            let faces_before = m.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let verts_before = m.verts.iter().filter(|(_, v)| v.is_active()).count();
+
+            let r = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+
+            // INVARIANT (the Phase 1 guarantee): whatever happens, the mesh is
+            // left topologically valid. A gate rejection rolls back to the
+            // (valid) pre-op state; a success is a valid cut.
+            assert!(
+                m.verify_face_invariants().is_valid(),
+                "[{label}] mesh must stay valid after boolean (ok={})", r.is_ok(),
+            );
+            let faces_after = m.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let verts_after = m.verts.iter().filter(|(_, v)| v.is_active()).count();
+
+            if r.is_err() {
+                // Fail-closed rollback must be byte-identical (counts restored).
+                assert_eq!(faces_after, faces_before, "[{label}] rollback preserves faces");
+                assert_eq!(verts_after, verts_before, "[{label}] rollback preserves verts");
+            } else if faces_after != faces_before || verts_after != verts_before {
+                any_cut = true;
+            }
+            println!(
+                "  [{label}] ok={} faces {}->{} verts {}->{} valid=true",
+                r.is_ok(), faces_before, faces_after, verts_before, verts_after,
+            );
+        }
+        // At least one config must actually cut end-to-end (the whole point of
+        // Phase 1 — box-box boolean was a total no-op before ADR-276).
+        assert!(any_cut, "ADR-276 Phase 1: at least one box-box config must cut");
+        println!("========================================================\n");
     }
 
     /// 두 겹치는 큐브로 Boolean 테스트
