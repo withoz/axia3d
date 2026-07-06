@@ -161,6 +161,42 @@ of corrupting the mesh:
   UI routing + default (Phase 5, Q2/Q3). `boolean_solid` is not reachable from
   the UI yet — the UI still shows the ADR-275 honest no-op warning.
 
+### Phase 2 (partial) — audit + fail-closed-correct gate (2026-07-06, user-approved "bounded 해결 시도")
+
+- **Root cause of the open cut (Q4 confirmed).** Audit (`adr276_phase2_audit_
+  open_seam_duplicate_verts`) on corner-poke: verts ARE shared (0 coincident
+  duplicates — LOCKED #5 dedup works), yet 6 boundary edges remain. Dumping the
+  face loops + boundary-edge owners showed the box-box cut is produced as a
+  **diagonal / tetrahedral notch, not the true rectangular notch**: A's three
+  bitten faces (top / +x / +y) are each cut with a single DIAGONAL across the
+  corner (e.g. +y face `…(20,50,100)→(50,50,70)…`, missing the real inner corner
+  `(20,50,70)`), and the notch walls are TRIANGLES (half-quads). The 6 open edges
+  are those diagonals. **`prepare_solid` fan-triangulates every face (convex-
+  assumption MVP), so `find_intersections` computes tri-tri segments along
+  triangle diagonals → the box-box intersection curve is topologically wrong.**
+- **Not a bounded fix.** Correcting this requires reworking the intersection to
+  preserve polygon loops (face-face intersection, not tri-tri on fan-tri'd
+  faces) — core CSG, deferred to Phase 2 proper.
+- **Safe bounded action taken — closed→closed gate.** The prior gate
+  (invariants + SI) did NOT catch "valid-but-open", so `boolean_solid` was
+  COMMITTING a geometrically-wrong open cut. Added: when BOTH operands are
+  watertight solids, the result must be watertight too (`face_set_manifold_info
+  (&merged_faces).is_closed_solid`), else roll back byte-identically.
+  `boolean_solid` is now **fail-closed-correct**: for the current box configs it
+  cleanly declines (rolls back) instead of shipping a wrong cut, and will only
+  commit once the intersection rework produces watertight results.
+- **Behavior change:** the Phase 1 "corner-poke cuts" result (9 faces, open) now
+  rolls back — that cut was geometrically wrong, so declining it is more correct.
+  `boolean()` (use_general=false) is unaffected (gate only runs for
+  `boolean_solid`). Curved-analytic path (ADR-197) unaffected (early return).
+- **Regression:** axia-geo 2159 pass / 0 fail. Test renamed
+  `adr276_phase12_box_box_never_commits_open_or_invalid` — asserts every config
+  is valid + (committed⇒watertight) OR (Err⇒byte-identical rollback). Audit test
+  kept as the Phase 2 characterization asset.
+- **Remaining Phase 2 core (deferred):** intersection-curve rework so box-box
+  produces the true rectangular notch (watertight) — then the gate starts
+  admitting real cuts. Then through-slot robustness, Phase 3 enclosure/void.
+
 ## Lock-ins (for the β phases)
 
 - **L-276-1** Complete the existing pipeline; do NOT rewrite `find_intersections`

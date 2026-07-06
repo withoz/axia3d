@@ -1646,6 +1646,20 @@ impl Mesh {
         // ── Stage 0: 솔리드 데이터 준비 ──────────────
         let solid_a = self.prepare_solid(faces_a)?;
         let solid_b = self.prepare_solid(faces_b)?;
+
+        // ADR-276 Phase 2 — capture input watertightness for the tightened gate.
+        // If BOTH operands are closed solids, a correct solid-CSG result must
+        // ALSO be a closed solid. The current split/classify produces a valid,
+        // non-self-intersecting, but OPEN (topologically wrong) cut for box-box
+        // (fan-triangulation corrupts the intersection curve into a diagonal /
+        // tetrahedral cut — ADR-276 Q4). The invariants+SI gate does NOT catch
+        // "valid-but-open", so without this check boolean_solid would COMMIT a
+        // geometrically-wrong open result. Requiring closed→closed makes it
+        // fail-closed-correct: it cleanly rolls back until the intersection
+        // rework lands, rather than shipping a wrong cut.
+        let both_inputs_closed = use_general
+            && self.face_set_manifold_info(&solid_a.face_ids).is_closed_solid
+            && self.face_set_manifold_info(&solid_b.face_ids).is_closed_solid;
         debug.push(format!(
             "Solid A: {} faces, {} tris | Solid B: {} faces, {} tris",
             solid_a.face_ids.len(), solid_a.all_triangles.len(),
@@ -1778,12 +1792,19 @@ impl Mesh {
         if let Some(backup) = fail_closed_backup {
             let inv_valid = self.verify_face_invariants().is_valid();
             let si_clean = self.detect_self_intersections().is_clean();
-            if !inv_valid || !si_clean {
+            // ADR-276 Phase 2 — closed→closed requirement. When both inputs were
+            // watertight solids, the result must be watertight too; otherwise the
+            // cut is geometrically wrong (open seam) even if invariant-valid.
+            let closed_ok = !both_inputs_closed
+                || self.face_set_manifold_info(&merged_faces).is_closed_solid;
+            if !inv_valid || !si_clean || !closed_ok {
                 *self = backup;
                 anyhow::bail!(
-                    "boolean_solid: result failed the ADR-276 Phase 1 validity gate \
-                     (invariants_valid={inv_valid}, self_intersection_clean={si_clean}) \
-                     — rolled back; this operand configuration is not yet supported"
+                    "boolean_solid: result failed the ADR-276 validity gate \
+                     (invariants_valid={inv_valid}, self_intersection_clean={si_clean}, \
+                     closed_solid={closed_ok}) — rolled back; this operand \
+                     configuration is not yet supported (watertight box-box CSG is \
+                     pending the intersection-curve rework, ADR-276 Phase 2 core)"
                 );
             }
         }
@@ -8837,11 +8858,15 @@ mod tests {
         println!("=====================================================================\n");
     }
 
-    // ADR-276 Phase 1 — box-box boolean now CUTS (Stage 1 wired to
-    // find_intersections) and is fail-closed: every config leaves the mesh
-    // VALID (either a valid cut, or a byte-identical rollback), never corrupt.
+    // ADR-276 Phase 1+2 — boolean_solid is FAIL-CLOSED-CORRECT: for closed-solid
+    // operands, every config leaves the mesh VALID and either (a) commits a
+    // WATERTIGHT (closed) cut, or (b) rolls back byte-identically. It NEVER
+    // commits a geometrically-wrong OPEN cut. (Phase 2 audit: box-box currently
+    // produces valid-but-open cuts — fan-triangulation corrupts the intersection
+    // curve, ADR-276 Q4 — so with the closed→closed gate they all roll back
+    // cleanly until the intersection-curve rework lands.)
     #[test]
-    fn adr276_phase1_box_box_subtract_cuts_and_never_corrupts() {
+    fn adr276_phase12_box_box_never_commits_open_or_invalid() {
         let mat = MaterialId::new(0);
         let configs: [(&str, DVec3, f64, f64, f64); 4] = [
             ("corner-poke", DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0),
@@ -8849,8 +8874,7 @@ mod tests {
             ("through-slot", DVec3::new(0.0, 0.0, 50.0), 200.0, 30.0, 30.0),
             ("enclosed cavity", DVec3::new(0.0, 0.0, 50.0), 40.0, 40.0, 40.0),
         ];
-        let mut any_cut = false;
-        println!("\n===== ADR-276 Phase 1: box-box boolean end-to-end =====");
+        println!("\n===== ADR-276 Phase 1+2: box-box fail-closed-correct =====");
         for (label, bpos, bw, bh, bd) in configs {
             let mut m = Mesh::new();
             let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
@@ -8860,32 +8884,106 @@ mod tests {
 
             let r = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
 
-            // INVARIANT (the Phase 1 guarantee): whatever happens, the mesh is
-            // left topologically valid. A gate rejection rolls back to the
-            // (valid) pre-op state; a success is a valid cut.
+            // INVARIANT #1 — the mesh is always left topologically valid.
             assert!(
                 m.verify_face_invariants().is_valid(),
-                "[{label}] mesh must stay valid after boolean (ok={})", r.is_ok(),
+                "[{label}] mesh must stay valid after boolean_solid (ok={})", r.is_ok(),
             );
-            let faces_after = m.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+            let faces_after = active.len();
             let verts_after = m.verts.iter().filter(|(_, v)| v.is_active()).count();
 
             if r.is_err() {
-                // Fail-closed rollback must be byte-identical (counts restored).
+                // INVARIANT #2 — fail-closed rollback is byte-identical.
                 assert_eq!(faces_after, faces_before, "[{label}] rollback preserves faces");
                 assert_eq!(verts_after, verts_before, "[{label}] rollback preserves verts");
-            } else if faces_after != faces_before || verts_after != verts_before {
-                any_cut = true;
+            } else {
+                // INVARIANT #3 — a COMMITTED cut of two closed solids must itself
+                // be watertight (the tightened gate guarantees this — never a
+                // wrong open cut).
+                assert!(
+                    m.face_set_manifold_info(&active).is_closed_solid,
+                    "[{label}] a committed boolean_solid result must be watertight",
+                );
             }
             println!(
                 "  [{label}] ok={} faces {}->{} verts {}->{} valid=true",
                 r.is_ok(), faces_before, faces_after, verts_before, verts_after,
             );
         }
-        // At least one config must actually cut end-to-end (the whole point of
-        // Phase 1 — box-box boolean was a total no-op before ADR-276).
-        assert!(any_cut, "ADR-276 Phase 1: at least one box-box config must cut");
-        println!("========================================================\n");
+        println!("=========================================================\n");
+    }
+
+    // ADR-276 Phase 2 audit (print-only) — WHY is boolean_solid's cut result
+    // valid-but-OPEN (is_closed_solid=false)? Hypothesis: split_faces_by_
+    // intersections runs INDEPENDENTLY on solid_a and solid_b, so the
+    // intersection points on A's edges and B's edges at the SAME 3D location
+    // become SEPARATE VertIds → A's and B's split faces don't share edges →
+    // boundary (open) seam. This measures duplicate-position vertices +
+    // boundary edge count to confirm.
+    #[test]
+    fn adr276_phase2_audit_open_seam_duplicate_verts() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0, mat).unwrap();
+        let _ = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+
+        // Bucket active verts by rounded position (0.01mm) → find coincident duplicates.
+        use std::collections::HashMap;
+        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        for (vid, v) in m.verts.iter() {
+            if !v.is_active() { continue; }
+            let p = v.pos();
+            let key = ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64, (p.z * 100.0).round() as i64);
+            buckets.entry(key).or_default().push(vid.raw());
+        }
+        let dups: Vec<_> = buckets.iter().filter(|(_, v)| v.len() >= 2).collect();
+        let active_verts = m.verts.iter().filter(|(_, v)| v.is_active()).count();
+        let info = m.face_set_manifold_info(
+            &m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect::<Vec<_>>()
+        );
+        println!("\n===== ADR-276 Phase 2 audit: open-seam diagnosis =====");
+        println!("active_verts={} | distinct positions={} | COINCIDENT-DUP positions={}",
+            active_verts, buckets.len(), dups.len());
+        for (pos, vids) in dups.iter().take(12) {
+            println!("  dup @ ({:.2},{:.2},{:.2}) → {} verts {:?}",
+                pos.0 as f64/100.0, pos.1 as f64/100.0, pos.2 as f64/100.0, vids.len(), vids);
+        }
+        println!("boundary_edge_count={} | is_closed_solid={} | non_manifold={}",
+            info.boundary_edge_count, info.is_closed_solid, info.non_manifold_edge_count);
+
+        // Locate the OPEN boundary edges (count==1) + their endpoint positions.
+        let active_faces: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let mut edge_counts: HashMap<EdgeId, u32> = HashMap::new();
+        let mut edge_owner: HashMap<EdgeId, FaceId> = HashMap::new();
+        for &fid in &active_faces {
+            if let Ok(edges) = m.face_outer_edges(fid) {
+                for e in edges { *edge_counts.entry(e).or_insert(0) += 1; edge_owner.entry(e).or_insert(fid); }
+            }
+        }
+        // Dump each active face's vertex loop (see polygon shapes at the seam).
+        println!("-- active face loops (vertex positions) --");
+        for &fid in &active_faces {
+            if let Ok(vs) = m.collect_loop_verts(m.faces.get(fid).unwrap().outer().start) {
+                let pts: Vec<String> = vs.iter().map(|&v| {
+                    let p = m.vertex_pos(v).unwrap_or(DVec3::ZERO);
+                    format!("({:.0},{:.0},{:.0})", p.x, p.y, p.z)
+                }).collect();
+                println!("  face {:?} [{} verts]: {}", fid, vs.len(), pts.join(" "));
+            }
+        }
+        println!("-- open boundary edges (count==1) + owning face --");
+        for (eid, cnt) in edge_counts.iter() {
+            if *cnt != 1 { continue; }
+            if let Some(edge) = m.edges.get(*eid) {
+                let a = m.vertex_pos(edge.v_small()).unwrap_or(DVec3::ZERO);
+                let b = m.vertex_pos(edge.v_large()).unwrap_or(DVec3::ZERO);
+                println!("  edge {:?} owner={:?}: ({:.0},{:.0},{:.0}) → ({:.0},{:.0},{:.0})",
+                    eid, edge_owner.get(eid), a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+        }
+        println!("=====================================================");
     }
 
     /// 두 겹치는 큐브로 Boolean 테스트
