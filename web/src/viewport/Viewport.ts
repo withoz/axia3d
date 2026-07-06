@@ -203,7 +203,10 @@ export class Viewport {
   private isPanning = false;
   private lastMouse = new THREE.Vector2();
   private orbitTarget = new THREE.Vector3(0, 0, 0);
-  private spherical = new THREE.Spherical(60000, Math.PI / 4, Math.PI / 4);
+  // Initial orbit distance — 20000 (was 60000; ~3× closer to the origin so the
+  // startup view sits nearer the vertices per user request 2026-07-06). Kept in
+  // sync with resetCamera() (Home / 🏠). Zoom clamp is [100, 5e8].
+  private spherical = new THREE.Spherical(20000, Math.PI / 4, Math.PI / 4);
 
   // View mode change callback
   private _onViewModeChange?: (mode: ViewMode) => void;
@@ -797,7 +800,7 @@ export class Viewport {
     //   y = r · sin(phi) · sin(theta)
     //   z = r · cos(phi)
     // phi = 0 → camera at +Z (north pole, "위"), phi = π/2 → equator (XY plane).
-    // 기본값 spherical(60000, π/4, π/4) → camera 가 (30k, 30k, 42k) 근처
+    // 기본값 spherical(20000, π/4, π/4) → camera 가 (10k, 10k, 14k) 근처
     // 에서 origin 을 바라봄 — CAD isometric view.
     const r = this.spherical.radius;
     const phi = this.spherical.phi;
@@ -2421,7 +2424,9 @@ export class Viewport {
 
   resetCamera() {
     this.orbitTarget.set(0, 0, 0);
-    this.spherical.set(60000, Math.PI / 4, Math.PI / 4);
+    // 20000 = ~3× closer than the old 60000 (kept in sync with the initial
+    // `spherical` above, user request 2026-07-06).
+    this.spherical.set(20000, Math.PI / 4, Math.PI / 4);
     if (this._viewMode === '3d') {
       this.updateCameraFromSpherical();
     } else {
