@@ -99,7 +99,15 @@ async function checkWasmFreshness(): Promise<void> {
 async function main() {
   debugLog('AXiA 3D starting...');
 
-  // 0. WASM freshness check (non-blocking, just logs + Toast if newer).
+  // 0. Initialize the Toast singleton FIRST — every Toast.info/warning/error/
+  //    success is `Toast.getInstance()?.show(...)`, so without this init the
+  //    instance stays null and ALL toasts silently no-op (the container is
+  //    never even created). Direct testing (2026-07-06) found the app never
+  //    called Toast.init, so user-facing feedback — including the ADR-275
+  //    Boolean no-op warning and every error/success toast — never rendered.
+  Toast.init(document.body);
+
+  // 0b. WASM freshness check (non-blocking, just logs + Toast if newer).
   //    Runs alongside engine init so no wall-clock impact.
   checkWasmFreshness();
 
