@@ -62,6 +62,43 @@ describe('BoundaryTool (ADR-148 β-4)', () => {
       expect(Toast.error).not.toHaveBeenCalled();
     });
 
+    it('ADR-175/178 — face-aware: synthesizes on the hovered face plane (z=200)', () => {
+      // getDrawPlane resolves the hit face's plane; the click pt lies on it.
+      (ctx as any).getDrawPlane = vi.fn(() => ({
+        normal: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0),
+        right: new THREE.Vector3(1, 0, 0),
+        onFace: true,
+      }));
+      const point = new THREE.Vector3(5, 5, 200); // on a box top face at z=200
+      tool.onMouseDown({} as MouseEvent, point);
+
+      expect(ctx.bridge.boundaryFromPoint).toHaveBeenCalledWith(
+        5, 5, 200, // point xyz
+        0, 0, 1,   // face normal
+        200,       // plane dist = normal · pt (NOT hardcoded 0)
+        1000,
+      );
+    });
+
+    it('ADR-175/178 — face-aware: non-cardinal +X face passes its normal', () => {
+      (ctx as any).getDrawPlane = vi.fn(() => ({
+        normal: new THREE.Vector3(1, 0, 0),
+        up: new THREE.Vector3(0, 0, 1),
+        right: new THREE.Vector3(0, 1, 0),
+        onFace: true,
+      }));
+      const point = new THREE.Vector3(100, 5, 30); // on a +X face at x=100
+      tool.onMouseDown({} as MouseEvent, point);
+
+      expect(ctx.bridge.boundaryFromPoint).toHaveBeenCalledWith(
+        100, 5, 30,
+        1, 0, 0, // +X normal
+        100,     // dist = normal · pt = 100
+        1000,
+      );
+    });
+
     it('null point shows warning and does not dispatch', async () => {
       const { Toast } = await import('../ui/Toast');
       tool.onMouseDown({} as MouseEvent, null);

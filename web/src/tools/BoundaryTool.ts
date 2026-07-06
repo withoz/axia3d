@@ -89,7 +89,7 @@ export class BoundaryTool implements ITool {
     // No persistent state to clean up.
   }
 
-  onMouseDown(_e: MouseEvent, point: THREE.Vector3 | null): void {
+  onMouseDown(e: MouseEvent, point: THREE.Vector3 | null): void {
     if (!point) {
       Toast.warning('Boundary: 유효한 평면 위 위치를 클릭하세요');
       return;
@@ -116,10 +116,17 @@ export class BoundaryTool implements ITool {
       return;
     }
 
-    // LOCKED #63 z=0 invariant: default plane = Z=0 ground (XY plane,
-    // normal = +Z). Future ADR may infer plane from snapped face.
-    const planeNormal = new THREE.Vector3(0, 0, 1);
-    const planeDist = 0; // signed distance from origin: normal · origin = 0
+    // ADR-175/178 parity — BoundaryTool is face-aware like the other draw
+    // tools: synthesize on the hovered face's plane, falling back to the Z=0
+    // ground plane (LOCKED #63) in empty space. `getDrawPlane` already resolves
+    // face-hit / plane-lock / sticky / view-default; the click `pt` (from the
+    // face-aware get3DPoint) lies on that plane, so its signed distance is
+    // `normal · pt` (Z=0 case → +Z · pt with pt.z=0 → 0, unchanged).
+    const drawPlane = this.ctx.getDrawPlane?.(e);
+    const planeNormal = (drawPlane?.normal ?? new THREE.Vector3(0, 0, 1))
+      .clone()
+      .normalize();
+    const planeDist = drawPlane ? planeNormal.dot(pt) : 0;
 
     debugLog(
       '[BoundaryTool] click point',
