@@ -9012,6 +9012,42 @@ impl AxiaEngine {
         out
     }
 
+    /// ADR-274 (d) — collapse a "flushed" extrusion. When a boss/pocket is
+    /// pushed back until its height reaches ~0, moving vertices to coincidence
+    /// leaves degenerate walls + coincident-distinct verts (dedup only fires on
+    /// creation), so the solid never closes. This recognizes that pattern and
+    /// rebuilds the clean flat face, reconciling Xia/Shape ownership.
+    ///
+    /// Gate-guarded + undoable: on any topology damage the engine rolls back
+    /// and this returns `{ok:false,error}` with the scene unchanged. When
+    /// nothing needs collapsing it returns `{ok:true,collapsed:0}` (no-op).
+    ///
+    /// `area_tol` — a face below this area counts as a collapsed wall
+    /// (`<= 0` → default 1e-3 mm²).
+    #[wasm_bindgen(js_name = "collapseFlushExtrusion")]
+    pub fn collapse_flush_extrusion(&mut self, area_tol: f64) -> String {
+        let tol = if area_tol > 0.0 { area_tol } else { 1e-3 };
+        self.scene.transactions.begin();
+        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        match self.scene.collapse_flush_extrusion(tol) {
+            Ok(0) => {
+                self.scene.transactions.cancel();
+                r#"{"ok":true,"collapsed":0}"#.to_string()
+            }
+            Ok(n) => {
+                self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                format!(r#"{{"ok":true,"collapsed":{}}}"#, n)
+            }
+            Err(e) => {
+                self.scene.transactions.cancel();
+                format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'"))
+            }
+        }
+    }
+
     /// Repair non-manifold edges (ADR-007 I5) — XIA-aware where possible,
     /// geometric fallback otherwise. Returns JSON report:
     /// `{ok, edgesExamined, edgesRepaired, edgesSkipped, facesDetached, vertsCreated}`.

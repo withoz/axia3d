@@ -2203,6 +2203,92 @@ impl Scene {
     ///
     /// Returns a report summarising what changed. Always succeeds — if
     /// some edges cannot be repaired the report lists them.
+    /// Scene-level wrapper for `Mesh::collapse_flush_extrusion` (ADR-274 (d)).
+    ///
+    /// Runs the gate-guarded geometry collapse — which turns the degenerate
+    /// scaffolding left when an extruded boss/pocket is pushed back to height 0
+    /// into a clean flat face — then reconciles the semantic layer: the removed
+    /// cap + wall faces are dropped from their Xia/Shape owners, and the new
+    /// flat face is re-assigned to the dominant former owner of the collapsed
+    /// region (the region belonged to one solid, so one owner dominates).
+    ///
+    /// Returns the number of degenerate walls collapsed (0 = nothing to do).
+    /// The geometry op is fail-closed (rolls back on any topology damage), so a
+    /// non-zero return means the mesh is clean; ownership is then consistent.
+    pub fn collapse_flush_extrusion(&mut self, area_tol: f64) -> Result<usize> {
+        use std::collections::HashSet;
+
+        let before: HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(f, _)| f)
+            .collect();
+
+        let count = self.mesh.collapse_flush_extrusion(area_tol)?;
+        if count == 0 {
+            return Ok(0);
+        }
+
+        let after: HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(f, _)| f)
+            .collect();
+        let removed: Vec<FaceId> = before.difference(&after).copied().collect();
+        let added: Vec<FaceId> = after.difference(&before).copied().collect();
+
+        // Vote for the dominant former owner of the collapsed region.
+        let mut xia_votes: HashMap<XiaId, usize> = HashMap::new();
+        let mut shape_votes: HashMap<crate::ShapeId, usize> = HashMap::new();
+        for &f in &removed {
+            if let Some(&x) = self.face_to_xia.get(&f) {
+                *xia_votes.entry(x).or_insert(0) += 1;
+            }
+            if let Some(&s) = self.face_to_shape.get(&f) {
+                *shape_votes.entry(s).or_insert(0) += 1;
+            }
+        }
+
+        // Drop removed faces from every owner index.
+        for &f in &removed {
+            if let Some(x) = self.face_to_xia.remove(&f) {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.face_ids.retain(|&g| g != f);
+                }
+            }
+            if let Some(s) = self.face_to_shape.remove(&f) {
+                if let Some(sh) = self.shapes.get_mut(&s) {
+                    sh.face_ids.retain(|&g| g != f);
+                }
+            }
+        }
+
+        // Assign the new flat face(s) to the dominant former owner. The Xia
+        // (property) layer takes precedence over the Shape (form) layer when
+        // both are present, mirroring how a materialized solid owns its faces.
+        let dom_xia = xia_votes.into_iter().max_by_key(|(_, c)| *c).map(|(x, _)| x);
+        let dom_shape = shape_votes.into_iter().max_by_key(|(_, c)| *c).map(|(s, _)| s);
+        for &f in &added {
+            if let Some(x) = dom_xia {
+                self.face_to_xia.insert(f, x);
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.face_ids.push(f);
+                }
+            } else if let Some(s) = dom_shape {
+                self.face_to_shape.insert(f, s);
+                if let Some(sh) = self.shapes.get_mut(&s) {
+                    sh.face_ids.push(f);
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
     pub fn repair_non_manifold_edges(&mut self) -> axia_geo::operations::repair::RepairReport {
         use axia_geo::operations::repair::RepairReport;
         let mut report = RepairReport::default();

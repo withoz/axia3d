@@ -129,6 +129,21 @@ export class MoveTool implements ITool {
     debugLog(`[Move] startPlacement: ${faceIds.length} faces, refPt=${refPoint?.toArray()}`);
   }
 
+  /**
+   * ADR-274 (d) — after a move commits, a face may have been pushed to sit flush
+   * with another (height → 0), leaving degenerate walls the engine can't dedup
+   * retroactively. Ask the engine to collapse them into a clean flat face. The
+   * op is gate-guarded (no-op unless genuine degenerate walls exist), so this is
+   * safe to call after every move.
+   */
+  private collapseFlushIfNeeded(): void {
+    const r = this.ctx.bridge.collapseFlushExtrusion(0);
+    if (r.ok && r.collapsed > 0) {
+      this.ctx.syncMesh();
+      Toast.success(`납작해진 면을 정리했습니다 (벽 ${r.collapsed}개 제거)`);
+    }
+  }
+
   onMouseDown(_e: MouseEvent, point: THREE.Vector3 | null): void {
     // Placement mode commit: first click finalizes position.
     if (this.placementMode) {
@@ -140,6 +155,7 @@ export class MoveTool implements ITool {
       this.target = null;
       this.transformLastDelta.set(0, 0, 0);
       this.ctx.dimLabel.clear();
+      this.collapseFlushIfNeeded();
       return;
     }
 
@@ -156,6 +172,7 @@ export class MoveTool implements ITool {
       this.target = null;
       this.transformLastDelta.set(0, 0, 0);
       this.ctx.dimLabel.clear();
+      this.collapseFlushIfNeeded();
       return;
     }
 

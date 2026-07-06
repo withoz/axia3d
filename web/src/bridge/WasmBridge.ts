@@ -468,6 +468,8 @@ type AxiaEngineExtended = AxiaEngine & {
   synthesizeFacesFromFreeEdges?(): number;
   countFreeEdges?(): number;
   meshManifoldInfo?(): string;
+  /** ADR-274 (d) — collapse a flushed extrusion (boss/pocket pushed to height 0) into a clean flat face. JSON {ok,collapsed,error?}. Gate-guarded + undoable. */
+  collapseFlushExtrusion?(areaTol: number): string;
   // computeGroundProjectedShadows removed 2026-05-16 (shadow system → ADR-106)
   edgeAngleThreshold?(): number;
   setEdgeAngleThreshold?(deg: number): void;
@@ -4418,6 +4420,30 @@ export class WasmBridge {
     } catch (e) {
       this.recordBridgeError('meshManifoldInfo', e);
       return empty;
+    }
+  }
+
+  /**
+   * ADR-274 (d) — collapse a "flushed" extrusion. When a boss/pocket is pushed
+   * back until its height reaches ~0, the engine is left with degenerate walls
+   * + coincident-distinct vertices (vertex dedup only fires on creation), so
+   * the solid never closes. This detects that and rebuilds the clean flat face,
+   * reconciling Xia/Shape ownership. Gate-guarded + undoable: on any topology
+   * damage the engine rolls back and `ok` is false with the scene unchanged.
+   *
+   * @param areaTol  a face below this area counts as a collapsed wall
+   *                 (`<= 0` → engine default 1e-3 mm²).
+   * @returns `{ collapsed }` = number of degenerate walls collapsed (0 = no-op).
+   */
+  collapseFlushExtrusion(areaTol = 0): { ok: boolean; collapsed: number; error?: string } {
+    if (!this.engine?.collapseFlushExtrusion) return { ok: false, collapsed: 0, error: 'unsupported' };
+    try {
+      const json = this.engine.collapseFlushExtrusion(areaTol);
+      const raw = JSON.parse(json);
+      return { ok: !!raw.ok, collapsed: raw.collapsed ?? 0, error: raw.error };
+    } catch (e) {
+      this.recordBridgeError('collapseFlushExtrusion', e);
+      return { ok: false, collapsed: 0, error: String(e) };
     }
   }
 
