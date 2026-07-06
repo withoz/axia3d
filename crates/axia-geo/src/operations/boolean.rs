@@ -8682,6 +8682,77 @@ mod adr110_tests {
 mod tests {
     use super::*;
 
+    // ADR-276 Phase 0 de-risk simulation (measurement, print-only).
+    //
+    // `boolean()` Stage 1 uses ONLY `detect_coplanar_faces`; the general
+    // `find_intersections` (tri-tri, boolean_geo::triangle_triangle_intersection)
+    // is fully implemented but is wired only into "Intersect with Model", NOT
+    // into `boolean()`. This measures whether wiring `find_intersections` into
+    // Stage 1 is the fix (collector + split stages already work) vs whether the
+    // collector/split themselves are also incomplete for box configs.
+    //
+    // Decisive questions per config:
+    //   (1) segs = find_intersections(A, B).len()  — does the collector find
+    //       the general (non-coplanar) box-box crossing at all?
+    //   (2) after split_faces_by_intersections — do faces actually get split
+    //       (face count grows) for those segments?
+    #[test]
+    fn adr276_phase0_sim_general_intersection_and_split() {
+        let mat = MaterialId::new(0);
+        let configs: [(&str, DVec3, f64, f64, f64); 4] = [
+            ("corner-poke", DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0),
+            ("top-center notch", DVec3::new(0.0, 0.0, 90.0), 40.0, 40.0, 40.0),
+            ("through-slot", DVec3::new(0.0, 0.0, 50.0), 200.0, 30.0, 30.0),
+            ("enclosed cavity", DVec3::new(0.0, 0.0, 50.0), 40.0, 40.0, 40.0),
+        ];
+        println!("\n===== ADR-276 Phase 0: wire find_intersections into Stage 1? =====");
+        for (label, bpos, bw, bh, bd) in configs {
+            let mut m = Mesh::new();
+            let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let b = m.create_box(bpos, bw, bh, bd, mat).unwrap();
+
+            let solid_a = m.prepare_solid(&a).unwrap();
+            let solid_b = m.prepare_solid(&b).unwrap();
+
+            // (1) general (non-coplanar) collector
+            let segs = m.find_intersections(&solid_a, &solid_b);
+            // (0) what boolean() currently uses instead:
+            let cop = m.detect_coplanar_faces(&solid_a, &solid_b);
+
+            // (2) does split actually cut faces with those general segments?
+            let faces_before = m.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let split_a = m.split_faces_by_intersections(&solid_a, &segs, mat);
+            let split_b = m.split_faces_by_intersections(&solid_b, &segs, mat);
+            let new_a: usize = split_a.values().map(|v| v.len()).sum();
+            let new_b: usize = split_b.values().map(|v| v.len()).sum();
+            let faces_after = m.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let inv = m.verify_face_invariants();
+
+            println!(
+                "  [{label}] find_intersections segs={} (coplanar={}) | split: {}->{} faces (A subfaces={}, B subfaces={}) | inv_valid={}",
+                segs.len(), cop.len(), faces_before, faces_after, new_a, new_b, inv.is_valid(),
+            );
+
+            // Regression guard for the ADR-276 core finding: the general
+            // collector DOES find the box-box crossing (and split grows faces)
+            // for surface-crossing configs. If this breaks, the "wire Stage 1"
+            // premise is invalidated. (enclosed cavity legitimately has 0 segs
+            // — B is fully inside A, no surface crossing.)
+            if label != "enclosed cavity" {
+                assert!(
+                    segs.len() >= 1,
+                    "[{label}] find_intersections must find the general crossing (got {})",
+                    segs.len(),
+                );
+                assert!(
+                    faces_after > faces_before,
+                    "[{label}] split must grow faces (before={faces_before}, after={faces_after})",
+                );
+            }
+        }
+        println!("=====================================================================\n");
+    }
+
     /// 두 겹치는 큐브로 Boolean 테스트
     fn make_test_cubes(mesh: &mut Mesh, mat: MaterialId) -> (Vec<FaceId>, Vec<FaceId>) {
         let a = make_box(mesh, DVec3::ZERO, DVec3::new(2.0, 2.0, 2.0), mat);
