@@ -1816,6 +1816,15 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
         ("fn create_recess(", "recess"),
         ("fn boolean_dispatch_json(", "boolean"),
         ("fn boolean_dispatch_dcel_multi_json(", "boolean multi"),
+        // ADR-274 Phase 3 P3-A — transform/deform ops that the gate-coverage
+        // simulation measured as CORRUPTS (self-intersection / winding-invariant
+        // on a closed solid). Locking their gate wiring here.
+        ("fn rotate_faces(", "rotate"),
+        ("fn scale_faces(", "scale"),
+        ("fn rotate_verts(", "rotate_verts"),
+        ("fn scale_verts(", "scale_verts"),
+        ("fn bend_verts(", "bend"),
+        ("fn twist_verts_deform(", "twist"),
     ] {
         let body = method_body(sig);
         assert!(

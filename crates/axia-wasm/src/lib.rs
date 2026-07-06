@@ -5669,10 +5669,21 @@ impl AxiaEngine {
         let angle_rad = angle_deg.to_radians();
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.bend_verts(&vids, bend_axis, bend_dir, origin, angle_rad, length_limit) {
             Ok(_) => {
+                // ADR-274 Phase 3 P3-A — a large bend folds geometry into
+                // self-intersection (measured SI 0→1). Gate rejects+rolls back;
+                // moderate bends pass.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "bend", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -5703,10 +5714,21 @@ impl AxiaEngine {
         let angle_per_unit = degrees_per_unit.to_radians();
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.twist_verts(&vids, axis_origin, axis_dir, angle_per_unit) {
             Ok(_) => {
+                // ADR-274 Phase 3 P3-A — a large twist folds geometry into
+                // self-intersection (measured SI 0→2). Gate rejects+rolls back;
+                // moderate twists pass.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "twist", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9418,13 +9440,25 @@ impl AxiaEngine {
         let angle_rad = angle_deg.to_radians();
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.rotate_faces(&fids, center, axis, angle_rad) {
             Ok(res) => {
                 debug_log!("[RUST] rotate: {} verts, {:.1}°", res.verts_moved, angle_deg);
                 // Level 3: iterative XPBD-style solve until convergence
                 let _ = resolve_iterative(&mut self.scene.mesh, &self.scene.constraints, 50, 1e-5);
+                // ADR-274 Phase 3 P3-A — rotating a SUBSET of a closed solid can
+                // self-intersect or flip winding invariants (measured: SI 0→1 /
+                // invariants→INVALID). Gate rejects+rolls back; SAFE moves (whole
+                // faces, no SI) pass untouched.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "rotate", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9432,6 +9466,7 @@ impl AxiaEngine {
                 true
             }
             Err(e) => {
+                self.scene.transactions.cancel();
                 console_error!("[RUST] rotate ERROR: {}", e);
                 self.set_error(format!("rotate: {}", e));
                 false
@@ -9451,11 +9486,22 @@ impl AxiaEngine {
         let scale = DVec3::new(sx, sy, sz);
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.scale_faces(&fids, center, scale) {
             Ok(res) => {
                 debug_log!("[RUST] scale: {} verts, ({:.2},{:.2},{:.2})", res.verts_moved, sx, sy, sz);
+                // ADR-274 Phase 3 P3-A — a NEGATIVE (reflection) scale flips
+                // winding + self-intersects (measured: SI 0→1 / invariants→INVALID).
+                // Gate rejects+rolls back; positive/non-uniform scale passes.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "scale", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 // Use topology_changed for full rebuild: shared vertices between
@@ -9465,6 +9511,7 @@ impl AxiaEngine {
                 true
             }
             Err(e) => {
+                self.scene.transactions.cancel();
                 console_error!("[RUST] scale ERROR: {}", e);
                 self.set_error(format!("scale: {}", e));
                 false
@@ -9524,13 +9571,23 @@ impl AxiaEngine {
         let angle_rad = angle_deg.to_radians();
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.rotate_verts(&vids, center, axis, angle_rad) {
             Ok(_) => {
                 // Level 2: auto-resolve constraints
                 // Level 3: iterative XPBD-style solve until convergence
                 let _ = resolve_iterative(&mut self.scene.mesh, &self.scene.constraints, 50, 1e-5);
+                // ADR-274 Phase 3 P3-A — rotating a SUBSET of verts self-intersects
+                // (measured SI 0→1). Gate rejects+rolls back.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "rotate_verts", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -9558,11 +9615,22 @@ impl AxiaEngine {
         let scale = DVec3::new(sx, sy, sz);
 
         self.scene.transactions.begin();
-        self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
 
         match self.scene.mesh.scale_verts(&vids, center, scale) {
             Ok(_) => {
                 let _ = resolve_iterative(&mut self.scene.mesh, &self.scene.constraints, 50, 1e-5);
+                // ADR-274 Phase 3 P3-A — a NEGATIVE (reflection) scale of a subset
+                // self-intersects (measured SI 0→1). Gate rejects+rolls back;
+                // positive non-uniform scale passes.
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "scale_verts", true,
+                ) {
+                    return false;
+                }
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
@@ -12161,3 +12229,4 @@ mod erase_face_only_tests {
         }
     }
 }
+
