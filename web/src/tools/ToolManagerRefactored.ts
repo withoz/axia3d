@@ -2058,6 +2058,13 @@ export class ToolManager {
       void import('../ui/BooleanHandler').then(({ startBooleanOp }) => {
         startBooleanOp({ bridge: this.bridge, toolManager: this }, op);
       });
+    } else if (action === 'intersect-with-model') {
+      // Same wiring-consistency fix as bool-* — route to the shared
+      // BooleanHandler.intersectWithModel so keyboard / Command Palette reach
+      // it (MenuBar previously handled this inline; palette silently no-op'd).
+      void import('../ui/BooleanHandler').then(({ intersectWithModel }) => {
+        intersectWithModel({ bridge: this.bridge, toolManager: this });
+      });
     }
   }
 

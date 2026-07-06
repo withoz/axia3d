@@ -11,7 +11,7 @@ import { Viewport, ViewMode } from '../viewport/Viewport';
 import { WasmBridge } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { FileManager } from '../file/FileManager';
-import { startBooleanOp } from './BooleanHandler';
+import { startBooleanOp, intersectWithModel } from './BooleanHandler';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import type { ImportFormat } from '../import/FileImporter';
@@ -651,21 +651,11 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'bool-union': startBooleanOp({ bridge, toolManager }, 'union'); break;
       case 'bool-subtract': startBooleanOp({ bridge, toolManager }, 'subtract'); break;
       case 'bool-intersect': startBooleanOp({ bridge, toolManager }, 'intersect'); break;
-      case 'intersect-with-model': {
-        const faceIds = toolManager.selection.getSelectedFaces();
-        if (!faceIds.length) {
-          Toast.info('모델과 교차: 먼저 면을 선택하세요');
-          break;
-        }
-        const result = bridge.intersectWithModel(faceIds);
-        if (!result || !result.ok) {
-          Toast.error(`모델과 교차 실패: ${result?.error ?? '알 수 없는 오류'}`);
-        } else {
-          Toast.success(`모델과 교차 완료 (총 ${result.totalFaces} 면)`);
-          toolManager.syncMesh();
-        }
+      case 'intersect-with-model':
+        // Shared handler (ADR-276 wiring consistency) — same routing as the
+        // keyboard / Command Palette path via executeAction.
+        intersectWithModel({ bridge, toolManager });
         break;
-      }
 
       // ── 형식 ──
       case 'format-units':

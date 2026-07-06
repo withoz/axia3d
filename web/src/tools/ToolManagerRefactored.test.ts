@@ -7,7 +7,7 @@ vi.mock('../utils/debug', () => ({ debugLog: vi.fn(), debugWarn: vi.fn() }));
 
 // ADR-276 wiring-consistency regression — executeAction('bool-*') must reach
 // the guarded BooleanHandler (dynamic import) from keyboard + Command Palette.
-vi.mock('../ui/BooleanHandler', () => ({ startBooleanOp: vi.fn() }));
+vi.mock('../ui/BooleanHandler', () => ({ startBooleanOp: vi.fn(), intersectWithModel: vi.fn() }));
 
 vi.mock('../ui/Toast', () => ({
   Toast: {
@@ -224,6 +224,13 @@ describe('ToolManager', () => {
       // executeAction dynamically imports BooleanHandler — let the microtask run.
       await vi.waitFor(() => expect(startBooleanOp).toHaveBeenCalledTimes(1));
       expect((startBooleanOp as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(op);
+    });
+
+    it("executeAction('intersect-with-model') reaches intersectWithModel", async () => {
+      const { intersectWithModel } = await import('../ui/BooleanHandler');
+      (intersectWithModel as unknown as ReturnType<typeof vi.fn>).mockClear();
+      tm.executeAction('intersect-with-model');
+      await vi.waitFor(() => expect(intersectWithModel).toHaveBeenCalledTimes(1));
     });
   });
 

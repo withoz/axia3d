@@ -43,6 +43,30 @@ const OP_NAME_KO: Record<'union' | 'subtract' | 'intersect', string> = {
 };
 
 /**
+ * "Intersect Faces with Model" (SketchUp) — split the selected faces where
+ * they cross other model geometry (topology split only, no in/out solid
+ * classification). Shared handler so EVERY entry point (menu / toolbar /
+ * keyboard / Command Palette) routes here identically — previously this
+ * lived inline in MenuBar, so the Command Palette entry silently no-op'd
+ * (executeAction had no branch). ADR-276 wiring-consistency follow-up.
+ */
+export function intersectWithModel(deps: BooleanHandlerDeps): void {
+  const { bridge, toolManager } = deps;
+  const faceIds = toolManager.selection.getSelectedFaces();
+  if (!faceIds.length) {
+    Toast.info('모델과 교차: 먼저 면을 선택하세요');
+    return;
+  }
+  const result = bridge.intersectWithModel(faceIds);
+  if (!result || !result.ok) {
+    Toast.error(`모델과 교차 실패: ${result?.error ?? '알 수 없는 오류'}`);
+  } else {
+    Toast.success(`모델과 교차 완료 (총 ${result.totalFaces} 면)`);
+    toolManager.syncMesh();
+  }
+}
+
+/**
  * ADR-066 Y-4 — Handle the multi-face DCEL dispatch result.
  * This is the canonical BooleanHandler entry — supersedes the
  * legacy single-face DCEL fast-path (ADR-064 Step 6-γ) and the
