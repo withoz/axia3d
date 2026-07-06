@@ -6695,7 +6695,14 @@ box+boss flush → closed solid 검증. 회귀 `flush_collapse_boss_in_ring_weld
 
 **진행 중 안정화 계획 (2026-07-06 세션)**: Phase 0 그린 baseline ✅ (`b1f6513`) / Phase 1
 문서·메모리 정합 ✅ (본 #88, `2b172fc`) / Phase 2 flush-collapse option A ✅ (`18ae83a`) /
-Phase 3 게이트 커버리지 확장
+Phase 3 게이트 커버리지 ✅ (`0577fd8`) — 시뮬레이션(phase3_gate_sim.rs + phase3_curved_cut_
+sim.rs)으로 무방비 topology-mutating op 21개 실측 → **6개만 실제 corrupt**(rotate_verts/
+faces·scale_verts/faces(음수)·bend·twist, 전부 SI/winding) → closure gate 배선. 나머지
+(곡면-cut 2 SAFE/self-reject·geometric-merge 2 self-reject·translate/scale(+)/taper/
+split_edge/flip/mirror/array/subdivide/trim_volume 11 SAFE)는 실측 안전 → 게이트 불필요
+(over-engineering 회피, "측정 먼저") /
+Phase 4 완결성 (MCP 17/30 미배선, BoundaryTool cardinal-only, tensor uv, ADR-259/264) /
+Phase 5 repo 위생
 (transform·deform·geometric-merge·trim·split-edge·intersectWithModel 무방비 — gate
 인프라 drop-in 재사용) / Phase 4 완결성(MCP 17/30 미배선, BoundaryTool cardinal-only,
 tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]
