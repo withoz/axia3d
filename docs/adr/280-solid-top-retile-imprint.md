@@ -124,6 +124,48 @@ sheet) face and a crossing shape re-tiles it:
 - **L-280-5** Additive per ADR-046 P31 #4 — no public API / UI / menu change.
 - **L-280-6** 절대 #[ignore] 금지.
 
+## β investigation (2026-07-07) — runtime findings + blocker
+
+Started β; instrumented the actual runtime (STR_DEBUG on the "draw-onto-solid
+guard", face_rederive.rs:1297). Findings that MUST inform the β (my initial model
+was incomplete):
+
+- The guard `region_touches_solid` (returns `RebuildReport::default()` early when
+  an affected face shares an edge with a wall) is CENTRAL:
+  - **Circle draw**: `affected = [disk(6, touches=false), box-top(1, touches=TRUE)]`
+    → region_touches_solid=**true** → EARLY RETURN (no arrange). The ring is then
+    formed by the Scene POST-PROCESS (`assign_circle_holes_innermost`). This is
+    why the contained circle works — it never goes through the arrange at all.
+  - **Crossing-rect draw**: `affected = [rect(7), disk(6)]` — **the box-top is
+    ABSENT from `affected_faces`**, so region_touches_solid=**false** → the
+    arrange re-derive PROCEEDS on {rect, disk} without the box-top boundary →
+    tiles only rect∪circle → 10 open edges.
+- Unresolved contradiction (the β blocker): at the moment of the rect re-derive,
+  `all solid-touching active faces` = only [bottom + 4 walls] — the **box-top
+  ring is not reported as solid-touching**, contradicting "the circle draw made a
+  ring whose outer square is shared with the walls". The intermediate face/edge
+  state between the circle draw and the rect draw needs full step-tracing
+  (add_vertex dedup / face id churn / post-process reparent effects) before a
+  safe β. Building on this incompletely-understood state risks the documented
+  wall-dangling panic + the 245+ solid-protection regressions (메타-원칙 #9).
+
+**β decision (honest):** the fix is a genuine multi-session effort. The de-risk
+sim proves the arrange tiles correctly GIVEN the boundary; the hard part is the
+runtime path (guard + scope + post-process + shared-edge materialization). Two
+concrete continuations, either needs its own careful pass:
+
+- **Level 1 (safe interim, low-risk, recommended first):** widen the guard —
+  fire `region_touches_solid` also when the affected region's 2D AABB overlaps
+  ANY solid-touching face (not only faces already in `affected_faces`). Then a
+  crossing shape on a solid top EARLY-RETURNS → the solid stays CLOSED (the shape
+  is left as an un-split coplanar sheet) instead of opening. This eliminates the
+  "옆면이 사라짐" broken-solid symptom immediately, aligned with the guard's
+  existing intent. It does NOT split (Level 2 does).
+- **Level 2 (full re-tile / split, the ADR-280 imprint):** feed the solid-top
+  boundary + remove the face + materialize reusing wall edges (this doc's
+  Decision). Needs the intermediate-state tracing above + the fail-closed gate
+  (Q3) as backstop.
+
 ## Cross-link
 
 - ADR-279 (curve-annulus nesting) + LOCKED — sibling; fixed the annulus formation
