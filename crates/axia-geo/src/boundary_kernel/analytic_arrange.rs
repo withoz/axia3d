@@ -1183,6 +1183,74 @@ mod tests {
             .collect()
     }
 
+    /// ADR-280 α — DE-RISK SIM. Does the arrange TILE THE FULL SQUARE when the
+    /// solid-top's outer boundary is fed alongside a crossing rect + circle?
+    ///
+    /// Production bug: `reconstruct_input_curves` excludes the box-top square edges
+    /// (they are `volume_edges`, shared with the walls), so the arrange gets only
+    /// {rect(4) + circle(1)} = 5 curves → it tiles only rect∪circle, the
+    /// square-minus-shapes region is lost → 10 open boundary edges (top opens).
+    ///
+    /// This sim validates the FIX DIRECTION: feed the square boundary too → the
+    /// arrange must tile the WHOLE square (Σ face areas ≈ square area). If it does,
+    /// the β fix (feed solid-top outer boundary + materialize with dedup) is sound.
+    #[test]
+    fn adr280_sim_arrange_tiles_full_square_with_boundary() {
+        let sq = 60.0_f64;   // square half-extent → 120×120 = 14400
+        let square = vec![
+            InputCurve::Line { a: Vec2::new(-sq, -sq), b: Vec2::new(sq, -sq) },
+            InputCurve::Line { a: Vec2::new(sq, -sq), b: Vec2::new(sq, sq) },
+            InputCurve::Line { a: Vec2::new(sq, sq), b: Vec2::new(-sq, sq) },
+            InputCurve::Line { a: Vec2::new(-sq, sq), b: Vec2::new(-sq, -sq) },
+        ];
+        let circle = InputCurve::Circle { center: Vec2::new(0.0, 0.0), radius: 40.0 };
+        // rect (crossing the circle): corners (-15,-15)..(55,55)
+        let rect = vec![
+            InputCurve::Line { a: Vec2::new(-15.0, -15.0), b: Vec2::new(55.0, -15.0) },
+            InputCurve::Line { a: Vec2::new(55.0, -15.0), b: Vec2::new(55.0, 55.0) },
+            InputCurve::Line { a: Vec2::new(55.0, 55.0), b: Vec2::new(-15.0, 55.0) },
+            InputCurve::Line { a: Vec2::new(-15.0, 55.0), b: Vec2::new(-15.0, -15.0) },
+        ];
+
+        // (A) CURRENT (broken) input — circle + rect only (no square boundary).
+        let mut without = vec![circle.clone()];
+        without.extend(rect.clone());
+        let fa = arrange(&without, 1e-4);
+        let ta: f64 = areas(&fa).iter().map(|x| x.abs()).sum();
+        println!("[A no-square] faces={} Σarea={:.0} (square=14400)", fa.len(), ta);
+
+        // (B) FIXED input — square boundary + circle + rect.
+        // Net tiled area = Σ (outer − holes) — a proper partition sums to 14400.
+        let mut with = square.clone();
+        with.push(circle.clone());
+        with.extend(rect.clone());
+        let fb = arrange(&with, 1e-4);
+        let net = |f: &ArrFace| -> f64 {
+            let mut poly = Vec::new();
+            for s in &f.outer { poly.extend(s.samples(true, 48)); }
+            let outer = signed_area(&poly).abs();
+            let holes: f64 = f.holes.iter().map(|h| {
+                let mut hp = Vec::new();
+                for s in h { hp.extend(s.samples(true, 48)); }
+                signed_area(&hp).abs()
+            }).sum();
+            outer - holes
+        };
+        let tb: f64 = fb.iter().map(net).sum();
+        let with_holes = fb.iter().filter(|f| !f.holes.is_empty()).count();
+        println!("[B with-square] faces={} (with-holes={}) net-tiled-area={:.0} (square=14400)", fb.len(), with_holes, tb);
+
+        // (A) must NOT cover the square (only rect∪circle region).
+        assert!(ta < 12000.0, "no-square input tiles only rect∪circle (Σ={ta:.0} < 12000)");
+        // (B) with the square boundary, the arrange NET-tiles the FULL SQUARE.
+        assert!(
+            (tb - 14400.0).abs() < 300.0,
+            "ADR-280 fix direction: feeding the square boundary net-tiles the full \
+             square (net={tb:.0} ≈ 14400) → arrange handles it, fix is sound"
+        );
+        assert!(fb.len() >= 4, "square partitioned into ≥4 sub-faces, got {}", fb.len());
+    }
+
     /// Step 1 일반화 — 직선(secant) + 원 → 면 2 (각 chord+arc).
     #[test]
     fn arrange_line_circle_two_faces() {
