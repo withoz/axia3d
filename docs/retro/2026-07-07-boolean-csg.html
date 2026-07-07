@@ -1,0 +1,349 @@
+<title>Boolean CSG 작업 요약 — 문제점·해결·미해결</title>
+<style>
+  :root {
+    --bg: #eef2f4;
+    --surface: #ffffff;
+    --surface-2: #f6f9fa;
+    --ink: #15202a;
+    --muted: #5a6b78;
+    --line: #d6dfe4;
+    --accent: #0f7784;
+    --accent-soft: #e2f0f1;
+    --good: #1f7a45;
+    --good-soft: #e3f2e8;
+    --warn: #a9711a;
+    --warn-soft: #f6ecd7;
+    --bad: #a8452c;
+    --bad-soft: #f6e4de;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  .wrap {
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.6;
+    padding: clamp(1rem, 3vw, 3rem) clamp(0.8rem, 3vw, 2rem);
+    max-width: 74rem;
+    margin: 0 auto;
+    font-size: 15px;
+  }
+  .wrap :is(h1,h2,h3,p,ul,table) { margin: 0; }
+
+  /* ── Header ── */
+  header.hd {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: clamp(1.4rem, 3vw, 2.4rem);
+    box-shadow: 0 1px 0 rgba(21,32,42,.03), 0 12px 30px -22px rgba(21,32,42,.25);
+    position: relative;
+    overflow: hidden;
+  }
+  header.hd::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 4px;
+    background: linear-gradient(90deg, var(--accent), #34a0ac 60%, var(--good));
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(1.5rem, 3.4vw, 2.15rem);
+    line-height: 1.12;
+    letter-spacing: -.02em;
+    text-wrap: balance;
+    margin-top: .5rem;
+    font-weight: 800;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lede { color: var(--muted); max-width: 60ch; margin-top: .7rem; font-size: 1.02rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: .5rem .6rem; margin-top: 1.2rem;
+  }
+  .meta .m {
+    font-family: var(--mono); font-size: .74rem;
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 999px; padding: .28rem .7rem; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .meta .m b { color: var(--ink); font-weight: 600; }
+  .meta .m.ok b { color: var(--good); }
+
+  /* ── Sections ── */
+  section { margin-top: clamp(1.4rem, 3vw, 2.2rem); }
+  .sec-head { display: flex; align-items: baseline; gap: .7rem; margin-bottom: .85rem; }
+  .sec-num {
+    font-family: var(--mono); font-size: .8rem; color: var(--accent);
+    font-weight: 700; letter-spacing: .05em;
+  }
+  h2 { font-size: 1.18rem; letter-spacing: -.01em; font-weight: 750; }
+  h2 .sub { font-weight: 500; color: var(--muted); font-size: .9rem; margin-left: .4rem; }
+
+  /* ── Flow strip ── */
+  .flow {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1rem 1.15rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+    font-family: var(--mono); font-size: .82rem;
+  }
+  .flow .step { background: var(--surface-2); border: 1px solid var(--line); border-radius: 7px; padding: .3rem .6rem; }
+  .flow .step.start { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+  .flow .step.end { border-color: var(--good); color: var(--good); background: var(--good-soft); font-weight: 600; }
+  .flow .arw { color: var(--accent); font-weight: 700; }
+
+  /* ── Tables ── */
+  .tbl-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 640px; }
+  thead th {
+    text-align: left; font-weight: 650; font-size: .74rem; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted);
+    padding: .7rem .85rem; border-bottom: 1.5px solid var(--line); background: var(--surface-2);
+    position: sticky; top: 0;
+  }
+  tbody td { padding: .72rem .85rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.n { font-family: var(--mono); color: var(--accent); font-weight: 700; width: 1.6rem; text-align: center; }
+  td.commit code, .meta code { white-space: nowrap; }
+  code {
+    font-family: var(--mono); font-size: .82em;
+    background: var(--accent-soft); color: #0a5b66;
+    padding: .05em .38em; border-radius: 5px; word-break: break-word;
+  }
+  td.commit code { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+
+  /* ── Status pills ── */
+  .pill {
+    display: inline-flex; align-items: center; gap: .35em;
+    font-size: .74rem; font-weight: 650; padding: .16em .6em; border-radius: 999px;
+    white-space: nowrap; font-family: var(--mono);
+  }
+  .pill::before { content: ""; width: .5em; height: .5em; border-radius: 50%; background: currentColor; }
+  .pill.good { color: var(--good); background: var(--good-soft); }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); }
+  .pill.bad  { color: var(--bad);  background: var(--bad-soft); }
+
+  /* ── Callout cards (architecture + verification) ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: .8rem; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }
+  .card .k { font-family: var(--mono); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); font-weight: 650; }
+  .card p { margin-top: .4rem; color: var(--ink); font-size: .9rem; }
+  .card p .muted { color: var(--muted); }
+
+  .verify {
+    background: var(--good-soft); border: 1px solid #bfe0cb; border-radius: 12px;
+    padding: 1rem 1.15rem; display: flex; flex-wrap: wrap; gap: .55rem 1.4rem; align-items: center;
+  }
+  .verify .vitem { font-size: .88rem; }
+  .verify .vitem b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--good); }
+
+  /* ── Completion grid ── */
+  .done-grid { display: grid; grid-template-columns: 1fr auto; gap: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+  .done-grid .cfg { padding: .6rem .9rem; border-bottom: 1px solid var(--line); font-size: .9rem; }
+  .done-grid .st { padding: .6rem .9rem; border-bottom: 1px solid var(--line); text-align: right; }
+  .done-grid .cfg:nth-last-child(2), .done-grid .st:last-child { border-bottom: none; }
+
+  /* ── Footer summary ── */
+  .kicker {
+    margin-top: clamp(1.4rem, 3vw, 2.2rem);
+    background: var(--ink); color: #eaf1f3; border-radius: 14px;
+    padding: clamp(1.2rem, 3vw, 1.8rem);
+  }
+  .kicker .k { font-family: var(--mono); font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; color: #6fc6cf; }
+  .kicker p { margin-top: .5rem; font-size: 1.05rem; line-height: 1.55; }
+  .kicker p b { color: #fff; }
+  .kicker .save { margin-top: .9rem; font-family: var(--mono); font-size: .78rem; color: #9fb4bd; word-break: break-all; }
+  .kicker .save code { background: rgba(255,255,255,.08); color: #cfe6ea; border: none; }
+
+  @media (max-width: 560px) { .wrap { font-size: 14px; } }
+</style>
+
+<div class="wrap">
+  <header class="hd">
+    <div class="eyebrow">AXiA · Kernel Dev Log · Boolean CSG</div>
+    <h1>“박스−박스 subtract 무동작”에서 <em>일반 다면체 CSG 완성</em>까지</h1>
+    <p class="lede">오늘 세션의 boolean CSG 작업을 <b>문제점 → 해결방법 → 미해결</b>로 구분해 정리. 매 단계 <em>측정 우선 → 원인 정밀 진단 → 최소 수정·기존 자산 재사용</em>으로 해결.</p>
+    <div class="meta">
+      <span class="m">📅 <b>2026-07-07</b></span>
+      <span class="m ok">테스트 <b>2959 pass</b> · 0 failed</span>
+      <span class="m">tsc <b>0</b> · 카탈로그 clean</span>
+      <span class="m commit">HEAD <code>7ca9729</code></span>
+      <span class="m commit">tag <code>backup/…adr276-phase4-20260707</code></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>전체 흐름</h2></div>
+    <div class="flow">
+      <span class="step start">박스−박스 subtract 무동작</span>
+      <span class="arw">→</span>
+      <span class="step">ADR-276 박스 CSG 마무리</span>
+      <span class="arw">→</span>
+      <span class="step">generality audit</span>
+      <span class="arw">→</span>
+      <span class="step">ADR-277 일반 mesh CSG (α~γ)</span>
+      <span class="arw">→</span>
+      <span class="step end">임의 다면체(회전 포함) watertight · UI end-to-end</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>문제점 → 해결방법 <span class="sub">해결됨 <span class="pill good">9</span></span></h2></div>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>#</th><th>문제점</th><th>근본 원인</th><th>해결방법</th><th>커밋</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="n">1</td>
+            <td>enclosed subtract가 UI에서 무동작</td>
+            <td>엔진은 이미 정확한 cavity 생성 — <b>배선 갭</b>: DCEL rescue가 clean no-op에만 발동, gate-rejection(<code>inv=12</code>) 놓침</td>
+            <td>rescue를 <code>dcelRejected</code>(kind='error')에도 발동하도록 broaden</td>
+            <td class="commit"><code>256640b</code></td>
+          </tr>
+          <tr>
+            <td class="n">2</td>
+            <td>coplanar 면 오분류 (일부 drop/keep 뒤섞임)</td>
+            <td>centroid <code>point_in_solid</code>가 straddling coplanar 면(경계 위 centroid)에서 동전던지기</td>
+            <td><b>side-occupancy 분류</b> (법선 ±εN 점의 op-solid 포함 여부)</td>
+            <td class="commit">Phase 4</td>
+          </tr>
+          <tr>
+            <td class="n">3</td>
+            <td>coplanar cell 면적 손실 → open</td>
+            <td><code>merge_faces_by_edge</code>가 공선-정점 사각형 손상</td>
+            <td>coplanar 존재 시 merge <b>skip</b> (cell은 이미 vert-share)</td>
+            <td class="commit">Phase 4</td>
+          </tr>
+          <tr>
+            <td class="n">4</td>
+            <td><b>모든 회전</b> boolean 실패 (rot(1,1,1) 순수-transversal 포함)</td>
+            <td>transversal 기계(split_by_chain + weld)가 축정렬 전용</td>
+            <td>generality audit로 규명 → ADR-277 착수</td>
+            <td class="commit"><code>45c3887</code></td>
+          </tr>
+          <tr>
+            <td class="n">5</td>
+            <td>회전 시 seam 불일치 (boundary=22, weld→nm=1)</td>
+            <td>A/B가 교차곡선을 <b>독립 split</b> (공유 vertex set 없음)</td>
+            <td><b>shared-vertex imprint</b> (전역 vertex arrangement + constrained retriangulation, weld 제거)</td>
+            <td class="commit">β-1~3</td>
+          </tr>
+          <tr>
+            <td class="n">6</td>
+            <td>imprint 후에도 회전 fail-closed</td>
+            <td><code>arrange</code>가 non-convex(L자) sub-face 생성 → <b>centroid가 면 밖</b> → 오분류</td>
+            <td>classify를 <b><code>strict_interior_point_3d</code></b>(ear-clipping 보장 내부점)로</td>
+            <td class="commit"><code>1c2facd</code></td>
+          </tr>
+          <tr>
+            <td class="n">7</td>
+            <td><b>MIXED</b>(coplanar+transversal, 2-axis / rot Z45) open(boundary=24)</td>
+            <td>grid coplanar resolver가 <b>과다 세분</b>(x=0/y=0 전체 추가) → cap 경계가 측벽과 T-junction</td>
+            <td><b>arrange 기반 coplanar resolver</b>(A/B 교차에서만 최소 세분, 측벽과 일치). 임의 폴리곤 → rotated-coplanar 동시 해결</td>
+            <td class="commit"><code>c18362a</code></td>
+          </tr>
+          <tr>
+            <td class="n">8</td>
+            <td>비-박스 solid 미검증</td>
+            <td>—</td>
+            <td>v2 imprint가 박스 가정 없음 → <b>신규코드 0으로 작동</b> (prism-box 3op watertight)</td>
+            <td class="commit"><code>cec869b</code></td>
+          </tr>
+          <tr>
+            <td class="n">9</td>
+            <td>브라우저 검증 하네스 (stale / clear 실패)</td>
+            <td>getMeshBuffers delta 캐시 stale, undo-loop clear 불안정</td>
+            <td>fresh reload + create_box 반환 ID + <b>boolean 결과 read</b>(off-axis verts로 회전 증명)</td>
+            <td class="commit"><code>7ca9729</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>핵심 아키텍처 결정 <span class="sub">ADR-277</span></h2></div>
+    <div class="cards">
+      <div class="card">
+        <div class="k">shared-vertex imprint</div>
+        <p>교차 세그먼트를 각 면에 각인 + <code>add_vertex</code> dedup → seam 구성상 봉합 <span class="muted">(weld 불필요)</span></p>
+      </div>
+      <div class="card">
+        <div class="k">Pattern 12 재사용</div>
+        <p><code>boundary_kernel::arrange</code>(기존 planar arrangement)로 가장 어려운 조각 — constrained subdivision + coplanar 최소 세분 — 해결</p>
+      </div>
+      <div class="card">
+        <div class="k">v2-first + v1 fallback</div>
+        <p><code>boolean_solid</code>이 v2 먼저 시도, 실패 시 v1 → <b>무회귀 cutover</b>. UI가 자동으로 회전·일반 CSG 획득</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>검증 <span class="sub">모두 green</span></h2></div>
+    <div class="verify">
+      <span class="vitem">워크스페이스 <b>2959 pass</b> · 0 failed</span>
+      <span class="vitem">tsc <b>0</b> errors</span>
+      <span class="vitem">ADR 카탈로그 clean</span>
+      <span class="vitem">브라우저: axis / coplanar / <b>2-axis MIXED</b> / <b>회전 박스(off-axis verts 8)</b> 전부 watertight</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>미해결 <span class="sub">deferred · core 아님</span></h2></div>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>항목</th><th>상태</th><th>비고</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>곡면 primitive 일반화</b> (cylinder / sphere / cone / torus boolean)</td>
+            <td><span class="pill bad">미해결 · 유일 major</span></td>
+            <td>현재 ADR-197 analytic 경로(부분 작동)로 별도 처리. v2 다면체 경로와 통합·전환은 별도 ADR 규모</td>
+          </tr>
+          <tr>
+            <td>v1 (grid resolver + weld) 은퇴</td>
+            <td><span class="pill warn">유지 결정</span></td>
+            <td>v2 superset이나 미검증 edge case용 fail-closed 안전망 — 실사용 telemetry 후 은퇴</td>
+          </tr>
+          <tr>
+            <td>coincident-plane 입력 위생 (맞닿은 박스)</td>
+            <td><span class="pill warn">deferred</span></td>
+            <td>생성 시 verts 융합 → 퇴화 non-manifold 입력. boolean 갭 아닌 입력 위생 별개</td>
+          </tr>
+          <tr>
+            <td>회전 박스 인터랙티브 시각 스크린샷</td>
+            <td><span class="pill warn">환경 한계</span></td>
+            <td>WASM 렌더 스크린샷 캡처 타임아웃 — 구조 stats(off-axis verts)로 확증 (기능 무관)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>완성 현황 <span class="sub">box · 다면체 CSG</span></h2></div>
+    <div class="done-grid">
+      <div class="cfg">transversal (corner / notch / slot / enclosed-cavity)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg">coplanar 1-axis (union / subtract / intersect)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg">MIXED (2-axis + rotated-coplanar, 3 op)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg">임의각 순수-transversal 회전 (3 op)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg">비-박스 다면체 (prism 등)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg"><b>곡면 primitive</b></div><div class="st"><span class="pill bad">미해결 (ADR-197 별개)</span></div>
+    </div>
+  </section>
+
+  <div class="kicker">
+    <div class="k">한 줄 요약</div>
+    <p>오늘 boolean이 <b>“아무것도 안 자름”</b>에서 <b>일반 다면체 CSG 완성</b>(회전·MIXED·비박스 전부 UI watertight)에 도달했고, 매 단계 <b>측정 우선 → 원인 정밀 진단 → 최소 수정·기존 자산 재사용</b>으로 해결. 남은 major는 <b>곡면 primitive</b> 하나.</p>
+    <div class="save">저장 완료 — 백업 태그 <code>backup/stabilize-boolean-adr276-phase4-20260707</code> → HEAD <code>7ca9729</code></div>
+  </div>
+</div>
