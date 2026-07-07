@@ -2180,6 +2180,65 @@ impl Mesh {
         Some(res.new_faces)
     }
 
+    /// ADR-276 Phase 2 — split a face by ONE interior CLOSED LOOP into an
+    /// annulus (outer + loop-as-hole) + an inner disk (the loop). For subtract,
+    /// classify keeps the annulus (outside B) + drops the disk (inside B). Used
+    /// for the notch-mouth / slot-exit holes. Returns [annulus, disk] or None.
+    #[allow(dead_code)]
+    fn apply_closed_loop_split(&mut self, face_id: FaceId, loop_pts: &[DVec3], material: MaterialId) -> Option<Vec<FaceId>> {
+        if loop_pts.len() < 3 { return None; }
+        let face = self.faces.get(face_id)?;
+        if !face.is_active() || !face.inners().is_empty() { return None; } // MVP: simple face only
+        let mat_f = face.material();
+        let surf = face.surface().cloned();
+        let owner = self.face_surface_owner_id(face_id);
+        let outer = self.collect_loop_verts(face.outer().start).ok()?;
+        if outer.len() < 3 { return None; }
+        let loop_verts0: Vec<VertId> = loop_pts.iter().map(|&p| self.add_vertex(p)).collect();
+        let loop_verts = dedup_consecutive_verts(&loop_verts0);
+        if loop_verts.len() < 3 { return None; }
+        // loop must be strictly interior (share no vertex with the outer boundary)
+        if loop_verts.iter().any(|v| outer.contains(v)) { return None; }
+        let n = loop_verts.len();
+        for i in 0..n {
+            let (a, b) = (loop_verts[i], loop_verts[(i + 1) % n]);
+            if self.find_edge(a, b).is_none() { self.add_edge(a, b).ok()?; }
+        }
+        let _ = self.remove_face(face_id);
+        let mut hole = loop_verts.clone();
+        hole.reverse(); // hole loop winds opposite the disk's outer
+        let annulus = self.add_face_with_holes(&outer, &[&hole], mat_f).ok()?;
+        let disk = self.add_face(&loop_verts, mat_f).ok()?;
+        if let Some(ref s) = surf {
+            self.faces[annulus].set_surface(Some(s.clone()));
+            self.faces[disk].set_surface(Some(s.clone()));
+        }
+        if let Some(o) = owner {
+            self.set_face_surface_owner_id(annulus, Some(o));
+            self.set_face_surface_owner_id(disk, Some(o));
+        }
+        let _ = material;
+        Some(vec![annulus, disk])
+    }
+
+    /// ADR-276 Phase 2 — a point guaranteed on a face's MATERIAL for in/out
+    /// classification. For a simple face this is the centroid; for a HOLED face
+    /// (annulus) the centroid can fall in the hole → instead nudge an outer-edge
+    /// midpoint slightly toward the outer centroid (on the ring, clear of a
+    /// central hole). MVP: central-hole annulus (box-box notch / slot).
+    fn face_classify_point(&self, fid: FaceId) -> Option<DVec3> {
+        let face = self.faces.get(fid)?;
+        if face.inners().is_empty() {
+            return self.face_centroid(fid);
+        }
+        let outer = self.collect_loop_verts(face.outer().start).ok()?;
+        let pts: Vec<DVec3> = outer.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        if pts.len() < 3 { return self.face_centroid(fid); }
+        let oc = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
+        let mid = (pts[0] + pts[1]) * 0.5;
+        Some(mid + (oc - mid) * 0.05)
+    }
+
     /// ADR-276 Phase 2 — split each face along its intersection segment CHAINS
     /// (via `split_face_by_chain`), producing watertight sub-faces. This is the
     /// solid-CSG replacement for `split_faces_by_intersections` (straight-chord
@@ -2205,7 +2264,20 @@ impl Mesh {
                     Some(subs) if subs.len() >= 2 => { out.insert(fid, subs); }
                     _ => { out.insert(fid, vec![fid]); }
                 }
+            } else if chains.is_empty() {
+                // No open chain but segments present → a CLOSED LOOP (hole:
+                // notch mouth / slot exit). Punch it as annulus + disk.
+                let loops = assemble_closed_loops(segs);
+                if loops.len() == 1 {
+                    match self.apply_closed_loop_split(fid, &loops[0], material) {
+                        Some(subs) if subs.len() >= 2 => { out.insert(fid, subs); }
+                        _ => { out.insert(fid, vec![fid]); }
+                    }
+                } else {
+                    out.insert(fid, vec![fid]);
+                }
             } else {
+                // MULTI open chains (e.g. slot top/bottom) — future; keep whole.
                 out.insert(fid, vec![fid]);
             }
         }
@@ -2220,21 +2292,27 @@ impl Mesh {
     /// them: remap each coincident vertex group to a single survivor and REBUILD
     /// the faces via `add_face` (which auto-shares edges by `find_edge`), closing
     /// the seam. Two-phase (collect → remove → re-add) to avoid mid-loop churn.
-    /// Faces with inner loops are left as-is (box-box has none; multi-loop weld
-    /// is future). Returns the (possibly rebuilt) face list.
+    /// Holed faces (annulus from a closed-loop split) are rebuilt too — their
+    /// inner-loop verts participate in the weld and re-add via
+    /// `add_face_with_holes` — so notch/slot seams close. Returns the (rebuilt)
+    /// face list.
     fn weld_result_seam(&mut self, faces: &[FaceId], material: MaterialId) -> Vec<FaceId> {
         use std::collections::HashMap;
-        // Bucket active result-face verts by position → find coincident groups.
+        let key = |p: DVec3| ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64, (p.z * 100.0).round() as i64);
+        // Bucket ALL result-face verts (outer + inner loops) by position.
         let mut vb: HashMap<(i64, i64, i64), Vec<VertId>> = HashMap::new();
         for &f in faces {
             let Some(face) = self.faces.get(f) else { continue };
             if !face.is_active() { continue; }
-            if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
-                for v in vs {
-                    let p = self.vertex_pos(v).unwrap_or(DVec3::ZERO);
-                    let k = ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64, (p.z * 100.0).round() as i64);
-                    let e = vb.entry(k).or_default();
-                    if !e.contains(&v) { e.push(v); }
+            let mut starts = vec![face.outer().start];
+            for inner in face.inners() { starts.push(inner.start); }
+            for start in starts {
+                if let Ok(vs) = self.collect_loop_verts(start) {
+                    for v in vs {
+                        let p = self.vertex_pos(v).unwrap_or(DVec3::ZERO);
+                        let e = vb.entry(key(p)).or_default();
+                        if !e.contains(&v) { e.push(v); }
+                    }
                 }
             }
         }
@@ -2246,19 +2324,23 @@ impl Mesh {
             }
         }
         if remap.is_empty() { return faces.to_vec(); }
-        // Phase 1 — collect rebuild specs (remapped loop + metadata) before mutating.
-        struct Spec { verts: Vec<VertId>, mat: MaterialId, surface: Option<crate::surfaces::AnalyticSurface>, owner: Option<u32> }
+        let rm = |vs: &[VertId], remap: &HashMap<VertId, VertId>| -> Vec<VertId> {
+            dedup_consecutive_verts(&vs.iter().map(|v| *remap.get(v).unwrap_or(v)).collect::<Vec<_>>())
+        };
+        // Phase 1 — collect rebuild specs (remapped outer + inner loops + metadata).
+        struct Spec { outer: Vec<VertId>, inners: Vec<Vec<VertId>>, mat: MaterialId, surface: Option<crate::surfaces::AnalyticSurface>, owner: Option<u32> }
         let mut specs: Vec<Spec> = Vec::new();
         let mut passthrough: Vec<FaceId> = Vec::new();
         for &f in faces {
             let Some(face) = self.faces.get(f) else { continue };
             if !face.is_active() { continue; }
-            if !face.inners().is_empty() { passthrough.push(f); continue; } // multi-loop: leave as-is
-            let loop_v = match self.collect_loop_verts(face.outer().start) { Ok(v) => v, Err(_) => { passthrough.push(f); continue; } };
-            let remapped: Vec<VertId> = loop_v.iter().map(|v| *remap.get(v).unwrap_or(v)).collect();
-            let deduped = dedup_consecutive_verts(&remapped);
+            let outer_v = match self.collect_loop_verts(face.outer().start) { Ok(v) => v, Err(_) => { passthrough.push(f); continue; } };
+            let inners: Vec<Vec<VertId>> = face.inners().iter()
+                .filter_map(|lr| self.collect_loop_verts(lr.start).ok())
+                .collect();
             specs.push(Spec {
-                verts: deduped,
+                outer: rm(&outer_v, &remap),
+                inners: inners.iter().map(|iv| rm(iv, &remap)).collect(),
                 mat: face.material(),
                 surface: face.surface().cloned(),
                 owner: self.face_surface_owner_id(f),
@@ -2269,12 +2351,19 @@ impl Mesh {
             if passthrough.contains(&f) { continue; }
             let _ = self.remove_face(f);
         }
-        // Phase 3 — re-add with remapped verts (add_face shares edges by find_edge).
+        // Phase 3 — re-add with remapped verts (add_face(_with_holes) shares
+        // edges by find_edge → the seam closes).
+        let _ = material;
         let mut out = passthrough;
         for s in &specs {
-            if s.verts.len() < 3 { continue; }
-            let _ = material; // caller material available if needed
-            if let Ok(nf) = self.add_face(&s.verts, s.mat) {
+            if s.outer.len() < 3 { continue; }
+            let built = if s.inners.is_empty() {
+                self.add_face(&s.outer, s.mat)
+            } else {
+                let hole_refs: Vec<&[VertId]> = s.inners.iter().filter(|h| h.len() >= 3).map(|h| h.as_slice()).collect();
+                self.add_face_with_holes(&s.outer, &hole_refs, s.mat)
+            };
+            if let Ok(nf) = built {
                 if let Some(ref surf) = s.surface { self.faces[nf].set_surface(Some(surf.clone())); }
                 if let Some(o) = s.owner { self.set_face_surface_owner_id(nf, Some(o)); }
                 out.push(nf);
@@ -2304,7 +2393,7 @@ impl Mesh {
                 Some(f) if f.is_active() => {},
                 _ => continue,
             };
-            let centroid = match self.face_centroid(fid) {
+            let centroid = match self.face_classify_point(fid) {
                 Some(c) => c,
                 None => continue,
             };
@@ -2325,7 +2414,7 @@ impl Mesh {
                 Some(f) if f.is_active() => {},
                 _ => continue,
             };
-            let centroid = match self.face_centroid(fid) {
+            let centroid = match self.face_classify_point(fid) {
                 Some(c) => c,
                 None => continue,
             };
@@ -8129,6 +8218,66 @@ fn assemble_chains(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
     chains
 }
 
+/// ADR-276 Phase 2 — assemble a face's intersection segments into CLOSED LOOPS
+/// (cycles: every node degree-2, no open ends). Complements `assemble_chains`
+/// (open only). A box-box notch/slot mouth is one such closed loop → punched as
+/// a hole. Returns each loop as an ordered ring of 3D points (first != last).
+#[allow(dead_code)]
+fn assemble_closed_loops(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
+    fn key(p: DVec3) -> (i64, i64, i64) {
+        ((p.x * 10000.0).round() as i64, (p.y * 10000.0).round() as i64, (p.z * 10000.0).round() as i64)
+    }
+    let mut nodes: Vec<DVec3> = Vec::new();
+    let mut id_of: std::collections::HashMap<(i64, i64, i64), usize> = std::collections::HashMap::new();
+    let mut adj: Vec<Vec<usize>> = Vec::new();
+    for &(a, b) in segs {
+        let na = *id_of.entry(key(a)).or_insert_with(|| { nodes.push(a); nodes.len() - 1 });
+        while adj.len() <= na { adj.push(Vec::new()); }
+        let nb = *id_of.entry(key(b)).or_insert_with(|| { nodes.push(b); nodes.len() - 1 });
+        while adj.len() <= nb { adj.push(Vec::new()); }
+        if na == nb { continue; }
+        adj[na].push(nb);
+        adj[nb].push(na);
+    }
+    // Only pure cycles: every node degree 2. (Mixed open+closed → skip closed here.)
+    if nodes.is_empty() || adj.iter().any(|a| a.len() != 2) {
+        return Vec::new();
+    }
+    let ekey = |a: usize, b: usize| (a.min(b), a.max(b));
+    let mut used: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut loops: Vec<Vec<DVec3>> = Vec::new();
+    for start in 0..nodes.len() {
+        // start a cycle from any node with an unused incident edge
+        if adj[start].iter().all(|&n| used.contains(&ekey(start, n))) { continue; }
+        let mut ring = vec![start];
+        let mut cur = start;
+        let mut prev: Option<usize> = None;
+        loop {
+            let mut nxt = None;
+            for &n in &adj[cur] {
+                if Some(n) == prev && adj[cur].len() > 1 { continue; }
+                if used.contains(&ekey(cur, n)) { continue; }
+                nxt = Some(n);
+                break;
+            }
+            match nxt {
+                Some(n) => {
+                    used.insert(ekey(cur, n));
+                    if n == start { break; } // closed the ring
+                    ring.push(n);
+                    prev = Some(cur);
+                    cur = n;
+                }
+                None => break,
+            }
+        }
+        if ring.len() >= 3 {
+            loops.push(ring.iter().map(|&i| nodes[i]).collect());
+        }
+    }
+    loops
+}
+
 // ════════════════════════════════════════════════════════════════════
 // 2D Polygon Splitting by Line Segments
 // ════════════════════════════════════════════════════════════════════
@@ -9236,6 +9385,7 @@ mod tests {
         ];
         println!("\n===== ADR-276 Phase 1+2: box-box fail-closed-correct =====");
         let mut corner_poke_cut = false;
+        let mut notch_cut = false;
         for (label, bpos, bw, bh, bd) in configs {
             let mut m = Mesh::new();
             let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
@@ -9269,16 +9419,21 @@ mod tests {
                 if label == "corner-poke" && faces_after != faces_before {
                     corner_poke_cut = true;
                 }
+                if label == "top-center notch" && faces_after != faces_before {
+                    notch_cut = true;
+                }
             }
             println!(
                 "  [{label}] ok={} faces {}->{} verts {}->{} valid=true",
                 r.is_ok(), faces_before, faces_after, verts_before, verts_after,
             );
         }
-        // ADR-276 Phase 2 WIN — the corner-poke box-box subtract now commits a
-        // WATERTIGHT cut (seam-welded), not a rollback. Locks the milestone.
+        // ADR-276 Phase 2 WINs — corner-poke (seam weld) AND the blind notch
+        // (closed-loop hole punch) now commit WATERTIGHT cuts, not rollbacks.
         assert!(corner_poke_cut,
             "ADR-276 Phase 2: corner-poke box-box subtract must commit a watertight cut");
+        assert!(notch_cut,
+            "ADR-276 Phase 2: top-center notch (closed-loop hole) must commit a watertight cut");
         println!("=========================================================\n");
     }
 
@@ -9607,6 +9762,41 @@ mod tests {
                 assert!(multi_chains >= 1, "slot: top/bottom faces are MULTI-chain");
             }
         }
+    }
+
+    // ADR-276 Phase 2 — notch debug: trace split → classify → assemble → weld.
+    #[test]
+    fn adr276_phase2_debug_notch_pipeline() {
+        use std::collections::HashMap;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(0.0, 0.0, 90.0), 40.0, 40.0, 40.0, mat).unwrap();
+        let sa = m.prepare_solid(&a).unwrap();
+        let sb = m.prepare_solid(&b).unwrap();
+        let segs = m.find_intersections_polygonal(&sa, &sb);
+        let mut byf: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+        for s in &segs { byf.entry(s.face_a).or_default().push((s.p0, s.p1)); byf.entry(s.face_b).or_default().push((s.p0, s.p1)); }
+        let split_a = m.split_faces_by_chains(&sa.face_ids, &byf, mat);
+        let split_b = m.split_faces_by_chains(&sb.face_ids, &byf, mat);
+        println!("\n===== notch debug =====");
+        let asum: usize = split_a.values().filter(|v| v.len() >= 2).count();
+        let bsum: usize = split_b.values().filter(|v| v.len() >= 2).count();
+        println!("A faces split: {} / B faces split: {}", asum, bsum);
+        let new_a: Vec<FaceId> = split_a.values().flat_map(|v| v.iter().copied()).collect();
+        let new_b: Vec<FaceId> = split_b.values().flat_map(|v| v.iter().copied()).collect();
+        let (ka, kb) = m.classify_split_faces(&new_a, &sb, &new_b, &sa, BoolOp::Subtract);
+        println!("classify: keep_a={}/{} keep_b={}/{}", ka.len(), new_a.len(), kb.len(), new_b.len());
+        for &f in &new_a { if !ka.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &new_b { if !kb.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &kb { let _ = m.flip_face(f); }
+        let result: Vec<FaceId> = ka.iter().chain(kb.iter()).copied().collect();
+        let welded = m.weld_result_seam(&result, mat);
+        let info = m.face_set_manifold_info(&welded);
+        println!("welded: faces={} closed={} boundary={} nm={} valid={}",
+            welded.len(), info.is_closed_solid, info.boundary_edge_count, info.non_manifold_edge_count, m.verify_face_invariants().is_valid());
+        let _ = HashMap::<u8, u8>::new();
+        println!("=======================");
     }
 
     // ADR-276 Phase 2 closed-loop SIM — can we split a face by an INTERIOR
