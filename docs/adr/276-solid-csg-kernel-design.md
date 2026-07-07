@@ -245,11 +245,18 @@ of corrupting the mesh:
   - enclosed cavity → no-op (Phase 3 void; valid closed A).
   So box-box CONVEX-CORNER subtract works: find_intersections_polygonal → chain
   split → classify → seam weld → watertight, gate-admitted.
-- **Remaining (deferred):** multi-chain faces (notch / through-slot), Phase 3
-  enclosure/void (A−B with B⊂A → internal cavity), Phase 4 coplanar,
-  Phase 5 UI routing (wire the UI's box-box boolean to `boolean_solid` + handle
-  still-unsupported configs gracefully — currently the UI still uses the DCEL
-  path and shows the ADR-275 warning for box-box).
+- **Phase 5 UI ROUTING DONE (2026-07-07) — box-box cuts from the UI.** Real
+  WASM export `booleanSolid` + `WasmBridge.booleanSolid` + BooleanHandler rescue:
+  after `booleanDispatchDcelMulti`, if the DCEL result is the planar NO-OP
+  (pathUsed=Nurbs, nothing new/removed), try `booleanSolid`; ok → syncMesh +
+  "완료 (solid CSG)"; declines (fail-closed) → fall through to the ADR-275
+  warning. Curved/DCEL path untouched (only the box no-op is rescued).
+  Browser-verified end-to-end: 2 overlapping box solids → select all →
+  executeAction('bool-subtract') → watertight cut (12→9 faces, closed).
+  export_baseline += booleanSolid; BooleanHandler.test 27 (+2 rescue).
+- **Remaining (deferred):** multi-chain faces (notch / through-slot — currently
+  fall back to the warning), Phase 3 enclosure/void (A−B with B⊂A → internal
+  cavity; currently a no-op), Phase 4 coplanar.
 
 ## Lock-ins (for the β phases)
 
