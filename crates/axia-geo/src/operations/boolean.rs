@@ -9609,6 +9609,43 @@ mod tests {
         }
     }
 
+    // ADR-276 Phase 2 closed-loop SIM — can we split a face by an INTERIOR
+    // CLOSED LOOP into annulus (outer + loop-as-hole) + inner disk, sharing the
+    // loop boundary (manifold)? And does face_centroid-based classify work for
+    // the annulus (its centroid falls in the HOLE)? Measures both before build.
+    #[test]
+    fn adr276_phase2_sim_closed_loop_hole() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // A's top face z=100, 100x100.
+        let outer: Vec<VertId> = [(-50.0,-50.0),(50.0,-50.0),(50.0,50.0),(-50.0,50.0)]
+            .iter().map(|&(x,y)| m.add_vertex(DVec3::new(x,y,100.0))).collect();
+        // interior square loop (notch mouth) 40x40. Hole winding = reverse of disk.
+        let inner_ccw: Vec<VertId> = [(-20.0,-20.0),(20.0,-20.0),(20.0,20.0),(-20.0,20.0)]
+            .iter().map(|&(x,y)| m.add_vertex(DVec3::new(x,y,100.0))).collect();
+        let mut inner_hole = inner_ccw.clone();
+        inner_hole.reverse(); // hole loop opposite winding to the disk's outer
+        let annulus = m.add_face_with_holes(&outer, &[&inner_hole], mat);
+        let disk = m.add_face(&inner_ccw, mat);
+
+        println!("\n===== ADR-276 Phase 2 sim: closed-loop hole split =====");
+        println!("annulus = {:?}, disk = {:?}", annulus.as_ref().map(|f| f.raw()), disk.as_ref().map(|f| f.raw()));
+        println!("mesh valid = {}", m.verify_face_invariants().is_valid());
+        if let (Ok(af), Ok(df)) = (&annulus, &disk) {
+            let info = m.face_set_manifold_info(&[*af, *df]);
+            println!("2-face set: closed={} boundary={} nm={} interior={}",
+                info.is_closed_solid, info.boundary_edge_count, info.non_manifold_edge_count, info.interior_edge_count);
+            // classify probe — annulus centroid vs where the material actually is
+            let ac = m.face_centroid(*af);
+            println!("annulus face_centroid = {:?} (NOTE: falls in the hole → naive centroid classify is WRONG for annulus)", ac);
+        }
+        println!("=======================================================");
+        // The split primitive must at least build validly + share the loop boundary
+        // (loop edges interior = shared by annulus hole + disk).
+        assert!(annulus.is_ok() && disk.is_ok(), "annulus + disk must build");
+        assert!(m.verify_face_invariants().is_valid(), "holed split must be valid");
+    }
+
     /// 두 겹치는 큐브로 Boolean 테스트
     fn make_test_cubes(mesh: &mut Mesh, mat: MaterialId) -> (Vec<FaceId>, Vec<FaceId>) {
         let a = make_box(mesh, DVec3::ZERO, DVec3::new(2.0, 2.0, 2.0), mat);
