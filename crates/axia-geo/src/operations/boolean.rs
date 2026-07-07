@@ -9123,6 +9123,63 @@ mod tests {
         println!("=====================================================");
     }
 
+    // ADR-276 Phase 2 split-by-chain SIMULATION (measure-first, before wiring).
+    // Can `split_face_by_chain` cut A's +y face along the L-corner chain
+    // (boundary → interior corner → boundary) into the L-notch remainder + the
+    // corner rectangle? If yes, routing the boolean split through it (instead of
+    // the straight-chord split_polygon_2d) closes the box-box notch.
+    #[test]
+    fn adr276_phase2_sim_split_face_by_chain_corner() {
+        use crate::operations::face_split::split_face_by_chain;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // A's +y face (y=50), with the two chain ENDPOINTS pre-inserted as
+        // boundary verts: (50,50,70) on the x=50 edge, (20,50,100) on the z=100
+        // edge. (In the real pipeline these come from split_edge at the
+        // intersection points; here we build them directly to isolate the split.)
+        let v: Vec<VertId> = [
+            DVec3::new(-50.0, 50.0, 0.0),
+            DVec3::new(50.0, 50.0, 0.0),
+            DVec3::new(50.0, 50.0, 70.0),    // chain end A (boundary)
+            DVec3::new(50.0, 50.0, 100.0),
+            DVec3::new(20.0, 50.0, 100.0),   // chain end B (boundary)
+            DVec3::new(-50.0, 50.0, 100.0),
+        ].iter().map(|&p| m.add_vertex(p)).collect();
+        let face = m.add_face(&v, mat).expect("build +y face");
+        let vc = m.add_vertex(DVec3::new(20.0, 50.0, 70.0)); // interior corner
+        m.add_edge(v[2], vc).expect("chain edge 1");
+        m.add_edge(vc, v[4]).expect("chain edge 2");
+
+        let res = split_face_by_chain(&mut m, face, &[v[2], vc, v[4]], mat);
+        println!("\n===== ADR-276 Phase 2 sim: split_face_by_chain corner cut =====");
+        match &res {
+            Ok(r) => {
+                println!("OK — {} sub-faces, mesh valid={}",
+                    r.new_faces.len(), m.verify_face_invariants().is_valid());
+                for &f in &r.new_faces {
+                    if let Ok(vs) = m.collect_loop_verts(m.faces.get(f).unwrap().outer().start) {
+                        let pts: Vec<String> = vs.iter().map(|&x| {
+                            let p = m.vertex_pos(x).unwrap_or(DVec3::ZERO);
+                            format!("({:.0},{:.0},{:.0})", p.x, p.y, p.z)
+                        }).collect();
+                        println!("  subface {:?} [{} verts]: {}", f, vs.len(), pts.join(" "));
+                    }
+                }
+            }
+            Err(e) => println!("ERR: {}", e),
+        }
+        println!("===============================================================");
+        let r = res.expect("split_face_by_chain must succeed on the L-corner chain");
+        assert_eq!(r.new_faces.len(), 2, "corner cut → exactly 2 sub-faces");
+        assert!(m.verify_face_invariants().is_valid(), "mesh must stay valid");
+        // One sub-face is the corner rectangle (4 verts: the notch), the other
+        // is the L-shaped remainder (6 verts). Verify both exist.
+        let counts: Vec<usize> = r.new_faces.iter()
+            .filter_map(|&f| m.collect_loop_verts(m.faces.get(f).unwrap().outer().start).ok().map(|v| v.len()))
+            .collect();
+        assert!(counts.contains(&4), "one sub-face must be the 4-vert corner rect, got {:?}", counts);
+    }
+
     /// 두 겹치는 큐브로 Boolean 테스트
     fn make_test_cubes(mesh: &mut Mesh, mat: MaterialId) -> (Vec<FaceId>, Vec<FaceId>) {
         let a = make_box(mesh, DVec3::ZERO, DVec3::new(2.0, 2.0, 2.0), mat);
