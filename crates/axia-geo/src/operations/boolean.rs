@@ -8885,6 +8885,84 @@ impl VertexArrangement {
     }
 }
 
+/// ADR-277 β-2 (N2) — a 2D sub-face of a polygon split by constraint segments.
+#[derive(Debug, Clone)]
+pub(crate) struct SubFace2D {
+    /// Outer boundary (CCW), 2D points.
+    pub outer: Vec<(f64, f64)>,
+    /// Inner hole loops (e.g. an interior constraint loop → annulus + disk).
+    pub holes: Vec<Vec<(f64, f64)>>,
+}
+
+/// ADR-277 β-2 (N2) — subdivide a 2D face polygon by constraint segments into
+/// sub-faces (planar arrangement face extraction).
+///
+/// **Pattern-12 reuse:** the `boundary_kernel::analytic_arrange::arrange`
+/// planar arrangement already does exactly this — feed the face boundary (closed
+/// Line loop) + the constraint segments (Lines), get back the arrangement faces
+/// (with holes), intersections resolved and lone spurs filtered. Handles a
+/// boundary-to-boundary chord (→ 2 faces), an L-chain, an interior closed loop
+/// (→ annulus + disk), and crossing chords (→ 4 faces) uniformly.
+///
+/// The constraint segments become shared edges between adjacent sub-faces; when
+/// the caller (β-3) lifts these 2D points back to 3D and `add_vertex`-dedups them
+/// against the β-1 arrangement, the A-face and B-face sub-faces stitch by
+/// construction (ADR-277 core). Pure — no mesh mutation.
+fn subdivide_face_2d(
+    boundary: &[(f64, f64)],
+    constraints: &[((f64, f64), (f64, f64))],
+    eps: f64,
+) -> Vec<SubFace2D> {
+    use crate::boundary_kernel::analytic_arrange::{arrange, InputCurve, SubCurve};
+    use crate::boundary_kernel::geom2::Vec2;
+
+    if boundary.len() < 3 {
+        return Vec::new();
+    }
+    let v2 = |p: (f64, f64)| Vec2::new(p.0, p.1);
+    let mut curves: Vec<InputCurve> = Vec::with_capacity(boundary.len() + constraints.len());
+    // Boundary as a closed Line loop.
+    for i in 0..boundary.len() {
+        let a = boundary[i];
+        let b = boundary[(i + 1) % boundary.len()];
+        curves.push(InputCurve::Line { a: v2(a), b: v2(b) });
+    }
+    // Constraint segments.
+    for &(a, b) in constraints {
+        curves.push(InputCurve::Line { a: v2(a), b: v2(b) });
+    }
+
+    // Start point of a sub-curve (Line exact; Arc from its pub fields — box CSG
+    // is all-Line, Arc handled for robustness; Freeform unsupported here).
+    let sub_start = |s: &SubCurve| -> Option<(f64, f64)> {
+        match s {
+            SubCurve::Line { a, .. } => Some((a.x, a.y)),
+            SubCurve::Arc { center, radius, a0, .. } => {
+                Some((center.x + radius * a0.cos(), center.y + radius * a0.sin()))
+            }
+            SubCurve::Freeform { .. } => None,
+        }
+    };
+    let loop_verts = |subs: &[SubCurve]| -> Vec<(f64, f64)> {
+        subs.iter().filter_map(&sub_start).collect()
+    };
+
+    arrange(&curves, eps)
+        .into_iter()
+        .filter_map(|f| {
+            let outer = loop_verts(&f.outer);
+            if outer.len() < 3 {
+                return None;
+            }
+            let holes: Vec<Vec<(f64, f64)>> = f.holes.iter()
+                .map(|h| loop_verts(h))
+                .filter(|h| h.len() >= 3)
+                .collect();
+            Some(SubFace2D { outer, holes })
+        })
+        .collect()
+}
+
 /// ADR-277 β-1 — build the shared vertex arrangement from intersection segments.
 /// Returns the arrangement + each segment as a `(idx0, idx1)` pair of shared
 /// indices. Adjacent/coincident segment endpoints collapse to one index, so the
@@ -10265,6 +10343,72 @@ mod tests {
         assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
         assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    // ADR-277 β-2 (N2) — the constrained subdivision primitive (wraps the
+    // boundary_kernel planar arrangement). A polygon split by constraint segments
+    // → sub-faces whose shared edges are the constraints (watertight seam by
+    // construction once lifted + deduped).
+    fn poly_area(loop2d: &[(f64, f64)]) -> f64 {
+        let n = loop2d.len();
+        let mut a = 0.0;
+        for i in 0..n {
+            let (x0, y0) = loop2d[i];
+            let (x1, y1) = loop2d[(i + 1) % n];
+            a += x0 * y1 - x1 * y0;
+        }
+        (a * 0.5).abs()
+    }
+
+    #[test]
+    fn adr277_beta2_chord_splits_square_in_two() {
+        // Unit square split by a vertical chord at x=0.5 → 2 faces, area 0.5 each.
+        let sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let cons = [((0.5, 0.0), (0.5, 1.0))];
+        let faces = subdivide_face_2d(&sq, &cons, 1e-7);
+        assert_eq!(faces.len(), 2, "vertical chord → 2 sub-faces");
+        let total: f64 = faces.iter().map(|f| poly_area(&f.outer)).sum();
+        assert!((total - 1.0).abs() < 1e-6, "areas sum to the square (1.0), got {total}");
+        for f in &faces { assert!((poly_area(&f.outer) - 0.5).abs() < 1e-6, "each half = 0.5"); }
+    }
+
+    #[test]
+    fn adr277_beta2_l_chain_splits_square() {
+        // L-chain (0.5,0)->(0.5,0.5)->(1,0.5) → 2 faces (a corner rect + an L).
+        let sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let cons = [((0.5, 0.0), (0.5, 0.5)), ((0.5, 0.5), (1.0, 0.5))];
+        let faces = subdivide_face_2d(&sq, &cons, 1e-7);
+        assert_eq!(faces.len(), 2, "L-chain → 2 sub-faces");
+        let total: f64 = faces.iter().map(|f| poly_area(&f.outer)).sum();
+        assert!((total - 1.0).abs() < 1e-6, "areas sum to 1.0, got {total}");
+        // The bottom-right corner rect is 0.5×0.5 = 0.25; the L-remainder is 0.75.
+        let mut areas: Vec<f64> = faces.iter().map(|f| poly_area(&f.outer)).collect();
+        areas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((areas[0] - 0.25).abs() < 1e-6 && (areas[1] - 0.75).abs() < 1e-6, "0.25 + 0.75, got {areas:?}");
+    }
+
+    #[test]
+    fn adr277_beta2_crossing_chords_make_four() {
+        // Two crossing chords → 4 quadrants, area 0.25 each.
+        let sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let cons = [((0.5, 0.0), (0.5, 1.0)), ((0.0, 0.5), (1.0, 0.5))];
+        let faces = subdivide_face_2d(&sq, &cons, 1e-7);
+        assert_eq!(faces.len(), 4, "crossing chords → 4 sub-faces");
+        for f in &faces { assert!((poly_area(&f.outer) - 0.25).abs() < 1e-6, "each quadrant 0.25"); }
+    }
+
+    #[test]
+    fn adr277_beta2_interior_loop_makes_annulus_and_disk() {
+        // An interior closed loop → an annulus (outer with a hole) + the inner
+        // disk. Total covered area = the square (holes counted once).
+        let sq = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let inner = [((3.0, 3.0), (7.0, 3.0)), ((7.0, 3.0), (7.0, 7.0)),
+                     ((7.0, 7.0), (3.0, 7.0)), ((3.0, 7.0), (3.0, 3.0))];
+        let faces = subdivide_face_2d(&sq, &inner, 1e-7);
+        assert!(faces.len() >= 2, "interior loop → annulus + disk (≥2 faces), got {}", faces.len());
+        // Exactly one face carries a hole (the annulus).
+        let with_hole = faces.iter().filter(|f| !f.holes.is_empty()).count();
+        assert!(with_hole >= 1, "the annulus face carries the interior loop as a hole");
     }
 
     // ADR-277 β-1 (N1) — the global vertex arrangement primitive. Coincident
