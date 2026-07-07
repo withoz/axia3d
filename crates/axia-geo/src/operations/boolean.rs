@@ -10832,6 +10832,68 @@ mod tests {
         }
     }
 
+    // ADR-278 (curved boolean audit) — locks the audit finding: POLYGONAL
+    // (tessellated, Path A) curved primitives cut watertight via v2 (γ
+    // generalization — a tessellated cyl/sphere/cone is just a many-faced
+    // polyhedron). The ANALYTIC (Path B, self-loop kernel-native) form largely
+    // NO-OPs: boolean_solid → v2 can't process the <3-vert self-loop faces, and
+    // the ADR-197 analytic dispatch doesn't cover box−cylinder subtract → the box
+    // is returned unchanged (no corruption, but no cut). Since production defaults
+    // Path B ON, this is a real user-facing gap. Fix direction (deferred to a
+    // Phase β): tessellate Path B curved faces before the v2 imprint (mirrors
+    // ADR-110 π-β polygonize) — reuses the proven polygonal path.
+    #[test]
+    fn adr278_curved_boolean_audit() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // POLYGONAL (Path A, engine default) — must cut watertight via v2.
+        let poly = |kind: &str, op: BoolOp| -> (bool, bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.create_box(DVec3::new(0.0,0.0,50.0),120.0,120.0,120.0,mat).unwrap();
+            let box_faces = active(&m);
+            let b = match kind {
+                "cyl" => m.create_cylinder(DVec3::new(30.0,30.0,60.0),30.0,160.0,24,mat).unwrap_or_default(),
+                "sph" => m.create_sphere(DVec3::new(40.0,40.0,110.0),40.0,16,12,mat).unwrap_or_default(),
+                _ => m.create_cone(DVec3::new(30.0,30.0,60.0),40.0,160.0,24,mat).unwrap_or_default(),
+            };
+            let ok = m.boolean_solid(&box_faces, &b, op, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
+        };
+        for (label, kind, op) in [
+            ("cyl−box", "cyl", BoolOp::Subtract), ("cyl∪box", "cyl", BoolOp::Union),
+            ("cyl∩box", "cyl", BoolOp::Intersect), ("sphere−box", "sph", BoolOp::Subtract),
+            ("cone−box", "con", BoolOp::Subtract),
+        ] {
+            let (ok, valid, closed, manifold) = poly(kind, op);
+            assert!(ok && valid && closed && manifold, "{label}: polygonal curved boolean must be watertight");
+        }
+
+        // ANALYTIC (Path B) — no-corruption guard + documents the no-op gap.
+        let pb = |kind: &str, op: BoolOp| -> (bool, usize, usize) {
+            let mut m = Mesh::new();
+            m.set_cylinder_path_b_default(true);
+            m.set_sphere_path_b_default(true);
+            m.set_cone_path_b_default(true);
+            m.create_box(DVec3::new(0.0,0.0,50.0),120.0,120.0,120.0,mat).unwrap();
+            let box_faces = active(&m);
+            let b = match kind {
+                "cyl" => m.create_cylinder(DVec3::new(30.0,30.0,60.0),30.0,160.0,24,mat).unwrap_or_default(),
+                "sph" => m.create_sphere(DVec3::new(40.0,40.0,110.0),40.0,16,12,mat).unwrap_or_default(),
+                _ => m.create_cone(DVec3::new(30.0,30.0,60.0),40.0,160.0,24,mat).unwrap_or_default(),
+            };
+            let _ = m.boolean_solid(&box_faces, &b, op, mat);
+            (m.verify_face_invariants().is_valid(), active(&m).len(), b.len())
+        };
+        // Path B SUB currently NO-OPs (box returned unchanged = 6 faces). No
+        // corruption. When the tessellate-then-v2 fix lands, resFaces will grow.
+        let (valid, res_faces, _bf) = pb("cyl", BoolOp::Subtract);
+        assert!(valid, "Path B curved boolean must never corrupt");
+        assert!(res_faces >= 6, "Path B cyl−box currently no-ops (box intact); guard against corruption");
+    }
+
     // ADR-277 γ — build a triangular prism (non-box polyhedron) and confirm it's
     // a valid closed solid; then measure v2 boolean on prism vs box.
     fn make_tri_prism(m: &mut Mesh, tri: [(f64, f64); 3], z0: f64, z1: f64, mat: MaterialId) -> Vec<FaceId> {
