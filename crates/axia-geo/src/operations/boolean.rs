@@ -10188,6 +10188,64 @@ mod tests {
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
     }
 
+    // ADR-277 (general CSG) de-risk — trace WHERE a pure-transversal rotated-box
+    // cut breaks, stage by stage (prepare → intersect → split → classify →
+    // assemble → weld). Locates the general-CSG gap precisely.
+    #[test]
+    fn adr277_trace_rotated_box_stages() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let mut m = Mesh::new();
+        m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let a_faces = active(&m);
+        let mid: std::collections::HashSet<FaceId> = a_faces.iter().copied().collect();
+        let bc = DVec3::new(40.0, 40.0, 60.0);
+        m.create_box(bc, 100.0, 100.0, 100.0, mat).unwrap();
+        let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+        // rotate B about (1,1,1) 30°
+        let mut bv = std::collections::HashSet::new();
+        for &f in &b_faces { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { bv.insert(v); } } }
+        let bvv: Vec<VertId> = bv.into_iter().collect();
+        m.rotate_verts(&bvv, bc, DVec3::new(1.0,1.0,1.0).normalize(), 30.0_f64.to_radians()).unwrap();
+
+        println!("\n===== ADR-277 trace: rot(1,1,1) subtract =====");
+        let sa = m.prepare_solid(&a_faces).unwrap();
+        let sb = m.prepare_solid(&b_faces).unwrap();
+        println!("Stage 0: A {} faces / B {} faces", sa.face_ids.len(), sb.face_ids.len());
+        let segs = m.find_intersections_polygonal(&sa, &sb);
+        println!("Stage 1: {} intersection segments", segs.len());
+        // per-face seg count
+        let mut byf: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+        for s in &segs { byf.entry(s.face_a).or_default().push((s.p0, s.p1)); byf.entry(s.face_b).or_default().push((s.p0, s.p1)); }
+        let seg_faces: Vec<(FaceId, usize)> = byf.iter().map(|(f, v)| (*f, v.len())).collect();
+        println!("Stage 1: {} faces receive segs; per-face counts: {:?}", seg_faces.len(),
+            seg_faces.iter().map(|(_, n)| *n).collect::<Vec<_>>());
+        let split_a = m.split_faces_by_chains(&sa.face_ids, &byf, mat);
+        let split_b = m.split_faces_by_chains(&sb.face_ids, &byf, mat);
+        let asplit: usize = split_a.values().filter(|v| v.len() >= 2).count();
+        let bsplit: usize = split_b.values().filter(|v| v.len() >= 2).count();
+        println!("Stage 2: A faces split {}/{}, B faces split {}/{} (of the seg-bearing faces)", asplit, sa.face_ids.len(), bsplit, sb.face_ids.len());
+        let new_a: Vec<FaceId> = split_a.values().flat_map(|v| v.iter().copied()).collect();
+        let new_b: Vec<FaceId> = split_b.values().flat_map(|v| v.iter().copied()).collect();
+        println!("Stage 2: total faces A {} → {}, B {} → {}", sa.face_ids.len(), new_a.len(), sb.face_ids.len(), new_b.len());
+        let (ka, kb) = m.classify_split_faces(&new_a, &sb, &new_b, &sa, BoolOp::Subtract);
+        println!("Stage 3: classify keep_a={}/{} keep_b={}/{}", ka.len(), new_a.len(), kb.len(), new_b.len());
+        for &f in &new_a { if !ka.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &new_b { if !kb.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &kb { let _ = m.flip_face(f); }
+        let result: Vec<FaceId> = ka.iter().chain(kb.iter()).copied().collect();
+        let pre = m.face_set_manifold_info(&result);
+        println!("Stage 5 (pre-weld): {} faces closed={} boundary={} nm={} valid={}",
+            result.len(), pre.is_closed_solid, pre.boundary_edge_count, pre.non_manifold_edge_count, m.verify_face_invariants().is_valid());
+        let welded = m.weld_result_seam(&result, mat);
+        let post = m.face_set_manifold_info(&welded);
+        println!("Stage 5.5 (post-weld): {} faces closed={} boundary={} nm={} valid={}",
+            welded.len(), post.is_closed_solid, post.boundary_edge_count, post.non_manifold_edge_count, m.verify_face_invariants().is_valid());
+        println!("==============================================");
+    }
+
     // ADR-276 Generality AUDIT (2026-07-07) — the current solid-CSG is
     // AXIS-ALIGNED-BOX scoped. Any rotation (even a PURE-transversal
     // fully-rotated box, coplanar=0) fails-closed: find_intersections_polygonal
