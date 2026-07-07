@@ -2469,6 +2469,7 @@ impl Scene {
             .map(|(f, _)| f)
             .collect();
 
+
         // ADR-186 (A) — analytic arrangement re-derive (sheet only, 3D solid 보호 δ-4a).
         // 교차를 closed-form (line/circle, circle/circle) 으로 해결 → 면을 Arc 경계로
         // 직접 추출 (polygon 잔재 제거). 동심원 등 circle containment 은 아래 Path B
@@ -2592,6 +2593,7 @@ impl Scene {
                 }
             }
         }
+
         Ok(report.created_faces)
     }
 
@@ -3302,19 +3304,47 @@ impl Scene {
         F: FnOnce(&mut Self) -> CommandResult,
     {
         let nm_before = self.mesh.collect_non_manifold_edges().len();
+        // ADR-280 Level 1 — also guard watertightness: if the mesh is a CLOSED
+        // solid before the draw, it must stay closed after. A shape that CROSSES
+        // another coplanar shape on a solid's top face makes the coplanar
+        // re-derive tile only the interior shapes (the top's outer boundary is a
+        // wall-shared volume edge, withheld from the arrange) → the top OPENS
+        // ("옆면이 사라짐"). Rejecting + rolling back keeps the solid closed (the
+        // draw is declined rather than breaking the solid). The full in-place
+        // re-tile / split is ADR-280 Level 2. (L-280-3 fail-closed; 메타-원칙 #9.)
+        let closed_before = {
+            let all: Vec<FaceId> = self
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(f, _)| f)
+                .collect();
+            self.mesh.face_set_manifold_info(&all).is_closed_solid
+        };
         let before_snapshot = self.scene_snapshot();
         let result = draw(self);
         // Never override an existing error (degenerate input, etc.).
         if matches!(result, CommandResult::Error(_)) {
             return result;
         }
-        if self.mesh.collect_non_manifold_edges().len() > nm_before {
+        let opened_solid = closed_before && {
+            let all: Vec<FaceId> = self
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(f, _)| f)
+                .collect();
+            !self.mesh.face_set_manifold_info(&all).is_closed_solid
+        };
+        if self.mesh.collect_non_manifold_edges().len() > nm_before || opened_solid {
             // The draw crossed/touched a solid face boundary → an edge now
-            // bears ≥3 faces (face remainder + side wall + new sub-face).
+            // bears ≥3 faces (non-manifold) OR the closed solid was opened.
             self.restore_scene_snapshot(&before_snapshot);
             self.transactions.discard_last_undo();
             return CommandResult::Error(
-                "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
+                "도형이 면 경계를 넘어 솔리드를 열거나 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
             );
         }
         result
@@ -13057,6 +13087,52 @@ mod tests {
             Some(shape_id),
             "face_to_shape reverse index points the real face to the shape"
         );
+    }
+
+    /// ADR-280 Level 1 — a crossing shape on a solid top must NEVER open the
+    /// solid (fail-closed): box + circle, then a rect that CROSSES the circle →
+    /// the solid stays closed (the rect is left un-split rather than opening the
+    /// top). Contained (non-crossing) draws must still split + stay closed.
+    #[test]
+    fn adr280_l1_crossing_shape_on_solid_stays_closed() {
+        let mut s = Scene::new();
+        s.face_rederive_on_draw = true;
+        s.auto_intersect_on_draw = true;
+        s.auto_face_synthesis_on_draw = true;
+        s.freeform_overlap_on_draw = true;
+        s.mesh
+            .create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, FORM_MATERIAL)
+            .unwrap();
+        s.execute(Command::DrawCircleAsCurve { center: DVec3::new(0.0, 0.0, 110.0), normal: DVec3::Z, radius: 40.0 });
+        let mid: Vec<axia_geo::FaceId> = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert!(s.mesh.face_set_manifold_info(&mid).is_closed_solid, "box+circle closed");
+
+        // CROSSING rect (partially overlaps the circle) — pre-fix opened the top
+        // (boundary=10). Level 1: solid must stay closed.
+        s.execute(Command::DrawRectAsShape { center: DVec3::new(20.0, 20.0, 110.0), normal: DVec3::Z, up: DVec3::Y, width: 70.0, height: 70.0 });
+        let after: Vec<axia_geo::FaceId> = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        let mi = s.mesh.face_set_manifold_info(&after);
+        assert!(
+            mi.is_closed_solid,
+            "ADR-280 L1: crossing shape must NOT open the solid (closed={}, boundary={})",
+            mi.is_closed_solid, mi.boundary_edge_count
+        );
+        assert_eq!(mi.non_manifold_edge_count, 0, "no non-manifold from the guard");
+
+        // GUARD MUST NOT OVER-FIRE — a valid rect on a PLAIN box top (no crossing
+        // shape) must still COMMIT (split) and keep the solid closed. Verified via
+        // face count growth (6 box faces → >6 after a committed split).
+        let mut s2 = Scene::new();
+        s2.face_rederive_on_draw = true;
+        s2.auto_intersect_on_draw = true;
+        s2.auto_face_synthesis_on_draw = true;
+        s2.freeform_overlap_on_draw = true;
+        s2.mesh.create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, FORM_MATERIAL).unwrap();
+        let box_faces = s2.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        s2.execute(Command::DrawRectAsShape { center: DVec3::new(0.0, 0.0, 110.0), normal: DVec3::Z, up: DVec3::Y, width: 40.0, height: 40.0 });
+        let c: Vec<axia_geo::FaceId> = s2.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert!(s2.mesh.face_set_manifold_info(&c).is_closed_solid, "plain-box rect stays closed");
+        assert!(c.len() > box_faces, "guard must NOT reject a valid plain-box-top rect (committed split): {} → {}", box_faces, c.len());
     }
 
     /// ADR-279 β — curve-annulus nesting is MANIFOLD (regression guard).

@@ -1,6 +1,6 @@
 # ADR-280 — Solid-Top Re-tile on Crossing Draw (imprint, preserve wall boundary) (α spec)
 
-- **Status**: Proposed (α spec — detailed wiring + de-risk sim; β needs 결재)
+- **Status**: Accepted (Level 1 fail-closed landed 2026-07-07; Level 2 full re-tile deferred)
 
 ## Context
 
@@ -165,6 +165,39 @@ concrete continuations, either needs its own careful pass:
   boundary + remove the face + materialize reusing wall edges (this doc's
   Decision). Needs the intermediate-state tracing above + the fail-closed gate
   (Q3) as backstop.
+
+## Level 1 landed (2026-07-07) — fail-closed guard (safe interim)
+
+Implemented the safe interim: a face-creating draw that would OPEN a closed solid
+is rejected + rolled back (the solid stays closed) instead of breaking it.
+
+- **Locus:** `Scene::guard_imprint` (scene.rs) — the existing ADR-258 β-1 wrapper
+  around face-creating `*AsShape` draws that already rolled back on a
+  non-manifold increase. Extended it: capture `closed_before = is_closed_solid`
+  over all active faces; after the draw, if `closed_before && !closed_after`
+  (the closed solid opened), restore the pre-draw snapshot + `discard_last_undo`
+  + return the Korean "면 안쪽에 그려주세요" error (same path as the nm guard).
+  This is the correct locus/timing — the earlier attempt to gate inside
+  `rederive_coplanar_on_draw` was too late (the crossing shape had already opened
+  the top before the re-derive ran; boundary was 9 at rederive entry).
+- **Behavior (browser + engine verified):**
+  - Crossing rect on box+circle → REJECTED, box stays **closed** (was: 10 open
+    edges). "옆면이 사라짐" eliminated.
+  - Rect on a plain box top (no crossing shape) → COMMITS (split), stays closed —
+    guard does NOT over-fire.
+  - ADR-279 concentric-circle annulus → NOT regressed (stays closed, committed).
+  - Rect drawn INSIDE a circle-on-a-solid → also rejected (it genuinely opens the
+    top too — same re-derive fragility). Declined safely; Level 2 makes it split.
+  - Flat-sheet / free-wire draws → unaffected (guard only fires when
+    `closed_before` AND only wraps face-creating `*AsShape` draws).
+- **Regression:** axia-core 435 (+1 `adr280_l1_crossing_shape_on_solid_stays_
+  closed`) / axia-geo 2190, 0 ignored. Known limitation of Level 1: the
+  multi-component case (a closed solid coexisting with an open sheet →
+  `is_closed_solid` already false → guard can't fire) is not covered — Level 2 /
+  a per-component check handles it.
+- **Trade-off (honest):** Level 1 makes crossing/inside-shape draws on a solid
+  top a safe *decline* (Toast), NOT a split. The actual re-tile/split is Level 2
+  (this doc's Decision — imprint, preserve wall boundary).
 
 ## Cross-link
 
