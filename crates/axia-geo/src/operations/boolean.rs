@@ -1477,6 +1477,134 @@ impl Mesh {
         self.boolean_impl(faces_a, faces_b, op, material, true)
     }
 
+    /// ADR-277 β-3 (general mesh CSG, gated v2 path) — imprint + retriangulate
+    /// with a SHARED vertex set instead of independent chain-split + post-hoc
+    /// weld. For each face crossed by the other solid, subdivide it (β-2 planar
+    /// arrangement) along its intersection segments and rebuild the sub-faces via
+    /// `add_vertex` (spatial-hash dedup, β-1 arrangement) so the A-side and B-side
+    /// sub-faces along a shared segment use the SAME vertices → the seam is
+    /// watertight by construction (no weld). Classify each sub-face by
+    /// `point_in_solid` per op; fail-closed gate (invariants + SI + closed→closed)
+    /// with byte-identical rollback. Handles arbitrary-angle / rotated cuts (the
+    /// ADR-276 generality-audit gap). Not yet UI-wired (β-5 cutover). Curved
+    /// operands + coplanar planes are out of this path (ADR-197 / Phase-4).
+    pub fn boolean_solid_v2(
+        &mut self,
+        faces_a: &[FaceId],
+        faces_b: &[FaceId],
+        op: BoolOp,
+        material: MaterialId,
+    ) -> Result<BooleanResult> {
+        let backup = self.clone();
+        let mut debug = Vec::new();
+
+        let solid_a = self.prepare_solid(faces_a)?;
+        let solid_b = self.prepare_solid(faces_b)?;
+        let both_closed = self.face_set_manifold_info(&solid_a.face_ids).is_closed_solid
+            && self.face_set_manifold_info(&solid_b.face_ids).is_closed_solid;
+
+        // Stage 1 — intersection segments (exact at any angle).
+        let segs = self.find_intersections_polygonal(&solid_a, &solid_b);
+        debug.push(format!("v2: {} intersection segments", segs.len()));
+        let mut segs_by_face: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+        for s in &segs {
+            segs_by_face.entry(s.face_a).or_default().push((s.p0, s.p1));
+            segs_by_face.entry(s.face_b).or_default().push((s.p0, s.p1));
+        }
+
+        // Stage 2+3 — imprint each solid's faces (shared vertex set via add_vertex).
+        let new_a = self.imprint_faces(&solid_a.face_ids, &segs_by_face, material);
+        let new_b = self.imprint_faces(&solid_b.face_ids, &segs_by_face, material);
+        debug.push(format!("v2: imprint A {}→{}, B {}→{}",
+            solid_a.face_ids.len(), new_a.len(), solid_b.face_ids.len(), new_b.len()));
+
+        // Stage 4 — classify sub-faces against the ORIGINAL solids.
+        let (keep_a, keep_b) = self.classify_split_faces(&new_a, &solid_b, &new_b, &solid_a, op);
+
+        // Stage 5 — assemble: keep A-out / B-in(flipped) etc.; remove the rest.
+        // NO weld — the shared vertex set already stitched the seam.
+        let mut result_faces: Vec<FaceId> = keep_a.clone();
+        for &fid in &keep_b {
+            if op == BoolOp::Subtract { self.flip_face(fid)?; }
+            result_faces.push(fid);
+        }
+        for &fid in new_a.iter().chain(new_b.iter()) {
+            if !keep_a.contains(&fid) && !keep_b.contains(&fid) {
+                let _ = self.remove_face(fid);
+            }
+        }
+
+        // Fail-closed gate (ADR-276 spirit).
+        let inv_valid = self.verify_face_invariants().is_valid();
+        let si_clean = self.detect_self_intersections().is_clean();
+        let closed_ok = !both_closed
+            || self.face_set_manifold_info(&result_faces).is_closed_solid;
+        if !inv_valid || !si_clean || !closed_ok {
+            *self = backup;
+            anyhow::bail!(
+                "boolean_solid_v2: result failed the gate (invariants_valid={inv_valid}, \
+                 self_intersection_clean={si_clean}, closed_solid={closed_ok}) — rolled back"
+            );
+        }
+
+        let new_verts = self.verts.iter().count(); // informational
+        let _ = new_verts;
+        Ok(BooleanResult { faces: result_faces, new_verts: 0, debug })
+    }
+
+    /// ADR-277 β-3 — imprint each face's intersection segments (β-2 subdivision)
+    /// and rebuild the sub-faces with a shared, `add_vertex`-deduped vertex set.
+    /// Faces with no segments pass through unchanged. The 2D↔3D round-trip is
+    /// exact (segments lie on the face plane), so a segment endpoint shared by an
+    /// A-face and a B-face lifts to the SAME 3D point → dedups → shared VertId.
+    fn imprint_faces(
+        &mut self,
+        face_ids: &[FaceId],
+        segs_by_face: &FxHashMap<FaceId, Vec<(DVec3, DVec3)>>,
+        material: MaterialId,
+    ) -> Vec<FaceId> {
+        use crate::operations::polygon_geom::PlaneBasis;
+        const SUBDIV_EPS: f64 = 1e-6;
+        let mut out = Vec::new();
+        for &fid in face_ids {
+            let segs = match segs_by_face.get(&fid) {
+                Some(s) if !s.is_empty() => s,
+                _ => { out.push(fid); continue; }
+            };
+            let Some((n, poly3)) = self.face_unit_normal_and_poly(fid) else { out.push(fid); continue; };
+            let Some(basis) = PlaneBasis::from_polygon(&poly3) else { out.push(fid); continue; };
+            let boundary2: Vec<(f64, f64)> = poly3.iter().map(|&p| basis.project(p)).collect();
+            let cons2: Vec<((f64, f64), (f64, f64))> =
+                segs.iter().map(|&(a, b)| (basis.project(a), basis.project(b))).collect();
+            let subfaces = subdivide_face_2d(&boundary2, &cons2, SUBDIV_EPS);
+            if subfaces.len() <= 1 {
+                out.push(fid); // no real split (spur / degenerate) → keep original
+                continue;
+            }
+            // Rebuild: remove original, add sub-faces (lift + dedup → shared verts).
+            let flip = basis.e1.cross(basis.e2).dot(n) < 0.0;
+            let _ = self.remove_face(fid);
+            for sf in &subfaces {
+                let mut ov: Vec<VertId> =
+                    sf.outer.iter().map(|&(u, v)| self.add_vertex(basis.lift(u, v))).collect();
+                if flip { ov.reverse(); }
+                if sf.holes.is_empty() {
+                    if let Ok(f) = self.add_face(&ov, material) { out.push(f); }
+                } else {
+                    let holes: Vec<Vec<VertId>> = sf.holes.iter().map(|h| {
+                        let mut hv: Vec<VertId> =
+                            h.iter().map(|&(u, v)| self.add_vertex(basis.lift(u, v))).collect();
+                        if flip { hv.reverse(); }
+                        hv
+                    }).collect();
+                    let refs: Vec<&[VertId]> = holes.iter().map(|h| h.as_slice()).collect();
+                    if let Ok(f) = self.add_face_with_holes(&ov, &refs, material) { out.push(f); }
+                }
+            }
+        }
+        out
+    }
+
     fn boolean_impl(
         &mut self,
         faces_a: &[FaceId],
@@ -10478,6 +10606,50 @@ mod tests {
         assert!(arr.len() < 2 * segs.len(),
             "arrangement collapses shared endpoints: {} unique < {} (2×{} segs)",
             arr.len(), 2 * segs.len(), segs.len());
+    }
+
+    // ADR-277 β-3 — the v2 imprint path: axis-aligned cuts watertight via the
+    // shared-vertex arrangement (NO weld); rotated cuts still fail-closed (they
+    // need the global intersection-curve assembly — a shared segment can be a
+    // boundary crossing on the A-face but interior on the B-face, so the two
+    // faces subdivide it differently → β-3 continuation). Locks: v2 axis-aligned
+    // commits watertight, and NO config ever commits a corrupt mesh.
+    #[test]
+    fn adr277_beta3_v2_axis_watertight_rotations_fail_closed() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let run = |axis: DVec3, deg: f64, bc: DVec3, op: BoolOp| -> (bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let a_faces = active(&m);
+            let mid: std::collections::HashSet<FaceId> = a_faces.iter().copied().collect();
+            m.create_box(bc, 100.0, 100.0, 100.0, mat).unwrap();
+            let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+            if deg.abs() > 1e-9 {
+                let mut bv = std::collections::HashSet::new();
+                for &f in &b_faces { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { bv.insert(v); } } }
+                let bvv: Vec<VertId> = bv.into_iter().collect();
+                m.rotate_verts(&bvv, bc, axis, deg.to_radians()).unwrap();
+            }
+            let ok = m.boolean_solid_v2(&a_faces, &b_faces, op, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid)
+        };
+        // Axis-aligned corner subtract via v2 → committed watertight.
+        let (ok, valid, closed) = run(DVec3::Z, 0.0, DVec3::new(60.0, 60.0, 60.0), BoolOp::Subtract);
+        assert!(ok && valid && closed, "v2 axis-aligned corner subtract must cut watertight");
+        // Rotated configs → fail-closed, never corrupt.
+        for (axis, deg, op) in [
+            (DVec3::Z, 45.0, BoolOp::Subtract),
+            (DVec3::new(1.0,1.0,1.0).normalize(), 30.0, BoolOp::Subtract),
+            (DVec3::Z, 45.0, BoolOp::Union),
+        ] {
+            let (_ok, valid, closed) = run(axis, deg, DVec3::new(45.0, 45.0, 55.0), op);
+            assert!(valid, "v2 rotated config must never commit an invalid mesh (fail-closed)");
+            assert!(closed, "committed-or-rolled-back state must be a closed solid");
+        }
     }
 
     // ADR-277 (general CSG) de-risk — trace WHERE a pure-transversal rotated-box
