@@ -283,16 +283,30 @@ export function startBooleanOp(
     );
     const multiResult = bridge.booleanDispatchDcelMulti(facesA, facesB, op);
 
-    // ADR-276 Phase 5 — solid-CSG rescue. When the DCEL path NO-OPs on a planar
-    // (box) config (pathUsed=Nurbs, nothing new/removed = the ADR-275 case), try
-    // the solid-CSG path (boolean_solid: split-by-chain + seam weld). It cuts
-    // convex-corner box-box WATERTIGHT; if it can't yet (notch / through-slot /
-    // enclosed), it fails closed (mesh rolled back) and we fall through to the
-    // DCEL result's honest ADR-275 warning. Leaves the working curved/DCEL path
-    // untouched (only the no-op box case is rescued).
-    if (multiResult && multiResult.kind === 'ok' && multiResult.pathUsed === 'Nurbs' &&
-        multiResult.allNewFaces.length === 0 && multiResult.allRemovedFaces.length === 0 &&
-        typeof bridge.booleanSolid === 'function') {
+    // ADR-276 Phase 3/5 — solid-CSG rescue. Fires when the DCEL/NURBS path can't
+    // produce a valid result for a planar (box) config, in EITHER of two ways:
+    //   (1) a clean NO-OP (pathUsed=Nurbs, nothing new/removed = the ADR-275
+    //       surface-crossing case: corner-poke / notch / through-slot); or
+    //   (2) a gate REJECTION (kind='error' — e.g. enclosed B⊂A, where the NURBS
+    //       dispatch yields invariant-violating geometry that its own closure
+    //       gate rolls back byte-identically → {kind:'error'}). Before ADR-276
+    //       Phase 3 the rescue only caught (1), so enclosed silently no-op'd
+    //       (the rolled-back result left the two boxes intact — the user saw
+    //       nothing happen).
+    // In both cases boolean_solid (curved-first, then polygonal split-by-chain +
+    // seam weld, with its OWN fail-closed closed→closed + invariant + SI gate)
+    // is the correct fallback: it cuts corner / notch / slot AND the enclosed
+    // cavity (A outer shell + B flipped inward void) WATERTIGHT. If it still
+    // can't, it fails closed (mesh rolled back) and we fall through to the DCEL
+    // result's honest ADR-275 message. The DCEL path already restored the mesh
+    // to pre-op state on both no-op and rejection, so boolean_solid runs on
+    // clean input. Working curved/DCEL cuts (kind='ok' WITH new faces) never
+    // reach here — untouched.
+    const dcelNoOp =
+      multiResult && multiResult.kind === 'ok' && multiResult.pathUsed === 'Nurbs' &&
+      multiResult.allNewFaces.length === 0 && multiResult.allRemovedFaces.length === 0;
+    const dcelRejected = multiResult != null && multiResult.kind === 'error';
+    if ((dcelNoOp || dcelRejected) && typeof bridge.booleanSolid === 'function') {
       const solid = bridge.booleanSolid(facesA, facesB, op);
       if (solid && solid.ok) {
         toolManager.syncMesh();
@@ -300,7 +314,7 @@ export function startBooleanOp(
         debugLog(`[Bool] solid-CSG cut: ${op}, totalFaces=${solid.totalFaces}`);
         return;
       }
-      debugLog(`[Bool] solid-CSG declined (${solid?.error ?? 'null'}); DCEL warning follows`);
+      debugLog(`[Bool] solid-CSG declined (${solid?.error ?? 'null'}); DCEL result follows`);
     }
 
     const handled = handleMultiDcelResult(deps, multiResult, op, groupSource);

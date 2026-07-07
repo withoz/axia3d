@@ -84,8 +84,10 @@ of corrupting the mesh:
 - **Phase 2 — Split robustness** (M): fix the through-slot invalid result
   (evaluate: non-convex face triangulation, multi-segment split ordering,
   chained crossings). Removes a rollback case.
-- **Phase 3 — Enclosure / void** (M): 0-seg subtract (B ⊂ A) → internal shell;
-  disjoint/enclosed UNI/INT semantics.
+- **Phase 3 — Enclosure / void** (M) ✅ DONE 2026-07-07: 0-seg subtract
+  (B ⊂ A) → internal cavity. Engine already correct; fix was broadening the UI
+  rescue to also fire on DCEL gate rejection. (disjoint/enclosed UNI/INT
+  semantics still deferred.)
 - **Phase 4 — Coplanar coincidence** (M): shared-plane operands — fold the
   coplanar path in cleanly + merge/dedup.
 - **Phase 5 — Routing + default + demo** (S): decide UI routing (see Q2), set
@@ -268,8 +270,46 @@ of corrupting the mesh:
     through-slot → 12→10 watertight. Both cut from the UI (rescue routing):
     "차집합 완료 (solid CSG)", is_closed_solid=true. **box-box subtract now
     cuts watertight for corner / blind-notch / through-slot.**
-- **Remaining (deferred):** Phase 3 enclosure/void (A−B with B⊂A → internal
-  cavity; currently a no-op), Phase 4 coplanar, other multi-loop/degenerate
+- **Phase 3 enclosure/void DONE (2026-07-07) — enclosed subtract makes a
+  cavity, wiring fix (user-approved: "상세한 시뮬로 진행하고 배선도 같이").**
+  - **Simulation finding (measurement-first):** the ENGINE was never the
+    problem — `boolean_solid` on B⊂A already produces a correct CAVITY (0
+    intersections → no split; assemble keeps all of A outward + all of B
+    FLIPPED inward via the existing Subtract `flip_face`). `adr276_phase3_
+    enclosed_subtract_makes_cavity` measures the stored normals: **6 outward
+    (A shell) + 6 inward (B void shell)**, closed, valid, 0 violations. The
+    "no-op" was a WIRING gap, not an engine gap.
+  - **Root cause (the wiring):** `boolean_dispatch_dcel_multi_json` (the DCEL
+    path the UI hits first) does NOT cleanly no-op on enclosed boxes — the
+    NURBS dispatch yields invariant-violating geometry (`inv=12`) that its
+    `closure_preserving_gate_passed` rolls back byte-identically → returns
+    `{kind:'error'}`. The ADR-276 Phase 5 rescue only fired on a CLEAN no-op
+    (`kind='ok' && pathUsed='Nurbs' && allNew/allRemoved empty`), so the
+    error slipped past → `boolean_solid` was never tried → user saw nothing.
+  - **Fix (BooleanHandler.startBooleanOp):** broaden the rescue to also fire
+    on a DCEL gate REJECTION (`dcelRejected = multiResult.kind === 'error'`),
+    not just the clean no-op. In both cases the DCEL path already restored the
+    mesh to pre-op state, so `boolean_solid` runs on clean input, and its OWN
+    fail-closed gate (closed→closed + invariants + SI) is the arbiter — if it
+    can't handle a config it declines and the honest DCEL message follows.
+    Strictly additive: working DCEL cuts (`kind='ok'` WITH new faces) never
+    reach the rescue.
+  - **Verified end-to-end (browser, real UI path):** enclosed subtract →
+    "차집합 완료 (solid CSG)", 12→12 faces, `verifyInvariants().valid=true`
+    (0 violations), `meshManifoldInfo.isClosedSolid=true`; render buffer =
+    24 tris (12 outward A shell + 12 inward void shell = confirmed cavity);
+    single Undo restores the 2 separate boxes. **Regression clear (same
+    session, direct `booleanSolid`):** corner-poke 12→9, blind-notch 12→11,
+    through-slot 12→10 — all closed, valid, 0 violations.
+  - **Not done (deferred):** the DCEL path still WASTES work computing an
+    invalid result for enclosed boxes before rolling back (a Plane-only
+    early-route to `boolean_solid` would skip it — Phase 5 optimization, not
+    correctness). The `face_cached_normals_or_compute` / attached-surface
+    normal is not flipped by `flip_face` (harmless for box cavities — Plane
+    faces render via the planar `face.normal()` path; curved cavities use
+    ADR-198 `face_surface_reversed`) — noted as a latent inconsistency for a
+    future `flip_face` surface-orientation ADR.
+- **Remaining (deferred):** Phase 4 coplanar, other multi-loop/degenerate
   configs. Union/Intersect box-box beyond the current cases.
 
 ## Lock-ins (for the β phases)

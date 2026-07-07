@@ -9827,6 +9827,47 @@ mod tests {
         }
     }
 
+    // ADR-276 Phase 3 — enclosed (B fully inside A) subtract must produce a
+    // correct CAVITY: A's outer shell (6 faces, normals OUTWARD) + B's void
+    // shell (6 faces, normals FLIPPED INWARD into the void). B⊂A has no surface
+    // crossing → 0 intersections → no split; the assemble stage keeps all of A
+    // (outside B) and all of B (inside A, flipped). Result = a valid closed
+    // solid-with-void (2 nested shells, one flipped). Measures each face's
+    // stored normal relative to the common center to distinguish a real cavity
+    // (6 out + 6 in) from a no-op (12 out = two un-flipped nested boxes).
+    #[test]
+    fn adr276_phase3_enclosed_subtract_makes_cavity() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let center = DVec3::new(0.0, 0.0, 50.0);
+        let a = m.create_box(center, 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(center, 40.0, 40.0, 40.0, mat).unwrap();
+        let r = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+        assert!(r.is_ok(), "enclosed subtract must not error: {:?}", r.err());
+
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        assert_eq!(active.len(), 12, "cavity = A(6) + B(6) void walls");
+        let info = m.face_set_manifold_info(&active);
+        assert!(info.is_closed_solid, "cavity must be a closed solid (2 shells)");
+        assert_eq!(info.boundary_edge_count, 0, "no open boundary");
+        assert_eq!(info.non_manifold_edge_count, 0, "manifold");
+        assert!(m.verify_face_invariants().is_valid(), "ADR-007 invariants");
+
+        let mut outward = 0;
+        let mut inward = 0;
+        for &f in &active {
+            let Some(c) = m.face_centroid(f) else { continue };
+            let n = m.faces[f].normal(); // stored normal (flip_face negates this)
+            let radial = (c - center).normalize_or_zero();
+            let d = n.dot(radial);
+            if d > 0.3 { outward += 1; } else if d < -0.3 { inward += 1; }
+        }
+        // The discriminator: a real cavity flips B's walls inward. A no-op leaves
+        // both boxes' walls outward (12 out, 0 in).
+        assert_eq!(outward, 6, "A outer shell = 6 outward faces");
+        assert_eq!(inward, 6, "B void shell = 6 INWARD-flipped faces (cavity, not a no-op)");
+    }
+
     // ADR-276 Phase 2 — notch debug: trace split → classify → assemble → weld.
     #[test]
     fn adr276_phase2_debug_notch_pipeline() {

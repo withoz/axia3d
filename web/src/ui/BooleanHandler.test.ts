@@ -289,6 +289,34 @@ describe('BooleanHandler', () => {
       expect((toastWarn.mock.calls[0][0] as string)).toContain('ADR-275');
     });
 
+    // ADR-276 Phase 3 — solid-CSG rescue ALSO fires on a DCEL gate REJECTION
+    // (kind='error'), not just a clean no-op. The enclosed (B⊂A) subtract makes
+    // the NURBS dispatch yield invariant-violating geometry its closure gate
+    // rolls back → {kind:'error'}. boolean_solid then makes the correct cavity.
+    it('DCEL rejection (kind=error) + boolean_solid CUTS → solid-CSG success (enclosed cavity)', () => {
+      setupMultiSelection([10, 20, 30, 40]);
+      (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({
+        kind: 'error', reason: 'engineErr',
+        detail: 'boolean 이 solid 를 열거나 자기교차를 만들어 취소됨',
+      });
+      (deps.bridge as any).booleanSolid = vi.fn().mockReturnValue({ ok: true, totalFaces: 12 });
+      startBooleanOp(deps, 'subtract');
+      expect(deps.bridge.booleanSolid).toHaveBeenCalled();
+      expect(deps.toolManager.syncMesh).toHaveBeenCalled();
+      expect(toastInfo).toHaveBeenCalled();      // "차집합 완료 (solid CSG)"
+    });
+
+    it('DCEL rejection (kind=error) + boolean_solid declines → does NOT sync', () => {
+      setupMultiSelection([10, 20, 30, 40]);
+      (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({
+        kind: 'error', reason: 'engineErr', detail: 'unsupported config',
+      });
+      (deps.bridge as any).booleanSolid = vi.fn().mockReturnValue({ ok: false, error: 'declined' });
+      startBooleanOp(deps, 'subtract');
+      expect(deps.bridge.booleanSolid).toHaveBeenCalled();
+      expect(deps.toolManager.syncMesh).not.toHaveBeenCalled();
+    });
+
     it('Nurbs path with partial failures shows warning toast and syncs mesh', () => {
       setupMultiSelection([10, 20, 30, 40]);
       (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({
