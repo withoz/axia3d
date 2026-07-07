@@ -168,6 +168,24 @@ depth is referenced by exactly 2 half-edges (its disk + its one parent's hole)
       7-arg bridge `drawCircleAsCurve` with 10 args → radius defaulted to the 7th
       arg (1.0) → two coincident r=1 circles, a false nm=1. The engine sim, always
       authoritative, correctly used radii 40/20.)*
+  - **Wiring audit (β, all callers of the containment splits):**
+    - **Production circle path** (`rederive_coplanar_on_draw`, face_rederive ON =
+      browser default) → now `assign_circle_holes_innermost`. **Fixed** (nm=0).
+    - **Legacy circle path** (`intersect_faces_inner` face_rederive **OFF**,
+      scene.rs ~3161, old `detect_circle_containment` + `split_face_by_inner_
+      circle` per-fid loop) → measured: NO nm=1 bug (nm=0), but it does not form
+      circle annuli at all (circle-in-polygon unhandled in legacy) — a
+      pre-existing legacy behavior, NOT this defect. Production never takes it
+      (face_rederive default ON); left untouched to avoid destabilizing the 245+
+      legacy regressions. SSOT note: two hole-assignment impls coexist; only the
+      production one matters.
+    - **A2 freeform path** (`face_rederive.rs:1719`, `split_face_by_inner_closed_
+      curve_generic` for Bezier/BSpline/NURBS self-loops, circles excluded) →
+      first-match-per-inner scan, so an analogous innermost/depth≥2 risk exists
+      for FREEFORM annuli — but the generic split requires a POLYGON outer (no
+      freeform-in-freeform), so it is much milder and untriggered by the circle
+      case. **Follow-up:** generalize `assign_circle_holes_innermost` to freeform
+      closed curves (separate curve type, separate ADR).
   - **Out of scope (follow-up):** extruding the INNERMOST disk of an annulus
     through is still gate-REJECTED (clean byte-identical rollback, no corruption)
     — a separate nested-region extrude limitation, NOT the annulus formation this
