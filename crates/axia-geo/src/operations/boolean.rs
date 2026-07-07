@@ -8819,6 +8819,85 @@ struct IntersectionSegment {
     p1: DVec3,
 }
 
+/// ADR-277 β-1 (N1) — global vertex arrangement for the intersection curve.
+///
+/// The general-CSG core: the intersection segments are the SAME 3D geometry for
+/// the A-face and the B-face of a crossing pair, and adjacent segments of an
+/// intersection chain share an endpoint. Deduping every endpoint into ONE shared
+/// index — using the mesh's spatial-hash tolerance (`SPATIAL_HASH_CELL` 1e-4 mm,
+/// dedup 1.5e-4 mm = 0.15μm, LOCKED #5) — means that when both faces are
+/// retriangulated against this arrangement (ADR-277 β-2), the seam edges use the
+/// SAME vertices and stitch by construction. This is what eliminates the
+/// independent-split + post-hoc-weld gap the de-risk trace found.
+///
+/// Pure primitive: no mesh mutation. β-3 maps the shared indices to real
+/// `VertId`s via `add_vertex` (which re-dedups against the same tolerance).
+#[derive(Debug, Default)]
+pub(crate) struct VertexArrangement {
+    points: Vec<DVec3>,
+    hash: FxHashMap<(i64, i64, i64), Vec<usize>>,
+}
+
+impl VertexArrangement {
+    /// Mirrors `mesh::SPATIAL_HASH_CELL` (0.1μm) and its ×1.5 dedup (0.15μm).
+    const CELL: f64 = 1e-4;
+    const DEDUP: f64 = 1.5e-4;
+
+    pub(crate) fn new() -> Self {
+        Self { points: Vec::new(), hash: FxHashMap::default() }
+    }
+
+    fn key(p: DVec3) -> (i64, i64, i64) {
+        let inv = 1.0 / Self::CELL;
+        ((p.x * inv).round() as i64, (p.y * inv).round() as i64, (p.z * inv).round() as i64)
+    }
+
+    /// Insert a point, deduped against the 3×3×3 neighbourhood (mirrors
+    /// `mesh::spatial_hash`). Returns the shared index — coincident points
+    /// (within 0.15μm) return the SAME index.
+    pub(crate) fn insert(&mut self, p: DVec3) -> usize {
+        let k = Self::key(p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(idxs) = self.hash.get(&(k.0 + dx, k.1 + dy, k.2 + dz)) {
+                        for &i in idxs {
+                            if (self.points[i] - p).length() < Self::DEDUP {
+                                return i;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let idx = self.points.len();
+        self.points.push(p);
+        self.hash.entry(k).or_default().push(idx);
+        idx
+    }
+
+    pub(crate) fn point(&self, idx: usize) -> DVec3 {
+        self.points[idx]
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.points.len()
+    }
+}
+
+/// ADR-277 β-1 — build the shared vertex arrangement from intersection segments.
+/// Returns the arrangement + each segment as a `(idx0, idx1)` pair of shared
+/// indices. Adjacent/coincident segment endpoints collapse to one index, so the
+/// pair count exceeding the unique-point count is exactly the sharing that makes
+/// the retriangulated seam watertight.
+fn build_intersection_arrangement(
+    segs: &[IntersectionSegment],
+) -> (VertexArrangement, Vec<(usize, usize)>) {
+    let mut arr = VertexArrangement::new();
+    let pairs = segs.iter().map(|s| (arr.insert(s.p0), arr.insert(s.p1))).collect();
+    (arr, pairs)
+}
+
 /// ADR-197 β-3-β — a surface-surface intersection between two faces' analytic
 /// surfaces (the curved-Boolean counterpart of `IntersectionSegment`). `ssi.points`
 /// is the 3D intersection curve; `ssi.uv_a` / `ssi.uv_b` are the parameters on
@@ -10186,6 +10265,75 @@ mod tests {
         assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
         assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    // ADR-277 β-1 (N1) — the global vertex arrangement primitive. Coincident
+    // endpoints (within 0.15μm, LOCKED #5) collapse to one shared index; points
+    // farther apart stay distinct.
+    #[test]
+    fn adr277_beta1_vertex_arrangement_dedup() {
+        let mut arr = VertexArrangement::new();
+        let a = arr.insert(DVec3::new(10.0, 20.0, 30.0));
+        // 0.1μm away (1e-4 mm) → within 0.15μm dedup → SAME index.
+        let a2 = arr.insert(DVec3::new(10.0 + 1e-4, 20.0, 30.0));
+        assert_eq!(a, a2, "coincident (0.1μm) endpoints share an index");
+        // 0.3μm away (3e-4 mm) → beyond dedup → distinct.
+        let b = arr.insert(DVec3::new(10.0 + 3e-4, 20.0, 30.0));
+        assert_ne!(a, b, "0.3μm-apart points are distinct");
+        assert_eq!(arr.len(), 2, "2 unique points");
+    }
+
+    // ADR-277 β-1 — an intersection CHAIN (seg0 A→B, seg1 B→C) shares the middle
+    // endpoint; a closed loop shares both. The shared index is what stitches the
+    // retriangulated sub-faces (β-2) without a weld.
+    #[test]
+    fn adr277_beta1_chain_shares_endpoints() {
+        let f = FaceId::new(0);
+        let g = FaceId::new(1);
+        let pa = DVec3::new(0.0, 0.0, 0.0);
+        let pb = DVec3::new(10.0, 0.0, 0.0);
+        let pc = DVec3::new(20.0, 0.0, 0.0);
+        // seg0 on face f (A→B), seg1 on face g (B→C) — B is shared (coincident).
+        let segs = vec![
+            IntersectionSegment { face_a: f, face_b: g, p0: pa, p1: pb },
+            IntersectionSegment { face_a: f, face_b: g, p0: DVec3::new(10.0 + 5e-5, 0.0, 0.0), p1: pc },
+        ];
+        let (arr, pairs) = build_intersection_arrangement(&segs);
+        assert_eq!(arr.len(), 3, "A, B, C — the shared B collapses to one point");
+        assert_eq!(pairs[0].1, pairs[1].0, "seg0.end and seg1.start are the SAME shared index");
+    }
+
+    // ADR-277 β-1 — the REAL rot(1,1,1) intersection curve: adjacent segments
+    // share endpoints, so the arrangement collapses to FEWER unique points than
+    // 2× the segment count. This sharing is the foundation of the watertight
+    // retriangulation (β-2) — the seam vertices exist ONCE, used by both A and B.
+    #[test]
+    fn adr277_beta1_rotated_box_segments_collapse() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let mut m = Mesh::new();
+        m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let a_faces = active(&m);
+        let mid: std::collections::HashSet<FaceId> = a_faces.iter().copied().collect();
+        let bc = DVec3::new(40.0, 40.0, 60.0);
+        m.create_box(bc, 100.0, 100.0, 100.0, mat).unwrap();
+        let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+        let mut bv = std::collections::HashSet::new();
+        for &f in &b_faces { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { bv.insert(v); } } }
+        let bvv: Vec<VertId> = bv.into_iter().collect();
+        m.rotate_verts(&bvv, bc, DVec3::new(1.0,1.0,1.0).normalize(), 30.0_f64.to_radians()).unwrap();
+        let sa = m.prepare_solid(&a_faces).unwrap();
+        let sb = m.prepare_solid(&b_faces).unwrap();
+        let segs = m.find_intersections_polygonal(&sa, &sb);
+        assert!(!segs.is_empty(), "the rotated box crosses A");
+        let (arr, pairs) = build_intersection_arrangement(&segs);
+        assert_eq!(pairs.len(), segs.len());
+        // Sharing: unique points < 2× segments (adjacent segs share endpoints).
+        assert!(arr.len() < 2 * segs.len(),
+            "arrangement collapses shared endpoints: {} unique < {} (2×{} segs)",
+            arr.len(), 2 * segs.len(), segs.len());
     }
 
     // ADR-277 (general CSG) de-risk — trace WHERE a pure-transversal rotated-box
