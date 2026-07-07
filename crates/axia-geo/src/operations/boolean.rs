@@ -1687,13 +1687,13 @@ impl Mesh {
             // downstream `split_polygon_2d` only cuts by a STRAIGHT chord, not
             // the L/corner chain a box-box notch needs (it ignores the interior
             // corner vertex) → it fails to split, leaving A+B both intact, which
-            // the closed-solid gate would WRONGLY admit (2 disjoint boxes read
-            // as boundary==0). Until the split-by-chain (planar arrangement)
-            // lands, keep the tri-tri collector so box-box yields an OPEN result
-            // that the gate correctly ROLLS BACK (fail-closed, no wrong output).
-            // `find_intersections_polygonal` stays as the verified building block
-            // (exercised by adr276_phase2_audit).
-            let general_intersections = self.find_intersections(&solid_a, &solid_b);
+            // ADR-276 Phase 2 WIRED: the TRUE face-to-face polygon intersection
+            // (exact rectangular loop, no fan-tri diagonals). Consumed by
+            // split_faces_by_chains below (Stage 2) which cuts along the segment
+            // CHAIN (corner-aware) → watertight box-box. Still gate-guarded:
+            // if any face falls back to unsplit, the result won't be watertight
+            // and the closed→closed gate rolls it back (fail-closed).
+            let general_intersections = self.find_intersections_polygonal(&solid_a, &solid_b);
             general_count = general_intersections.len();
             intersections.extend(general_intersections);
         } else {
@@ -1703,16 +1703,30 @@ impl Mesh {
             intersections.len(), coplanar_count, general_count));
 
         // ── Stage 2: Face Split — 교차선으로 face 분할 ─────
-        let split_a = if !intersections.is_empty() {
-            self.split_faces_by_intersections(&solid_a, &intersections, material)
+        // ADR-276 Phase 2: the solid-CSG path (use_general) splits along the
+        // segment CHAINS (split_face_by_chain, corner-aware) → watertight; the
+        // legacy path keeps split_polygon_2d (straight chord).
+        let (split_a, split_b) = if intersections.is_empty() {
+            (
+                solid_a.face_ids.iter().map(|&f| (f, vec![f])).collect(),
+                solid_b.face_ids.iter().map(|&f| (f, vec![f])).collect(),
+            )
+        } else if use_general {
+            // Group segments by BOTH endpoints' faces (as split_faces_by_intersections
+            // does), then split each solid's own faces along their chains.
+            let mut segs_by_face: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+            for seg in &intersections {
+                segs_by_face.entry(seg.face_a).or_default().push((seg.p0, seg.p1));
+                segs_by_face.entry(seg.face_b).or_default().push((seg.p0, seg.p1));
+            }
+            let sa = self.split_faces_by_chains(&solid_a.face_ids, &segs_by_face, material);
+            let sb = self.split_faces_by_chains(&solid_b.face_ids, &segs_by_face, material);
+            (sa, sb)
         } else {
-            // 교차 없으면 모든 face를 자기 자신으로 매핑
-            solid_a.face_ids.iter().map(|&f| (f, vec![f])).collect()
-        };
-        let split_b = if !intersections.is_empty() {
-            self.split_faces_by_intersections(&solid_b, &intersections, material)
-        } else {
-            solid_b.face_ids.iter().map(|&f| (f, vec![f])).collect()
+            (
+                self.split_faces_by_intersections(&solid_a, &intersections, material),
+                self.split_faces_by_intersections(&solid_b, &intersections, material),
+            )
         };
 
         // 분할 후 새로운 face 목록
@@ -2090,6 +2104,100 @@ impl Mesh {
             }
         }
         segments
+    }
+
+    /// ADR-276 Phase 2 — ensure `p` is a VERTEX on `face_id`'s outer boundary.
+    /// If a boundary vertex already sits there, reuse it; otherwise find the
+    /// boundary EDGE containing `p` and `split_edge` to insert it. Returns the
+    /// vertex id, or None if `p` is not on the boundary.
+    #[allow(dead_code)]
+    fn ensure_boundary_vertex(&mut self, face_id: FaceId, p: DVec3, tol: f64) -> Option<VertId> {
+        let start = self.faces.get(face_id)?.outer().start;
+        let loop_verts = self.collect_loop_verts(start).ok()?;
+        for &v in &loop_verts {
+            if let Ok(vp) = self.vertex_pos(v) {
+                if (vp - p).length() < tol { return Some(v); }
+            }
+        }
+        let edges = self.face_outer_edges(face_id).ok()?;
+        for e in edges {
+            let edge = self.edges.get(e)?;
+            let a = self.vertex_pos(edge.v_small()).ok()?;
+            let b = self.vertex_pos(edge.v_large()).ok()?;
+            let ab = b - a;
+            let len2 = ab.dot(ab);
+            if len2 < 1e-18 { continue; }
+            let t = (p - a).dot(ab) / len2;
+            if t <= 1e-6 || t >= 1.0 - 1e-6 { continue; } // at/beyond an endpoint
+            if (a + ab * t - p).length() < tol {
+                let (nv, _, _) = self.split_edge(e, p).ok()?;
+                return Some(nv);
+            }
+        }
+        None
+    }
+
+    /// ADR-276 Phase 2 — realize ONE ordered point chain as a cut of `face_id`
+    /// via `split_face_by_chain`. Endpoints are inserted on the boundary
+    /// (`ensure_boundary_vertex`); interior points become interior verts; the
+    /// chain edges are created. Returns the resulting sub-faces, or None.
+    #[allow(dead_code)]
+    fn apply_chain_split(&mut self, face_id: FaceId, chain: &[DVec3], material: MaterialId) -> Option<Vec<FaceId>> {
+        use crate::operations::face_split::split_face_by_chain;
+        if chain.len() < 2 { return None; }
+        const TOL: f64 = 1e-3;
+        // Endpoints on boundary (split_edge inserts if needed). Insert the first,
+        // then re-resolve the second (the loop may have gained a vertex).
+        let v0 = self.ensure_boundary_vertex(face_id, chain[0], TOL)?;
+        let vk = self.ensure_boundary_vertex(face_id, chain[chain.len() - 1], TOL)?;
+        if v0 == vk { return None; }
+        let mut chain_verts: Vec<VertId> = Vec::with_capacity(chain.len());
+        chain_verts.push(v0);
+        for &p in &chain[1..chain.len() - 1] {
+            chain_verts.push(self.add_vertex(p)); // interior (spatial-hash dedup shares seam verts)
+        }
+        chain_verts.push(vk);
+        chain_verts.dedup();
+        if chain_verts.len() < 2 { return None; }
+        for w in chain_verts.windows(2) {
+            if self.find_edge(w[0], w[1]).is_none() {
+                self.add_edge(w[0], w[1]).ok()?;
+            }
+        }
+        let res = split_face_by_chain(self, face_id, &chain_verts, material).ok()?;
+        Some(res.new_faces)
+    }
+
+    /// ADR-276 Phase 2 — split each face along its intersection segment CHAINS
+    /// (via `split_face_by_chain`), producing watertight sub-faces. This is the
+    /// solid-CSG replacement for `split_faces_by_intersections` (straight-chord
+    /// only). MVP: exactly one chain per face (box-box corner or straight cut).
+    /// 0 / multi-chain or an unrealizable chain → face kept whole (the caller's
+    /// closed-solid gate then rolls back any non-watertight result).
+    #[allow(dead_code)]
+    fn split_faces_by_chains(
+        &mut self,
+        face_ids: &[FaceId],
+        segs_by_face: &FxHashMap<FaceId, Vec<(DVec3, DVec3)>>,
+        material: MaterialId,
+    ) -> FxHashMap<FaceId, Vec<FaceId>> {
+        let mut out: FxHashMap<FaceId, Vec<FaceId>> = FxHashMap::default();
+        for &fid in face_ids {
+            let segs = match segs_by_face.get(&fid) {
+                Some(s) if !s.is_empty() => s,
+                _ => { out.insert(fid, vec![fid]); continue; }
+            };
+            let chains = assemble_chains(segs);
+            if chains.len() == 1 {
+                match self.apply_chain_split(fid, &chains[0], material) {
+                    Some(subs) if subs.len() >= 2 => { out.insert(fid, subs); }
+                    _ => { out.insert(fid, vec![fid]); }
+                }
+            } else {
+                out.insert(fid, vec![fid]);
+            }
+        }
+        out
     }
 
     /// Stage 3: 분할된 face들을 원본 반대편 솔리드로 분류
@@ -7879,6 +7987,66 @@ fn arrange_polygon_2d(poly: &[Pt2], cuts: &[(Pt2, Pt2)]) -> Vec<Region2D> {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// ADR-276 Phase 2 — assemble intersection segments into ordered point chains
+// ════════════════════════════════════════════════════════════════════
+
+/// Group a face's intersection SEGMENTS into ordered point CHAINS. Each chain
+/// runs endpoint → interior… → endpoint (degree-1 nodes are chain ends,
+/// degree-2 nodes are interior). Points are position-deduped (0.1μm grid).
+/// For a box-box corner this returns one 3-point chain (boundary, corner,
+/// boundary); for a straight cut, one 2-point chain.
+#[allow(dead_code)]
+fn assemble_chains(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
+    fn key(p: DVec3) -> (i64, i64, i64) {
+        ((p.x * 10000.0).round() as i64, (p.y * 10000.0).round() as i64, (p.z * 10000.0).round() as i64)
+    }
+    let mut nodes: Vec<DVec3> = Vec::new();
+    let mut id_of: std::collections::HashMap<(i64, i64, i64), usize> = std::collections::HashMap::new();
+    let mut adj: Vec<Vec<usize>> = Vec::new();
+    for &(a, b) in segs {
+        let na = *id_of.entry(key(a)).or_insert_with(|| { nodes.push(a); nodes.len() - 1 });
+        while adj.len() <= na { adj.push(Vec::new()); }
+        let nb = *id_of.entry(key(b)).or_insert_with(|| { nodes.push(b); nodes.len() - 1 });
+        while adj.len() <= nb { adj.push(Vec::new()); }
+        if na == nb { continue; }
+        adj[na].push(nb);
+        adj[nb].push(na);
+    }
+    let ekey = |a: usize, b: usize| (a.min(b), a.max(b));
+    let mut used: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut chains: Vec<Vec<DVec3>> = Vec::new();
+    for start in 0..nodes.len() {
+        if adj[start].len() != 1 { continue; } // chain endpoint
+        let mut chain_ids = vec![start];
+        let mut cur = start;
+        let mut prev: Option<usize> = None;
+        loop {
+            let mut nxt = None;
+            for &n in &adj[cur] {
+                if Some(n) == prev { continue; }
+                if used.contains(&ekey(cur, n)) { continue; }
+                nxt = Some(n);
+                break;
+            }
+            match nxt {
+                Some(n) => {
+                    used.insert(ekey(cur, n));
+                    chain_ids.push(n);
+                    prev = Some(cur);
+                    cur = n;
+                    if adj[n].len() != 2 { break; } // reached an endpoint / junction
+                }
+                None => break,
+            }
+        }
+        if chain_ids.len() >= 2 {
+            chains.push(chain_ids.iter().map(|&i| nodes[i]).collect());
+        }
+    }
+    chains
+}
+
+// ════════════════════════════════════════════════════════════════════
 // 2D Polygon Splitting by Line Segments
 // ════════════════════════════════════════════════════════════════════
 
@@ -9064,7 +9232,9 @@ mod tests {
                 }
             }
         }
-        let _ = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+        let bres = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+        println!("[boolean_solid result] ok={} {}", bres.is_ok(),
+            bres.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
 
         // Bucket active verts by rounded position (0.01mm) → find coincident duplicates.
         use std::collections::HashMap;
@@ -9178,6 +9348,76 @@ mod tests {
             .filter_map(|&f| m.collect_loop_verts(m.faces.get(f).unwrap().outer().start).ok().map(|v| v.len()))
             .collect();
         assert!(counts.contains(&4), "one sub-face must be the 4-vert corner rect, got {:?}", counts);
+    }
+
+    // ADR-276 Phase 2 — probe: split_faces_by_chains actually splits A's crossed
+    // faces on the box-box corner-poke (each into 2 sub-faces), staying valid.
+    #[test]
+    fn adr276_phase2_probe_split_faces_by_chains_corner_poke() {
+        use std::collections::HashMap;
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 50.0, 100.0), 60.0, 60.0, 60.0, mat).unwrap();
+        let sa = m.prepare_solid(&a).unwrap();
+        let sb = m.prepare_solid(&b).unwrap();
+        let segs = m.find_intersections_polygonal(&sa, &sb);
+        let mut by_a: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+        let mut by_b: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
+        for s in &segs {
+            by_a.entry(s.face_a).or_default().push((s.p0, s.p1));
+            by_b.entry(s.face_b).or_default().push((s.p0, s.p1));
+        }
+        let split_a = m.split_faces_by_chains(&sa.face_ids, &by_a, mat);
+        let split_b = m.split_faces_by_chains(&sb.face_ids, &by_b, mat);
+
+        println!("\n===== ADR-276 Phase 2 probe: split_faces_by_chains =====");
+        let mut a_split = 0;
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        for (orig, subs) in split_a.iter() {
+            *counts.entry(subs.len()).or_insert(0) += 1;
+            if subs.len() >= 2 { a_split += 1; }
+            println!("  A face {:?} → {} sub-faces", orig, subs.len());
+        }
+        let b_split = split_b.values().filter(|v| v.len() >= 2).count();
+        println!("A crossed-faces split: {} (expect 3) | B split: {} (expect 3)", a_split, b_split);
+        println!("mesh valid = {}", m.verify_face_invariants().is_valid());
+        println!("========================================================");
+
+        assert!(m.verify_face_invariants().is_valid(), "mesh must stay valid after chain splits");
+        assert_eq!(a_split, 3, "A's 3 crossed faces (top/+x/+y) must each split into ≥2");
+        assert_eq!(b_split, 3, "B's 3 crossed walls must each split into ≥2");
+
+        // Continue the pipeline (classify + assemble) to see the assembled cut.
+        let new_a: Vec<FaceId> = split_a.values().flat_map(|v| v.iter().copied()).collect();
+        let new_b: Vec<FaceId> = split_b.values().flat_map(|v| v.iter().copied()).collect();
+        let (keep_a, keep_b) = m.classify_split_faces(&new_a, &sb, &new_b, &sa, BoolOp::Subtract);
+        println!("[classify] keep_a={}/{} keep_b={}/{}", keep_a.len(), new_a.len(), keep_b.len(), new_b.len());
+        for &f in &new_a { if !keep_a.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &new_b { if !keep_b.contains(&f) { let _ = m.remove_face(f); } }
+        for &f in &keep_b { let _ = m.flip_face(f); }
+        let result: Vec<FaceId> = keep_a.iter().chain(keep_b.iter()).copied().collect();
+        let info = m.face_set_manifold_info(&result);
+        println!("[assembled] faces={} closed={} boundary={} nm={}",
+            result.len(), info.is_closed_solid, info.boundary_edge_count, info.non_manifold_edge_count);
+        // boundary edge positions
+        let mut ec: HashMap<EdgeId, u32> = HashMap::new();
+        let mut owner: HashMap<EdgeId, FaceId> = HashMap::new();
+        for &f in &result {
+            if let Ok(es) = m.face_outer_edges(f) {
+                for e in es { *ec.entry(e).or_insert(0) += 1; owner.entry(e).or_insert(f); }
+            }
+        }
+        for (eid, c) in ec.iter() {
+            if *c == 1 {
+                if let Some(ed) = m.edges.get(*eid) {
+                    let a = m.vertex_pos(ed.v_small()).unwrap_or(DVec3::ZERO);
+                    let b = m.vertex_pos(ed.v_large()).unwrap_or(DVec3::ZERO);
+                    println!("  OPEN edge owner={:?}: ({:.0},{:.0},{:.0})→({:.0},{:.0},{:.0})",
+                        owner.get(eid), a.x, a.y, a.z, b.x, b.y, b.z);
+                }
+            }
+        }
     }
 
     /// 두 겹치는 큐브로 Boolean 테스트

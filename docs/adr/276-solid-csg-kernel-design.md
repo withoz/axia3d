@@ -211,14 +211,32 @@ of corrupting the mesh:
   tri-tri collector for now (open result → gate rolls back → fail-closed, no
   wrong output); `find_intersections_polygonal` is retained as the verified,
   `#[allow(dead_code)]` building block (exercised by the audit test).
-- **Remaining Phase 2 core (deferred): split-by-chain (planar arrangement).**
-  Enhance the split so a face is cut along the intersection SEGMENT CHAIN
-  (inserting interior corner vertices) — a proper planar subdivision, not a
-  single straight chord. Candidate: route the boolean split through the
-  existing `split_face_by_chain` (face_split.rs) instead of `split_polygon_2d`.
-  Once that lands + consumes `find_intersections_polygonal`, box-box yields the
-  watertight notch and the gate admits it. Then through-slot robustness, Phase 3
-  enclosure/void.
+- **Phase 2 split-by-chain WIRED (2026-07-07) — 3 of 4 sub-problems solved,
+  seam-welding is the last gap.** Added `split_faces_by_chains` (+
+  `assemble_chains`, `apply_chain_split`, `ensure_boundary_vertex`) and wired
+  `boolean_impl` (use_general) to Stage 1 = `find_intersections_polygonal`,
+  Stage 2 = `split_faces_by_chains`. Verified:
+  - ✓ intersection curve correct (6-segment notch loop)
+  - ✓ `split_face_by_chain` cuts the L-corner (sim)
+  - ✓ `split_faces_by_chains` splits all 6 crossed faces into 2 each, mesh valid
+    (`adr276_phase2_probe_split_faces_by_chains_corner_poke`)
+  - ✗ **seam welding**: after classify drops the corner-rects, the notch seam
+    has 12 OPEN boundary edges. Root cause: A's 3 faces share seam verts via
+    shared-edge `split_edge`, but B is a SEPARATE solid — B's `split_edge`
+    creates a DUPLICATE vertex at a seam endpoint that is A-interior but
+    B-boundary (e.g. (20,50,70): interior to A's +y face, on B's −x wall edge),
+    so A's seam edge (V3–V2) and B's (V7–V2) don't share → open. No weld/stitch
+    utility exists.
+  Gate still protects: box-box → open → `closed_solid=false` → byte-identical
+  rollback (fail-closed, no wrong output). Wiring kept (exercises the verified
+  code on the live path; safe).
+- **Remaining Phase 2 core (deferred): SEAM WELDING.** Make cross-solid seam
+  vertices shared — either (a) a post-assemble weld pass (merge coincident verts
+  + dedup the resulting duplicate edges, re-wiring HEs), or (b) build the
+  intersection curve as shared vertices FIRST and split both solids against that
+  single set (dedup-aware edge insertion). Once seam verts/edges are shared,
+  box-box is watertight and the gate admits the cut. Then through-slot
+  robustness, Phase 3 enclosure/void, Phase 4 coplanar, Phase 5 UI routing.
 
 ## Lock-ins (for the β phases)
 
