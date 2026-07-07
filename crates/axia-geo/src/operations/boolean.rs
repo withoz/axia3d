@@ -1761,10 +1761,11 @@ impl Mesh {
         // (1) find the planes shared by A and B, (2) EXCLUDE those faces from the
         // keep/assemble below, (3) rebuild them by side-occupancy in
         // `resolve_coplanar_planes` (read-only here — returns outward-wound
-        // quads; added after the originals are removed). Union only for now
-        // (subtract/intersect coplanar are asymmetric future increments); other
-        // ops keep the legacy behavior (→ gate rolls back coplanar configs).
-        let coplanar_keys = if use_general && op == BoolOp::Union {
+        // quads; added after the originals are removed). Op-aware for all three
+        // ops (the side-occupancy predicate encodes Union = A∪B / Subtract =
+        // A∖B / Intersect = A∩B). Non-rect / mixed coplanar+transversal configs
+        // still fall through → the closed→closed gate rolls them back.
+        let coplanar_keys = if use_general {
             self.shared_coplanar_plane_keys(&solid_a, &solid_b)
         } else {
             std::collections::HashSet::new()
@@ -10117,25 +10118,15 @@ mod tests {
         assert_eq!(inward, 6, "B void shell = 6 INWARD-flipped faces (cavity, not a no-op)");
     }
 
-    // ADR-276 Phase 4 — coplanar-coincidence characterization + fail-closed lock.
+    // ADR-276 Phase 4 — no-corruption guard for coplanar-overlap SUBTRACT.
     //
-    // Coplanar = operands sharing a face PLANE (touching / lateral overlap /
-    // flush). These are the CSG-degenerate cases: a point on a shared face is
-    // neither strictly in nor out, and two OVERLAPPING coplanar faces must be
-    // resolved by a 2D polygon boolean in the shared plane (union merges them,
-    // subtract/intersect clips them). The current pipeline collects coplanar
-    // pairs (Stage 0.5 `detect_coplanar_faces`) but does NOT run that 2D face
-    // boolean, so a lateral/flush overlap yields an OPEN result (double-covered
-    // coplanar region + mismatched seam) → the closed→closed gate rolls it back
-    // byte-identically. This test LOCKS that safety: coplanar-overlap subtract
-    // must NOT commit a corrupt result — it either errors (rolled back to the
-    // valid 2-box input) or, if a future Phase-4 2D-face-boolean lands, produces
-    // a valid closed solid. It must NEVER leave an invalid/open committed mesh.
-    //
-    // (Reusable building blocks for the future fix already exist:
-    // `operations::coplanar` `sutherland_hodgman` [2D intersection] +
-    // `polygon_difference_walking` [2D difference] — Phase 4 proper wires them
-    // into a coplanar-face-pair resolver. Not a wiring fix like Phase 2/3.)
+    // Coplanar = operands sharing a face PLANE. Since the Phase-4 side-occupancy
+    // resolver landed (`resolve_coplanar_planes`), lateral-overlap subtract now
+    // COMMITS a watertight box x[-50,0] (see `..._subtract_watertight`). This
+    // test remains as the invariant guard: whatever the outcome, boolean_solid
+    // must NEVER commit an invalid/open mesh — it either produces a valid closed
+    // solid or rolls back byte-identically to the valid 2-box input (fail-closed
+    // for any config the resolver still can't handle, e.g. non-rect coplanar).
     #[test]
     fn adr276_phase4_coplanar_overlap_fails_closed_no_corruption() {
         let mat = MaterialId::new(0);
@@ -10193,6 +10184,57 @@ mod tests {
         assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
         assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    // ADR-276 Phase 4 — lateral-overlap SUBTRACT: A−B keeps A's non-overlap
+    // slab (x[-50,0]); the coplanar y/z faces are clipped, B's x=0 wall (flipped)
+    // becomes the new cut face. Watertight box x[-50,0].
+    #[test]
+    fn adr276_phase4_lateral_overlap_subtract_watertight() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let r = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+        assert!(r.is_ok(), "lateral-overlap subtract must succeed: {:?}", r.err());
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info = m.face_set_manifold_info(&active);
+        assert!(m.verify_face_invariants().is_valid());
+        assert!(info.is_closed_solid, "A−B = one closed slab");
+        assert_eq!(info.boundary_edge_count, 0);
+        assert_eq!(info.non_manifold_edge_count, 0);
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for &f in &active {
+            if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) {
+                for v in vs { if let Some(p) = m.verts.get(v).map(|v| v.pos()) { lo = lo.min(p); hi = hi.max(p); } }
+            }
+        }
+        assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x).abs() < 1e-3, "A−B spans x[-50,0], got [{},{}]", lo.x, hi.x);
+    }
+
+    // ADR-276 Phase 4 — lateral-overlap INTERSECT: A∩B = the overlap slab
+    // (x[0,50]); coplanar faces clipped to the overlap, A's x=50 & B's x=0 caps.
+    #[test]
+    fn adr276_phase4_lateral_overlap_intersect_watertight() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let r = m.boolean_solid(&a, &b, BoolOp::Intersect, mat);
+        assert!(r.is_ok(), "lateral-overlap intersect must succeed: {:?}", r.err());
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info = m.face_set_manifold_info(&active);
+        assert!(m.verify_face_invariants().is_valid());
+        assert!(info.is_closed_solid, "A∩B = one closed overlap slab");
+        assert_eq!(info.boundary_edge_count, 0);
+        assert_eq!(info.non_manifold_edge_count, 0);
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for &f in &active {
+            if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) {
+                for v in vs { if let Some(p) = m.verts.get(v).map(|v| v.pos()) { lo = lo.min(p); hi = hi.max(p); } }
+            }
+        }
+        assert!((lo.x).abs() < 1e-3 && (hi.x - 50.0).abs() < 1e-3, "A∩B spans x[0,50], got [{},{}]", lo.x, hi.x);
     }
 
     // ADR-276 Phase 4 — the coplanar grid-cell 2D-boolean primitive. Two

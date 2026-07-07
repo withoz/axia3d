@@ -88,11 +88,11 @@ of corrupting the mesh:
   (B ⊂ A) → internal cavity. Engine already correct; fix was broadening the UI
   rescue to also fire on DCEL gate rejection. (disjoint/enclosed UNI/INT
   semantics still deferred.)
-- **Phase 4 — Coplanar coincidence** (M) — UNION ✅ DONE 2026-07-07 (new
-  `coplanar_grid_cells` + side-occupancy `resolve_coplanar_planes`; box union
-  cuts watertight, browser-verified). SUBTRACT/INTERSECT coplanar + non-rect +
-  mixed still fail-closed (deferred). (touching/coincident-plane = degenerate
-  input, separate.)
+- **Phase 4 — Coplanar coincidence** (M) — ✅ DONE 2026-07-07 for all 3 ops
+  (new `coplanar_grid_cells` + side-occupancy `resolve_coplanar_planes`; box
+  union/subtract/intersect cut watertight, browser-verified). Non-rect + mixed
+  coplanar+transversal still fail-closed (deferred). (touching/coincident-plane =
+  degenerate input, separate.)
 - **Phase 5 — Routing + default + demo** (S): decide UI routing (see Q2), set
   default on/off, browser demo across the config matrix, full regression + a
   proper regression suite replacing the print-only sim.
@@ -368,17 +368,31 @@ of corrupting the mesh:
     two overlapping boxes → bool-union → "solid-CSG cut: union, totalFaces=14",
     AABB x[-50,100] y[-50,50] z[0,100], is_closed_solid=true, 0 violations).
     Regression clear: corner/notch/slot subtract untouched (Union path only).
-  - **Scope / still deferred:** UNION of axis-aligned coplanar rects only.
-    SUBTRACT / INTERSECT coplanar (asymmetric — the resolver is already op-aware
-    via the side-occupancy predicate, just not yet wired for those ops) and
-    non-rect (post-cut L-shape) coplanar faces remain FAIL-CLOSED (roll back).
-    `adr276_phase4_coplanar_overlap_fails_closed_no_corruption` (subtract) still
-    asserts no-corruption. Mixed coplanar+transversal configs also deferred
-    (the skip-weld heuristic assumes pure-coplanar).
-- **Remaining (deferred):** Phase 4 SUBTRACT/INTERSECT coplanar (wire the
-  op-aware resolver for the other two ops), non-rect coplanar faces, mixed
-  coplanar+transversal, coincident-plane operand hygiene (stacked/touching),
-  other multi-loop/degenerate configs.
+  - **Scope (UNION increment):** axis-aligned coplanar rects.
+- **Phase 4 SUBTRACT + INTERSECT DONE (2026-07-07) — coplanar box CSG complete
+  for all three ops (user: "진행").** The side-occupancy resolver was already
+  op-aware (its `in_result` predicate encodes Union = A∪B / Subtract = A∖B /
+  Intersect = A∩B); the only gate was `op == Union` in Stage 4.9. Opening it to
+  all `use_general` ops wired subtract + intersect with ZERO new algorithm.
+  - **Verified (engine):** `adr276_phase4_lateral_overlap_subtract_watertight`
+    (A−B = box x[-50,0]) + `..._intersect_watertight` (A∩B = box x[0,50]) — both
+    closed, valid, 0 violations. `..._union_watertight` (x[-50,100]) unchanged.
+  - **Verified (browser, direct booleanSolid):** subtract → 6 faces, closed,
+    nm=0, x[-50,0]; intersect → 6 faces, closed, nm=0, x[0,50]; union → 14
+    faces, closed, x[-50,100]. (The executeAction rescue path's getStats read is
+    stale after booleanSolid — a known Phase-3 cosmetic; the engine result +
+    console "solid-CSG cut" are authoritative.)
+  - **Regression clear:** corner/notch/slot subtract untouched (they have NO
+    coplanar-shared planes → coplanar_keys empty → resolver never fires). Full
+    axia-geo 2170 pass.
+  - **Still deferred (fail-closed):** non-rect (post-cut L-shape) coplanar faces
+    + mixed coplanar+transversal configs (the skip-weld/merge heuristic assumes
+    pure-coplanar) + coincident-plane operand hygiene (stacked/touching =
+    degenerate non-manifold input). `adr276_phase4_coplanar_overlap_fails_closed_
+    no_corruption` guards no-corruption for anything the resolver can't handle.
+- **Remaining (deferred):** non-rect coplanar faces, mixed coplanar+transversal,
+  coincident-plane operand hygiene (stacked/touching), other multi-loop/
+  degenerate configs.
 
 ## Lock-ins (for the β phases)
 
