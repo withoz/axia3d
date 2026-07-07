@@ -139,6 +139,33 @@ Per phase, absolute #[ignore] 금지. β-4 adds rotated-box watertight asserts
 (the audit's `rot (1,1,1)` / `rot Z 45` flip from fail-closed to committed-
 watertight). β-5 must keep every ADR-276 assertion green.
 
+## Acceptance Log
+
+- **α (2026-07-07, `32c8e6c`):** spec + de-risk trace
+  (`adr277_trace_rotated_box_stages`) — Stage 1 correct at any angle; the gap is
+  Stage 2 split + Stage 5.5 weld (independent split, no shared vertex set).
+- **β-1 (2026-07-07, `a30a3da`):** `VertexArrangement` (N1) — spatial-hash dedup
+  (0.15μm, LOCKED #5) of intersection endpoints into a shared index +
+  `build_intersection_arrangement`. Tests: dedup boundary, chain sharing, real
+  rot(1,1,1) segments collapse to < 2× unique. Pure primitive.
+- **β-2 (2026-07-07, `78651af`):** `subdivide_face_2d` (N2) — **Pattern-12 reuse**
+  of `boundary_kernel::analytic_arrange::arrange`; boundary + constraint Lines →
+  sub-faces (`SubFace2D { outer, holes }`). Tests: chord→2, L-chain→2 (0.25+0.75),
+  crossing→4, interior loop→annulus+disk. Pure primitive.
+- **β-3 (2026-07-07, `0a7afde`):** `boolean_solid_v2` + `imprint_faces` — the
+  gated imprint pipeline (subdivide each crossed face + rebuild via add_vertex
+  dedup, NO weld) + classify + fail-closed gate. v1 unchanged, v2 not UI-wired.
+  **Axis-aligned corner subtract via v2 = watertight (9 faces, no weld)** — proves
+  the shared-vertex architecture. **Rotated cuts still fail-closed** (β-3
+  continuation): a shared segment can be a boundary crossing on the A-face but
+  interior on the B-face → the two faces subdivide it differently (trace: v2
+  boundary 22→9 vs v1, still open). **β-3 next increment = global
+  intersection-curve assembly** — pre-split all segments at their mutual crossings
+  and connect loose ends into the closed curve on the solid, so a shared segment
+  is subdivided identically on both faces.
+- **Remaining:** β-3 continuation (global intersection-curve assembly) → β-4
+  rotated watertight → β-5 cutover (retire weld) → γ arbitrary solids.
+
 ## Cross-link
 
 - ADR-276 (axis-aligned box CSG + generality audit) — direct predecessor; the
