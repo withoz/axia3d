@@ -1474,6 +1474,21 @@ impl Mesh {
         op: BoolOp,
         material: MaterialId,
     ) -> Result<BooleanResult> {
+        // ADR-278 β — polygonalize Path B (analytic self-loop) curved operands
+        // ONCE, at the top, so BOTH the v2 imprint path AND the v1 fallback see a
+        // proven POLYGONAL polyhedron. (v2 can't process < 3-vert self-loop
+        // analytic faces — `prepare_solid` skips them → no-op; v1 likewise.)
+        // Doing it here (not inside v2) is essential: v2 is fail-closed and
+        // rolls the mesh back on Err, so a polygonalization trapped inside v2
+        // would be discarded before the v1 fallback ran, leaving v1 with the
+        // original analytic faces → no-op. Regenerating the operand as a Path A
+        // primitive makes the whole (v2-first, v1-fallback) machinery cut it
+        // watertight (ADR-278 audit: polygonal curved boolean is SOLVED).
+        let faces_a_vec = self.polygonalize_curved_operand(faces_a, material);
+        let faces_b_vec = self.polygonalize_curved_operand(faces_b, material);
+        let faces_a: &[FaceId] = &faces_a_vec;
+        let faces_b: &[FaceId] = &faces_b_vec;
+
         // ADR-277 β-5 — try the general v2 imprint path FIRST (shared-vertex
         // imprint + constrained subdivision + coplanar resolver): a strict
         // superset of v1 that also cuts arbitrary-angle / rotated solids. v2 is
@@ -1508,6 +1523,8 @@ impl Mesh {
         let backup = self.clone();
         let mut debug = Vec::new();
 
+        // ADR-278 β — Path B curved operands are polygonalized upstream in
+        // `boolean_solid` (once, so the v1 fallback sees polygonal faces too).
         let solid_a = self.prepare_solid(faces_a)?;
         let solid_b = self.prepare_solid(faces_b)?;
         let both_closed = self.face_set_manifold_info(&solid_a.face_ids).is_closed_solid
@@ -1696,6 +1713,72 @@ impl Mesh {
             }
         }
         out
+    }
+
+    /// ADR-278 β — if the operand is a Path B (analytic self-loop) CYLINDER,
+    /// regenerate it as a POLYGONAL cylinder (reuse the proven Path A builder,
+    /// which guarantees a consistent rim between caps and side — face-by-face
+    /// `tessellate_face_surface` would sample the rim inconsistently → open).
+    /// The polygonal operand is a many-faced polyhedron the general v2 imprint
+    /// cuts watertight. Returns the new face list (or the input unchanged if not
+    /// a handled curved primitive → falls through to the current behaviour).
+    ///
+    /// MVP: axis-aligned (±Z) cylinder — the common "vertical hole" case.
+    /// Rotated cylinders + sphere/cone/torus are follow-up increments (they
+    /// return the input unchanged → fail-closed no-op, no regression).
+    fn polygonalize_curved_operand(&mut self, faces: &[FaceId], material: MaterialId) -> Vec<FaceId> {
+        use crate::surfaces::AnalyticSurface as S;
+        // Find a Cylinder-surface self-loop face.
+        let mut cyl: Option<(DVec3, DVec3, f64)> = None; // (axis_origin, axis_dir, radius)
+        let mut has_self_loop = false;
+        for &fid in faces {
+            let Some(face) = self.faces.get(fid) else { continue };
+            let start = face.outer().start;
+            if !start.is_null() {
+                let eid = self.hes[start].edge();
+                if self.edges.get(eid).map(|e| e.is_self_loop()).unwrap_or(false) {
+                    has_self_loop = true;
+                }
+            }
+            if let Some(S::Cylinder { axis_origin, axis_dir, radius, .. }) = face.surface() {
+                cyl = Some((*axis_origin, *axis_dir, *radius));
+            }
+        }
+        // Only handle the Path B cylinder case (self-loop + Cylinder surface).
+        let Some((axis_origin, axis_dir, radius)) = cyl else { return faces.to_vec(); };
+        if !has_self_loop { return faces.to_vec(); }
+        // MVP: axis-aligned ±Z only.
+        if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
+            return faces.to_vec();
+        }
+        // Axial extent from the operand's verts projected onto Z.
+        let mut zmin = f64::MAX;
+        let mut zmax = f64::MIN;
+        let mut got = false;
+        for &fid in faces {
+            let Some(face) = self.faces.get(fid) else { continue };
+            if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
+                for v in vs {
+                    if let Some(p) = self.verts.get(v).map(|v| v.pos()) {
+                        zmin = zmin.min(p.z); zmax = zmax.max(p.z); got = true;
+                    }
+                }
+            }
+        }
+        if !got || (zmax - zmin) < 1e-6 { return faces.to_vec(); }
+        // `create_cylinder` treats `center` as the BASE (spans z ∈ [center.z,
+        // center.z + height]), so the base = zmin, NOT the mid-plane.
+        let base = DVec3::new(axis_origin.x, axis_origin.y, zmin);
+        let height = zmax - zmin;
+
+        // Remove the Path B faces, regenerate polygonal (Path B OFF), restore flag.
+        for &fid in faces { let _ = self.remove_face(fid); }
+        let prev = self.cylinder_path_b_default;
+        self.cylinder_path_b_default = false;
+        let new_faces = self.create_cylinder(base, radius, height, 32, material).unwrap_or_default();
+        self.cylinder_path_b_default = prev;
+        if new_faces.is_empty() { return faces.to_vec(); } // builder failed → (originals already gone; caller gate will roll back)
+        new_faces
     }
 
     fn boolean_impl(
@@ -10832,6 +10915,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn adr278b_probe_path_b_cylinder_structure() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        m.set_cylinder_path_b_default(true);
+        let faces = m.create_cylinder(DVec3::new(0.0,0.0,50.0), 30.0, 100.0, 24, mat).unwrap();
+        println!("\n===== Path B cylinder structure =====");
+        println!("faces: {}", faces.len());
+        for &f in &faces {
+            let face = m.faces.get(f).unwrap();
+            let start = face.outer().start;
+            let vs = m.collect_loop_verts(start).map(|v| v.len()).unwrap_or(0);
+            let eid = m.hes[start].edge();
+            let self_loop = m.edges.get(eid).map(|e| e.is_self_loop()).unwrap_or(false);
+            let surf = face.surface().map(|s| match s {
+                crate::surfaces::AnalyticSurface::Plane{..}=>"Plane",
+                crate::surfaces::AnalyticSurface::Cylinder{..}=>"Cylinder",
+                crate::surfaces::AnalyticSurface::Sphere{..}=>"Sphere",
+                crate::surfaces::AnalyticSurface::Cone{..}=>"Cone",
+                crate::surfaces::AnalyticSurface::Torus{..}=>"Torus",
+                _=>"other",
+            }).unwrap_or("none");
+            let inners = face.inners().len();
+            // tessellate?
+            let tess = m.tessellate_face_surface(f, 0.5).map(|t| (t.vertices.len(), t.triangles.len()));
+            println!("  face{} surf={} outerVerts={} selfLoop={} inners={} tess={:?}",
+                f.raw(), surf, vs, self_loop, inners, tess);
+        }
+        println!("=====================================");
+    }
+
     // ADR-278 (curved boolean audit) — locks the audit finding: POLYGONAL
     // (tessellated, Path A) curved primitives cut watertight via v2 (γ
     // generalization — a tessellated cyl/sphere/cone is just a many-faced
@@ -10871,8 +10985,11 @@ mod tests {
             assert!(ok && valid && closed && manifold, "{label}: polygonal curved boolean must be watertight");
         }
 
-        // ANALYTIC (Path B) — no-corruption guard + documents the no-op gap.
-        let pb = |kind: &str, op: BoolOp| -> (bool, usize, usize) {
+        // ANALYTIC (Path B) — after the ADR-278 β fix, the Path B cylinder is
+        // polygonalized (`polygonalize_curved_operand`) at the `boolean_solid`
+        // entry so BOTH the v2 imprint path and the v1 fallback see a proven
+        // polygonal polyhedron. cyl−box must now CUT watertight, not no-op.
+        let pb = |kind: &str, op: BoolOp| -> (bool, bool, bool, usize) {
             let mut m = Mesh::new();
             m.set_cylinder_path_b_default(true);
             m.set_sphere_path_b_default(true);
@@ -10885,13 +11002,16 @@ mod tests {
                 _ => m.create_cone(DVec3::new(30.0,30.0,60.0),40.0,160.0,24,mat).unwrap_or_default(),
             };
             let _ = m.boolean_solid(&box_faces, &b, op, mat);
-            (m.verify_face_invariants().is_valid(), active(&m).len(), b.len())
+            let info = m.face_set_manifold_info(&active(&m));
+            (m.verify_face_invariants().is_valid(), info.is_closed_solid,
+             info.non_manifold_edge_count == 0, active(&m).len())
         };
-        // Path B SUB currently NO-OPs (box returned unchanged = 6 faces). No
-        // corruption. When the tessellate-then-v2 fix lands, resFaces will grow.
-        let (valid, res_faces, _bf) = pb("cyl", BoolOp::Subtract);
+        // Path B cylinder − box (base inside the box → blind pocket from the
+        // top): CUTS watertight (box + bore ≫ 6 faces), never corrupts.
+        let (valid, closed, manifold, res_faces) = pb("cyl", BoolOp::Subtract);
         assert!(valid, "Path B curved boolean must never corrupt");
-        assert!(res_faces >= 6, "Path B cyl−box currently no-ops (box intact); guard against corruption");
+        assert!(res_faces > 6, "Path B cyl−box must now CUT (bore added), got {res_faces} faces");
+        assert!(closed && manifold, "Path B cyl−box result must be watertight (closed={closed}, manifold={manifold})");
     }
 
     // ADR-277 γ — build a triangular prism (non-box polyhedron) and confirm it's
