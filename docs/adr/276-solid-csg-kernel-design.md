@@ -230,13 +230,26 @@ of corrupting the mesh:
   Gate still protects: box-box → open → `closed_solid=false` → byte-identical
   rollback (fail-closed, no wrong output). Wiring kept (exercises the verified
   code on the live path; safe).
-- **Remaining Phase 2 core (deferred): SEAM WELDING.** Make cross-solid seam
-  vertices shared — either (a) a post-assemble weld pass (merge coincident verts
-  + dedup the resulting duplicate edges, re-wiring HEs), or (b) build the
-  intersection curve as shared vertices FIRST and split both solids against that
-  single set (dedup-aware edge insertion). Once seam verts/edges are shared,
-  box-box is watertight and the gate admits the cut. Then through-slot
-  robustness, Phase 3 enclosure/void, Phase 4 coplanar, Phase 5 UI routing.
+- **Phase 2 SEAM WELDING COMPLETE (2026-07-07) — box-box corner subtract cuts
+  WATERTIGHT.** `weld_result_seam` + `boolean_impl` Stage 5.5 (use_general).
+  The weld does NOT do manual HE surgery: it buckets result-face verts by
+  position, remaps each coincident group to a survivor, and REBUILDS the faces
+  via `add_face` (two-phase collect→remove→re-add), which auto-shares edges by
+  `find_edge` → the seam closes. Simulation-first validated closure (assembled
+  boundary 12 → welded boundary 0) before wiring.
+  - **corner-poke SUB → ok, 12→9 faces, is_closed_solid=true, boundary=0,
+    non-manifold=0** (committed watertight cut; was a rollback). Verified
+    end-to-end in the browser (`demoBooleanSolidTwoBoxes` → 9, closed).
+  - notch / through-slot → still roll back (closed-loop notch / full-span slot
+    need multi-chain / different handling; safe fail-closed).
+  - enclosed cavity → no-op (Phase 3 void; valid closed A).
+  So box-box CONVEX-CORNER subtract works: find_intersections_polygonal → chain
+  split → classify → seam weld → watertight, gate-admitted.
+- **Remaining (deferred):** multi-chain faces (notch / through-slot), Phase 3
+  enclosure/void (A−B with B⊂A → internal cavity), Phase 4 coplanar,
+  Phase 5 UI routing (wire the UI's box-box boolean to `boolean_solid` + handle
+  still-unsupported configs gracefully — currently the UI still uses the DCEL
+  path and shows the ADR-275 warning for box-box).
 
 ## Lock-ins (for the β phases)
 
