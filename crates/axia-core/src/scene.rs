@@ -2496,8 +2496,14 @@ impl Scene {
         // containment 분할 안 됨. ADR-185 split_face_by_inner_circle (원 *보존*,
         // ring+disk, 새 face 0) 로 처리 → 다각형=kernel / 원=ADR-185 단일 entry 통합.
         // (kernel-native Circle metadata 보존 — polygonize 손실 회피.)
+        //
+        // ADR-279 β — the old order-dependent pairwise scan assigned a circle
+        // nested at depth ≥ 2 (원 안 원 안 …) to MULTIPLE enclosing faces because
+        // containment is transitive → non-manifold (nm=1), solid opens. Replaced
+        // by the canonical single-parent assignment (`assign_circle_holes_
+        // innermost`, 메타-원칙 #4 SSOT): each circle hole → its INNERMOST parent
+        // ONLY (smallest enclosing face). Manifold at any nesting depth.
         {
-            let mut processed: HashSet<FaceId> = HashSet::new();
             let fids: Vec<FaceId> = self
                 .mesh
                 .faces
@@ -2505,54 +2511,10 @@ impl Scene {
                 .filter(|(_, f)| f.is_active())
                 .map(|(f, _)| f)
                 .collect();
-            for ii in 0..fids.len() {
-                for jj in (ii + 1)..fids.len() {
-                    let fa = fids[ii];
-                    let fb = fids[jj];
-                    if processed.contains(&fa) || processed.contains(&fb) {
-                        continue;
-                    }
-                    if !self.mesh.faces.contains(fa) || !self.mesh.faces[fa].is_active() {
-                        continue;
-                    }
-                    if !self.mesh.faces.contains(fb) || !self.mesh.faces[fb].is_active() {
-                        continue;
-                    }
-                    if let Some((outer_c, inner_c)) =
-                        axia_geo::operations::annulus::detect_circle_containment(
-                            &self.mesh, fa, fb,
-                        )
-                    {
-                        if axia_geo::operations::annulus::split_face_by_inner_circle(
-                            &mut self.mesh,
-                            outer_c,
-                            inner_c,
-                        )
-                        .is_ok()
-                        {
-                            // **multi-hole** — outer(ring) 는 보존, inner(원 disk)만
-                            // 마킹. 한 outer 가 여러 원 hole 을 가질 수 있음 (rect 안
-                            // 원 N개). outer 를 마킹하면 두 번째 원 pair 가 skip 돼
-                            // "면이 분할 안됨" (사용자 보고 2026-06-02).
-                            processed.insert(inner_c);
-                        }
-                    } else {
-                        // ADR-186 (A) — circle-in-polygon containment: 다각형 면 안의
-                        // 원 disk → smooth 곡선 hole (Phase 4 가 circle hole 을 skip,
-                        // 여기서 generic split). detect_circle_containment 은 둘 다
-                        // 원일 때만 Some → else 에서 generic 양방향 시도 (validation
-                        // 먼저 → 실패 시 무변경, 안전). polygon hole 잔재 제거.
-                        // **multi-hole** — inner(원)만 마킹, outer(다각형)는 보존.
-                        use axia_geo::operations::annulus::split_face_by_inner_circle_generic;
-                        if split_face_by_inner_circle_generic(&mut self.mesh, fa, fb).is_ok() {
-                            processed.insert(fb); // fb = inner 원, fa = outer 보존
-                        } else if split_face_by_inner_circle_generic(&mut self.mesh, fb, fa).is_ok()
-                        {
-                            processed.insert(fa); // fa = inner 원, fb = outer 보존
-                        }
-                    }
-                }
-            }
+            let _ = axia_geo::operations::annulus::assign_circle_holes_innermost(
+                &mut self.mesh,
+                &fids,
+            );
         }
 
         // δ-4c XIA reconcile — 비활성 face 링크 제거.
@@ -13097,15 +13059,18 @@ mod tests {
         );
     }
 
-    /// ADR-279 (curve annulus nesting) α — DE-RISK SIMULATION (measure-first).
+    /// ADR-279 β — curve-annulus nesting is MANIFOLD (regression guard).
     ///
-    /// Reproduces the "곡선 경계 annulus → non-manifold" limit in the PRODUCTION
-    /// path (all 3 flags ON = `face_rederive_on_draw` → `rederive_coplanar_on_draw`).
-    /// Two concentric Path B circles (arc-bounded annulus) must currently produce
-    /// a non-manifold edge (nm >= 1). Documents the exact failure so the β fix can
-    /// flip the assertions. NOT a fix — a measurement.
+    /// Two concentric Path B circles nested in a solid top face (arc-bounded
+    /// annulus at nesting depth ≥ 2) must be watertight in the PRODUCTION path
+    /// (all 4 flags ON = browser: face_rederive + auto_intersect + auto_face_synth
+    /// + freeform_overlap → `rederive_coplanar_on_draw`). Pre-fix the inner circle
+    /// was double-assigned as a hole to BOTH its immediate parent AND its
+    /// grandparent (box-top), giving the rim edge 3 face-bearing HEs → nm=1. The
+    /// `assign_circle_holes_innermost` single-parent assignment fixes it. Both
+    /// cases now nm=0, box-top keeps exactly ONE hole, solid stays closed.
     #[test]
-    fn sim_curve_annulus_nonmanifold_diagnosis() {
+    fn adr279_curve_annulus_nested_is_manifold() {
         let dump = |tag: &str, s: &Scene| {
             let active: Vec<axia_geo::FaceId> = s
                 .mesh
@@ -13150,6 +13115,7 @@ mod tests {
         b.face_rederive_on_draw = true;
         b.auto_intersect_on_draw = true;
         b.auto_face_synthesis_on_draw = true;
+        b.freeform_overlap_on_draw = true; // match browser production (4th flag)
         // box centered (0,0,50) size 120 → top face at z=110, normal +Z.
         b.mesh
             .create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, FORM_MATERIAL)
@@ -13161,14 +13127,35 @@ mod tests {
         let b_nm = dump("B after R20 (annulus on solid)", &b);
         eprintln!("--- Case B (box) concentric-circle annulus nm = {b_nm} ---");
 
-        // MEASUREMENT (current buggy behavior): the arc-bounded annulus nested in a
-        // solid top face is non-manifold. Case A (lone circles) is CLEAN (nm=0), so
-        // the defect needs the box/nested-hole context. β fix flips B to nm==0.
+        // ADR-279 β — single-parent hole assignment (assign_circle_holes_innermost)
+        // FIXES the curve-annulus-on-solid non-manifold. Both cases must now be
+        // manifold-clean (nm=0), the box-top keeps exactly ONE hole (R40), and the
+        // solid stays closed.
+        assert_eq!(a_nm, 0, "Case A (lone concentric circles) must stay clean");
+        assert_eq!(
+            b_nm, 0,
+            "ADR-279 β: curve annulus on a solid must be manifold (nm=0); got {b_nm}"
+        );
+        // box-top (face with the R40 hole) must have exactly ONE inner loop, not two.
+        let b_active: Vec<axia_geo::FaceId> = b
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(f, _)| f)
+            .collect();
+        let max_inners = b_active
+            .iter()
+            .map(|&f| b.mesh.faces[f].inners().len())
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            max_inners, 1,
+            "ADR-279 β: no face may gain a duplicate (grandparent) hole; max inners={max_inners}"
+        );
         assert!(
-            b_nm >= 1,
-            "SIM: expected the curve-annulus-on-solid limit (nm>=1) to reproduce in \
-             the production rederive path; got Case A nm={a_nm}, Case B nm={b_nm}. \
-             If B is now 0, the fix landed — flip this assertion."
+            b.mesh.face_set_manifold_info(&b_active).is_closed_solid,
+            "ADR-279 β: box with a nested circular annulus stays a closed solid"
         );
     }
 

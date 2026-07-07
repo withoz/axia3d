@@ -429,6 +429,121 @@ pub fn split_face_by_inner_circle_generic(
     Ok(())
 }
 
+/// ADR-279 β — Circle-hole containment "size" for innermost-parent ordering.
+///
+/// Circle face → π·r² (from metadata — `face_area` returns ~0 for a self-loop);
+/// polygon face → `face_area` (shoelace of the outer loop). Monotonic enclosed
+/// area, comparable across circle/polygon, used only to order containers
+/// smallest-first.
+fn face_containment_size(mesh: &Mesh, fid: FaceId) -> f64 {
+    if let Some(c) = extract_circle(mesh, fid) {
+        std::f64::consts::PI * c.radius * c.radius
+    } else {
+        mesh.face_area(fid)
+    }
+}
+
+/// ADR-279 β — is this circle face ALREADY a "disk" whose rim is a hole of some
+/// container (i.e., a ring+disk relationship already exists)?
+///
+/// A ring+disk split reparents the circle's twin half-edge to the container as an
+/// INNER (hole) loop. On a scoped re-derive (drawing a 2nd concentric circle), the
+/// outer container + its existing circle hole are preserved untouched, so this
+/// circle's twin already points at an active container as a non-outer loop.
+/// Re-assigning it would add a DUPLICATE hole → the rim edge gets a 3rd
+/// face-bearing HE → non-manifold. So a circle already-a-hole is skipped as an
+/// inner candidate (it may still serve as a CONTAINER for a smaller circle).
+///
+/// A fresh / standalone circle's twin has a null face → returns false.
+fn circle_already_hole(mesh: &Mesh, fid: FaceId) -> bool {
+    let Some(face) = mesh.faces.get(fid) else { return false };
+    let he1 = face.outer().start;
+    if he1.is_null() || !mesh.hes.contains(he1) {
+        return false;
+    }
+    let he2 = mesh.hes[he1].next_rad();
+    if he2 == he1 || !mesh.hes.contains(he2) {
+        return false;
+    }
+    let tf = mesh.hes[he2].face();
+    !tf.is_null()
+        && tf != fid
+        && mesh.faces.get(tf).map_or(false, |f| f.is_active())
+        && !mesh.hes[he2].is_outer()
+}
+
+/// ADR-279 β — assign every circle hole to its **innermost** parent ONLY.
+///
+/// The old Scene post-process scanned coplanar face PAIRS with an order-dependent
+/// `processed` guard. Because containment is transitive (R20 ⊂ disk40 ⊂ box-top),
+/// a circle nested at depth ≥ 2 could be assigned as a hole to MULTIPLE enclosing
+/// faces (immediate parent AND grandparent) → the self-loop edge ended up
+/// referenced by 3 face-bearing half-edges → **non-manifold** (nm=1), solid opens
+/// (the "곡선 annulus 한계", ADR-279).
+///
+/// Canonical single-parent assignment (메타-원칙 #4 SSOT): sort candidate faces
+/// by enclosed area ASCENDING, then for each circle `inner` (smallest first)
+/// assign it as a hole to the FIRST (⇒ smallest ⇒ innermost) larger face that
+/// contains it, and STOP. A face can be both an inner (of a bigger face) and a
+/// container (of a smaller circle) — only the inner side is de-duplicated, so
+/// perfect nesting at any depth resolves to one-hole-per-parent (L-279-3/4).
+///
+/// Returns the number of circle holes assigned.
+pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize {
+    use std::cmp::Ordering;
+    let mut sized: Vec<(FaceId, f64)> = faces
+        .iter()
+        .copied()
+        .filter(|&f| mesh.faces.get(f).map_or(false, |x| x.is_active()))
+        .map(|f| (f, face_containment_size(mesh, f)))
+        .collect();
+    sized.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut processed: std::collections::HashSet<FaceId> = std::collections::HashSet::new();
+    let mut count = 0usize;
+    for i in 0..sized.len() {
+        let inner = sized[i].0;
+        if processed.contains(&inner) {
+            continue;
+        }
+        // Only a circle face can become a smooth (self-loop) hole here.
+        if extract_circle(mesh, inner).is_none() {
+            continue;
+        }
+        // Skip a circle that is ALREADY a disk whose rim is a container's hole
+        // (ring+disk already formed on a prior draw / preserved by the scoped
+        // re-derive) — re-assigning it duplicates the hole → non-manifold. It can
+        // still act as a CONTAINER for a smaller circle below.
+        if circle_already_hole(mesh, inner) {
+            continue;
+        }
+        // First (smallest ascending) larger face that contains `inner` = its
+        // innermost parent. Assign the circle hole there ONLY, then break.
+        for j in (i + 1)..sized.len() {
+            let outer = sized[j].0;
+            if !mesh.faces.get(inner).map_or(false, |x| x.is_active()) {
+                break;
+            }
+            if !mesh.faces.get(outer).map_or(false, |x| x.is_active()) {
+                continue;
+            }
+            let assigned = if extract_circle(mesh, outer).is_some() {
+                // both circles — split_face_by_inner_circle validates containment.
+                split_face_by_inner_circle(mesh, outer, inner).is_ok()
+            } else {
+                // polygon outer + circle inner — generic validates point-in-poly.
+                split_face_by_inner_circle_generic(mesh, outer, inner).is_ok()
+            };
+            if assigned {
+                processed.insert(inner);
+                count += 1;
+                break; // innermost container found — do NOT assign to grandparents.
+            }
+        }
+    }
+    count
+}
+
 /// ADR-185 — 두 face 가 coplanar Circle 이고 한쪽이 다른쪽을 완전 포함하면
 /// `(outer, inner)` 반환. partial overlap / disjoint / non-circle → `None`.
 ///
@@ -733,6 +848,64 @@ mod tests {
             "ADR-185: ring+disk manifold-safe; violations: {:?}",
             report.violations
         );
+    }
+
+    #[test]
+    fn adr279_assign_innermost_three_level_nesting_manifold() {
+        // ADR-279 β — 3 concentric circles (R30 ⊃ R20 ⊃ R10). Each inner circle
+        // must be assigned as a hole to its INNERMOST parent ONLY (R10→R20,
+        // R20→R30), never a grandparent. No face gains a duplicate hole → manifold.
+        let mut mesh = Mesh::new();
+        let r30 = build_circle_face(&mut mesh, DVec3::ZERO, 30.0, DVec3::Z);
+        let r20 = build_circle_face(&mut mesh, DVec3::ZERO, 20.0, DVec3::Z);
+        let r10 = build_circle_face(&mut mesh, DVec3::ZERO, 10.0, DVec3::Z);
+
+        let assigned = assign_circle_holes_innermost(&mut mesh, &[r30, r20, r10]);
+        assert_eq!(assigned, 2, "two inner circles assigned (R10→R20, R20→R30)");
+
+        // Each face has AT MOST one inner loop — no grandparent double-assignment.
+        assert_eq!(mesh.faces[r30].inners().len(), 1, "R30 ring: 1 hole (R20)");
+        assert_eq!(mesh.faces[r20].inners().len(), 1, "R20 ring: 1 hole (R10)");
+        assert_eq!(mesh.faces[r10].inners().len(), 0, "R10 innermost disk: 0 holes");
+        assert!(
+            mesh.faces[r30].is_active() && mesh.faces[r20].is_active() && mesh.faces[r10].is_active(),
+            "all three faces stay active (ring/ring/disk)"
+        );
+
+        // Manifold: every shared rim edge has exactly 2 face-bearing HEs.
+        let report = mesh.verify_face_invariants();
+        assert_eq!(
+            report.violations.len(),
+            0,
+            "ADR-279: 3-level nested curve annulus manifold-safe; got {:?}",
+            report.violations
+        );
+        let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(
+            mesh.face_set_manifold_info(&active).non_manifold_edge_count,
+            0,
+            "ADR-279: no non-manifold edge (authoritative ManifoldInfo)"
+        );
+    }
+
+    #[test]
+    fn adr279_assign_innermost_idempotent_skips_already_hole() {
+        // ADR-279 β — running the assignment TWICE (mirrors a scoped re-derive that
+        // preserves an existing ring+disk) must NOT re-assign an already-hole circle
+        // → no duplicate hole, still manifold.
+        let mut mesh = Mesh::new();
+        let outer = build_circle_face(&mut mesh, DVec3::ZERO, 20.0, DVec3::Z);
+        let inner = build_circle_face(&mut mesh, DVec3::ZERO, 10.0, DVec3::Z);
+        assert_eq!(assign_circle_holes_innermost(&mut mesh, &[outer, inner]), 1);
+        // second pass — inner is already outer's hole → nothing re-assigned.
+        assert_eq!(
+            assign_circle_holes_innermost(&mut mesh, &[outer, inner]),
+            0,
+            "already-hole circle is skipped (no duplicate assignment)"
+        );
+        assert_eq!(mesh.faces[outer].inners().len(), 1, "outer keeps exactly 1 hole");
+        let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0);
     }
 
     #[test]

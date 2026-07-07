@@ -1,6 +1,6 @@
 # ADR-279 — Curve-Annulus Nesting Non-Manifold Fix (α spec)
 
-- **Status**: Proposed (α spec — measure-first + wiring plan; β needs 결재)
+- **Status**: Accepted (β implemented + demo-verified 2026-07-07)
 
 ## Context
 
@@ -132,6 +132,48 @@ depth is referenced by exactly 2 half-edges (its disk + its one parent's hole)
   reproducing Case A nm=0 (clean) and Case B nm=1 (defect) in the production
   rederive path. Localises the defect to "box-top face gains a 2nd inner loop
   after the inner circle".
+
+## Acceptance Log
+
+- **2026-07-07 β (`assign_circle_holes_innermost`)** — single-parent hole
+  assignment landed (Q1=(a) unify, Q2=(a) circles, Q3=(a) all depths, Q4=(b)
+  gate discrepancy separate).
+  - **Root cause pinned (β diagnosis):** the defect is NOT the arrange (it skips
+    full-circle holes, `face_rederive.rs:1611`) — it is the Scene **post-process
+    containment loop** (`rederive_coplanar_on_draw`). On a scoped re-derive of a
+    2nd concentric circle, the box-top's existing R40 hole + `disk40` are
+    preserved untouched; the old order-dependent pairwise loop then RE-assigned
+    `disk40` (the R40 circle, already box-top's hole-disk) as ANOTHER box-top hole
+    → duplicate → the R40 rim edge gains a 3rd face-bearing HE → nm=1.
+  - **Fix:** replaced the pairwise loop with the canonical
+    `axia_geo::operations::annulus::assign_circle_holes_innermost` (메타-원칙 #4
+    SSOT): sort candidate faces by enclosed area ascending, assign each circle to
+    its FIRST (smallest ⇒ innermost) container and stop; **skip a circle whose rim
+    twin is already a container's hole** (`circle_already_hole` — the ring+disk
+    already exists, re-assigning duplicates it). A circle may still serve as a
+    container for a smaller one, so perfect nesting at any depth → one-hole-per-
+    parent.
+  - **Verification (3 layers):**
+    - Engine sim `adr279_curve_annulus_nested_is_manifold` (axia-core, production
+      4-flag path incl. `freeform_overlap`): Case A nm=0, **Case B (box + R40 +
+      R20) now nm=0, closed=true, box-top inners 2→1**. Unit tests
+      `adr279_assign_innermost_three_level_nesting_manifold` (R30⊃R20⊃R10, each
+      innermost-only, nm=0) + `adr279_assign_innermost_idempotent_skips_already_
+      hole` (axia-geo).
+    - Suite: axia-geo 2189 pass / 0 ignored, axia-core 434 pass / 0 ignored.
+    - Browser (real Chromium, fresh WASM): box + `drawCircleAsCurve(…,40)` +
+      `drawCircleAsCurve(…,20)` → 8 faces, **closed=true, nm=0, boundary=0,
+      invValid=true** (was nm=1). Single-circle carve/through unaffected (42-face
+      through-hole, closed, nm=0). *(Note: my first browser probe mis-called the
+      7-arg bridge `drawCircleAsCurve` with 10 args → radius defaulted to the 7th
+      arg (1.0) → two coincident r=1 circles, a false nm=1. The engine sim, always
+      authoritative, correctly used radii 40/20.)*
+  - **Out of scope (follow-up):** extruding the INNERMOST disk of an annulus
+    through is still gate-REJECTED (clean byte-identical rollback, no corruption)
+    — a separate nested-region extrude limitation, NOT the annulus formation this
+    ADR fixed. Q4 checker discrepancy (`verify_face_invariants` valid vs
+    `face_set_manifold_info` nm) left to a separate ADR; β regressions assert on
+    the authoritative `face_set_manifold_info` (L-279-2).
 
 ## Cross-link
 
