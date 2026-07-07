@@ -1787,6 +1787,18 @@ impl Mesh {
             let _ = self.remove_face(fid);
         }
 
+        // ── Stage 5.5: SEAM WELD (ADR-276 Phase 2, solid-CSG path) ──
+        // Split+classify leaves the notch seam OPEN (A-side vs B-side duplicate
+        // verts). Weld coincident verts + rebuild faces so the seam edges share
+        // → watertight. Only for use_general (split-by-chain path).
+        let result_faces = if use_general {
+            let welded = self.weld_result_seam(&result_faces, material);
+            debug.push(format!("Seam weld: {} → {} faces", result_faces.len(), welded.len()));
+            welded
+        } else {
+            result_faces
+        };
+
         // ── Stage 6: 공면 face 병합 ──────────────────
         let merged_faces = self.merge_coplanar_result_faces(&result_faces);
         debug.push(format!(
@@ -2195,6 +2207,77 @@ impl Mesh {
                 }
             } else {
                 out.insert(fid, vec![fid]);
+            }
+        }
+        out
+    }
+
+    /// ADR-276 Phase 2 — SEAM WELD. After split+classify+assemble, the notch
+    /// seam between A-side and B-side kept faces has DUPLICATE verts (A splits
+    /// via shared-edge split_edge; B is a separate solid, so its split_edge makes
+    /// a fresh vert at a point that is A-interior but B-boundary → two verts at
+    /// one position → the seam edges don't share → open boundary). This welds
+    /// them: remap each coincident vertex group to a single survivor and REBUILD
+    /// the faces via `add_face` (which auto-shares edges by `find_edge`), closing
+    /// the seam. Two-phase (collect → remove → re-add) to avoid mid-loop churn.
+    /// Faces with inner loops are left as-is (box-box has none; multi-loop weld
+    /// is future). Returns the (possibly rebuilt) face list.
+    fn weld_result_seam(&mut self, faces: &[FaceId], material: MaterialId) -> Vec<FaceId> {
+        use std::collections::HashMap;
+        // Bucket active result-face verts by position → find coincident groups.
+        let mut vb: HashMap<(i64, i64, i64), Vec<VertId>> = HashMap::new();
+        for &f in faces {
+            let Some(face) = self.faces.get(f) else { continue };
+            if !face.is_active() { continue; }
+            if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
+                for v in vs {
+                    let p = self.vertex_pos(v).unwrap_or(DVec3::ZERO);
+                    let k = ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64, (p.z * 100.0).round() as i64);
+                    let e = vb.entry(k).or_default();
+                    if !e.contains(&v) { e.push(v); }
+                }
+            }
+        }
+        let mut remap: HashMap<VertId, VertId> = HashMap::new();
+        for ids in vb.values() {
+            if ids.len() >= 2 {
+                let survivor = *ids.iter().min_by_key(|v| v.raw()).unwrap();
+                for &d in ids { if d != survivor { remap.insert(d, survivor); } }
+            }
+        }
+        if remap.is_empty() { return faces.to_vec(); }
+        // Phase 1 — collect rebuild specs (remapped loop + metadata) before mutating.
+        struct Spec { verts: Vec<VertId>, mat: MaterialId, surface: Option<crate::surfaces::AnalyticSurface>, owner: Option<u32> }
+        let mut specs: Vec<Spec> = Vec::new();
+        let mut passthrough: Vec<FaceId> = Vec::new();
+        for &f in faces {
+            let Some(face) = self.faces.get(f) else { continue };
+            if !face.is_active() { continue; }
+            if !face.inners().is_empty() { passthrough.push(f); continue; } // multi-loop: leave as-is
+            let loop_v = match self.collect_loop_verts(face.outer().start) { Ok(v) => v, Err(_) => { passthrough.push(f); continue; } };
+            let remapped: Vec<VertId> = loop_v.iter().map(|v| *remap.get(v).unwrap_or(v)).collect();
+            let deduped = dedup_consecutive_verts(&remapped);
+            specs.push(Spec {
+                verts: deduped,
+                mat: face.material(),
+                surface: face.surface().cloned(),
+                owner: self.face_surface_owner_id(f),
+            });
+        }
+        // Phase 2 — remove the rebuildable faces.
+        for &f in faces {
+            if passthrough.contains(&f) { continue; }
+            let _ = self.remove_face(f);
+        }
+        // Phase 3 — re-add with remapped verts (add_face shares edges by find_edge).
+        let mut out = passthrough;
+        for s in &specs {
+            if s.verts.len() < 3 { continue; }
+            let _ = material; // caller material available if needed
+            if let Ok(nf) = self.add_face(&s.verts, s.mat) {
+                if let Some(ref surf) = s.surface { self.faces[nf].set_surface(Some(surf.clone())); }
+                if let Some(o) = s.owner { self.set_face_surface_owner_id(nf, Some(o)); }
+                out.push(nf);
             }
         }
         out
@@ -9152,6 +9235,7 @@ mod tests {
             ("enclosed cavity", DVec3::new(0.0, 0.0, 50.0), 40.0, 40.0, 40.0),
         ];
         println!("\n===== ADR-276 Phase 1+2: box-box fail-closed-correct =====");
+        let mut corner_poke_cut = false;
         for (label, bpos, bw, bh, bd) in configs {
             let mut m = Mesh::new();
             let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
@@ -9182,12 +9266,19 @@ mod tests {
                     m.face_set_manifold_info(&active).is_closed_solid,
                     "[{label}] a committed boolean_solid result must be watertight",
                 );
+                if label == "corner-poke" && faces_after != faces_before {
+                    corner_poke_cut = true;
+                }
             }
             println!(
                 "  [{label}] ok={} faces {}->{} verts {}->{} valid=true",
                 r.is_ok(), faces_before, faces_after, verts_before, verts_after,
             );
         }
+        // ADR-276 Phase 2 WIN — the corner-poke box-box subtract now commits a
+        // WATERTIGHT cut (seam-welded), not a rollback. Locks the milestone.
+        assert!(corner_poke_cut,
+            "ADR-276 Phase 2: corner-poke box-box subtract must commit a watertight cut");
         println!("=========================================================\n");
     }
 
@@ -9418,6 +9509,54 @@ mod tests {
                 }
             }
         }
+
+        // ── SEAM WELD SIMULATION (approach: remap dup verts → survivor, rebuild
+        // faces via add_face which auto-shares edges by find_edge). Low-risk:
+        // no manual HE surgery. Validate that this closes the solid. ──
+        let mut vb: HashMap<(i64, i64, i64), Vec<VertId>> = HashMap::new();
+        for &f in &result {
+            if let Ok(vs) = m.collect_loop_verts(m.faces.get(f).unwrap().outer().start) {
+                for v in vs {
+                    let p = m.vertex_pos(v).unwrap_or(DVec3::ZERO);
+                    let k = ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64, (p.z * 100.0).round() as i64);
+                    let e = vb.entry(k).or_default();
+                    if !e.contains(&v) { e.push(v); }
+                }
+            }
+        }
+        let mut remap: HashMap<VertId, VertId> = HashMap::new();
+        let mut dup_count = 0;
+        for (_k, ids) in vb.iter() {
+            if ids.len() >= 2 {
+                dup_count += 1;
+                let survivor = *ids.iter().min_by_key(|v| v.raw()).unwrap();
+                for &dead in ids { if dead != survivor { remap.insert(dead, survivor); } }
+            }
+        }
+        println!("[weld] dup positions={} remaps={}", dup_count, remap.len());
+        // rebuild each result face with remapped verts
+        let mut welded: Vec<FaceId> = Vec::new();
+        for &f in &result {
+            let loop_v = match m.collect_loop_verts(m.faces.get(f).unwrap().outer().start) {
+                Ok(v) => v, Err(_) => { welded.push(f); continue; }
+            };
+            let mat_f = m.faces.get(f).map(|x| x.material()).unwrap_or(mat);
+            let remapped: Vec<VertId> = loop_v.iter().map(|v| *remap.get(v).unwrap_or(v)).collect();
+            let deduped = dedup_consecutive_verts(&remapped);
+            if deduped.len() < 3 { let _ = m.remove_face(f); continue; }
+            let _ = m.remove_face(f);
+            match m.add_face(&deduped, mat_f) {
+                Ok(nf) => welded.push(nf),
+                Err(_) => {}
+            }
+        }
+        let winfo = m.face_set_manifold_info(&welded);
+        println!("[welded] faces={} closed={} boundary={} nm={} valid={}",
+            welded.len(), winfo.is_closed_solid, winfo.boundary_edge_count,
+            winfo.non_manifold_edge_count, m.verify_face_invariants().is_valid());
+        println!("========================================================");
+        // The whole point: welding closes the box-box subtract.
+        assert!(winfo.is_closed_solid, "seam weld must close the box-box subtract (boundary={})", winfo.boundary_edge_count);
     }
 
     /// 두 겹치는 큐브로 Boolean 테스트
