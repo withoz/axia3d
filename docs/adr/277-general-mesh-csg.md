@@ -163,8 +163,22 @@ watertight). β-5 must keep every ADR-276 assertion green.
   intersection-curve assembly** — pre-split all segments at their mutual crossings
   and connect loose ends into the closed curve on the solid, so a shared segment
   is subdivided identically on both faces.
-- **Remaining:** β-3 continuation (global intersection-curve assembly) → β-4
-  rotated watertight → β-5 cutover (retire weld) → γ arbitrary solids.
+- **β-4 (2026-07-07, `1c2facd`) — PURE-TRANSVERSAL ROTATED CUTS WATERTIGHT (audit
+  gap closed).** β-3-continuation diagnosis (measure-first) found the intersection
+  curve for rot(1,1,1) is a clean closed loop (10 segs, all degree-2), imprint(A)
+  alone is closed+valid, and imprint(A+B) shares the curve edges (nm=10 = 10 edges
+  × 4 faces) — so the shared-vertex imprint is CORRECT. The gap was CLASSIFY:
+  `arrange` can yield a NON-CONVEX (L-shape) sub-face whose CENTROID falls outside
+  it → `point_in_solid` misclassifies → wrong seam face count. Fix:
+  `boolean_solid_v2` classifies with a STRICT INTERIOR point
+  (`strict_interior_point_3d`, ear-clipping) not the centroid. Result
+  (`adr277_beta4_pure_transversal_rotations_watertight`): rot(1,1,1) 30°/20°,
+  rot(1,2,3) 25° — SUB / UNI / INT all commit WATERTIGHT (valid + closed +
+  manifold). The decisive audit case (`rot (1,1,1)` fail-closed) now cuts.
+- **Remaining:** β-4 continuation — MIXED coplanar+transversal (e.g. rot Z 45,
+  a rotation leaving some faces coplanar) still fails-closed; fold the Phase-4
+  `resolve_coplanar_planes` into v2. Then β-5 cutover (route UI/boolean_solid to
+  v2, retire the weld band-aid) → γ arbitrary (non-box) polyhedral solids.
 
 ## Cross-link
 
