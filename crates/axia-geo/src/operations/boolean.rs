@@ -9868,6 +9868,52 @@ mod tests {
         assert_eq!(inward, 6, "B void shell = 6 INWARD-flipped faces (cavity, not a no-op)");
     }
 
+    // ADR-276 Phase 4 — coplanar-coincidence characterization + fail-closed lock.
+    //
+    // Coplanar = operands sharing a face PLANE (touching / lateral overlap /
+    // flush). These are the CSG-degenerate cases: a point on a shared face is
+    // neither strictly in nor out, and two OVERLAPPING coplanar faces must be
+    // resolved by a 2D polygon boolean in the shared plane (union merges them,
+    // subtract/intersect clips them). The current pipeline collects coplanar
+    // pairs (Stage 0.5 `detect_coplanar_faces`) but does NOT run that 2D face
+    // boolean, so a lateral/flush overlap yields an OPEN result (double-covered
+    // coplanar region + mismatched seam) → the closed→closed gate rolls it back
+    // byte-identically. This test LOCKS that safety: coplanar-overlap subtract
+    // must NOT commit a corrupt result — it either errors (rolled back to the
+    // valid 2-box input) or, if a future Phase-4 2D-face-boolean lands, produces
+    // a valid closed solid. It must NEVER leave an invalid/open committed mesh.
+    //
+    // (Reusable building blocks for the future fix already exist:
+    // `operations::coplanar` `sutherland_hodgman` [2D intersection] +
+    // `polygon_difference_walking` [2D difference] — Phase 4 proper wires them
+    // into a coplanar-face-pair resolver. Not a wiring fix like Phase 2/3.)
+    #[test]
+    fn adr276_phase4_coplanar_overlap_fails_closed_no_corruption() {
+        let mat = MaterialId::new(0);
+        // Lateral half-overlap: A x[-50,50] + B x[0,100], both y[-50,50] z[0,100].
+        // y=±50 & z=0/100 face pairs are coplanar+overlapping; x-faces cross.
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        // Input is two valid closed boxes (no vertex fusion — x-planes distinct).
+        assert!(m.verify_face_invariants().is_valid(), "input must start valid");
+        let r = m.boolean_solid(&a, &b, BoolOp::Subtract, mat);
+
+        // Whatever the outcome, the committed mesh must be sound (fail-closed).
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let inv = m.verify_face_invariants();
+        let info = m.face_set_manifold_info(&active);
+        assert!(inv.is_valid(), "coplanar-overlap must NOT commit an invalid mesh (fail-closed)");
+        if r.is_err() {
+            // Current behavior: rolled back byte-identically to the 2-box input.
+            assert_eq!(active.len(), 12, "rollback restores the two 6-face boxes");
+            assert!(info.is_closed_solid, "rolled-back input is 2 valid closed boxes");
+        } else {
+            // A future Phase-4 2D-face-boolean landing: must be a valid closed solid.
+            assert!(info.is_closed_solid, "if a coplanar cut commits, it must be watertight");
+        }
+    }
+
     // ADR-276 Phase 2 — notch debug: trace split → classify → assemble → weld.
     #[test]
     fn adr276_phase2_debug_notch_pipeline() {

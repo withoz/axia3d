@@ -88,8 +88,11 @@ of corrupting the mesh:
   (B ⊂ A) → internal cavity. Engine already correct; fix was broadening the UI
   rescue to also fire on DCEL gate rejection. (disjoint/enclosed UNI/INT
   semantics still deferred.)
-- **Phase 4 — Coplanar coincidence** (M): shared-plane operands — fold the
-  coplanar path in cleanly + merge/dedup.
+- **Phase 4 — Coplanar coincidence** (M) ⏳ CHARACTERIZED 2026-07-07,
+  fail-closed locked: shared-plane operands need a 2D-face-boolean resolver
+  (reuse `coplanar::sutherland_hodgman` + `polygon_difference_walking`) for
+  overlapping coplanar pairs. Real feature, not a wiring fix — Phase-4-proper
+  session + 결재. (touching/coincident-plane = degenerate input, separate.)
 - **Phase 5 — Routing + default + demo** (S): decide UI routing (see Q2), set
   default on/off, browser demo across the config matrix, full regression + a
   proper regression suite replacing the print-only sim.
@@ -309,8 +312,41 @@ of corrupting the mesh:
     faces render via the planar `face.normal()` path; curved cavities use
     ADR-198 `face_surface_reversed`) — noted as a latent inconsistency for a
     future `flip_face` surface-orientation ADR.
-- **Remaining (deferred):** Phase 4 coplanar, other multi-loop/degenerate
-  configs. Union/Intersect box-box beyond the current cases.
+- **Phase 4 coplanar CHARACTERIZED (2026-07-07) — fail-closed locked; the fix
+  is a real 2D-face-boolean feature, NOT a wiring fix (user: "상세한 시뮬로
+  진행합니다").** Sim (`adr276_phase4_*`) over 3 coplanar configs × 3 ops:
+  - **stacked/touching** (A z[0,100] + B z[100,200], same XY): the shared z=100
+    plane makes B's bottom verts COINCIDE with A's top verts → spatial-hash
+    dedup FUSES them → the INPUT is already non-manifold (each z=100 rim edge
+    shared by 4 faces). This is degenerate INPUT (touching solids fused on
+    creation), not a boolean gap — out of scope (input hygiene / a separate
+    "coincident-plane operands" concern). boolean_solid correctly rolls back
+    (invalid input → gate fails).
+  - **lateral half-overlap** (A x[-50,50] + B x[0,100], both y[-50,50]z[0,100])
+    and **flush pocket**: VALID closed inputs, but boolean_solid currently
+    rolls back (fail-closed no-op). Root cause (traced): the y=±50 & z=0/100
+    face pairs are COPLANAR and OVERLAPPING (double-covered in x[0,50]); the
+    intersection segments lie ON face boundaries so `split_faces_by_chains`
+    splits nothing (A 0/6, B 0/6); classify keeps the overlapping coplanar
+    faces from both operands → `merge_coplanar_result_faces` can't unify them
+    (it merges edge-adjacent coplanar faces, not OVERLAPPING ones) → OPEN
+    result (boundary=12) → closed→closed gate rolls back byte-identically.
+  - **The real fix (Phase 4 proper):** a coplanar-face-pair resolver — for each
+    coplanar OVERLAPPING pair, run a 2D polygon boolean in the shared plane
+    (union merges the two rectangles into one; subtract/intersect clips) and
+    replace the pair. Building blocks already exist and are reusable:
+    `operations::coplanar` `sutherland_hodgman` (2D intersection) +
+    `polygon_difference_walking` (2D difference) + `PlaneBasis`/`face_unit_normal`.
+    This is a bounded but genuine feature (winding/plane-basis/seam-with-the-
+    non-coplanar-cut-faces edge cases + LOCKED-boolean regression risk) —
+    recommend a dedicated Phase-4-proper session with 결재, NOT folded in here.
+  - **Locked now (safety):** `adr276_phase4_coplanar_overlap_fails_closed_no_
+    corruption` asserts coplanar-overlap subtract NEVER commits an invalid/open
+    mesh — it errors + rolls back to the valid 2-box input (or, if the resolver
+    later lands, commits a watertight solid). Fail-closed guaranteed.
+- **Remaining (deferred):** Phase 4 proper (coplanar-face 2D-boolean resolver),
+  coincident-plane operand hygiene (stacked/touching), other multi-loop/
+  degenerate configs, Union/Intersect box-box beyond the current cases.
 
 ## Lock-ins (for the β phases)
 
