@@ -1474,7 +1474,17 @@ impl Mesh {
         op: BoolOp,
         material: MaterialId,
     ) -> Result<BooleanResult> {
-        self.boolean_impl(faces_a, faces_b, op, material, true)
+        // ADR-277 β-5 — try the general v2 imprint path FIRST (shared-vertex
+        // imprint + constrained subdivision + coplanar resolver): a strict
+        // superset of v1 that also cuts arbitrary-angle / rotated solids. v2 is
+        // fail-closed (byte-identical rollback on any invalid result), so on Err
+        // the mesh is exactly pre-op and we fall back to the v1 axis-box path
+        // (itself fail-closed). Zero regression: every case v1 cut, v2 cuts too;
+        // v2 additionally cuts rotation.
+        match self.boolean_solid_v2(faces_a, faces_b, op, material) {
+            Ok(r) => Ok(r),
+            Err(_) => self.boolean_impl(faces_a, faces_b, op, material, true),
+        }
     }
 
     /// ADR-277 β-3 (general mesh CSG, gated v2 path) — imprint + retriangulate
