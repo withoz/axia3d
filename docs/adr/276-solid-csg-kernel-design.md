@@ -88,11 +88,11 @@ of corrupting the mesh:
   (B ⊂ A) → internal cavity. Engine already correct; fix was broadening the UI
   rescue to also fire on DCEL gate rejection. (disjoint/enclosed UNI/INT
   semantics still deferred.)
-- **Phase 4 — Coplanar coincidence** (M) ⏳ CHARACTERIZED 2026-07-07,
-  fail-closed locked: shared-plane operands need a 2D-face-boolean resolver
-  (reuse `coplanar::sutherland_hodgman` + `polygon_difference_walking`) for
-  overlapping coplanar pairs. Real feature, not a wiring fix — Phase-4-proper
-  session + 결재. (touching/coincident-plane = degenerate input, separate.)
+- **Phase 4 — Coplanar coincidence** (M) — UNION ✅ DONE 2026-07-07 (new
+  `coplanar_grid_cells` + side-occupancy `resolve_coplanar_planes`; box union
+  cuts watertight, browser-verified). SUBTRACT/INTERSECT coplanar + non-rect +
+  mixed still fail-closed (deferred). (touching/coincident-plane = degenerate
+  input, separate.)
 - **Phase 5 — Routing + default + demo** (S): decide UI routing (see Q2), set
   default on/off, browser demo across the config matrix, full regression + a
   proper regression suite replacing the print-only sim.
@@ -331,22 +331,54 @@ of corrupting the mesh:
     faces from both operands → `merge_coplanar_result_faces` can't unify them
     (it merges edge-adjacent coplanar faces, not OVERLAPPING ones) → OPEN
     result (boundary=12) → closed→closed gate rolls back byte-identically.
-  - **The real fix (Phase 4 proper):** a coplanar-face-pair resolver — for each
-    coplanar OVERLAPPING pair, run a 2D polygon boolean in the shared plane
-    (union merges the two rectangles into one; subtract/intersect clips) and
-    replace the pair. Building blocks already exist and are reusable:
-    `operations::coplanar` `sutherland_hodgman` (2D intersection) +
-    `polygon_difference_walking` (2D difference) + `PlaneBasis`/`face_unit_normal`.
-    This is a bounded but genuine feature (winding/plane-basis/seam-with-the-
-    non-coplanar-cut-faces edge cases + LOCKED-boolean regression risk) —
-    recommend a dedicated Phase-4-proper session with 결재, NOT folded in here.
-  - **Locked now (safety):** `adr276_phase4_coplanar_overlap_fails_closed_no_
-    corruption` asserts coplanar-overlap subtract NEVER commits an invalid/open
-    mesh — it errors + rolls back to the valid 2-box input (or, if the resolver
-    later lands, commits a watertight solid). Fail-closed guaranteed.
-- **Remaining (deferred):** Phase 4 proper (coplanar-face 2D-boolean resolver),
-  coincident-plane operand hygiene (stacked/touching), other multi-loop/
-  degenerate configs, Union/Intersect box-box beyond the current cases.
+  - **The real fix (Phase 4 proper):** a coplanar-face-pair resolver (below).
+    Note the reusable-utils assumption was WRONG (investigated): `polygon_
+    difference_walking` needs exactly-2 transversal crossings; `greiner_hormann`
+    skips coincident/collinear edges + needs transversal crossings; the box-flush
+    coplanar topology has only collinear edges → NONE of them fit. A new robust
+    primitive was needed.
+- **Phase 4 UNION DONE (2026-07-07) — coplanar side-occupancy resolver, box
+  UNION cuts watertight (user: "권장으로 진행").** Two boxes flush on shared
+  planes and overlapping now merge into ONE watertight solid.
+  - **New primitive `coplanar_grid_cells`** (unit-tested `adr276_phase4_
+    coplanar_grid_cells_primitive`): axis-aligned rectangle 2D-boolean via grid
+    decomposition — the cartesian product of all rects' x/y edges; each cell is
+    wholly in/out each operand, so one center test classifies it. Robust for
+    overlap / flush / containment / disjoint + any operand count (the topology
+    the reusable utils couldn't handle).
+  - **`resolve_coplanar_planes` (side-occupancy classification)** — the KEY
+    insight: a coplanar face STRADDLES the other solid's boundary, so the
+    centroid `point_in_solid` classify is a coin-flip (measured: A's z=0 & y=-50
+    faces DROPPED while z=100 & y=50 KEPT — same x=0 centroid, opposite verdict).
+    Instead, for each plane shared by A and B, grid-decompose all faces on it and
+    classify each cell by SIDE-OCCUPANCY: `point_in_solid` at cell-center ± εN
+    for the op's solid predicate (Union = A∪B). A cell is boundary iff the two
+    sides differ; the outward normal points to the empty side. Correct for
+    same-normal flush overlap AND opposite-normal interior coincidence.
+  - **Integration:** coplanar-shared-plane faces are EXCLUDED from the centroid
+    classify + removed; `resolve_coplanar_planes` (read-only) returns outward-
+    wound quads, added after removal (`add_vertex` dedup shares corners with the
+    cut faces). The coplanar-Union path SKIPS weld + `merge_coplanar_result_
+    faces` — the cells are already watertight, and `merge_faces_by_edge`
+    corrupts collinear-vertex coplanar rects (drops a neighbour's area → re-opens
+    the solid). The extra coplanar cell edges are harmless (valid 2-manifold
+    interior edges, hidden by the coplanar render policy, LOCKED #16).
+  - **Verified:** engine `adr276_phase4_lateral_overlap_union_watertight` (union
+    = box x[-50,100], closed, valid, 0 violations) + browser end-to-end (create
+    two overlapping boxes → bool-union → "solid-CSG cut: union, totalFaces=14",
+    AABB x[-50,100] y[-50,50] z[0,100], is_closed_solid=true, 0 violations).
+    Regression clear: corner/notch/slot subtract untouched (Union path only).
+  - **Scope / still deferred:** UNION of axis-aligned coplanar rects only.
+    SUBTRACT / INTERSECT coplanar (asymmetric — the resolver is already op-aware
+    via the side-occupancy predicate, just not yet wired for those ops) and
+    non-rect (post-cut L-shape) coplanar faces remain FAIL-CLOSED (roll back).
+    `adr276_phase4_coplanar_overlap_fails_closed_no_corruption` (subtract) still
+    asserts no-corruption. Mixed coplanar+transversal configs also deferred
+    (the skip-weld heuristic assumes pure-coplanar).
+- **Remaining (deferred):** Phase 4 SUBTRACT/INTERSECT coplanar (wire the
+  op-aware resolver for the other two ops), non-rect coplanar faces, mixed
+  coplanar+transversal, coincident-plane operand hygiene (stacked/touching),
+  other multi-loop/degenerate configs.
 
 ## Lock-ins (for the β phases)
 

@@ -1754,29 +1754,59 @@ impl Mesh {
             keep_a.len(), keep_b.len(),
         ));
 
+        // ── Stage 4.9: COPLANAR PLANE PLAN (ADR-276 Phase 4) ──
+        // Faces coplanar-coincident with the OTHER solid straddle its boundary,
+        // so the centroid `point_in_solid` classify is unreliable for them (a
+        // straddling face's centroid lands on the boundary → coin-flip). Instead:
+        // (1) find the planes shared by A and B, (2) EXCLUDE those faces from the
+        // keep/assemble below, (3) rebuild them by side-occupancy in
+        // `resolve_coplanar_planes` (read-only here — returns outward-wound
+        // quads; added after the originals are removed). Union only for now
+        // (subtract/intersect coplanar are asymmetric future increments); other
+        // ops keep the legacy behavior (→ gate rolls back coplanar configs).
+        let coplanar_keys = if use_general && op == BoolOp::Union {
+            self.shared_coplanar_plane_keys(&solid_a, &solid_b)
+        } else {
+            std::collections::HashSet::new()
+        };
+        let coplanar_quads: Vec<[DVec3; 4]> = if !coplanar_keys.is_empty() {
+            self.resolve_coplanar_planes(&solid_a, &solid_b, op)
+        } else {
+            Vec::new()
+        };
+        let is_coplanar_face = |mesh: &Self, fid: FaceId| -> bool {
+            if coplanar_keys.is_empty() { return false; }
+            match mesh.face_unit_normal_and_poly(fid) {
+                Some((n, poly)) => coplanar_keys.contains(&Self::coplanar_plane_key(n, n.dot(poly[0]))),
+                None => false,
+            }
+        };
+
         // ── Stage 5: 결과 조립 ───────────────────────
         let mut result_faces = Vec::new();
 
-        // A에서 유지할 face
+        // A에서 유지할 face (coplanar-shared 면은 제외 — Stage 5.4 에서 재구성)
         for &fid in &keep_a {
+            if is_coplanar_face(self, fid) { continue; }
             result_faces.push(fid);
         }
 
-        // B에서 유지할 face (Subtract 시 winding 반전)
+        // B에서 유지할 face (Subtract 시 winding 반전; coplanar-shared 제외)
         for &fid in &keep_b {
+            if is_coplanar_face(self, fid) { continue; }
             if op == BoolOp::Subtract {
                 self.flip_face(fid)?;
             }
             result_faces.push(fid);
         }
 
-        // 제거 대상 face 삭제
+        // 제거 대상: 미유지 face + (coplanar-shared 원본 전부 — 재구성됨)
         let remove_a: Vec<FaceId> = new_faces_a.iter()
-            .filter(|f| !keep_a.contains(f))
+            .filter(|f| !keep_a.contains(f) || is_coplanar_face(self, **f))
             .copied()
             .collect();
         let remove_b: Vec<FaceId> = new_faces_b.iter()
-            .filter(|f| !keep_b.contains(f))
+            .filter(|f| !keep_b.contains(f) || is_coplanar_face(self, **f))
             .copied()
             .collect();
 
@@ -1787,11 +1817,33 @@ impl Mesh {
             let _ = self.remove_face(fid);
         }
 
+        // ── Stage 5.4: add the rebuilt coplanar boundary faces (Phase 4) ──
+        // Originals removed above → now materialize the side-occupancy quads.
+        // `add_vertex` spatial-hash dedup (LOCKED #5) shares corners with the
+        // surrounding cut faces; `merge_coplanar_result_faces` fuses the cells.
+        if !coplanar_quads.is_empty() {
+            for quad in &coplanar_quads {
+                let verts: Vec<VertId> = quad.iter().map(|&p| self.add_vertex(p)).collect();
+                if let Ok(f) = self.add_face(&verts, material) {
+                    result_faces.push(f);
+                }
+            }
+            debug.push(format!("Coplanar resolve: +{} boundary faces", coplanar_quads.len()));
+        }
+
         // ── Stage 5.5: SEAM WELD (ADR-276 Phase 2, solid-CSG path) ──
         // Split+classify leaves the notch seam OPEN (A-side vs B-side duplicate
         // verts). Weld coincident verts + rebuild faces so the seam edges share
         // → watertight. Only for use_general (split-by-chain path).
-        let result_faces = if use_general {
+        // ADR-276 Phase 4 — the coplanar-resolved cells are already watertight
+        // (add_vertex dedup shares their corners with the cut faces) AND
+        // merge_faces_by_edge corrupts collinear-vertex coplanar rects (drops a
+        // neighbour's area → re-opens the solid). So the coplanar-Union path
+        // SKIPS both weld and merge; the extra coplanar cell edges are harmless
+        // (valid 2-manifold interior edges, hidden by the coplanar render policy,
+        // LOCKED #16). Non-coplanar paths (corner/notch/slot) keep weld+merge.
+        let skip_weld_merge = !coplanar_quads.is_empty();
+        let result_faces = if use_general && !skip_weld_merge {
             let welded = self.weld_result_seam(&result_faces, material);
             debug.push(format!("Seam weld: {} → {} faces", result_faces.len(), welded.len()));
             welded
@@ -1800,12 +1852,16 @@ impl Mesh {
         };
 
         // ── Stage 6: 공면 face 병합 ──────────────────
-        let merged_faces = self.merge_coplanar_result_faces(&result_faces);
-        debug.push(format!(
-            "Face merging: {} → {} (merged {} coplanar faces)",
-            result_faces.len(), merged_faces.len(),
-            result_faces.len() - merged_faces.len()
-        ));
+        let merged_faces = if skip_weld_merge {
+            result_faces
+        } else {
+            let m = self.merge_coplanar_result_faces(&result_faces);
+            debug.push(format!(
+                "Face merging: {} → {} (merged {} coplanar faces)",
+                result_faces.len(), m.len(), result_faces.len() - m.len()
+            ));
+            m
+        };
 
         let new_vert_count = split_count_a + split_count_b;
         debug.push(format!(
@@ -7798,6 +7854,136 @@ impl Mesh {
         Some((n / nl, poly))
     }
 
+    /// ADR-276 Phase 4 — unsigned quantized plane key (normal made sign-
+    /// canonical so +N and −N faces on the same plane share a key).
+    fn coplanar_plane_key(n: DVec3, offset: f64) -> (i64, i64, i64, i64) {
+        let q = |v: f64| (v * 1e4_f64).round() as i64;
+        // Canonicalize the sign by the first significant component.
+        let (nx, ny, nz, d) = if n.x.abs() > 1e-6 {
+            if n.x < 0.0 { (-n.x, -n.y, -n.z, -offset) } else { (n.x, n.y, n.z, offset) }
+        } else if n.y.abs() > 1e-6 {
+            if n.y < 0.0 { (-n.x, -n.y, -n.z, -offset) } else { (n.x, n.y, n.z, offset) }
+        } else if n.z < 0.0 {
+            (-n.x, -n.y, -n.z, -offset)
+        } else {
+            (n.x, n.y, n.z, offset)
+        };
+        (q(nx), q(ny), q(nz), q(d))
+    }
+
+    /// ADR-276 Phase 4 — the unsigned plane keys shared by a face of A AND a
+    /// face of B. Faces on these planes are coplanar-coincident and must be
+    /// classified by side-occupancy (`resolve_coplanar_planes`), NOT by the
+    /// centroid `point_in_solid` (a straddling coplanar face's centroid lands on
+    /// the other solid's boundary → unreliable in/out).
+    fn shared_coplanar_plane_keys(
+        &self, solid_a: &SolidData, solid_b: &SolidData,
+    ) -> std::collections::HashSet<(i64, i64, i64, i64)> {
+        let plane_keys = |solid: &SolidData| -> std::collections::HashSet<(i64, i64, i64, i64)> {
+            let mut ks = std::collections::HashSet::new();
+            for &fid in &solid.face_ids {
+                if let Some((n, poly)) = self.face_unit_normal_and_poly(fid) {
+                    ks.insert(Self::coplanar_plane_key(n, n.dot(poly[0])));
+                }
+            }
+            ks
+        };
+        let ka = plane_keys(solid_a);
+        let kb = plane_keys(solid_b);
+        ka.intersection(&kb).copied().collect()
+    }
+
+    /// ADR-276 Phase 4 — rebuild the coplanar-coincident boundary faces via
+    /// SIDE-OCCUPANCY classification. For each plane shared by A and B, grid-
+    /// decompose all of A's + B's faces on that plane (axis-aligned rects) into
+    /// cells; a cell belongs to the result boundary iff the op's solid predicate
+    /// (Union = in A∪B, Subtract = in A∖B, Intersect = in A∩B) differs on the
+    /// two sides of the plane (`point_in_solid` at cell-center ± εN). The
+    /// outward normal points to the empty side. This is the correct coplanar CSG
+    /// classification (handles same-normal flush overlap AND opposite-normal
+    /// interior coincidence) — the centroid classify cannot, because a straddling
+    /// coplanar face's centroid sits on the boundary. Returns the new boundary
+    /// faces; `add_vertex` dedup shares their corners with the surrounding cut
+    /// faces and `merge_coplanar_result_faces` fuses the cells.
+    ///
+    /// Scope: axis-aligned rects in the plane basis (post-cut non-rect faces →
+    /// that plane is skipped → gate rolls back if still open, fail-closed).
+    fn resolve_coplanar_planes(
+        &self,
+        solid_a: &SolidData,
+        solid_b: &SolidData,
+        op: BoolOp,
+    ) -> Vec<[DVec3; 4]> {
+        use crate::operations::polygon_geom::PlaneBasis;
+        const EPS_OFF: f64 = 1e-3; // off-plane probe (> LOCKED #5 dedup 1.5μm)
+
+        let shared = self.shared_coplanar_plane_keys(solid_a, solid_b);
+        let mut out: Vec<[DVec3; 4]> = Vec::new();
+
+        for key in shared {
+            // Collect A + B faces on this plane (from the ORIGINAL solids).
+            let mut poly0: Option<Vec<DVec3>> = None;
+            let mut rects: Vec<[f64; 4]> = Vec::new();
+            let mut basis_opt: Option<PlaneBasis> = None;
+            let mut all_rects = true;
+            for solid in [solid_a, solid_b] {
+                for &fid in &solid.face_ids {
+                    let Some((n, poly)) = self.face_unit_normal_and_poly(fid) else { continue };
+                    if Self::coplanar_plane_key(n, n.dot(poly[0])) != key { continue; }
+                    if poly0.is_none() {
+                        poly0 = Some(poly.clone());
+                        basis_opt = PlaneBasis::from_polygon(&poly);
+                    }
+                    let Some(basis) = &basis_opt else { all_rects = false; break; };
+                    if poly.len() != 4 { all_rects = false; break; }
+                    let p2: Vec<(f64, f64)> = poly.iter().map(|&p| basis.project(p)).collect();
+                    let x0 = p2.iter().map(|c| c.0).fold(f64::MAX, f64::min);
+                    let x1 = p2.iter().map(|c| c.0).fold(f64::MIN, f64::max);
+                    let y0 = p2.iter().map(|c| c.1).fold(f64::MAX, f64::min);
+                    let y1 = p2.iter().map(|c| c.1).fold(f64::MIN, f64::max);
+                    let axis = p2.iter().all(|&(x, _)| (x - x0).abs() < 1e-6 || (x - x1).abs() < 1e-6)
+                        && p2.iter().all(|&(_, y)| (y - y0).abs() < 1e-6 || (y - y1).abs() < 1e-6);
+                    if !axis || (x1 - x0) < 1e-6 || (y1 - y0) < 1e-6 { all_rects = false; break; }
+                    rects.push([x0, y0, x1, y1]);
+                }
+                if !all_rects { break; }
+            }
+            let (Some(basis), true) = (basis_opt, all_rects) else { continue };
+            if rects.is_empty() { continue; }
+
+            let plane_n = basis.e1.cross(basis.e2).normalize_or_zero();
+            // Candidate cells = the union footprint (covered by any rect).
+            let cells = coplanar_grid_cells(&rects, &[], BoolOp::Union);
+            let in_result = |p: DVec3| -> bool {
+                let ina = point_in_solid(&solid_a.all_triangles, p);
+                let inb = point_in_solid(&solid_b.all_triangles, p);
+                match op {
+                    BoolOp::Union => ina || inb,
+                    BoolOp::Subtract => ina && !inb,
+                    BoolOp::Intersect => ina && inb,
+                }
+            };
+            for c in &cells {
+                let cx = 0.5 * (c[0] + c[2]);
+                let cy = 0.5 * (c[1] + c[3]);
+                let center = basis.lift(cx, cy);
+                let plus = in_result(center + plane_n * EPS_OFF);
+                let minus = in_result(center - plane_n * EPS_OFF);
+                if plus == minus { continue; } // interior or void → not a boundary
+                // Outward normal points to the EMPTY side (empty = the !solid side).
+                // CCW quad in basis has normal +plane_n; reverse if outward is −.
+                let mut quad = [
+                    basis.lift(c[0], c[1]), basis.lift(c[2], c[1]),
+                    basis.lift(c[2], c[3]), basis.lift(c[0], c[3]),
+                ];
+                let outward_is_plus = minus; // solid on − side ⇒ outward = +N
+                if !outward_is_plus { quad.reverse(); }
+                out.push(quad);
+            }
+        }
+        out
+    }
+
     /// ── Stage 6: 공면 face 병합 ───────────────────
     /// Boolean 결과에서 인접한 공면 face들을 병합하여 unnecessary edge 제거.
     ///
@@ -7868,6 +8054,69 @@ impl Mesh {
 
         current_faces
     }
+}
+
+/// ADR-276 Phase 4 — coplanar boolean of axis-aligned rectangles via grid-cell
+/// decomposition. `a_rects` / `b_rects` are `[x0, y0, x1, y1]` (x0<x1, y0<y1) in
+/// a shared 2D plane basis (all faces lying on ONE plane, projected). Returns
+/// the grid cells (as `[x0, y0, x1, y1]`) that belong to the boolean result:
+///   - Union     = cell in A OR B
+///   - Subtract  = cell in A AND NOT B
+///   - Intersect = cell in A AND B
+///
+/// The grid = the cartesian product of the sorted-unique x and y edges of every
+/// rect. Each cell is entirely inside-or-outside each operand (rects are
+/// axis-aligned), so a single center-point test classifies it exactly. Robust
+/// for any axis-aligned arrangement (overlap / flush / containment / disjoint)
+/// and any operand count — the failure mode of the reusable 2D utils
+/// (`polygon_difference_walking` needs exactly-2 transversal crossings;
+/// `greiner_hormann` skips coincident/collinear edges) which do NOT handle the
+/// coplanar box-flush topology. The caller re-lifts each kept cell to a 3D face
+/// and lets `merge_coplanar_result_faces` fuse the edge-adjacent cells back into
+/// minimal faces.
+fn coplanar_grid_cells(a_rects: &[[f64; 4]], b_rects: &[[f64; 4]], op: BoolOp) -> Vec<[f64; 4]> {
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    for r in a_rects.iter().chain(b_rects.iter()) {
+        xs.push(r[0]); xs.push(r[2]);
+        ys.push(r[1]); ys.push(r[3]);
+    }
+    let dedup_sorted = |mut v: Vec<f64>| -> Vec<f64> {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        v
+    };
+    let xs = dedup_sorted(xs);
+    let ys = dedup_sorted(ys);
+    if xs.len() < 2 || ys.len() < 2 {
+        return Vec::new();
+    }
+    let contains = |rects: &[[f64; 4]], cx: f64, cy: f64| -> bool {
+        rects.iter().any(|r| cx > r[0] && cx < r[2] && cy > r[1] && cy < r[3])
+    };
+    let mut cells = Vec::new();
+    for i in 0..xs.len() - 1 {
+        for j in 0..ys.len() - 1 {
+            let (x0, x1) = (xs[i], xs[i + 1]);
+            let (y0, y1) = (ys[j], ys[j + 1]);
+            if (x1 - x0) < 1e-9 || (y1 - y0) < 1e-9 {
+                continue;
+            }
+            let cx = 0.5 * (x0 + x1);
+            let cy = 0.5 * (y0 + y1);
+            let in_a = contains(a_rects, cx, cy);
+            let in_b = contains(b_rects, cx, cy);
+            let keep = match op {
+                BoolOp::Union => in_a || in_b,
+                BoolOp::Subtract => in_a && !in_b,
+                BoolOp::Intersect => in_a && in_b,
+            };
+            if keep {
+                cells.push([x0, y0, x1, y1]);
+            }
+        }
+    }
+    cells
 }
 
 /// 연속된 동일 VertId 제거
@@ -9912,6 +10161,79 @@ mod tests {
             // A future Phase-4 2D-face-boolean landing: must be a valid closed solid.
             assert!(info.is_closed_solid, "if a coplanar cut commits, it must be watertight");
         }
+    }
+
+                // ADR-276 Phase 4 — lateral-overlap UNION end-to-end: two boxes flush on
+    // the y/z planes and overlapping in x must merge into ONE watertight box
+    // (the coplanar-union resolver replaces the double-covered y/z faces).
+    #[test]
+    fn adr276_phase4_lateral_overlap_union_watertight() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // A x[-50,50] + B x[0,100], both y[-50,50] z[0,100]. Union = box x[-50,100].
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let r = m.boolean_solid(&a, &b, BoolOp::Union, mat);
+        assert!(r.is_ok(), "lateral-overlap union must succeed: {:?}", r.err());
+
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        let info = m.face_set_manifold_info(&active);
+        assert!(m.verify_face_invariants().is_valid(), "union must be ADR-007 valid");
+        assert!(info.is_closed_solid, "union of two flush boxes = one closed solid");
+        assert_eq!(info.boundary_edge_count, 0, "watertight");
+        assert_eq!(info.non_manifold_edge_count, 0, "manifold");
+
+        // The merged box spans x[-50,100] y[-50,50] z[0,100] (AABB check).
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for &f in &active {
+            if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) {
+                for v in vs { if let Some(p) = m.verts.get(v).map(|v| v.pos()) { lo = lo.min(p); hi = hi.max(p); } }
+            }
+        }
+        assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
+        assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
+        assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    // ADR-276 Phase 4 — the coplanar grid-cell 2D-boolean primitive. Two
+    // coplanar axis-aligned rects sharing the full y-extent and overlapping in
+    // x (the lateral-overlap box-flush topology the reusable utils can't handle).
+    #[test]
+    fn adr276_phase4_coplanar_grid_cells_primitive() {
+        // A = x[-50,50], B = x[0,100], both y[0,100]. Overlap x[0,50].
+        let a = [[-50.0, 0.0, 50.0, 100.0]];
+        let b = [[0.0, 0.0, 100.0, 100.0]];
+
+        // UNION → the whole span x[-50,100] as 3 edge-adjacent cells.
+        let uni = coplanar_grid_cells(&a, &b, BoolOp::Union);
+        assert_eq!(uni.len(), 3, "union = 3 cells spanning x[-50,100]");
+        let min_x = uni.iter().map(|c| c[0]).fold(f64::MAX, f64::min);
+        let max_x = uni.iter().map(|c| c[2]).fold(f64::MIN, f64::max);
+        assert!((min_x + 50.0).abs() < 1e-6 && (max_x - 100.0).abs() < 1e-6, "union spans x[-50,100]");
+
+        // SUBTRACT A−B → only A's non-overlap part x[-50,0].
+        let sub = coplanar_grid_cells(&a, &b, BoolOp::Subtract);
+        assert_eq!(sub.len(), 1, "A−B = 1 cell x[-50,0]");
+        assert!((sub[0][0] + 50.0).abs() < 1e-6 && (sub[0][2] - 0.0).abs() < 1e-6);
+
+        // INTERSECT → the overlap x[0,50].
+        let int = coplanar_grid_cells(&a, &b, BoolOp::Intersect);
+        assert_eq!(int.len(), 1, "A∩B = 1 cell x[0,50]");
+        assert!((int[0][0] - 0.0).abs() < 1e-6 && (int[0][2] - 50.0).abs() < 1e-6);
+
+        // Full containment: B ⊂ A. Union = A; Subtract = A with a hole (grid
+        // yields the ring cells, no single-cell); Intersect = B.
+        let big = [[-50.0, -50.0, 50.0, 50.0]];
+        let small = [[-10.0, -10.0, 10.0, 10.0]];
+        let cu = coplanar_grid_cells(&big, &small, BoolOp::Union);
+        let area: f64 = cu.iter().map(|c| (c[2] - c[0]) * (c[3] - c[1])).sum();
+        assert!((area - 100.0 * 100.0).abs() < 1e-3, "union area = A (100x100)");
+        let ci = coplanar_grid_cells(&big, &small, BoolOp::Intersect);
+        let ia: f64 = ci.iter().map(|c| (c[2] - c[0]) * (c[3] - c[1])).sum();
+        assert!((ia - 20.0 * 20.0).abs() < 1e-3, "intersect area = B (20x20)");
+        let cs = coplanar_grid_cells(&big, &small, BoolOp::Subtract);
+        let sa: f64 = cs.iter().map(|c| (c[2] - c[0]) * (c[3] - c[1])).sum();
+        assert!((sa - (100.0 * 100.0 - 20.0 * 20.0)).abs() < 1e-3, "A−B area = A minus B hole");
     }
 
     // ADR-276 Phase 2 — notch debug: trace split → classify → assemble → weld.
