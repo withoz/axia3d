@@ -204,11 +204,18 @@ watertight). β-5 must keep every ADR-276 assertion green.
   handles ARBITRARY polygons it ALSO fixes rotated-coplanar (rot Z 45). Verified
   (`adr277_mixed_coplanar_transversal_watertight`): 2-axis UNI/SUB/INT + rot Z 45
   SUB/UNI all watertight. Also closes the ADR-276 Phase-4 deferred 2-axis mixed.
-- **Status: box-box CSG essentially complete** — transversal + coplanar + MIXED +
-  arbitrary rotation all cut watertight via v2 (boolean_solid v2-first). Remaining
-  (smaller / follow-up): γ arbitrary NON-box polyhedral solids; retire the v1 weld
-  band-aid + grid `resolve_coplanar_planes` once fully subsumed; interactive
-  rotated-box browser demo (rotate-tool/faceMap harness — orthogonal).
+- **γ (2026-07-07, `cec869b`) — NON-BOX polyhedra cut watertight (v2 is general).**
+  The imprint pipeline never assumed boxes (find_intersections on any convex face,
+  arrange on any polygon, strict-interior classify), so arbitrary polyhedra work
+  with ZERO new code. Verified (`adr277_gamma_nonbox_polyhedra_watertight` +
+  `make_tri_prism`): box⊕prism (3 ops), prism−box, two-prism union — all
+  watertight/no-corruption.
+- **Status: general polyhedral CSG COMPLETE** — transversal + coplanar + MIXED +
+  arbitrary rotation + non-box polyhedra all cut watertight via v2 (boolean_solid
+  v2-first). Remaining (follow-up / cleanup, not core): retire the v1 weld
+  band-aid + grid `resolve_coplanar_planes` once fully subsumed; curved-primitive
+  generalization (ADR-197 analytic path, separate); interactive rotated-box
+  browser demo (rotate-tool/faceMap harness — orthogonal).
 
 ## Cross-link
 
