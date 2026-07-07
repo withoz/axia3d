@@ -175,10 +175,29 @@ watertight). β-5 must keep every ADR-276 assertion green.
   (`adr277_beta4_pure_transversal_rotations_watertight`): rot(1,1,1) 30°/20°,
   rot(1,2,3) 25° — SUB / UNI / INT all commit WATERTIGHT (valid + closed +
   manifold). The decisive audit case (`rot (1,1,1)` fail-closed) now cuts.
-- **Remaining:** β-4 continuation — MIXED coplanar+transversal (e.g. rot Z 45,
-  a rotation leaving some faces coplanar) still fails-closed; fold the Phase-4
-  `resolve_coplanar_planes` into v2. Then β-5 cutover (route UI/boolean_solid to
-  v2, retire the weld band-aid) → γ arbitrary (non-box) polyhedral solids.
+- **β-4 continuation (2026-07-07, `791bb90`) — coplanar fold-in; v2 is a strict
+  SUPERSET of v1.** Folded the Phase-4 `resolve_coplanar_planes` (side-occupancy)
+  into `boolean_solid_v2`: coplanar-shared-plane faces are excluded from the
+  transversal imprint and rebuilt as side-occupancy quads sharing the same
+  vertex set. `adr277_beta4cont_v2_superset_of_v1`: v2 cuts every ADR-276 case
+  watertight — corner / notch / slot / enclosed-cavity / coplanar-1-axis (all 3
+  ops) — plus pure-transversal arbitrary rotation (β-4). MIXED
+  coplanar+transversal (2-axis, rotated-coplanar) still fails-closed in BOTH v1
+  and v2 (no regression).
+- **β-5 cutover (2026-07-07, `4e5fb1b`) — boolean_solid tries v2 FIRST, falls
+  back to v1.** Both fail-closed, so on any v2 Err the mesh is exactly pre-op and
+  v1 runs on clean input → the UI (BooleanHandler → bridge.booleanSolid) now gets
+  arbitrary-angle boolean with ZERO regression. Verified: full suite green with
+  boolean_solid = v2-first (axia-geo 2182, axia-core 433, 0 failed); browser
+  axis-corner subtract via bridge.booleanSolid → 9 faces watertight. Rotation
+  engine-proven + now reachable through boolean_solid. (Interactive rotated-box
+  browser demo pending a rotate-tool/faceMap harness fix — orthogonal.)
+- **Remaining:** β-5 rotated-box interactive browser demo (harness); MIXED
+  coplanar+transversal (2-axis / rotated-coplanar — the coplanar cells and
+  transversal sub-faces don't yet stitch at the shared solid edge, and rotated
+  coplanar needs the arrange-based subdivision instead of the axis-aligned grid);
+  γ arbitrary (non-box) polyhedral solids; retire the v1 weld band-aid once v2
+  fully subsumes it.
 
 ## Cross-link
 
