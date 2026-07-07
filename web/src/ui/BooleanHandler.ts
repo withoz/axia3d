@@ -293,11 +293,14 @@ export function startBooleanOp(
     //       Phase 3 the rescue only caught (1), so enclosed silently no-op'd
     //       (the rolled-back result left the two boxes intact — the user saw
     //       nothing happen).
-    // In both cases boolean_solid (curved-first, then polygonal split-by-chain +
-    // seam weld, with its OWN fail-closed closed→closed + invariant + SI gate)
-    // is the correct fallback: it cuts corner / notch / slot AND the enclosed
-    // cavity (A outer shell + B flipped inward void) WATERTIGHT. If it still
-    // can't, it fails closed (mesh rolled back) and we fall through to the DCEL
+    // In both cases boolean_solid (ADR-278 β: polygonalizes any Path B analytic
+    // curved operand first, then the v2 imprint + arrange path, then a v1 grid +
+    // seam-weld fallback — all under its OWN fail-closed closed→closed +
+    // invariant + SI gate) is the correct fallback: it cuts corner / notch /
+    // slot / arbitrary-rotation / non-box polyhedra / Path B analytic cylinders
+    // AND the enclosed cavity (A outer shell + B flipped inward void) WATERTIGHT.
+    // If it still can't, it fails closed (WASM boolean_solid_op restores the
+    // pre-op scene snapshot byte-identically) and we fall through to the DCEL
     // result's honest ADR-275 message. The DCEL path already restored the mesh
     // to pre-op state on both no-op and rejection, so boolean_solid runs on
     // clean input. Working curved/DCEL cuts (kind='ok' WITH new faces) never
