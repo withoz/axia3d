@@ -118,18 +118,18 @@ function handleMultiDcelResult(
   // All-disjoint / no-closed-loops case — no actual mesh change.
   // (Per-pair Ok with disjoint=true OR new_faces empty due to D-H safe-only.)
   //
-  // ADR-275 (c) guard — this branch fires both for (1) genuinely disjoint
-  // solids (correct no-op) AND (2) OVERLAPPING planar/box solids that the
-  // engine simply cannot cut (scoping matrix 2026-07-06: planar box-box CSG
-  // is unimplemented in BOTH the DCEL SSI path and classic Mesh::boolean).
-  // The old wording ("모든 pair 가 교차하지 않거나…", Toast.info) was
-  // misleading for clearly-overlapping boxes and easy to miss. Elevate to a
-  // warning and name the real limitation + what IS supported.
+  // ADR-275 (c) guard, refined for ADR-276 Phase 5 — this branch is reached
+  // AFTER the boolean_solid rescue (startBooleanOp) has already tried and
+  // DECLINED (or the operands are genuinely disjoint). So it now means: either
+  // (1) the two solids don't overlap, or (2) this specific box configuration
+  // isn't watertight-cuttable YET. Corner/edge OVERLAP box subtract DOES work
+  // now (Phase 5); through-holes / blind notches / full containment are still
+  // pending. Keep the wording config-specific (not "all box boolean unsupported").
   if (newCount === 0 && removedCount === 0) {
     Toast.warning(
-      `${OP_NAME_KO[op]}: 변경 없음 — 두 solid 가 실제로 떨어져 있거나, ` +
-        `평면(box) solid boolean 이 아직 미지원입니다. 현재 곡면 analytic ` +
-        `surface(구·원기둥·원뿔·원환) ∩ 축정렬 box 절단만 지원됩니다 (ADR-275).`,
+      `${OP_NAME_KO[op]}: 변경 없음 — 두 solid 가 떨어져 있거나, 이 형상 구성이 ` +
+        `아직 미지원입니다. 겹치는 모서리(corner) 절단과 곡면(구·원기둥·원뿔·원환) ` +
+        `∩ box 는 지원 — 관통 구멍·홈·완전 포함은 준비 중 (ADR-275/276).`,
       6000,
     );
     debugLog(
