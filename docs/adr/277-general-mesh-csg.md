@@ -192,12 +192,23 @@ watertight). β-5 must keep every ADR-276 assertion green.
   axis-corner subtract via bridge.booleanSolid → 9 faces watertight. Rotation
   engine-proven + now reachable through boolean_solid. (Interactive rotated-box
   browser demo pending a rotate-tool/faceMap harness fix — orthogonal.)
-- **Remaining:** β-5 rotated-box interactive browser demo (harness); MIXED
-  coplanar+transversal (2-axis / rotated-coplanar — the coplanar cells and
-  transversal sub-faces don't yet stitch at the shared solid edge, and rotated
-  coplanar needs the arrange-based subdivision instead of the axis-aligned grid);
-  γ arbitrary (non-box) polyhedral solids; retire the v1 weld band-aid once v2
-  fully subsumes it.
+- **MIXED (2026-07-07, `c18362a`) — coplanar+transversal WATERTIGHT (last major
+  box-box gap closed).** Diagnosis: 2-axis union pre-gate was OPEN (boundary=24)
+  because the grid-based `resolve_coplanar_planes` UNIFORMLY subdivides the cap
+  (adds every x/y grid line), so the L-cap perimeter splits at points (x=0 on the
+  y=-50 edge) the uncrossed transversal wall lacks → T-junction. Fix:
+  `resolve_coplanar_planes_arrange` — arranges all A+B coplanar face polygons
+  (`boundary_kernel::arrange`) so sub-faces split ONLY at the A/B crossings
+  (perimeter matches the walls) + side-occupancy classify + outward-wound 3D loops
+  (outer+holes); `boolean_solid_v2` uses it instead of the grid. Because arrange
+  handles ARBITRARY polygons it ALSO fixes rotated-coplanar (rot Z 45). Verified
+  (`adr277_mixed_coplanar_transversal_watertight`): 2-axis UNI/SUB/INT + rot Z 45
+  SUB/UNI all watertight. Also closes the ADR-276 Phase-4 deferred 2-axis mixed.
+- **Status: box-box CSG essentially complete** — transversal + coplanar + MIXED +
+  arbitrary rotation all cut watertight via v2 (boolean_solid v2-first). Remaining
+  (smaller / follow-up): γ arbitrary NON-box polyhedral solids; retire the v1 weld
+  band-aid + grid `resolve_coplanar_planes` once fully subsumed; interactive
+  rotated-box browser demo (rotate-tool/faceMap harness — orthogonal).
 
 ## Cross-link
 
