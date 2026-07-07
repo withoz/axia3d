@@ -210,6 +210,21 @@ watertight). β-5 must keep every ADR-276 assertion green.
   with ZERO new code. Verified (`adr277_gamma_nonbox_polyhedra_watertight` +
   `make_tri_prism`): box⊕prism (3 ops), prism−box, two-prism union — all
   watertight/no-corruption.
+- **Browser real-time verification (2026-07-07, WASM rebuilt for MIXED + γ):**
+  via `bridge.booleanSolid` (= `Mesh::boolean_solid` v2-first) on a reloaded
+  scene — axis corner SUB (9 faces, AABB x[-50,50]), lateral UNI (14, x[-50,100]),
+  **2-axis UNI MIXED (14, AABB x[-50,100]y[-50,100] = L-prism)**, 2-axis SUB MIXED
+  (8) — all `ok`, closed, nm=0, valid. The viewport (real-time preview) reflects
+  the new v2 capability; boolean is click-to-apply (no drag ghost). WASM
+  screenshot capture is an environment limitation (structural stats are
+  authoritative). Wiring confirmed intact: UI → bridge.booleanSolid → WASM
+  booleanSolid → Mesh::boolean_solid (v2-first) → boolean_solid_v2
+  (imprint + resolve_coplanar_planes_arrange) → v1 fallback.
+- **v1 retention (follow-up decision):** the v1 grid `resolve_coplanar_planes` +
+  `weld_result_seam` are kept as the fail-closed fallback under boolean_solid.
+  v2 is a proven superset, but retiring v1 removes the safety net for untested
+  edge cases — defer retirement until real-world telemetry shows v2 never falls
+  back (not core; not done now).
 - **Status: general polyhedral CSG COMPLETE** — transversal + coplanar + MIXED +
   arbitrary rotation + non-box polyhedra all cut watertight via v2 (boolean_solid
   v2-first). Remaining (follow-up / cleanup, not core): retire the v1 weld
