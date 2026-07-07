@@ -220,6 +220,14 @@ watertight). β-5 must keep every ADR-276 assertion green.
   authoritative). Wiring confirmed intact: UI → bridge.booleanSolid → WASM
   booleanSolid → Mesh::boolean_solid (v2-first) → boolean_solid_v2
   (imprint + resolve_coplanar_planes_arrange) → v1 fallback.
+- **ROTATED-box interactive browser demo (2026-07-07) — DONE.** Fresh reload,
+  `eng.rotate_faces` (about (1,1,1) 30°) on box B, then `bridge.booleanSolid`
+  subtract → 10 faces, closed, valid, nm=0. Definitive proof rotation reached the
+  boolean: the RESULT mesh has 8 OFF-AXIS vertices (only the rotated box's cut can
+  produce them). (An intermediate getMeshBuffers AABB read of rotated-B-alone was
+  stale — rotate is a delta-buffer op — but the committed boolean result reads
+  correctly.) The general-CSG rotation capability is reachable end-to-end from the
+  UI-equivalent flow (a user's Rotate tool + bool-subtract).
 - **v1 retention (follow-up decision):** the v1 grid `resolve_coplanar_planes` +
   `weld_result_seam` are kept as the fail-closed fallback under boolean_solid.
   v2 is a proven superset, but retiring v1 removes the safety net for untested
