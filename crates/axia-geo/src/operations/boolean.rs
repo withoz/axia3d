@@ -1833,18 +1833,15 @@ impl Mesh {
         }
 
         // ── Stage 5.5: SEAM WELD (ADR-276 Phase 2, solid-CSG path) ──
-        // Split+classify leaves the notch seam OPEN (A-side vs B-side duplicate
-        // verts). Weld coincident verts + rebuild faces so the seam edges share
-        // → watertight. Only for use_general (split-by-chain path).
-        // ADR-276 Phase 4 — the coplanar-resolved cells are already watertight
-        // (add_vertex dedup shares their corners with the cut faces) AND
-        // merge_faces_by_edge corrupts collinear-vertex coplanar rects (drops a
-        // neighbour's area → re-opens the solid). So the coplanar-Union path
-        // SKIPS both weld and merge; the extra coplanar cell edges are harmless
-        // (valid 2-manifold interior edges, hidden by the coplanar render policy,
-        // LOCKED #16). Non-coplanar paths (corner/notch/slot) keep weld+merge.
-        let skip_weld_merge = !coplanar_quads.is_empty();
-        let result_faces = if use_general && !skip_weld_merge {
+        // Split+classify leaves a transversal cut seam OPEN (A-side vs B-side
+        // duplicate verts). Weld coincident verts + rebuild faces so the seam
+        // edges share → watertight. Runs for EVERY use_general op — a MIXED
+        // config (ADR-276 Phase 4) has both coplanar-resolved cells AND
+        // transversal side faces, and the transversal seam still needs welding.
+        // The coplanar cells are already vert-shared (add_vertex dedup) so weld
+        // is a no-op for them.
+        let has_coplanar = !coplanar_quads.is_empty();
+        let result_faces = if use_general {
             let welded = self.weld_result_seam(&result_faces, material);
             debug.push(format!("Seam weld: {} → {} faces", result_faces.len(), welded.len()));
             welded
@@ -1853,7 +1850,12 @@ impl Mesh {
         };
 
         // ── Stage 6: 공면 face 병합 ──────────────────
-        let merged_faces = if skip_weld_merge {
+        // ADR-276 Phase 4 — SKIP merge when coplanar cells are present:
+        // merge_faces_by_edge corrupts collinear-vertex coplanar rects (drops a
+        // neighbour's area → re-opens the solid). The extra coplanar cell edges
+        // are harmless (valid 2-manifold interior edges, hidden by the coplanar
+        // render policy, LOCKED #16). Non-coplanar paths keep merge.
+        let merged_faces = if has_coplanar {
             result_faces
         } else {
             let m = self.merge_coplanar_result_faces(&result_faces);
@@ -10184,6 +10186,44 @@ mod tests {
         assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
         assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    // ADR-276 Phase 4 — MIXED config (coplanar + transversal) characterization.
+    // A x[-50,50]y[-50,50] + B x[0,100]y[0,100] (both z[0,100]), offset in BOTH
+    // x and y: z=0/z=100 union footprint = L-shape (coplanar), AND the x/y side
+    // faces cross transversally. Locks two facts:
+    //   (1) the coplanar RESOLVER itself works — it produces the L-shape (7 cells
+    //       per shared plane, 14 total) even though each input face is a rect;
+    //   (2) the FULL mixed op is fail-closed — stitching the transversal side
+    //       faces to the coplanar cells is not yet solved (general-CSG piece), so
+    //       boolean_solid must roll back byte-identically rather than commit the
+    //       non-manifold result. No corruption either way.
+    #[test]
+    fn adr276_phase4_mixed_config_coplanar_resolver_works_op_fails_closed() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let b = m.create_box(DVec3::new(50.0, 50.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        let sa = m.prepare_solid(&a).unwrap();
+        let sb = m.prepare_solid(&b).unwrap();
+
+        // (1) The coplanar resolver produces the L-shape footprint.
+        let keys = m.shared_coplanar_plane_keys(&sa, &sb);
+        assert_eq!(keys.len(), 2, "z=0 and z=100 are the shared coplanar planes");
+        let quads = m.resolve_coplanar_planes(&sa, &sb, BoolOp::Union);
+        assert_eq!(quads.len(), 14, "L-shape = 7 cells × 2 planes (resolver handles non-rect footprint)");
+
+        // (2) The full mixed op is fail-closed (no corruption).
+        let r = m.boolean_solid(&a, &b, BoolOp::Union, mat);
+        let active: Vec<FaceId> = m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        assert!(m.verify_face_invariants().is_valid(), "must never commit an invalid mesh");
+        let info = m.face_set_manifold_info(&active);
+        if r.is_err() {
+            assert_eq!(active.len(), 12, "rolled back to the two 6-face boxes");
+            assert!(info.is_closed_solid);
+        } else {
+            assert!(info.is_closed_solid, "if it commits, it must be watertight");
+        }
     }
 
     // ADR-276 Phase 4 — lateral-overlap SUBTRACT: A−B keeps A's non-overlap

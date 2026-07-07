@@ -385,14 +385,45 @@ of corrupting the mesh:
   - **Regression clear:** corner/notch/slot subtract untouched (they have NO
     coplanar-shared planes → coplanar_keys empty → resolver never fires). Full
     axia-geo 2170 pass.
-  - **Still deferred (fail-closed):** non-rect (post-cut L-shape) coplanar faces
-    + mixed coplanar+transversal configs (the skip-weld/merge heuristic assumes
-    pure-coplanar) + coincident-plane operand hygiene (stacked/touching =
-    degenerate non-manifold input). `adr276_phase4_coplanar_overlap_fails_closed_
-    no_corruption` guards no-corruption for anything the resolver can't handle.
-- **Remaining (deferred):** non-rect coplanar faces, mixed coplanar+transversal,
-  coincident-plane operand hygiene (stacked/touching), other multi-loop/
-  degenerate configs.
+  - **Still deferred (fail-closed):** see the non-rect / mixed characterization
+    below.
+- **Phase 4 non-rect / MIXED characterized (2026-07-07) — the coplanar resolver
+  handles non-rect footprints; the real gap is MIXED (coplanar + transversal),
+  which is the general-CSG stitch (user: "상세한 시뮬레이션으로 배선관계와 모든
+  문제점 검토").** Detailed sim of the 2-axis-offset union (A x[-50,50]y[-50,50]
+  + B x[0,100]y[0,100], both z[0,100] — z=0/z=100 footprint is an L-shape and the
+  x/y side faces cross transversally):
+  - **Finding 1 — the coplanar resolver ALREADY handles the non-rect (L-shape)
+    footprint:** `resolve_coplanar_planes` grid-decomposes the two rects on each
+    shared z-plane and side-occupancy-classifies the cells → 7 cells per plane =
+    the L-shape (14 quads total), correct. So "non-rect coplanar" per se is not
+    the blocker — the grid + side-occupancy produces rectilinear (L/staircase)
+    footprints from rect inputs for free.
+  - **Finding 2 — the real gap is MIXED (coplanar + transversal):** the 2-axis
+    union's x/y SIDE faces cross transversally (10 intersection segs); those
+    partial side faces (e.g. A's x=50 kept only for y[-50,0]) must be split AND
+    stitched to the coplanar z-cells. The op rolls back (measured: 20 faces, 4
+    non-manifold edges each shared by 3 faces = T-junctions where a transversal
+    side face meets a coplanar cell edge without a shared vertex set). Welding
+    alone does not reconcile them — this is the general-CSG imprint+merge (a
+    consistent shared vertex set across coplanar cells AND transversal splits),
+    the genuinely hard remaining piece, NOT a wiring tweak.
+  - **Safe improvement landed:** the weld/merge heuristic is refined — weld now
+    runs for EVERY `use_general` op (a mixed config's transversal seam needs it;
+    the coplanar cells are already vert-shared so weld is a no-op for them), and
+    only `merge_coplanar_result_faces` is skipped when coplanar cells are present
+    (it corrupts collinear-vertex coplanar rects). Pure-coplanar (1-axis) union/
+    subtract/intersect still watertight (engine + browser re-verified); the mixed
+    2-axis config remains fail-closed.
+  - **Locked:** `adr276_phase4_mixed_config_coplanar_resolver_works_op_fails_
+    closed` asserts BOTH — the resolver produces the 14-quad L-shape AND the full
+    mixed op is no-corruption (rolls back to the valid 2-box input).
+- **Remaining (deferred):** MIXED coplanar+transversal (general-CSG imprint+merge
+  — shared vertex set across coplanar cells + transversal splits), a TRULY
+  non-rect INPUT face (chained-boolean L-face — needs vertex-based grid lines,
+  and likely hits the same mixed stitch), coincident-plane operand hygiene
+  (stacked/touching = degenerate non-manifold input), other multi-loop/degenerate
+  configs.
 
 ## Lock-ins (for the β phases)
 
