@@ -13097,6 +13097,81 @@ mod tests {
         );
     }
 
+    /// ADR-279 (curve annulus nesting) α — DE-RISK SIMULATION (measure-first).
+    ///
+    /// Reproduces the "곡선 경계 annulus → non-manifold" limit in the PRODUCTION
+    /// path (all 3 flags ON = `face_rederive_on_draw` → `rederive_coplanar_on_draw`).
+    /// Two concentric Path B circles (arc-bounded annulus) must currently produce
+    /// a non-manifold edge (nm >= 1). Documents the exact failure so the β fix can
+    /// flip the assertions. NOT a fix — a measurement.
+    #[test]
+    fn sim_curve_annulus_nonmanifold_diagnosis() {
+        let dump = |tag: &str, s: &Scene| {
+            let active: Vec<axia_geo::FaceId> = s
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(f, _)| f)
+                .collect();
+            let mi = s.mesh.face_set_manifold_info(&active);
+            let inv = s.mesh.verify_face_invariants();
+            let loops: Vec<(u32, usize)> = active
+                .iter()
+                .map(|&f| (f.raw(), s.mesh.faces[f].inners().len()))
+                .collect();
+            eprintln!(
+                "[{tag}] active={} closed={} boundary={} nm={} inv_valid={} inv_viol={} loops(inners)={:?}",
+                active.len(),
+                mi.is_closed_solid,
+                mi.boundary_edge_count,
+                mi.non_manifold_edge_count,
+                inv.is_valid(),
+                inv.violations.len(),
+                loops,
+            );
+            mi.non_manifold_edge_count
+        };
+
+        // ── Case A: 2 concentric circles on Z=0 (NO box) — minimal repro ──
+        let mut a = Scene::new();
+        a.face_rederive_on_draw = true;
+        a.auto_intersect_on_draw = true;
+        a.auto_face_synthesis_on_draw = true;
+        a.execute(Command::DrawCircleAsCurve { center: DVec3::ZERO, normal: DVec3::Z, radius: 40.0 });
+        dump("A after R40", &a);
+        a.execute(Command::DrawCircleAsCurve { center: DVec3::ZERO, normal: DVec3::Z, radius: 20.0 });
+        let a_nm = dump("A after R20 (annulus)", &a);
+
+        eprintln!("--- Case A (no box) concentric-circle annulus nm = {a_nm} ---");
+
+        // ── Case B: BOX + 2 concentric circles on the top face (matches browser) ──
+        let mut b = Scene::new();
+        b.face_rederive_on_draw = true;
+        b.auto_intersect_on_draw = true;
+        b.auto_face_synthesis_on_draw = true;
+        // box centered (0,0,50) size 120 → top face at z=110, normal +Z.
+        b.mesh
+            .create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, FORM_MATERIAL)
+            .expect("box");
+        dump("B box", &b);
+        b.execute(Command::DrawCircleAsCurve { center: DVec3::new(0.0, 0.0, 110.0), normal: DVec3::Z, radius: 40.0 });
+        dump("B after R40 on top", &b);
+        b.execute(Command::DrawCircleAsCurve { center: DVec3::new(0.0, 0.0, 110.0), normal: DVec3::Z, radius: 20.0 });
+        let b_nm = dump("B after R20 (annulus on solid)", &b);
+        eprintln!("--- Case B (box) concentric-circle annulus nm = {b_nm} ---");
+
+        // MEASUREMENT (current buggy behavior): the arc-bounded annulus nested in a
+        // solid top face is non-manifold. Case A (lone circles) is CLEAN (nm=0), so
+        // the defect needs the box/nested-hole context. β fix flips B to nm==0.
+        assert!(
+            b_nm >= 1,
+            "SIM: expected the curve-annulus-on-solid limit (nm>=1) to reproduce in \
+             the production rederive path; got Case A nm={a_nm}, Case B nm={b_nm}. \
+             If B is now 0, the fix landed — flip this assertion."
+        );
+    }
+
     /// Finding #1 — order-independence (spec "순서 무관"): drawing the line then
     /// the circle must yield the same topology (faces / line / arc counts) as
     /// the circle then the line.
