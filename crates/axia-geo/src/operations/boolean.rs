@@ -1520,10 +1520,12 @@ impl Mesh {
         // leaves some faces coplanar) is handled: coplanar cells + transversal
         // sub-faces share ONE vertex set (add_vertex dedup).
         let coplanar_keys = self.shared_coplanar_plane_keys(&solid_a, &solid_b);
-        let coplanar_quads: Vec<[DVec3; 4]> = if coplanar_keys.is_empty() {
+        // ADR-277 MIXED — arrange-based coplanar resolution (arbitrary polygons,
+        // minimal subdivision that matches the transversal walls' edges).
+        let coplanar_loops: Vec<(Vec<DVec3>, Vec<Vec<DVec3>>)> = if coplanar_keys.is_empty() {
             Vec::new()
         } else {
-            self.resolve_coplanar_planes(&solid_a, &solid_b, op)
+            self.resolve_coplanar_planes_arrange(&solid_a, &solid_b, op)
         };
         let is_coplanar = |mesh: &Self, fid: FaceId| -> bool {
             if coplanar_keys.is_empty() { return false; }
@@ -1532,12 +1534,11 @@ impl Mesh {
                 None => false,
             }
         };
-        // If there ARE shared coplanar planes but the resolver produced NO quads
-        // (e.g. a rotated/non-rect coplanar overlap the axis-aligned grid can't
-        // handle), bail early → fail-closed rollback (don't leave the plane open).
-        if !coplanar_keys.is_empty() && coplanar_quads.is_empty() {
+        // Shared coplanar planes but the resolver produced NO sub-faces → bail
+        // (fail-closed; don't leave the plane open).
+        if !coplanar_keys.is_empty() && coplanar_loops.is_empty() {
             *self = backup;
-            anyhow::bail!("boolean_solid_v2: coplanar plane present but resolver produced no cells (non-rect/rotated coplanar not yet supported)");
+            anyhow::bail!("boolean_solid_v2: coplanar plane present but resolver produced no sub-faces");
         }
 
         // Stage 1 — intersection segments (exact at any angle).
@@ -1555,8 +1556,8 @@ impl Mesh {
         let b_nc: Vec<FaceId> = solid_b.face_ids.iter().filter(|&&f| !is_coplanar(self, f)).copied().collect();
         let new_a = self.imprint_faces(&a_nc, &segs_by_face, material);
         let new_b = self.imprint_faces(&b_nc, &segs_by_face, material);
-        debug.push(format!("v2: imprint A {}→{}, B {}→{} ({} coplanar quads)",
-            a_nc.len(), new_a.len(), b_nc.len(), new_b.len(), coplanar_quads.len()));
+        debug.push(format!("v2: imprint A {}→{}, B {}→{} ({} coplanar sub-faces)",
+            a_nc.len(), new_a.len(), b_nc.len(), new_b.len(), coplanar_loops.len()));
 
         // Stage 4 — classify sub-faces against the ORIGINAL solids. v2 uses a
         // STRICT INTERIOR point (ear-clipping) not the centroid: arrange can
@@ -1606,15 +1607,23 @@ impl Mesh {
             }
         }
         // Coplanar planes: remove the excluded originals + materialize the
-        // side-occupancy quads (already op-classified + outward-wound). The
-        // fresh cell verts dedup-share with the transversal sub-faces' verts.
-        if !coplanar_quads.is_empty() {
+        // arrange-based sub-faces (already op-classified by side-occupancy +
+        // outward-wound). The fresh verts dedup-share with the transversal
+        // sub-faces' verts (minimal subdivision → perimeter matches the walls).
+        if !coplanar_loops.is_empty() {
             let cop_faces: Vec<FaceId> = solid_a.face_ids.iter().chain(solid_b.face_ids.iter())
                 .filter(|&&f| is_coplanar(self, f)).copied().collect();
             for fid in cop_faces { let _ = self.remove_face(fid); }
-            for quad in &coplanar_quads {
-                let verts: Vec<VertId> = quad.iter().map(|&p| self.add_vertex(p)).collect();
-                if let Ok(f) = self.add_face(&verts, material) { result_faces.push(f); }
+            for (outer, holes) in &coplanar_loops {
+                let ov: Vec<VertId> = outer.iter().map(|&p| self.add_vertex(p)).collect();
+                if holes.is_empty() {
+                    if let Ok(f) = self.add_face(&ov, material) { result_faces.push(f); }
+                } else {
+                    let hvs: Vec<Vec<VertId>> = holes.iter()
+                        .map(|h| h.iter().map(|&p| self.add_vertex(p)).collect()).collect();
+                    let refs: Vec<&[VertId]> = hvs.iter().map(|h| h.as_slice()).collect();
+                    if let Ok(f) = self.add_face_with_holes(&ov, &refs, material) { result_faces.push(f); }
+                }
             }
         }
 
@@ -8199,6 +8208,95 @@ impl Mesh {
         out
     }
 
+    /// ADR-277 MIXED — arrange-based coplanar-plane resolver. Unlike the
+    /// grid-based `resolve_coplanar_planes` (axis-aligned rects, UNIFORM
+    /// subdivision that over-cuts the plane and T-junctions against the
+    /// transversal walls), this arranges ALL of A's + B's face polygons on the
+    /// shared plane together (`boundary_kernel::arrange`) → sub-faces split ONLY
+    /// at the A/B boundary crossings, so a sub-face's outer perimeter is NOT
+    /// over-subdivided and matches the (uncrossed) transversal walls' edges → the
+    /// MIXED seam stitches. Handles ARBITRARY polygons (rotated / non-rect
+    /// coplanar), not just axis-aligned rects. Each arrangement face is kept by
+    /// SIDE-OCCUPANCY (strict-interior point ± εN, op predicate); returns the
+    /// kept sub-faces as outward-wound 3D loops (outer + holes). Read-only.
+    fn resolve_coplanar_planes_arrange(
+        &self,
+        solid_a: &SolidData,
+        solid_b: &SolidData,
+        op: BoolOp,
+    ) -> Vec<(Vec<DVec3>, Vec<Vec<DVec3>>)> {
+        use crate::boundary_kernel::analytic_arrange::{arrange, InputCurve, SubCurve};
+        use crate::boundary_kernel::geom2::Vec2;
+        use crate::operations::polygon_geom::{strict_interior_point_3d, PlaneBasis};
+        const EPS_OFF: f64 = 1e-3;
+
+        let shared = self.shared_coplanar_plane_keys(solid_a, solid_b);
+        let mut out: Vec<(Vec<DVec3>, Vec<Vec<DVec3>>)> = Vec::new();
+
+        for key in shared {
+            let mut basis: Option<PlaneBasis> = None;
+            let mut curves: Vec<InputCurve> = Vec::new();
+            for solid in [solid_a, solid_b] {
+                for &fid in &solid.face_ids {
+                    let Some((n, poly)) = self.face_unit_normal_and_poly(fid) else { continue };
+                    if Self::coplanar_plane_key(n, n.dot(poly[0])) != key { continue; }
+                    if basis.is_none() {
+                        basis = PlaneBasis::from_polygon(&poly);
+                    }
+                    let Some(b) = &basis else { continue };
+                    let p2: Vec<(f64, f64)> = poly.iter().map(|&p| b.project(p)).collect();
+                    for i in 0..p2.len() {
+                        let a = p2[i];
+                        let c = p2[(i + 1) % p2.len()];
+                        curves.push(InputCurve::Line { a: Vec2::new(a.0, a.1), b: Vec2::new(c.0, c.1) });
+                    }
+                }
+            }
+            let Some(b) = basis else { continue };
+            let plane_n = b.e1.cross(b.e2).normalize_or_zero();
+            let sub_start = |s: &SubCurve| -> Option<(f64, f64)> {
+                match s {
+                    SubCurve::Line { a, .. } => Some((a.x, a.y)),
+                    SubCurve::Arc { center, radius, a0, .. } => Some((center.x + radius * a0.cos(), center.y + radius * a0.sin())),
+                    SubCurve::Freeform { .. } => None,
+                }
+            };
+            let lift_loop = |subs: &[SubCurve]| -> Vec<DVec3> {
+                subs.iter().filter_map(&sub_start).map(|(u, v)| b.lift(u, v)).collect()
+            };
+
+            for f in arrange(&curves, 1e-6) {
+                let outer = lift_loop(&f.outer);
+                if outer.len() < 3 { continue; }
+                let Some(ip) = strict_interior_point_3d(&outer) else { continue };
+                let in_result = |p: DVec3| -> bool {
+                    let ina = point_in_solid(&solid_a.all_triangles, p);
+                    let inb = point_in_solid(&solid_b.all_triangles, p);
+                    match op {
+                        BoolOp::Union => ina || inb,
+                        BoolOp::Subtract => ina && !inb,
+                        BoolOp::Intersect => ina && inb,
+                    }
+                };
+                let plus = in_result(ip + plane_n * EPS_OFF);
+                let minus = in_result(ip - plane_n * EPS_OFF);
+                if plus == minus { continue; } // interior or void
+                let holes: Vec<Vec<DVec3>> = f.holes.iter()
+                    .map(|h| lift_loop(h)).filter(|h| h.len() >= 3).collect();
+                let mut o = outer;
+                let mut hs = holes;
+                // Outward to the empty side: a CCW loop lifts to normal +plane_n;
+                // reverse (outer + holes) if the outward normal is −plane_n.
+                if !minus {
+                    o.reverse();
+                    for h in &mut hs { h.reverse(); }
+                }
+                out.push((o, hs));
+            }
+        }
+        out
+    }
+
     /// ── Stage 6: 공면 face 병합 ───────────────────
     /// Boolean 결과에서 인접한 공면 face들을 병합하여 unnecessary edge 제거.
     ///
@@ -10690,6 +10788,48 @@ mod tests {
         assert!(arr.len() < 2 * segs.len(),
             "arrangement collapses shared endpoints: {} unique < {} (2×{} segs)",
             arr.len(), 2 * segs.len(), segs.len());
+    }
+
+    // ADR-277 MIXED — coplanar+transversal configs now cut watertight via v2's
+    // ARRANGE-based coplanar resolver (minimal subdivision that matches the
+    // transversal walls, arbitrary polygons). Both sub-cases close: 2-axis
+    // axis-aligned (grid over-subdivision T-junction fixed) AND rotated-coplanar
+    // (rot Z 45 — the axis-aligned grid couldn't handle the rotated overlap).
+    // This also closes the ADR-276 Phase-4 deferred 2-axis mixed case.
+    #[test]
+    fn adr277_mixed_coplanar_transversal_watertight() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let run = |bc: DVec3, rot_deg: f64, op: BoolOp| -> (bool, bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let a_faces = active(&m);
+            let mid: std::collections::HashSet<FaceId> = a_faces.iter().copied().collect();
+            m.create_box(bc, 100.0, 100.0, 100.0, mat).unwrap();
+            let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+            if rot_deg.abs() > 1e-9 {
+                let mut bv = std::collections::HashSet::new();
+                for &f in &b_faces { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { bv.insert(v); } } }
+                let bvv: Vec<VertId> = bv.into_iter().collect();
+                m.rotate_verts(&bvv, bc, DVec3::Z, rot_deg.to_radians()).unwrap();
+            }
+            let ok = m.boolean_solid_v2(&a_faces, &b_faces, op, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
+        };
+        for (label, bc, rot, op) in [
+            ("2-axis UNI", DVec3::new(50.0,50.0,50.0), 0.0, BoolOp::Union),
+            ("2-axis SUB", DVec3::new(50.0,50.0,50.0), 0.0, BoolOp::Subtract),
+            ("2-axis INT", DVec3::new(50.0,50.0,50.0), 0.0, BoolOp::Intersect),
+            ("rot Z 45 SUB", DVec3::new(60.0,60.0,50.0), 45.0, BoolOp::Subtract),
+            ("rot Z 45 UNI", DVec3::new(60.0,60.0,50.0), 45.0, BoolOp::Union),
+        ] {
+            let (ok, valid, closed, manifold) = run(bc, rot, op);
+            assert!(ok, "{label}: MIXED coplanar+transversal must commit (not fail-closed)");
+            assert!(valid && closed && manifold, "{label}: must be watertight");
+        }
     }
 
     // ADR-277 β-4 continuation — v2 with the Phase-4 coplanar resolver folded in
