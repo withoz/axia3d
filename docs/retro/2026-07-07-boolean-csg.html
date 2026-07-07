@@ -62,7 +62,7 @@
     font-weight: 800;
   }
   h1 em { font-style: normal; color: var(--accent); }
-  .lede { color: var(--muted); max-width: 60ch; margin-top: .7rem; font-size: 1.02rem; }
+  .lede { color: var(--muted); max-width: 62ch; margin-top: .7rem; font-size: 1.02rem; }
   .meta {
     display: flex; flex-wrap: wrap; gap: .5rem .6rem; margin-top: 1.2rem;
   }
@@ -131,7 +131,9 @@
   /* ── Callout cards (architecture + verification) ── */
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: .8rem; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }
+  .card.hot { border-color: #bfe0cb; background: linear-gradient(180deg, var(--good-soft), var(--surface) 55%); }
   .card .k { font-family: var(--mono); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); font-weight: 650; }
+  .card.hot .k { color: var(--good); }
   .card p { margin-top: .4rem; color: var(--ink); font-size: .9rem; }
   .card p .muted { color: var(--muted); }
 
@@ -166,13 +168,14 @@
 <div class="wrap">
   <header class="hd">
     <div class="eyebrow">AXiA · Kernel Dev Log · Boolean CSG</div>
-    <h1>“박스−박스 subtract 무동작”에서 <em>일반 다면체 CSG 완성</em>까지</h1>
-    <p class="lede">오늘 세션의 boolean CSG 작업을 <b>문제점 → 해결방법 → 미해결</b>로 구분해 정리. 매 단계 <em>측정 우선 → 원인 정밀 진단 → 최소 수정·기존 자산 재사용</em>으로 해결.</p>
+    <h1>“박스−박스 subtract 무동작”에서 <em>일반 다면체 + 곡면 Path B 절단</em>까지</h1>
+    <p class="lede">boolean CSG 작업을 <b>문제점 → 해결방법 → 미해결</b>로 구분해 정리. 이번 갱신은 <em>ADR-278 β — Path B(analytic) 곡면 실린더 절단</em> + <em>배선·메뉴·툴바 정합 검토</em>를 반영. 매 단계 <em>측정 우선 → 원인 정밀 진단 → 최소 수정·기존 자산 재사용</em>.</p>
     <div class="meta">
       <span class="m">📅 <b>2026-07-07</b></span>
-      <span class="m ok">테스트 <b>2959 pass</b> · 0 failed</span>
+      <span class="m ok">axia-geo <b>2187 pass</b> · 0 ignored</span>
+      <span class="m ok">boolean <b>286</b> · vitest BooleanHandler <b>29</b></span>
       <span class="m">tsc <b>0</b> · 카탈로그 clean</span>
-      <span class="m commit">HEAD <code>7ca9729</code></span>
+      <span class="m commit">HEAD <code>b209b5b</code></span>
       <span class="m commit">tag <code>backup/…adr276-phase4-20260707</code></span>
     </div>
   </header>
@@ -188,12 +191,14 @@
       <span class="arw">→</span>
       <span class="step">ADR-277 일반 mesh CSG (α~γ)</span>
       <span class="arw">→</span>
-      <span class="step end">임의 다면체(회전 포함) watertight · UI end-to-end</span>
+      <span class="step">ADR-278 곡면 감사</span>
+      <span class="arw">→</span>
+      <span class="step end">ADR-278 β: Path B 곡면 실린더 절단 · 배선 검토</span>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-num">§1</span><h2>문제점 → 해결방법 <span class="sub">해결됨 <span class="pill good">9</span></span></h2></div>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>문제점 → 해결방법 <span class="sub">해결됨 <span class="pill good">10</span></span></h2></div>
     <div class="tbl-scroll">
       <table>
         <thead>
@@ -263,13 +268,20 @@
             <td>fresh reload + create_box 반환 ID + <b>boolean 결과 read</b>(off-axis verts로 회전 증명)</td>
             <td class="commit"><code>7ca9729</code></td>
           </tr>
+          <tr style="background: var(--good-soft);">
+            <td class="n">10</td>
+            <td><b>Path B(analytic) 곡면 실린더 subtract가 무동작</b> — production 기본 Path B ON이라 사용자가 원통을 그려 박스에서 빼면 아무것도 안 깎임</td>
+            <td>Path B = 1 anchor + self-loop 면 (&lt;3 vert) → <code>prepare_solid</code>가 skip → no-op. ADR-197 analytic dispatch는 box−cyl subtract 미포함</td>
+            <td><b>ADR-278 β — polygonalize-then-CSG</b>: <code>boolean_solid</code> 진입점에서 Path B 실린더를 등가의 <b>polygonal 실린더로 재생성</b>(검증된 Path A 빌더 재사용) 후 기존 v2-first/v1-fallback이 절단. polygonal 곡면 boolean은 이미 SOLVED</td>
+            <td class="commit"><code>7cb03bd</code></td>
+          </tr>
         </tbody>
       </table>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-num">§2</span><h2>핵심 아키텍처 결정 <span class="sub">ADR-277</span></h2></div>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>핵심 아키텍처 결정 <span class="sub">ADR-277 · 278</span></h2></div>
     <div class="cards">
       <div class="card">
         <div class="k">shared-vertex imprint</div>
@@ -283,21 +295,72 @@
         <div class="k">v2-first + v1 fallback</div>
         <p><code>boolean_solid</code>이 v2 먼저 시도, 실패 시 v1 → <b>무회귀 cutover</b>. UI가 자동으로 회전·일반 CSG 획득</p>
       </div>
+      <div class="card hot">
+        <div class="k">ADR-278 β · polygonalize-then-CSG</div>
+        <p>Path B 곡면 operand를 <b>진입점에서 1회</b> polygonalize → v2·v1 <span class="muted">둘 다</span> 다면체를 봄. <span class="muted">v2 내부에 두면 rollback 시 소실되어 v1이 원본 analytic 면을 받음 → 배치가 핵심.</span></p>
+      </div>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-num">§3</span><h2>검증 <span class="sub">모두 green</span></h2></div>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>배선·메뉴·툴바 검토 <span class="sub">4개 surface 정합</span></h2></div>
+    <div class="flow" style="margin-bottom:.8rem;">
+      <span class="step">메뉴 / 툴바 / Command Palette / F8·F9</span>
+      <span class="arw">→</span>
+      <span class="step">startBooleanOp</span>
+      <span class="arw">→</span>
+      <span class="step">booleanDispatchDcelMulti</span>
+      <span class="arw">→</span>
+      <span class="step start">no-op / reject</span>
+      <span class="arw">→</span>
+      <span class="step">booleanSolid rescue</span>
+      <span class="arw">→</span>
+      <span class="step">WASM (스냅샷 guard)</span>
+      <span class="arw">→</span>
+      <span class="step end">boolean_solid = ADR-278 β</span>
+    </div>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Surface</th><th>진입</th><th>라우팅</th><th>상태</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>메뉴</td><td><code>index.html</code> menu-action</td><td>MenuBar <code>case 'bool-*'</code> → <code>startBooleanOp</code></td><td><span class="pill good">정합</span></td></tr>
+          <tr><td>툴바</td><td><code>index.html</code> tool-btn + dropdown</td><td>main.ts <code>dispatchToolbarAction</code> → <code>startBooleanOp</code></td><td><span class="pill good">정합</span></td></tr>
+          <tr><td>Command Palette</td><td><code>AxiaCommands</code></td><td><code>executeAction</code> → ToolManager:2047 → <code>startBooleanOp</code></td><td><span class="pill good">정합</span></td></tr>
+          <tr><td>키보드</td><td>F8 union · F9 intersect</td><td><code>executeAction</code> → ToolManager:2047 → <code>startBooleanOp</code></td><td><span class="pill warn">subtract 단축키 없음*</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cards" style="margin-top:.8rem;">
+      <div class="card">
+        <div class="k">SSOT · 중복 없음</div>
+        <p>각 surface가 <code>startBooleanOp</code>을 <b>정확히 1회</b> 호출. Palette·키보드는 ToolManager:2047 분기를 단일 진실 원천으로 경유.</p>
+      </div>
+      <div class="card">
+        <div class="k">라벨 정합</div>
+        <p>합집합(Union) / 차집합(Subtract) / 교집합(Intersect) · ∪ − ∩ · F8/F9 힌트 — 메뉴·툴바·Palette 동일. <code>export_baseline</code>에 <code>booleanSolid</code> drift guard.</p>
+      </div>
+      <div class="card hot">
+        <div class="k">안전망 — WASM 스냅샷</div>
+        <p><code>boolean_solid_op</code>이 polygonalize <b>이전</b>에 스냅샷 확보 → 실패 시 <code>restore_scene_snapshot</code>으로 원본 Path B 실린더 <b>byte-identical 복원</b>.</p>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:.7rem; font-size:.85rem;">* subtract 키보드 단축키 부재는 ADR-278과 무관한 기존 UX (메뉴·툴바·Palette로 접근 가능). LOCKED #1(기존 명령 보존)·additive-only 원칙상 사용자 지시 없이 키 바인딩 미변경.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>검증 <span class="sub">3-layer · 모두 green</span></h2></div>
     <div class="verify">
-      <span class="vitem">워크스페이스 <b>2959 pass</b> · 0 failed</span>
-      <span class="vitem">tsc <b>0</b> errors</span>
-      <span class="vitem">ADR 카탈로그 clean</span>
-      <span class="vitem">브라우저: axis / coplanar / <b>2-axis MIXED</b> / <b>회전 박스(off-axis verts 8)</b> 전부 watertight</span>
+      <span class="vitem">엔진 <code>adr278_curved_boolean_audit</code>: Path B cyl−box <b>절단 + watertight</b>(closed·manifold) 단언</span>
+      <span class="vitem">axia-geo <b>2187 pass</b> · 0 ignored · boolean <b>286</b></span>
+      <span class="vitem">tsc <b>0</b> · vitest BooleanHandler <b>29</b></span>
+      <span class="vitem">브라우저 실제 UI 경로: DCEL no-op(<code>UnsupportedSurfaceKind</code>) → booleanSolid rescue → <b>9→8면</b>, invariants valid, 0 violations</span>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-num">§4</span><h2>미해결 <span class="sub">deferred · core 아님</span></h2></div>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>미해결 <span class="sub">deferred · additive 후속</span></h2></div>
     <div class="tbl-scroll">
       <table>
         <thead>
@@ -305,9 +368,9 @@
         </thead>
         <tbody>
           <tr>
-            <td><b>곡면 primitive 일반화</b> (cylinder / sphere / cone / torus boolean)</td>
-            <td><span class="pill bad">미해결 · 유일 major</span></td>
-            <td>현재 ADR-197 analytic 경로(부분 작동)로 별도 처리. v2 다면체 경로와 통합·전환은 별도 ADR 규모</td>
+            <td><b>Path B 회전 실린더 · sphere / cone / torus subtract</b></td>
+            <td><span class="pill warn">deferred · 무회귀</span></td>
+            <td>현재 operand 그대로 반환(문서화된 no-op). <code>polygonalize_curved_operand</code>를 해당 surface kind / 비-Z 축으로 확장하면 동일 패턴으로 해결 — additive 후속(결재 불요)</td>
           </tr>
           <tr>
             <td>v1 (grid resolver + weld) 은퇴</td>
@@ -320,9 +383,14 @@
             <td>생성 시 verts 융합 → 퇴화 non-manifold 입력. boolean 갭 아닌 입력 위생 별개</td>
           </tr>
           <tr>
-            <td>회전 박스 인터랙티브 시각 스크린샷</td>
+            <td>analytic-surface 보존 곡면 boolean</td>
+            <td><span class="pill warn">대안 · defer</span></td>
+            <td>ADR-278 β는 polygonal 결과(절단은 정확, 곡면 metadata 상실 — 여느 tessellation CAD와 동일). surface 보존은 ADR-197 SSI 확장 — 대규모, 요구 시</td>
+          </tr>
+          <tr>
+            <td>회전/곡면 인터랙티브 시각 스크린샷</td>
             <td><span class="pill warn">환경 한계</span></td>
-            <td>WASM 렌더 스크린샷 캡처 타임아웃 — 구조 stats(off-axis verts)로 확증 (기능 무관)</td>
+            <td>WASM 렌더 스크린샷 캡처 타임아웃 — 구조 stats(off-axis verts, face 수, invariants)로 확증 (기능 무관)</td>
           </tr>
         </tbody>
       </table>
@@ -330,20 +398,22 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-num">§5</span><h2>완성 현황 <span class="sub">box · 다면체 CSG</span></h2></div>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>완성 현황 <span class="sub">box · 다면체 · 곡면 CSG</span></h2></div>
     <div class="done-grid">
       <div class="cfg">transversal (corner / notch / slot / enclosed-cavity)</div><div class="st"><span class="pill good">완성</span></div>
       <div class="cfg">coplanar 1-axis (union / subtract / intersect)</div><div class="st"><span class="pill good">완성</span></div>
       <div class="cfg">MIXED (2-axis + rotated-coplanar, 3 op)</div><div class="st"><span class="pill good">완성</span></div>
       <div class="cfg">임의각 순수-transversal 회전 (3 op)</div><div class="st"><span class="pill good">완성</span></div>
       <div class="cfg">비-박스 다면체 (prism 등)</div><div class="st"><span class="pill good">완성</span></div>
-      <div class="cfg"><b>곡면 primitive</b></div><div class="st"><span class="pill bad">미해결 (ADR-197 별개)</span></div>
+      <div class="cfg">곡면 Path A (tessellated cyl / sphere / cone, 3 op)</div><div class="st"><span class="pill good">완성</span></div>
+      <div class="cfg"><b>곡면 Path B 실린더 (축 Z) subtract</b></div><div class="st"><span class="pill good">완성 (ADR-278 β)</span></div>
+      <div class="cfg">곡면 Path B 회전 실린더 / sphere / cone / torus</div><div class="st"><span class="pill warn">deferred (무회귀)</span></div>
     </div>
   </section>
 
   <div class="kicker">
     <div class="k">한 줄 요약</div>
-    <p>오늘 boolean이 <b>“아무것도 안 자름”</b>에서 <b>일반 다면체 CSG 완성</b>(회전·MIXED·비박스 전부 UI watertight)에 도달했고, 매 단계 <b>측정 우선 → 원인 정밀 진단 → 최소 수정·기존 자산 재사용</b>으로 해결. 남은 major는 <b>곡면 primitive</b> 하나.</p>
-    <div class="save">저장 완료 — 백업 태그 <code>backup/stabilize-boolean-adr276-phase4-20260707</code> → HEAD <code>7ca9729</code></div>
+    <p>boolean이 <b>“아무것도 안 자름”</b>에서 <b>일반 다면체 CSG 완성</b>(회전·MIXED·비박스)에 도달한 뒤, 이번 갱신으로 <b>Path B(analytic) 곡면 실린더 subtract</b>까지 UI end-to-end 절단(ADR-278 β, polygonalize-then-CSG). 4개 UI surface 배선·라벨 정합 + WASM 스냅샷 안전망 확인. 남은 것은 <b>Path B 회전실린더·sphere/cone/torus</b>(동일 패턴 additive 후속).</p>
+    <div class="save">저장 완료 — 백업 태그 <code>backup/stabilize-boolean-adr276-phase4-20260707</code> → HEAD <code>b209b5b</code> · commits <code>7cb03bd</code>(β) · <code>b209b5b</code>(배선 주석)</div>
   </div>
 </div>
