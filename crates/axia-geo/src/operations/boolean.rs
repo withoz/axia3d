@@ -10832,6 +10832,90 @@ mod tests {
         }
     }
 
+    // ADR-277 γ — build a triangular prism (non-box polyhedron) and confirm it's
+    // a valid closed solid; then measure v2 boolean on prism vs box.
+    fn make_tri_prism(m: &mut Mesh, tri: [(f64, f64); 3], z0: f64, z1: f64, mat: MaterialId) -> Vec<FaceId> {
+        // bottom verts at z0, top at z1
+        let b: Vec<VertId> = tri.iter().map(|&(x, y)| m.add_vertex(DVec3::new(x, y, z0))).collect();
+        let t: Vec<VertId> = tri.iter().map(|&(x, y)| m.add_vertex(DVec3::new(x, y, z1))).collect();
+        let mut faces = Vec::new();
+        // bottom (normal -z): CW from above → [b0,b2,b1]
+        if let Ok(f) = m.add_face(&[b[0], b[2], b[1]], mat) { faces.push(f); }
+        // top (normal +z): CCW from above → [t0,t1,t2]
+        if let Ok(f) = m.add_face(&[t[0], t[1], t[2]], mat) { faces.push(f); }
+        // 3 side quads (outward): edge i→i+1 bottom, up, back, down
+        for i in 0..3 {
+            let j = (i + 1) % 3;
+            if let Ok(f) = m.add_face(&[b[i], b[j], t[j], t[i]], mat) { faces.push(f); }
+        }
+        faces
+    }
+
+    #[test]
+    fn adr277_gamma_prism_is_valid_solid() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let faces = make_tri_prism(&mut m, [(-40.0, -30.0), (40.0, -30.0), (0.0, 40.0)], 0.0, 80.0, mat);
+        let info = m.face_set_manifold_info(&faces);
+        println!("\n===== γ prism validity =====");
+        println!("faces={} closed={} boundary={} nm={} valid={}",
+            faces.len(), info.is_closed_solid, info.boundary_edge_count, info.non_manifold_edge_count, m.verify_face_invariants().is_valid());
+        println!("============================");
+        assert_eq!(faces.len(), 5, "tri prism = 5 faces");
+        assert!(info.is_closed_solid && info.boundary_edge_count == 0 && info.non_manifold_edge_count == 0, "prism must be a closed manifold");
+        assert!(m.verify_face_invariants().is_valid(), "prism ADR-007 valid");
+    }
+
+    // ADR-277 γ — v2 cuts NON-BOX polyhedra watertight (the imprint pipeline is
+    // general: find_intersections_polygonal on any convex face, arrange on any
+    // polygon, strict-interior classify). box⊕prism (3 ops), prism−box, and
+    // prism∩prism all commit valid+closed+manifold.
+    #[test]
+    fn adr277_gamma_nonbox_polyhedra_watertight() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // box (A) vs prism (B) poking through A's top.
+        let box_prism = |op: BoolOp| -> (bool, bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.create_box(DVec3::new(0.0,0.0,50.0),100.0,100.0,100.0,mat).unwrap();
+            let box_faces = active(&m);
+            let prism_faces = make_tri_prism(&mut m, [(-30.0,-30.0),(30.0,-30.0),(0.0,30.0)], 30.0, 130.0, mat);
+            let ok = m.boolean_solid_v2(&box_faces, &prism_faces, op, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
+        };
+        for (label, op) in [("box−prism", BoolOp::Subtract), ("box∪prism", BoolOp::Union), ("box∩prism", BoolOp::Intersect)] {
+            let (ok, valid, closed, manifold) = box_prism(op);
+            assert!(ok && valid && closed && manifold, "{label}: non-box prism boolean must be watertight");
+        }
+        // prism (A) − box (B): a box notch out of the prism.
+        {
+            let mut m = Mesh::new();
+            let prism_faces = make_tri_prism(&mut m, [(-40.0,-40.0),(40.0,-40.0),(0.0,40.0)], 0.0, 100.0, mat);
+            let pset: std::collections::HashSet<FaceId> = prism_faces.iter().copied().collect();
+            m.create_box(DVec3::new(0.0,-20.0,90.0),40.0,40.0,60.0,mat).unwrap();
+            let box_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !pset.contains(f)).collect();
+            let ok = m.boolean_solid_v2(&prism_faces, &box_faces, BoolOp::Subtract, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(ok && m.verify_face_invariants().is_valid() && info.is_closed_solid && info.non_manifold_edge_count == 0,
+                "prism−box must be watertight");
+        }
+        // two overlapping prisms.
+        {
+            let mut m = Mesh::new();
+            let p1 = make_tri_prism(&mut m, [(-40.0,-30.0),(40.0,-30.0),(0.0,40.0)], 0.0, 100.0, mat);
+            let p1set: std::collections::HashSet<FaceId> = p1.iter().copied().collect();
+            let p2 = make_tri_prism(&mut m, [(-40.0,30.0),(40.0,30.0),(0.0,-40.0)], 30.0, 70.0, mat);
+            let p2v: Vec<FaceId> = p2.into_iter().filter(|f| !p1set.contains(f)).collect();
+            let ok = m.boolean_solid_v2(&p1, &p2v, BoolOp::Union, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(m.verify_face_invariants().is_valid() && info.is_closed_solid,
+                "two-prism union must be no-corruption (ok={ok})");
+        }
+    }
+
     // ADR-277 β-4 continuation — v2 with the Phase-4 coplanar resolver folded in
     // is a strict SUPERSET of v1: it cuts every ADR-276 case watertight (corner /
     // notch / slot / enclosed-cavity / coplanar-1-axis all 3 ops) AND adds
