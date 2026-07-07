@@ -10188,6 +10188,82 @@ mod tests {
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
     }
 
+    // ADR-276 Generality AUDIT (2026-07-07) — the current solid-CSG is
+    // AXIS-ALIGNED-BOX scoped. Any rotation (even a PURE-transversal
+    // fully-rotated box, coplanar=0) fails-closed: find_intersections_polygonal
+    // + split_by_chain + weld do not yet handle arbitrary-angle diagonal cuts.
+    // This LOCKS that boundary: the axis baseline commits a valid cut; every
+    // rotated config must NEVER commit a corrupt mesh (either a valid closed cut
+    // or a byte-identical rollback to the two valid boxes). Decision input: the
+    // next boolean investment is a GENERAL mesh CSG (which subsumes rotation +
+    // the MIXED box case), NOT a box-specific mixed resolver.
+    #[test]
+    fn adr276_generality_audit_axis_only_rotations_fail_closed() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // Build A (axis box) + B (axis box), rotate B's verts, run an op.
+        // Returns (op_ok, mesh_valid, closed).
+        let audit = |label: &str, rot_axis: DVec3, rot_deg: f64, b_center: DVec3, op: BoolOp| -> (bool, bool, bool) {
+            let mut m = Mesh::new();
+            let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let a_faces: Vec<FaceId> = {
+                // A is the whole mesh so far
+                active(&m)
+            };
+            let _ = a;
+            let mid: std::collections::HashSet<FaceId> = active(&m).into_iter().collect();
+            let _b = m.create_box(b_center, 100.0, 100.0, 100.0, mat).unwrap();
+            let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+            if rot_deg.abs() > 1e-9 {
+                let mut bv: std::collections::HashSet<VertId> = std::collections::HashSet::new();
+                for &f in &b_faces {
+                    if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) {
+                        for v in vs { bv.insert(v); }
+                    }
+                }
+                let bvv: Vec<VertId> = bv.into_iter().collect();
+                let _ = m.rotate_verts(&bvv, b_center, rot_axis, rot_deg.to_radians());
+            }
+            let sa = m.prepare_solid(&a_faces).ok();
+            let sb = m.prepare_solid(&b_faces).ok();
+            let (cop, gen) = match (&sa, &sb) {
+                (Some(sa), Some(sb)) => (m.shared_coplanar_plane_keys(sa, sb).len(), m.find_intersections_polygonal(sa, sb).len()),
+                _ => (0, 0),
+            };
+            let opn = match op { BoolOp::Union => "UNI", BoolOp::Subtract => "SUB", BoolOp::Intersect => "INT" };
+            let r = m.boolean_solid(&a_faces, &b_faces, op, mat);
+            let act = active(&m);
+            let info = m.face_set_manifold_info(&act);
+            let valid = m.verify_face_invariants().is_valid();
+            println!("[{label:26} {opn}] coplanar={cop} transversal={gen} | ok={} faces={} closed={} nm={} valid={} {}",
+                r.is_ok(), act.len(), info.is_closed_solid, info.non_manifold_edge_count, valid,
+                r.as_ref().err().map(|e| { let s=e.to_string(); if s.contains("gate"){"[gate-rollback]".into()} else {s.chars().take(30).collect::<String>()} }).unwrap_or_default());
+            (r.is_ok(), valid, info.is_closed_solid)
+        };
+        println!("\n===== ADR-276 Generality AUDIT =====");
+        // Baseline: axis-aligned corner overlap (known-good) → must commit.
+        let (ok, valid, closed) = audit("axis corner (baseline)", DVec3::Z, 0.0, DVec3::new(60.0, 60.0, 60.0), BoolOp::Subtract);
+        assert!(ok && valid && closed, "axis-aligned baseline must cut watertight");
+        // Rotated configs — must be no-corruption (valid always; committed→closed).
+        let rotated = [
+            ("rot Z 45 SUB", DVec3::Z, 45.0, DVec3::new(60.0, 60.0, 50.0), BoolOp::Subtract),
+            ("rot Z 45 UNI", DVec3::Z, 45.0, DVec3::new(60.0, 60.0, 50.0), BoolOp::Union),
+            ("rot X 30", DVec3::X, 30.0, DVec3::new(0.0, 40.0, 60.0), BoolOp::Subtract),
+            ("rot (1,1,1) 30 [pure transversal]", DVec3::new(1.0,1.0,1.0).normalize(), 30.0, DVec3::new(40.0, 40.0, 60.0), BoolOp::Subtract),
+            ("rot Z 5 (near-coplanar)", DVec3::Z, 5.0, DVec3::new(60.0, 0.0, 50.0), BoolOp::Subtract),
+        ];
+        for (label, axis, deg, ctr, op) in rotated {
+            let (_ok, valid, closed) = audit(label, axis, deg, ctr, op);
+            assert!(valid, "{label}: rotated config must NEVER commit an invalid mesh (fail-closed)");
+            // If it committed (future general CSG), it must be watertight; if it
+            // rolled back, the restored 2-box input is also closed.
+            assert!(closed, "{label}: committed-or-rolled-back state must be a closed solid");
+        }
+        println!("====================================");
+    }
+
     // ADR-276 Phase 4 — MIXED config (coplanar + transversal) characterization.
     // A x[-50,50]y[-50,50] + B x[0,100]y[0,100] (both z[0,100]), offset in BOTH
     // x and y: z=0/z=100 union footprint = L-shape (coplanar), AND the x/y side

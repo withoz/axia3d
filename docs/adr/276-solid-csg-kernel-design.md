@@ -418,12 +418,37 @@ of corrupting the mesh:
   - **Locked:** `adr276_phase4_mixed_config_coplanar_resolver_works_op_fails_
     closed` asserts BOTH — the resolver produces the 14-quad L-shape AND the full
     mixed op is no-corruption (rolls back to the valid 2-box input).
-- **Remaining (deferred):** MIXED coplanar+transversal (general-CSG imprint+merge
-  — shared vertex set across coplanar cells + transversal splits), a TRULY
-  non-rect INPUT face (chained-boolean L-face — needs vertex-based grid lines,
-  and likely hits the same mixed stitch), coincident-plane operand hygiene
-  (stacked/touching = degenerate non-manifold input), other multi-loop/degenerate
-  configs.
+- **Generality AUDIT (2026-07-07) — the current solid-CSG is AXIS-ALIGNED-BOX
+  scoped; the next investment is a GENERAL mesh CSG, not a box-specific mixed
+  resolver (user: "Generality 감사 (측정)").** Measured boolean_solid on rotated
+  boxes (`adr276_generality_audit_axis_only_rotations_fail_closed`):
+  | config | coplanar | transversal | result |
+  |---|---|---|---|
+  | axis corner (baseline) | 0 | 6 | ✅ cut, 9 faces, watertight |
+  | rot Z 45° (SUB/UNI) | 2 | 8 | fail-closed (mixed: z-planes stay coplanar) |
+  | rot X 30° | 2 | 16 | fail-closed (mixed: x-planes stay) |
+  | **rot (1,1,1) 30°** | **0** | **10** | **fail-closed (PURE transversal!)** |
+  | rot Z 5° (near-coplanar) | 2 | 10 | fail-closed |
+  - **Decisive finding:** `rot (1,1,1)` has coplanar=0 (pure transversal, no
+    coplanar complication) yet STILL rolls back. So `find_intersections_polygonal`
+    + `split_by_chain` + `weld` do NOT handle arbitrary-angle DIAGONAL cuts — the
+    transversal machinery is effectively axis-aligned-box-specific (axis cuts →
+    axis-aligned segments + L-corner chains split_by_chain handles; a rotated box
+    → diagonal segments/chains → fail). Every rotation is fail-closed (no
+    corruption).
+  - **Decision:** the next boolean investment is a GENERAL mesh CSG (robust
+    mesh-mesh intersection + classify + retriangulate/stitch for arbitrary-angle
+    faces), which SUBSUMES both rotation AND the MIXED box case. A box-specific
+    mixed resolver would be wasted effort (general CSG covers it). Large kernel
+    effort (BSP or robust boolean), high regression risk on LOCKED boolean —
+    warrants its own ADR + 결재.
+  - **Curved primitives** (cylinder/sphere/cone/torus ∩ axis box) are a SEPARATE
+    partially-working path (ADR-197 curved dispatch, tried before the general
+    path) — not covered by this audit.
+- **Remaining (deferred):** GENERAL mesh CSG (arbitrary-angle / rotated / non-box
+  solids — the audit's finding; subsumes MIXED coplanar+transversal + truly
+  non-rect INPUT faces), coincident-plane operand hygiene (stacked/touching =
+  degenerate non-manifold input), curved-primitive generalization (ADR-197).
 
 ## Lock-ins (for the β phases)
 
