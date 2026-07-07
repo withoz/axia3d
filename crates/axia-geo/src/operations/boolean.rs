@@ -1518,8 +1518,40 @@ impl Mesh {
         debug.push(format!("v2: imprint A {}→{}, B {}→{}",
             solid_a.face_ids.len(), new_a.len(), solid_b.face_ids.len(), new_b.len()));
 
-        // Stage 4 — classify sub-faces against the ORIGINAL solids.
-        let (keep_a, keep_b) = self.classify_split_faces(&new_a, &solid_b, &new_b, &solid_a, op);
+        // Stage 4 — classify sub-faces against the ORIGINAL solids. v2 uses a
+        // STRICT INTERIOR point (ear-clipping) not the centroid: arrange can
+        // produce a NON-CONVEX sub-face (L-shape) whose centroid falls OUTSIDE
+        // the face → point_in_solid misclassifies it → the seam gets the wrong
+        // number of faces. `strict_interior_point_3d` is guaranteed inside.
+        use crate::operations::boolean_geo::point_in_solid;
+        use crate::operations::polygon_geom::strict_interior_point_3d;
+        let classify_pt = |mesh: &Self, fid: FaceId| -> Option<DVec3> {
+            let face = mesh.faces.get(fid)?;
+            if !face.is_active() { return None; }
+            let poly: Vec<DVec3> = mesh.collect_loop_verts(face.outer().start).ok()?
+                .iter().filter_map(|&v| mesh.verts.get(v).map(|x| x.pos())).collect();
+            strict_interior_point_3d(&poly).or_else(|| mesh.face_centroid(fid))
+        };
+        let mut keep_a: Vec<FaceId> = Vec::new();
+        for &fid in &new_a {
+            let Some(p) = classify_pt(self, fid) else { continue };
+            let inside_b = point_in_solid(&solid_b.all_triangles, p);
+            let keep = match op {
+                BoolOp::Union | BoolOp::Subtract => !inside_b,
+                BoolOp::Intersect => inside_b,
+            };
+            if keep { keep_a.push(fid); }
+        }
+        let mut keep_b: Vec<FaceId> = Vec::new();
+        for &fid in &new_b {
+            let Some(p) = classify_pt(self, fid) else { continue };
+            let inside_a = point_in_solid(&solid_a.all_triangles, p);
+            let keep = match op {
+                BoolOp::Union => !inside_a,
+                BoolOp::Subtract | BoolOp::Intersect => inside_a,
+            };
+            if keep { keep_b.push(fid); }
+        }
 
         // Stage 5 — assemble: keep A-out / B-in(flipped) etc.; remove the rest.
         // NO weld — the shared vertex set already stitched the seam.
@@ -10608,19 +10640,20 @@ mod tests {
             arr.len(), 2 * segs.len(), segs.len());
     }
 
-    // ADR-277 β-3 — the v2 imprint path: axis-aligned cuts watertight via the
-    // shared-vertex arrangement (NO weld); rotated cuts still fail-closed (they
-    // need the global intersection-curve assembly — a shared segment can be a
-    // boundary crossing on the A-face but interior on the B-face, so the two
-    // faces subdivide it differently → β-3 continuation). Locks: v2 axis-aligned
-    // commits watertight, and NO config ever commits a corrupt mesh.
+    // ADR-277 β-4 — the general-CSG milestone: PURE-transversal arbitrary-angle
+    // (rotated) box cuts now commit WATERTIGHT via the v2 imprint path (shared
+    // vertex arrangement + strict-interior classify, NO weld), for all three ops.
+    // This closes the ADR-276 generality-audit gap (rot(1,1,1) was fail-closed).
+    // MIXED coplanar+transversal (rot Z 45 — a rotation that leaves some faces
+    // coplanar) still fails-closed: it needs the Phase-4 coplanar resolver folded
+    // into v2 (β-4 continuation). No config ever commits a corrupt mesh.
     #[test]
-    fn adr277_beta3_v2_axis_watertight_rotations_fail_closed() {
+    fn adr277_beta4_pure_transversal_rotations_watertight() {
         let mat = MaterialId::new(0);
         let active = |m: &Mesh| -> Vec<FaceId> {
             m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
         };
-        let run = |axis: DVec3, deg: f64, bc: DVec3, op: BoolOp| -> (bool, bool, bool) {
+        let run = |axis: DVec3, deg: f64, bc: DVec3, op: BoolOp| -> (bool, bool, bool, bool) {
             let mut m = Mesh::new();
             m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
             let a_faces = active(&m);
@@ -10635,21 +10668,24 @@ mod tests {
             }
             let ok = m.boolean_solid_v2(&a_faces, &b_faces, op, mat).is_ok();
             let info = m.face_set_manifold_info(&active(&m));
-            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid)
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
         };
-        // Axis-aligned corner subtract via v2 → committed watertight.
-        let (ok, valid, closed) = run(DVec3::Z, 0.0, DVec3::new(60.0, 60.0, 60.0), BoolOp::Subtract);
-        assert!(ok && valid && closed, "v2 axis-aligned corner subtract must cut watertight");
-        // Rotated configs → fail-closed, never corrupt.
-        for (axis, deg, op) in [
-            (DVec3::Z, 45.0, BoolOp::Subtract),
-            (DVec3::new(1.0,1.0,1.0).normalize(), 30.0, BoolOp::Subtract),
-            (DVec3::Z, 45.0, BoolOp::Union),
+        let d111 = DVec3::new(1.0, 1.0, 1.0).normalize();
+        // Pure-transversal rotated cuts — must COMMIT watertight, all 3 ops.
+        for (label, axis, deg, bc, op) in [
+            ("rot(1,1,1) 30 SUB", d111, 30.0, DVec3::new(40.0, 40.0, 60.0), BoolOp::Subtract),
+            ("rot(1,1,1) 20 SUB", d111, 20.0, DVec3::new(40.0, 40.0, 60.0), BoolOp::Subtract),
+            ("rot(1,2,3) 25 SUB", DVec3::new(1.0, 2.0, 3.0).normalize(), 25.0, DVec3::new(40.0, 45.0, 60.0), BoolOp::Subtract),
+            ("rot(1,1,1) 30 UNI", d111, 30.0, DVec3::new(40.0, 40.0, 60.0), BoolOp::Union),
+            ("rot(1,1,1) 30 INT", d111, 30.0, DVec3::new(40.0, 40.0, 60.0), BoolOp::Intersect),
         ] {
-            let (_ok, valid, closed) = run(axis, deg, DVec3::new(45.0, 45.0, 55.0), op);
-            assert!(valid, "v2 rotated config must never commit an invalid mesh (fail-closed)");
-            assert!(closed, "committed-or-rolled-back state must be a closed solid");
+            let (ok, valid, closed, manifold) = run(axis, deg, bc, op);
+            assert!(ok, "{label}: pure-transversal rotated cut must commit (not fail-closed)");
+            assert!(valid && closed && manifold, "{label}: must be watertight (valid+closed+manifold)");
         }
+        // MIXED (rot Z 45 leaves z-planes coplanar) — fail-closed, no corruption.
+        let (_ok, valid, closed, _m) = run(DVec3::Z, 45.0, DVec3::new(60.0, 60.0, 50.0), BoolOp::Subtract);
+        assert!(valid && closed, "mixed config must be no-corruption (fail-closed to valid boxes)");
     }
 
     // ADR-277 (general CSG) de-risk — trace WHERE a pure-transversal rotated-box
