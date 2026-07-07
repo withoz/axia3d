@@ -9043,6 +9043,58 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-276 Phase 5 — solid-CSG boolean (`Mesh::boolean_solid`): the
+    /// split-by-chain + seam-weld path that cuts box/planar solids WATERTIGHT
+    /// (convex-corner subtract). Same JSON shape as `boolean_op`. `boolean_solid`
+    /// is internally fail-closed (any non-watertight result → byte-identical
+    /// rollback + Err), so the caller gets either a real watertight cut or a
+    /// clean error to fall back on (e.g. the ADR-275 warning).
+    #[wasm_bindgen(js_name = "booleanSolid")]
+    pub fn boolean_solid_op(
+        &mut self,
+        faces_a: &[u32],
+        faces_b: &[u32],
+        op: &str,
+    ) -> String {
+        let fids_a: Vec<FaceId> = faces_a.iter().map(|&id| FaceId::new(id)).collect();
+        let fids_b: Vec<FaceId> = faces_b.iter().map(|&id| FaceId::new(id)).collect();
+        let bool_op = match op {
+            "union" => BoolOp::Union,
+            "subtract" => BoolOp::Subtract,
+            "intersect" => BoolOp::Intersect,
+            _ => return format!(r#"{{"ok":false,"error":"unknown op: {}"}}"#, op),
+        };
+        let snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.begin();
+        self.scene.transactions.set_before_snapshot(snapshot.clone());
+        let mat = axia_core::FORM_MATERIAL;
+        match self.scene.mesh.boolean_solid(&fids_a, &fids_b, bool_op, mat) {
+            Ok(res) => {
+                self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                let face_ids: Vec<u32> = res.faces.iter().map(|f| f.raw()).collect();
+                format!(
+                    r#"{{"ok":true,"op":"{}","resultFaces":{},"newVerts":{},"totalVerts":{},"totalFaces":{}}}"#,
+                    op,
+                    format!("{:?}", face_ids),
+                    res.new_verts,
+                    self.scene.mesh.vert_count(),
+                    self.scene.mesh.face_count(),
+                )
+            }
+            Err(e) => {
+                // boolean_solid already rolled back the mesh internally; restore
+                // the scene snapshot + cancel the txn for full consistency.
+                self.scene.restore_scene_snapshot(&snapshot);
+                self.scene.transactions.cancel();
+                self.invalidate_cache();
+                format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'"))
+            }
+        }
+    }
+
     /// Diagnose non-manifold edges (ADR-007 I5) without modifying the
     /// scene. Returns JSON: `{count, edges:[{edge, faceCount}, …]}`.
     /// Useful for the UI's "씬 무결성 검사" command.

@@ -282,6 +282,27 @@ export function startBooleanOp(
         `A=${facesA.length}, B=${facesB.length}`,
     );
     const multiResult = bridge.booleanDispatchDcelMulti(facesA, facesB, op);
+
+    // ADR-276 Phase 5 — solid-CSG rescue. When the DCEL path NO-OPs on a planar
+    // (box) config (pathUsed=Nurbs, nothing new/removed = the ADR-275 case), try
+    // the solid-CSG path (boolean_solid: split-by-chain + seam weld). It cuts
+    // convex-corner box-box WATERTIGHT; if it can't yet (notch / through-slot /
+    // enclosed), it fails closed (mesh rolled back) and we fall through to the
+    // DCEL result's honest ADR-275 warning. Leaves the working curved/DCEL path
+    // untouched (only the no-op box case is rescued).
+    if (multiResult && multiResult.kind === 'ok' && multiResult.pathUsed === 'Nurbs' &&
+        multiResult.allNewFaces.length === 0 && multiResult.allRemovedFaces.length === 0 &&
+        typeof bridge.booleanSolid === 'function') {
+      const solid = bridge.booleanSolid(facesA, facesB, op);
+      if (solid && solid.ok) {
+        toolManager.syncMesh();
+        Toast.info(`${OP_NAME_KO[op]} 완료 (solid CSG)`, 3000);
+        debugLog(`[Bool] solid-CSG cut: ${op}, totalFaces=${solid.totalFaces}`);
+        return;
+      }
+      debugLog(`[Bool] solid-CSG declined (${solid?.error ?? 'null'}); DCEL warning follows`);
+    }
+
     const handled = handleMultiDcelResult(deps, multiResult, op, groupSource);
     if (handled) return;
     // fall-through: null bridge OR pathUsed === 'Mesh'.

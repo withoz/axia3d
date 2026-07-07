@@ -258,6 +258,37 @@ describe('BooleanHandler', () => {
       expect(deps.bridge.booleanOp).not.toHaveBeenCalled();
     });
 
+    // ADR-276 Phase 5 — solid-CSG rescue on the DCEL no-op (box-box).
+    const allDisjointResult = () => ({
+      kind: 'ok', pathUsed: 'Nurbs', fallbackReason: null,
+      perPair: [{ faceA: 10, faceB: 30, outcome: { kind: 'ok', dcel: {
+        newFacesA: [], newFacesB: [], removedFaces: [], preservedFaces: [10, 30],
+        disjoint: true, robustnessClean: true } } }],
+      allNewFaces: [], allRemovedFaces: [], warnings: [],
+    });
+
+    it('DCEL no-op + boolean_solid CUTS → solid-CSG success, no ADR-275 warning', () => {
+      setupMultiSelection([10, 20, 30, 40]);
+      (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue(allDisjointResult());
+      (deps.bridge as any).booleanSolid = vi.fn().mockReturnValue({ ok: true, totalFaces: 9 });
+      startBooleanOp(deps, 'subtract');
+      expect(deps.bridge.booleanSolid).toHaveBeenCalled();
+      expect(deps.toolManager.syncMesh).toHaveBeenCalled();
+      expect(toastInfo).toHaveBeenCalled();      // "차집합 완료 (solid CSG)"
+      expect(toastWarn).not.toHaveBeenCalled();  // NOT the ADR-275 warning
+    });
+
+    it('DCEL no-op + boolean_solid declines → falls through to ADR-275 warning', () => {
+      setupMultiSelection([10, 20, 30, 40]);
+      (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue(allDisjointResult());
+      (deps.bridge as any).booleanSolid = vi.fn().mockReturnValue({ ok: false, error: 'not yet supported' });
+      startBooleanOp(deps, 'subtract');
+      expect(deps.bridge.booleanSolid).toHaveBeenCalled();
+      expect(deps.toolManager.syncMesh).not.toHaveBeenCalled();
+      expect(toastWarn).toHaveBeenCalled();      // ADR-275 warning
+      expect((toastWarn.mock.calls[0][0] as string)).toContain('ADR-275');
+    });
+
     it('Nurbs path with partial failures shows warning toast and syncs mesh', () => {
       setupMultiSelection([10, 20, 30, 40]);
       (deps.bridge as any).booleanDispatchDcelMulti = vi.fn().mockReturnValue({

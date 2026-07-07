@@ -553,6 +553,7 @@ type AxiaEngineExtended = AxiaEngine & {
   is_face_locked?(face_id_raw: number): boolean;
   // Boolean
   boolean_op?(a: Uint32Array, b: Uint32Array, op: string): string;
+  booleanSolid?(a: Uint32Array, b: Uint32Array, op: string): string;
   sheetBoolean?(a: number, b: number, op: string): string;
   drawPolyline?(points: Float64Array): number;
   getPositionsPtr?(): number;
@@ -6629,6 +6630,24 @@ export class WasmBridge {
     } catch (e) {
       console.error('[WasmBridge] booleanOp failed:', e);
       Toast.error(`Boolean 연산 실패: ${String(e)}`);
+      return null;
+    }
+  }
+
+  /** ADR-276 Phase 5 — solid-CSG boolean (`Mesh::boolean_solid`): cuts
+   *  box/planar solids WATERTIGHT (convex-corner). Fail-closed: returns
+   *  `{ok:false,...}` (with the mesh rolled back) for configs it can't yet do
+   *  watertight, so the caller can fall back (e.g. the ADR-275 warning).
+   *  No user Toast here — the caller decides the messaging. */
+  booleanSolid(facesA: number[], facesB: number[], op: 'union' | 'subtract' | 'intersect'): BooleanResult | null {
+    if (!this.engine || !this.engine.booleanSolid) return null;
+    this.markDirty();
+    try {
+      const json = this.engine.booleanSolid(new Uint32Array(facesA), new Uint32Array(facesB), op);
+      if (!json) return null;
+      return JSON.parse(json) as BooleanResult;
+    } catch (e) {
+      console.error('[WasmBridge] booleanSolid failed:', e);
       return null;
     }
   }
