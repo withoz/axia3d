@@ -9559,6 +9559,56 @@ mod tests {
         assert!(winfo.is_closed_solid, "seam weld must close the box-box subtract (boundary={})", winfo.boundary_edge_count);
     }
 
+    // ADR-276 Phase 2 multi-chain SIM — WHY do notch / through-slot fall back?
+    // Measure, per crossed face, the intersection SEGMENTS and the open CHAINS
+    // that assemble_chains produces. Hypothesis: these configs create CLOSED
+    // LOOP intersections (a hole outline: all nodes degree-2, no degree-1 end),
+    // which assemble_chains returns 0 chains for → split_faces_by_chains falls
+    // back to unsplit → not watertight → gate rolls back.
+    #[test]
+    fn adr276_phase2_sim_notch_slot_chains() {
+        use std::collections::HashMap;
+        let mat = MaterialId::new(0);
+        let configs: [(&str, DVec3, f64, f64, f64); 2] = [
+            ("top-center notch", DVec3::new(0.0, 0.0, 90.0), 40.0, 40.0, 40.0),
+            ("through-slot", DVec3::new(0.0, 0.0, 50.0), 200.0, 30.0, 30.0),
+        ];
+        for (label, bpos, bw, bh, bd) in configs {
+            let mut m = Mesh::new();
+            let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let b = m.create_box(bpos, bw, bh, bd, mat).unwrap();
+            let sa = m.prepare_solid(&a).unwrap();
+            let sb = m.prepare_solid(&b).unwrap();
+            let segs = m.find_intersections_polygonal(&sa, &sb);
+            let mut by: HashMap<FaceId, Vec<(DVec3, DVec3)>> = HashMap::new();
+            for s in &segs {
+                by.entry(s.face_a).or_default().push((s.p0, s.p1));
+                by.entry(s.face_b).or_default().push((s.p0, s.p1));
+            }
+            println!("\n===== {label}: {} segs, {} faces crossed =====", segs.len(), by.len());
+            let mut closed_loops = 0;
+            let mut multi_chains = 0;
+            for (fid, fsegs) in by.iter() {
+                let chains = assemble_chains(fsegs);
+                let open = chains.len();
+                if open == 0 { closed_loops += 1; }
+                if open >= 2 { multi_chains += 1; }
+                let kind = if open == 0 { "CLOSED-LOOP (hole) or degenerate" }
+                    else if open == 1 { "1 open chain" } else { "MULTI open chains" };
+                println!("  face {:?}: {} segs → {} open-chains [{}]", fid, fsegs.len(), open, kind);
+            }
+            println!("  → closed-loop faces={}, multi-chain faces={}", closed_loops, multi_chains);
+            println!("=====================================================");
+            // Lock the structural finding (the two gaps that block notch/slot):
+            if label == "top-center notch" {
+                assert_eq!(closed_loops, 1, "notch: A's top face is a CLOSED-LOOP hole");
+            } else {
+                assert_eq!(closed_loops, 2, "slot: A's 2 end faces are CLOSED-LOOP holes");
+                assert!(multi_chains >= 1, "slot: top/bottom faces are MULTI-chain");
+            }
+        }
+    }
+
     /// 두 겹치는 큐브로 Boolean 테스트
     fn make_test_cubes(mesh: &mut Mesh, mat: MaterialId) -> (Vec<FaceId>, Vec<FaceId>) {
         let a = make_box(mesh, DVec3::ZERO, DVec3::new(2.0, 2.0, 2.0), mat);
