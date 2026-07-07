@@ -2152,6 +2152,38 @@ impl Mesh {
     /// ADR-276 Phase 2 — realize ONE ordered point chain as a cut of `face_id`
     /// via `split_face_by_chain`. Endpoints are inserted on the boundary
     /// (`ensure_boundary_vertex`); interior points become interior verts; the
+    /// ADR-276 Phase 2 — is `p` on face `f`'s outer boundary (a vertex or on an
+    /// edge, within tol)? Read-only; used to route a chain to the right sub-face
+    /// during MULTI-chain sequential splitting.
+    fn point_on_face_boundary(&self, f: FaceId, p: DVec3, tol: f64) -> bool {
+        let Some(face) = self.faces.get(f) else { return false };
+        if !face.is_active() { return false; }
+        if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
+            for v in &vs {
+                if let Ok(vp) = self.vertex_pos(*v) { if (vp - p).length() < tol { return true; } }
+            }
+        }
+        if let Ok(edges) = self.face_outer_edges(f) {
+            for e in edges {
+                let Some(edge) = self.edges.get(e) else { continue };
+                let (Ok(a), Ok(b)) = (self.vertex_pos(edge.v_small()), self.vertex_pos(edge.v_large())) else { continue };
+                let ab = b - a;
+                let l2 = ab.dot(ab);
+                if l2 < 1e-18 { continue; }
+                let t = (p - a).dot(ab) / l2;
+                if (0.0..=1.0).contains(&t) && (a + ab * t - p).length() < tol { return true; }
+            }
+        }
+        false
+    }
+
+    /// Both chain endpoints on face `f`'s boundary → this chain can split `f`.
+    fn chain_fits_face(&self, f: FaceId, chain: &[DVec3], tol: f64) -> bool {
+        chain.len() >= 2
+            && self.point_on_face_boundary(f, chain[0], tol)
+            && self.point_on_face_boundary(f, chain[chain.len() - 1], tol)
+    }
+
     /// chain edges are created. Returns the resulting sub-faces, or None.
     #[allow(dead_code)]
     fn apply_chain_split(&mut self, face_id: FaceId, chain: &[DVec3], material: MaterialId) -> Option<Vec<FaceId>> {
@@ -2277,8 +2309,33 @@ impl Mesh {
                     out.insert(fid, vec![fid]);
                 }
             } else {
-                // MULTI open chains (e.g. slot top/bottom) — future; keep whole.
-                out.insert(fid, vec![fid]);
+                // MULTI open chains (e.g. slot walls cross A at both x=±50) —
+                // apply split_face_by_chain SEQUENTIALLY, routing each chain to
+                // whichever current sub-face its endpoints lie on.
+                let mut current = vec![fid];
+                let mut ok = true;
+                for chain in &chains {
+                    match current.iter().position(|&f| self.chain_fits_face(f, chain, 1e-3)) {
+                        Some(pos) => {
+                            let target = current[pos];
+                            match self.apply_chain_split(target, chain, material) {
+                                Some(subs) if subs.len() >= 2 => {
+                                    current.remove(pos);
+                                    current.extend(subs);
+                                }
+                                _ => { ok = false; break; }
+                            }
+                        }
+                        None => { ok = false; break; }
+                    }
+                }
+                if ok && current.len() > 1 {
+                    out.insert(fid, current);
+                } else {
+                    // partial/failed — the fail-closed gate will roll back if the
+                    // overall result isn't watertight.
+                    out.insert(fid, if current.is_empty() { vec![fid] } else { current });
+                }
             }
         }
         out
@@ -9386,6 +9443,7 @@ mod tests {
         println!("\n===== ADR-276 Phase 1+2: box-box fail-closed-correct =====");
         let mut corner_poke_cut = false;
         let mut notch_cut = false;
+        let mut slot_cut = false;
         for (label, bpos, bw, bh, bd) in configs {
             let mut m = Mesh::new();
             let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
@@ -9422,6 +9480,9 @@ mod tests {
                 if label == "top-center notch" && faces_after != faces_before {
                     notch_cut = true;
                 }
+                if label == "through-slot" && faces_after != faces_before {
+                    slot_cut = true;
+                }
             }
             println!(
                 "  [{label}] ok={} faces {}->{} verts {}->{} valid=true",
@@ -9434,6 +9495,8 @@ mod tests {
             "ADR-276 Phase 2: corner-poke box-box subtract must commit a watertight cut");
         assert!(notch_cut,
             "ADR-276 Phase 2: top-center notch (closed-loop hole) must commit a watertight cut");
+        assert!(slot_cut,
+            "ADR-276 Phase 2: through-slot (multi-chain + closed-loop) must commit a watertight cut");
         println!("=========================================================\n");
     }
 
