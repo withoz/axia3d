@@ -199,6 +199,52 @@ is rejected + rolled back (the solid stays closed) instead of breaking it.
   top a safe *decline* (Toast), NOT a split. The actual re-tile/split is Level 2
   (this doc's Decision — imprint, preserve wall boundary).
 
+## Level 2 — resolved wiring + β plan (2026-07-07 trace)
+
+The Level-1 β investigation's contradiction ("box-top ring absent from
+affected_faces at the rect re-derive") is now RESOLVED by a precise post-circle +
+during-rect trace:
+
+- **Post-circle state (confirmed):** the box-top ring EXISTS and is well-formed —
+  `face1: outerVerts=4 (square), inners=1 (circle hole), touchesSolid=true`, disk
+  `face6: outerVerts=1 (Path B self-loop)`. So after the circle, the solid top is
+  a proper ring+disk (closed).
+- **During the crossing-rect draw (root mechanism):** `exec_draw_rect_as_shape`
+  → `exec_draw_rect` (Phase 1) draws the rect as 4 LINES. Each line CROSSES the
+  circle, so ADR-172 crossing-split (`find_line_crossings` → `split_edge`) fires
+  and **fragments the ring's circle-hole boundary + the disk BEFORE the coplanar
+  re-derive runs.** By re-derive time the clean ring (face1) is already consumed
+  into fragments → the affected region is {rect-frag, disk-frag}, none
+  solid-touching → the guard doesn't fire, the arrange re-tiles the fragments
+  without the square boundary → the top opens.
+
+So the real Level-2 blocker is a MULTI-SUBSYSTEM interaction: **the crossing-split
+(ADR-172) consumes the solid-top ring before the coplanar re-derive can preserve
+its square boundary.** The de-risk sim (§De-risk) already proves the arrange
+net-tiles the full square GIVEN the boundary — the gap is keeping that boundary
+alive through the crossing-split.
+
+**Level 2 β plan (two candidate routes, needs its own careful pass + 결재):**
+- **Route A — preserve + feed the solid-top boundary:** mark the solid-top face's
+  OUTER boundary edges (wall-shared `volume_edges`) as protected-from-consumption
+  through `exec_draw_rect`'s crossing-split, then feed them to the coplanar
+  re-derive arrange (the ADR-280 Decision) + materialize reusing the wall edges
+  via dedup. Requires threading "don't consume this boundary" through the
+  line-crossing-split path — invasive.
+- **Route B — route crossing-shape-on-solid-top through the ADR-277 imprint:**
+  detect (at the draw level) that the shape crosses a coplanar shape on a solid
+  top, and instead of the line-by-line crossing-split + coplanar re-derive, run
+  the ADR-277 boolean-v2 shared-vertex imprint on the solid-top face (which
+  preserves the outer boundary by construction, watertight, no weld). Reuses
+  proven machinery; the work is the detection + dispatch + wiring the imprint to
+  the draw path.
+
+**Recommendation:** Route B (reuse the ADR-277 imprint, proven watertight) over
+Route A (thread protection through crossing-split, fragile). Either is a dedicated
+multi-subsystem effort with a full-regression gate + the Level-1 fail-closed guard
+(already live) as the backstop — if Level 2 can't produce a closed result, Level 1
+still declines the draw (never a broken solid).
+
 ## Cross-link
 
 - ADR-279 (curve-annulus nesting) + LOCKED — sibling; fixed the annulus formation
