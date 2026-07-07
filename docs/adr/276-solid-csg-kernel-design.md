@@ -254,9 +254,23 @@ of corrupting the mesh:
   Browser-verified end-to-end: 2 overlapping box solids → select all →
   executeAction('bool-subtract') → watertight cut (12→9 faces, closed).
   export_baseline += booleanSolid; BooleanHandler.test 27 (+2 rescue).
-- **Remaining (deferred):** multi-chain faces (notch / through-slot — currently
-  fall back to the warning), Phase 3 enclosure/void (A−B with B⊂A → internal
-  cavity; currently a no-op), Phase 4 coplanar.
+- **Phase 2 notch + slot DONE (2026-07-07) — closed-loop hole + multi-chain.**
+  - CLOSED-LOOP (`assemble_closed_loops` + `apply_closed_loop_split`): a
+    face crossed by a closed intersection loop (notch mouth / slot exit) →
+    annulus (`add_face_with_holes`) + inner disk; classify keeps the annulus
+    (hole-aware `face_classify_point`), drops the disk. `weld_result_seam`
+    extended to rebuild HOLED faces (bucket inner-loop verts + re-add via
+    add_face_with_holes) so the annulus welds to B's walls.
+  - MULTI-CHAIN (`point_on_face_boundary` / `chain_fits_face`): a face with
+    ≥2 open chains → split_face_by_chain applied SEQUENTIALLY, each chain
+    routed to the sub-face its endpoints lie on.
+  - Result (adr276_phase12 + browser): top-center notch → 12→11 watertight;
+    through-slot → 12→10 watertight. Both cut from the UI (rescue routing):
+    "차집합 완료 (solid CSG)", is_closed_solid=true. **box-box subtract now
+    cuts watertight for corner / blind-notch / through-slot.**
+- **Remaining (deferred):** Phase 3 enclosure/void (A−B with B⊂A → internal
+  cavity; currently a no-op), Phase 4 coplanar, other multi-loop/degenerate
+  configs. Union/Intersect box-box beyond the current cases.
 
 ## Lock-ins (for the β phases)
 
