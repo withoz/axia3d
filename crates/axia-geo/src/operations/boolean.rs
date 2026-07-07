@@ -1503,20 +1503,50 @@ impl Mesh {
         let both_closed = self.face_set_manifold_info(&solid_a.face_ids).is_closed_solid
             && self.face_set_manifold_info(&solid_b.face_ids).is_closed_solid;
 
+        // Stage 0.5 — coplanar-shared planes (ADR-276 Phase 4 fold-in). Faces on
+        // a plane shared by A and B are EXCLUDED from the transversal imprint and
+        // rebuilt by side-occupancy (`resolve_coplanar_planes`), so a MIXED
+        // config (coplanar planes + transversal sides, e.g. a rotation that
+        // leaves some faces coplanar) is handled: coplanar cells + transversal
+        // sub-faces share ONE vertex set (add_vertex dedup).
+        let coplanar_keys = self.shared_coplanar_plane_keys(&solid_a, &solid_b);
+        let coplanar_quads: Vec<[DVec3; 4]> = if coplanar_keys.is_empty() {
+            Vec::new()
+        } else {
+            self.resolve_coplanar_planes(&solid_a, &solid_b, op)
+        };
+        let is_coplanar = |mesh: &Self, fid: FaceId| -> bool {
+            if coplanar_keys.is_empty() { return false; }
+            match mesh.face_unit_normal_and_poly(fid) {
+                Some((n, poly)) => coplanar_keys.contains(&Self::coplanar_plane_key(n, n.dot(poly[0]))),
+                None => false,
+            }
+        };
+        // If there ARE shared coplanar planes but the resolver produced NO quads
+        // (e.g. a rotated/non-rect coplanar overlap the axis-aligned grid can't
+        // handle), bail early → fail-closed rollback (don't leave the plane open).
+        if !coplanar_keys.is_empty() && coplanar_quads.is_empty() {
+            *self = backup;
+            anyhow::bail!("boolean_solid_v2: coplanar plane present but resolver produced no cells (non-rect/rotated coplanar not yet supported)");
+        }
+
         // Stage 1 — intersection segments (exact at any angle).
         let segs = self.find_intersections_polygonal(&solid_a, &solid_b);
-        debug.push(format!("v2: {} intersection segments", segs.len()));
+        debug.push(format!("v2: {} intersection segments, {} coplanar planes", segs.len(), coplanar_keys.len()));
         let mut segs_by_face: FxHashMap<FaceId, Vec<(DVec3, DVec3)>> = FxHashMap::default();
         for s in &segs {
             segs_by_face.entry(s.face_a).or_default().push((s.p0, s.p1));
             segs_by_face.entry(s.face_b).or_default().push((s.p0, s.p1));
         }
 
-        // Stage 2+3 — imprint each solid's faces (shared vertex set via add_vertex).
-        let new_a = self.imprint_faces(&solid_a.face_ids, &segs_by_face, material);
-        let new_b = self.imprint_faces(&solid_b.face_ids, &segs_by_face, material);
-        debug.push(format!("v2: imprint A {}→{}, B {}→{}",
-            solid_a.face_ids.len(), new_a.len(), solid_b.face_ids.len(), new_b.len()));
+        // Stage 2+3 — imprint each solid's NON-coplanar faces (shared vertex set
+        // via add_vertex). Coplanar-shared-plane faces are handled separately.
+        let a_nc: Vec<FaceId> = solid_a.face_ids.iter().filter(|&&f| !is_coplanar(self, f)).copied().collect();
+        let b_nc: Vec<FaceId> = solid_b.face_ids.iter().filter(|&&f| !is_coplanar(self, f)).copied().collect();
+        let new_a = self.imprint_faces(&a_nc, &segs_by_face, material);
+        let new_b = self.imprint_faces(&b_nc, &segs_by_face, material);
+        debug.push(format!("v2: imprint A {}→{}, B {}→{} ({} coplanar quads)",
+            a_nc.len(), new_a.len(), b_nc.len(), new_b.len(), coplanar_quads.len()));
 
         // Stage 4 — classify sub-faces against the ORIGINAL solids. v2 uses a
         // STRICT INTERIOR point (ear-clipping) not the centroid: arrange can
@@ -1563,6 +1593,18 @@ impl Mesh {
         for &fid in new_a.iter().chain(new_b.iter()) {
             if !keep_a.contains(&fid) && !keep_b.contains(&fid) {
                 let _ = self.remove_face(fid);
+            }
+        }
+        // Coplanar planes: remove the excluded originals + materialize the
+        // side-occupancy quads (already op-classified + outward-wound). The
+        // fresh cell verts dedup-share with the transversal sub-faces' verts.
+        if !coplanar_quads.is_empty() {
+            let cop_faces: Vec<FaceId> = solid_a.face_ids.iter().chain(solid_b.face_ids.iter())
+                .filter(|&&f| is_coplanar(self, f)).copied().collect();
+            for fid in cop_faces { let _ = self.remove_face(fid); }
+            for quad in &coplanar_quads {
+                let verts: Vec<VertId> = quad.iter().map(|&p| self.add_vertex(p)).collect();
+                if let Ok(f) = self.add_face(&verts, material) { result_faces.push(f); }
             }
         }
 
@@ -10638,6 +10680,55 @@ mod tests {
         assert!(arr.len() < 2 * segs.len(),
             "arrangement collapses shared endpoints: {} unique < {} (2×{} segs)",
             arr.len(), 2 * segs.len(), segs.len());
+    }
+
+    // ADR-277 β-4 continuation — v2 with the Phase-4 coplanar resolver folded in
+    // is a strict SUPERSET of v1: it cuts every ADR-276 case watertight (corner /
+    // notch / slot / enclosed-cavity / coplanar-1-axis all 3 ops) AND adds
+    // pure-transversal arbitrary rotation (β-4). MIXED coplanar+transversal
+    // (2-axis / rotated-coplanar) still fails-closed in BOTH v1 and v2 → cutover
+    // (β-5) is a safe, non-regressing addition of rotation. No corruption.
+    #[test]
+    fn adr277_beta4cont_v2_superset_of_v1() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // sized B box at bc; run v2.
+        let run = |bd: DVec3, bc: DVec3, rot_deg: f64, op: BoolOp| -> (bool, bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+            let a_faces = active(&m);
+            let mid: std::collections::HashSet<FaceId> = a_faces.iter().copied().collect();
+            m.create_box(bc, bd.x, bd.y, bd.z, mat).unwrap();
+            let b_faces: Vec<FaceId> = active(&m).into_iter().filter(|f| !mid.contains(f)).collect();
+            if rot_deg.abs() > 1e-9 {
+                let mut bv = std::collections::HashSet::new();
+                for &f in &b_faces { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { bv.insert(v); } } }
+                let bvv: Vec<VertId> = bv.into_iter().collect();
+                m.rotate_verts(&bvv, bc, DVec3::Z, rot_deg.to_radians()).unwrap();
+            }
+            let ok = m.boolean_solid_v2(&a_faces, &b_faces, op, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
+        };
+        let b100 = DVec3::new(100.0, 100.0, 100.0);
+        // v1-parity: every ADR-276 case must commit watertight via v2.
+        for (label, bd, bc, op) in [
+            ("corner", DVec3::new(60.0,60.0,60.0), DVec3::new(60.0,60.0,110.0), BoolOp::Subtract),
+            ("notch", DVec3::new(40.0,40.0,40.0), DVec3::new(0.0,0.0,100.0), BoolOp::Subtract),
+            ("slot", DVec3::new(40.0,40.0,160.0), DVec3::new(0.0,0.0,50.0), BoolOp::Subtract),
+            ("enclosed", DVec3::new(40.0,40.0,40.0), DVec3::new(0.0,0.0,50.0), BoolOp::Subtract),
+            ("lateral SUB", b100, DVec3::new(50.0,0.0,50.0), BoolOp::Subtract),
+            ("lateral UNI", b100, DVec3::new(50.0,0.0,50.0), BoolOp::Union),
+            ("lateral INT", b100, DVec3::new(50.0,0.0,50.0), BoolOp::Intersect),
+        ] {
+            let (ok, valid, closed, manifold) = run(bd, bc, 0.0, op);
+            assert!(ok && valid && closed && manifold, "{label}: v2 must cut this ADR-276 case watertight");
+        }
+        // MIXED — fail-closed, no corruption (v1 also fails these).
+        let (_ok, valid, closed, _m) = run(b100, DVec3::new(50.0,50.0,50.0), 0.0, BoolOp::Union);
+        assert!(valid && closed, "2-axis mixed must be no-corruption");
     }
 
     // ADR-277 β-4 — the general-CSG milestone: PURE-transversal arbitrary-angle
