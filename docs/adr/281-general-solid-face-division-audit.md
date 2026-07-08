@@ -106,6 +106,47 @@ Planar solid-top crossing now SPLITS watertight (was Level-1-declined).
   the early-return path (safely declined by Level 1, not yet split) — a further β
   step. Then β-2 (mutual split), β-3 (through/divide), β-4 (curved G2).
 
+## Wiring + menu/toolbar review (2026-07-08, post β-1)
+
+Full re-review of the draw → face-split → solid-top re-tile path:
+
+```
+Draw tool (mouse)              DrawRect/Circle/Polygon/Ellipse/Line Tool
+  → ctx.bridge.draw*As{Shape,Curve}
+  → surfaceDrawReject (TS)     -1 → Toast.warning(lastError())   [ALL face-creating draws]
+  → WASM draw_*_as_{shape,curve}
+  → Command::Draw*As{Shape,Curve}
+  → guard_imprint (engine)     Level-1 open-solid rollback + β-1 backstop  [ALL face draws]
+  → exec_draw_* → intersect_faces_inner → rederive_coplanar_on_draw
+  → rebuild_coplanar_faces_analytic_scoped  (β-1 force_include + part_of_solid re-tile)
+```
+
+**Consistent / correct:**
+- UI tools route to the **kernel-aware `*AsShape`/`*AsCurve`** bridge methods;
+  legacy `drawRect`/`drawCircle` are NOT UI-exposed (ADR-087 K-ζ intact).
+- Every FACE-creating draw (rect / circle-shape / polygon / circle-curve /
+  ellipse / closed bezier / bspline / nurbs) goes through **both**
+  `guard_imprint` (engine: Level-1 open-solid rollback + β-1 re-tile backstop)
+  **and** `surfaceDrawReject` (TS: rejection → Korean Toast).
+- β-1's `force_include` + `part_of_solid` re-tile lives in the SHARED
+  `rebuild_coplanar_faces_analytic_scoped`, so it is reached identically from
+  ALL of the above draws (rect verified; line/curve share the path).
+- Menu (`arc/bezier/circle/freehand/line/polygon/rect`) + toolbar (`data-tool`)
+  entries present.
+
+**Finding — `DrawLineAsShape` gap (both layers):** the LINE draw is NOT wrapped
+by `guard_imprint` (no engine Level-1 backstop) NOR `surfaceDrawReject` (no Toast)
+— ADR-258 deliberately excluded lines ("Line/Point create no face"). But a line
+DOES split faces (measured: line across a box top → surface 1→2, closed), and a
+line crossing a shape on a solid re-tiles via β-1 (measured clean: box+circle+line
+→ 7→8, closed, nm=0). So the common case is safe; the gap is that a line which
+*opens* a solid in a degenerate/complex config would not be caught/rolled-back or
+Toasted. Not fixed here: wrapping `guard_imprint` on lines risks the polyline /
+free-wire nesting (per-segment `scene_snapshot` + `discard_last_undo` inside an
+outer transaction — the likely reason ADR-258 excluded it), and `DrawLineTool`
+already has its own rich Toast feedback. Recommend a dedicated pass (a
+nesting-safe line guard) if a real line-opens-solid case surfaces.
+
 ## Cross-link
 
 - ADR-280 (solid-top re-tile — Level 1 guard live; this ADR is its generalized
