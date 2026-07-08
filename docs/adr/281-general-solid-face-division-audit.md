@@ -1,6 +1,6 @@
 # ADR-281 — General Solid Face Division: audit + Route B (ADR-277 imprint) unification (α)
 
-- **Status**: Proposed (measure-first audit + design; β needs 결재)
+- **Status**: Accepted (audit + design; β-1/G1 landed 2026-07-08; β-2/3/4 deferred)
 
 ## Context
 
@@ -85,6 +85,26 @@ Route B reuses the proven watertight imprint. A stays the fallback only.
 - **L-281-4** Curved faces keep their AnalyticSurface where possible (ADR-089
   A-χ inheritance); polygonalize only where the imprint requires it (ADR-278 β).
 - **L-281-5** 절대 #[ignore] 금지.
+
+## β-1 (G1) landed — 2026-07-08
+
+Planar solid-top crossing now SPLITS watertight (was Level-1-declined).
+
+- **Fix:** `reconstruct_input_curves` gains a `force_include` set; the solid-top
+  boundary (on-plane `volume_edges`) is fed to the coplanar arrange even though
+  wall-shared, so it net-tiles the FULL top (ADR-280 de-risk sim). `part_of_solid`
+  on-plane top faces are removed + re-tiled when their boundary is fed; the
+  wall-shared edges are preserved (not in `edges_to_remove`) and the new outer
+  loop reuses them via `add_vertex`/`find_edge` dedup. Level 1 (guard_imprint)
+  stays the fail-closed backstop.
+- **Verified:** engine `adr281_b1_crossing_shape_on_solid_splits_watertight`
+  (crossing rect → faces 7→9, closed, nm=0) + browser real production path
+  (7→9 split, closed, nm=0). axia-core 436 (+1) / axia-geo 2190, 0 ignored — the
+  245+ solid-protection regressions + ADR-279 annulus + plain-box-top +
+  line-split all unaffected.
+- **Remaining:** contained-shape-inside-another-shape on a solid top still takes
+  the early-return path (safely declined by Level 1, not yet split) — a further β
+  step. Then β-2 (mutual split), β-3 (through/divide), β-4 (curved G2).
 
 ## Cross-link
 
