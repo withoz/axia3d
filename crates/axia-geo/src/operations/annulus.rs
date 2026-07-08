@@ -908,6 +908,90 @@ mod tests {
         assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0);
     }
 
+    /// Helper: build a RECT (polygon, 4-vert loop) face on the Z=0 plane,
+    /// centered at `c`, half-extent `h`. A standalone free sheet (its edge twins
+    /// have a null face) — models a rect drawn INSIDE a circle disk.
+    fn build_rect_face(mesh: &mut Mesh, c: DVec3, h: f64) -> FaceId {
+        let vids: Vec<crate::VertId> = [
+            c + DVec3::new(-h, -h, 0.0),
+            c + DVec3::new(h, -h, 0.0),
+            c + DVec3::new(h, h, 0.0),
+            c + DVec3::new(-h, h, 0.0),
+        ]
+        .iter()
+        .map(|&p| mesh.add_vertex(p))
+        .collect();
+        mesh.add_face(&vids, MaterialId::new(0)).expect("rect face")
+    }
+
+    /// ADR-283 α (de-risk sim) — CHARACTERIZE the gap: a POLYGON (rect) inner
+    /// fully inside a CIRCLE (self-loop) outer is NOT handled by any existing
+    /// containment function → it would stay an un-integrated free sheet (the
+    /// "옆면 사라짐" contained case). `detect_circle_containment` needs BOTH
+    /// circles (rect inner → None); `split_face_by_inner_circle_generic` needs a
+    /// Circle inner (rect → NotCircleFace). This is why ADR-283 is needed.
+    #[test]
+    fn adr283_sim_rect_in_circle_gap_uncovered() {
+        let mut mesh = Mesh::new();
+        let circle = build_circle_face(&mut mesh, DVec3::ZERO, 40.0, DVec3::Z);
+        let rect = build_rect_face(&mut mesh, DVec3::ZERO, 10.0);
+
+        // (a) circle-containment detection FAILS (rect is not a circle).
+        assert!(
+            detect_circle_containment(&mesh, circle, rect).is_none(),
+            "gap: rect inner is not a Circle → detect_circle_containment None"
+        );
+        // (b) the circle-inner split FAILS (inner must be a Circle self-loop).
+        let r = split_face_by_inner_circle_generic(&mut mesh, circle, rect);
+        assert!(
+            matches!(r, Err(AnnulusError::NotCircleFace { role: "inner", .. })),
+            "gap: rect inner → NotCircleFace, got {r:?}"
+        );
+        // (c) the rect is still a standalone sheet: circle gained no hole, so the
+        // rect's 4 edges remain free boundary (not integrated).
+        assert_eq!(mesh.faces[circle].inners().len(), 0, "circle has no hole yet");
+    }
+
+    /// ADR-283 α (de-risk sim) — VALIDATE the fix direction: reparenting the rect
+    /// inner's TWIN loop (N half-edges, generalizing the circle's single self-loop
+    /// twin, annulus.rs:420-428) into the circle outer as a HOLE integrates the
+    /// rect (its edges become 2-face: rect + circle-hole) → manifold, circle gains
+    /// a rect-shaped hole, both faces stay active. This is the β implementation
+    /// (`split_face_by_inner_polygon`) prototyped inline.
+    #[test]
+    fn adr283_sim_rect_in_circle_reparent_manifold() {
+        let mut mesh = Mesh::new();
+        let circle = build_circle_face(&mut mesh, DVec3::ZERO, 40.0, DVec3::Z);
+        let rect = build_rect_face(&mut mesh, DVec3::ZERO, 10.0);
+
+        // === prototype reparent (β = split_face_by_inner_polygon) ===
+        // Generalize the self-loop twin reparent to a multi-HE loop: for each
+        // boundary HE of the rect, take its radial twin (the free "outside"),
+        // move it onto the circle, and register the twin loop as the circle's hole.
+        let inner_start = mesh.faces[rect].outer().start;
+        let inner_hes = mesh.collect_loop_hes(inner_start).expect("rect loop");
+        assert_eq!(inner_hes.len(), 4, "rect outer loop = 4 HEs");
+        let twin0 = mesh.hes[inner_hes[0]].next_rad();
+        for &he in &inner_hes {
+            let twin = mesh.hes[he].next_rad();
+            assert!(twin != he && mesh.hes.contains(twin), "each rect HE has a twin");
+            mesh.hes[twin].set_face(circle);
+            mesh.hes[twin].set_outer(false);
+        }
+        mesh.faces[circle].add_inner(LoopRef { start: twin0, is_outer: false });
+
+        // === verify: manifold, circle has a rect hole, both faces active ===
+        assert_eq!(mesh.faces[circle].inners().len(), 1, "circle gained a rect hole");
+        assert!(mesh.faces[circle].is_active() && mesh.faces[rect].is_active(),
+            "both faces stay active (outer-with-hole + inner)");
+        let report = mesh.verify_face_invariants();
+        assert_eq!(report.violations.len(), 0,
+            "ADR-283: rect-in-circle reparent manifold-safe; violations {:?}", report.violations);
+        let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0,
+            "ADR-283: no non-manifold edge after reparent (authoritative ManifoldInfo)");
+    }
+
     #[test]
     fn adr185_split_rejects_not_contained() {
         // inner 가 outer 밖이면 reject (silent skip 용).
