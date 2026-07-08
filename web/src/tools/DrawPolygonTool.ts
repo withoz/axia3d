@@ -7,10 +7,10 @@
  *   mouse move → preview polygon with radius = distance to cursor
  *   2nd click → commit
  *
- * Implementation: delegates to bridge.drawCircle with the chosen segment
- * count. A circle with 6 segments is a hexagonal face, 8 is an octagon,
- * etc. The DCEL mesh already treats such low-segment "circles" as
- * proper N-sided polygon faces.
+ * Implementation: delegates to bridge.drawPolygonAsShape (kernel-aware
+ * form-layer draw, guard_imprint-wrapped) with the chosen side count — a
+ * regular N-gon face. (The legacy bridge.drawCircle path was deleted in
+ * ADR-087 K-ζ; polygons are their own As-Shape entry now.)
  *
  * Like DrawCircleTool, all subsequent positions are projected onto the
  * drawing plane detected at the first click so the result is planar

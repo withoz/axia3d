@@ -85,6 +85,44 @@ Level-2 goal (actually re-tile a crossing top) already landed as ADR-281 β-1.
   - `adr258_contained_imprint_accepted` / `adr258_ground_rect_unaffected` —
     unaffected (nm=0 draws pass through as before).
 
+## Wiring + menu/toolbar re-review (2026-07-08, post-ADR-282)
+
+Full re-verification after the guard change (all read-only greps + tests):
+
+**Engine/bridge wiring — consistent:**
+- `guard_imprint` (non-manifold-only) wraps the **8 face-creating draws**
+  (rect / circle-shape / polygon / circle-curve / ellipse / closed bezier /
+  bspline / nurbs). Line / point / polyline / centerline are wire-draws (no
+  face) → intentionally unguarded (ADR-258).
+- `surfaceDrawReject` wraps the **matching 8 bridge methods** (1:1) — genuine
+  corruption rejections still Toast `lastError()`.
+- Error message is single-source and updated to non-manifold-only ("비-manifold
+  (겹친 면)"); no stale "솔리드를 열거나". No stale `opened_solid`/`closed_before`
+  references in code.
+
+**Draw-tool → bridge routing — all kernel-aware (no legacy):**
+- Rect/RotRect → `drawRectAsShape`; Circle → `drawCircleAsCurve`/`AsShape`
+  (+ curved-surface `drawCircleOn{Sphere,Cylinder,Cone,Torus}`); Ellipse →
+  `drawEllipseAsCurve`; Polygon → `drawPolygonAsShape`; Bezier/Spline →
+  `drawClosed{Bezier,BSpline}AsCurve` (+ open with-curve variants); Line/
+  Polyline/Freehand/Arc → `drawLineAsShape`/`drawPolylineAsShape`; Hole/Window/
+  PolygonHole → `punch*`/`drill*`/`cutWallDoorOpening` (WASM integrity-gated).
+- Legacy `bridge.drawCircle`/`drawRect` are DELETED (ADR-087 K-ζ) and NOT
+  UI-exposed. Fixed a stale `DrawPolygonTool` doc comment that still named
+  `bridge.drawCircle` (it actually calls `drawPolygonAsShape`).
+
+**Menu/toolbar consistency — verified:**
+- Every registered draw tool (line, polyline, rect, rotrect, circle, ellipse,
+  polygon, arc, pie, point, bezier, spline, freehand, hole, polygon-hole,
+  window, centerline) is reachable via MenuBar `tool-*`, toolbar `data-tool`,
+  and/or Command Palette. `ellipse` is Command-Palette-only (AxiaCommands
+  `tool-ellipse` + ActionCatalog) — reachable, not orphaned.
+- ActionCatalog ⊇ CommandCatalog invariant intact (CatalogConsistency 3/3,
+  LOCKED #60/#61).
+
+**Verification:** axia-core 436 / axia-geo 2190 (0 failed / 0 ignored), vitest
+2508 passed / 1 skipped, tsc 0 errors, ADR-catalog check pass.
+
 ## Cross-link
 
 - ADR-258 β-1 (guard_imprint — the non-manifold check retained).
