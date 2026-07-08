@@ -306,6 +306,13 @@ fn reconstruct_input_curves(
     tol: f64,
     volume_edges: &HashSet<EdgeId>,
     scope_edges: Option<&HashSet<EdgeId>>,
+    // ADR-281 β-1 — solid-top boundary edges to FEED to the arrange even though
+    // they are `volume_edges` (shared with a wall). Without them the arrange
+    // tiles only the interior shapes and the solid top opens on a crossing draw.
+    // The de-risk sim (ADR-280) confirms: WITH the boundary the arrange net-tiles
+    // the full face. These edges are NOT removed (wall keeps them); the new outer
+    // loop reuses them via add_vertex/find_edge dedup.
+    force_include: &HashSet<EdgeId>,
 ) -> Vec<InputCurve> {
     let project = |p: DVec3| -> Vec2 {
         let d = p - plane_origin;
@@ -334,12 +341,15 @@ fn reconstruct_input_curves(
     // when Phase 0.5 detection ran (gate on).
     let mut freeform_owners_seen: HashSet<u32> = HashSet::new();
     for (eid, edge) in mesh.edges.iter() {
-        if !edge.is_active() || volume_edges.contains(&eid) {
+        // ADR-281 β-1 — `force_include` (solid-top boundary) overrides the
+        // volume_edges exclusion so the arrange receives the full outer boundary.
+        if !edge.is_active() || (volume_edges.contains(&eid) && !force_include.contains(&eid)) {
             continue;
         }
         // Option A — restrict to the affected region's edges (None = full plane).
+        // force_include edges bypass the scope filter too (they are the boundary).
         if let Some(s) = scope_edges {
-            if !s.contains(&eid) {
+            if !s.contains(&eid) && !force_include.contains(&eid) {
                 continue;
             }
         }
@@ -1323,6 +1333,24 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     //    reconstruct (the separate B4b-2a collect step is removed). The
     //    `enable_freeform_overlap` gate now controls only Phase 0.5 detection;
     //    reconstruct / A1 override are gate-implicit (owner-id presence).
+    // ADR-281 β-1 — solid-top boundary = on-plane `volume_edges` (the top's outer
+    // square, shared with the walls). Feeding these to the arrange lets it net-tile
+    // the FULL solid-top face (de-risk sim ADR-280), so a crossing shape splits the
+    // top without opening it. They are NOT removed (walls keep them); the new outer
+    // loop reuses them via dedup. Non-empty ⇒ β-1 solid-top re-tile is active for
+    // this plane; Level 1 (guard_imprint) is the fail-closed backstop.
+    let solid_top_boundary: HashSet<EdgeId> = volume_edges
+        .iter()
+        .copied()
+        .filter(|&e| {
+            mesh.edges.get(e).map_or(false, |ed| {
+                matches!(
+                    (mesh.verts.get(ed.v_small()), mesh.verts.get(ed.v_large())),
+                    (Some(a), Some(bb)) if on_plane(a.pos()) && on_plane(bb.pos())
+                )
+            })
+        })
+        .collect();
     let input_curves = reconstruct_input_curves(
         mesh,
         plane_origin,
@@ -1332,6 +1360,7 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
         tol,
         &volume_edges,
         scope_edges,
+        &solid_top_boundary,
     );
     if input_curves.is_empty() {
         return Ok(RebuildReport::default());
@@ -1380,11 +1409,17 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
         }
         // 평면상이지만 solid 일부면 (edge 가 volume_edges 에 = off-plane 면과 공유,
         // 예: box bottom) → 보호 (re-derive 안 함).
+        // ADR-281 β-1 — EXCEPT the on-plane solid-TOP faces when their boundary is
+        // being fed to the arrange (`solid_top_boundary` non-empty): remove +
+        // re-tile them so a crossing shape splits the top. The wall-shared boundary
+        // edges are preserved (edges_to_remove excludes volume_edges) and the new
+        // outer loop reuses them via dedup. Level 1 (guard_imprint) rolls back if
+        // the result opens the solid — so this is safe to attempt.
         let part_of_solid = mesh
             .face_outer_edges(fid)
             .ok()
             .map_or(false, |edges| edges.iter().any(|e| volume_edges.contains(e)));
-        if part_of_solid {
+        if part_of_solid && solid_top_boundary.is_empty() {
             continue;
         }
         // A1 (2026-06-03) — closed Bezier/BSpline/NURBS self-loop face 보존.
@@ -2467,6 +2502,7 @@ mod tests {
             1e-4,
             &HashSet::new(),
             None,
+            &HashSet::new(),
         );
         let n_circ = curves
             .iter()

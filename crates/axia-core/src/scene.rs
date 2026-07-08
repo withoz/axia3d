@@ -13089,6 +13089,44 @@ mod tests {
         );
     }
 
+    /// ADR-281 β-1 (G1) — a crossing CLOSED shape on a planar solid top now
+    /// actually SPLITS the top watertight (not just a safe decline). The
+    /// solid-top boundary is fed to the coplanar arrange (force_include) + the
+    /// on-plane solid-top faces are re-tiled; Level 1 remains the fail-closed
+    /// backstop. Verifies split (face count up) + closed + manifold, on top of
+    /// the annulus / contained / plain-box cases staying correct.
+    #[test]
+    fn adr281_b1_crossing_shape_on_solid_splits_watertight() {
+        let build = |rect_c: DVec3, rect_wh: (f64, f64)| -> (usize, usize, bool, usize) {
+            let mut s = Scene::new();
+            s.face_rederive_on_draw = true;
+            s.auto_intersect_on_draw = true;
+            s.auto_face_synthesis_on_draw = true;
+            s.freeform_overlap_on_draw = true;
+            s.mesh.create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, FORM_MATERIAL).unwrap();
+            s.execute(Command::DrawCircleAsCurve { center: DVec3::new(0.0, 0.0, 110.0), normal: DVec3::Z, radius: 40.0 });
+            let before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            s.execute(Command::DrawRectAsShape { center: rect_c, normal: DVec3::Z, up: DVec3::Y, width: rect_wh.0, height: rect_wh.1 });
+            let after: Vec<axia_geo::FaceId> = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+            let mi = s.mesh.face_set_manifold_info(&after);
+            (before, after.len(), mi.is_closed_solid, mi.non_manifold_edge_count)
+        };
+
+        // CROSSING rect (partial overlap of the circle) → SPLIT + watertight
+        // (the β-1 win: was Level-1-declined, now actually splits the top).
+        let (b0, a0, closed0, nm0) = build(DVec3::new(20.0, 20.0, 110.0), (70.0, 70.0));
+        assert!(a0 > b0, "ADR-281 β-1: crossing shape must SPLIT the top (faces {b0}→{a0})");
+        assert!(closed0, "ADR-281 β-1: split stays a closed solid");
+        assert_eq!(nm0, 0, "ADR-281 β-1: split is manifold");
+
+        // CONTAINED rect fully inside the circle → SAFE (closed): β-1 targets the
+        // crossing case; the contained-inside-a-shape sub-case takes the
+        // early-return path and is safely declined by Level 1 (never opens). It
+        // may split in a later β step — for now it must at least stay closed.
+        let (_b1, _a1, closed1, nm1) = build(DVec3::new(0.0, 0.0, 110.0), (20.0, 20.0));
+        assert!(closed1 && nm1 == 0, "contained rect stays watertight (closed={closed1}, nm={nm1})");
+    }
+
     /// ADR-280 Level 1 — a crossing shape on a solid top must NEVER open the
     /// solid (fail-closed): box + circle, then a rect that CROSSES the circle →
     /// the solid stays closed (the rect is left un-split rather than opening the
