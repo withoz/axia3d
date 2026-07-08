@@ -1,6 +1,6 @@
 # ADR-280 — Solid-Top Re-tile on Crossing Draw (imprint, preserve wall boundary) (α spec)
 
-- **Status**: Accepted (Level 1 fail-closed landed 2026-07-07; Level 2 full re-tile deferred)
+- **Status**: Accepted (Level 1 fail-closed landed 2026-07-07; Level 2 full re-tile deferred). **Level 1 `opened_solid` decline SUPERSEDED by ADR-282 (2026-07-08)** — it declined legitimate deformations; `guard_imprint` now rejects only genuine non-manifold corruption. Level 2 (actual crossing re-tile) already landed as ADR-281 β-1.
 
 ## Context
 

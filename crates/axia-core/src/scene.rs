@@ -3304,47 +3304,29 @@ impl Scene {
         F: FnOnce(&mut Self) -> CommandResult,
     {
         let nm_before = self.mesh.collect_non_manifold_edges().len();
-        // ADR-280 Level 1 — also guard watertightness: if the mesh is a CLOSED
-        // solid before the draw, it must stay closed after. A shape that CROSSES
-        // another coplanar shape on a solid's top face makes the coplanar
-        // re-derive tile only the interior shapes (the top's outer boundary is a
-        // wall-shared volume edge, withheld from the arrange) → the top OPENS
-        // ("옆면이 사라짐"). Rejecting + rolling back keeps the solid closed (the
-        // draw is declined rather than breaking the solid). The full in-place
-        // re-tile / split is ADR-280 Level 2. (L-280-3 fail-closed; 메타-원칙 #9.)
-        let closed_before = {
-            let all: Vec<FaceId> = self
-                .mesh
-                .faces
-                .iter()
-                .filter(|(_, f)| f.is_active())
-                .map(|(f, _)| f)
-                .collect();
-            self.mesh.face_set_manifold_info(&all).is_closed_solid
-        };
+        // ADR-282 — reject ONLY genuine corruption (a NEW non-manifold edge, i.e.
+        // an edge that ends up bearing ≥3 faces). The former ADR-280
+        // `opened_solid` check (reject if a closed solid merely OPENS) was
+        // REMOVED: it declined legitimate deformations ("겹치면 변형이 정상") —
+        // e.g. a shape drawn inside another on a solid top opens the top as a
+        // free coplanar sheet, which is a valid deform (ADR-283 will auto-split
+        // it), not a break. A draw that DEFORMS/opens now passes through; only
+        // one that CORRUPTS (non-manifold) is rolled back. Rollback reuses the
+        // ADR-193 pattern (`restore_scene_snapshot` + `discard_last_undo`).
         let before_snapshot = self.scene_snapshot();
         let result = draw(self);
         // Never override an existing error (degenerate input, etc.).
         if matches!(result, CommandResult::Error(_)) {
             return result;
         }
-        let opened_solid = closed_before && {
-            let all: Vec<FaceId> = self
-                .mesh
-                .faces
-                .iter()
-                .filter(|(_, f)| f.is_active())
-                .map(|(f, _)| f)
-                .collect();
-            !self.mesh.face_set_manifold_info(&all).is_closed_solid
-        };
-        if self.mesh.collect_non_manifold_edges().len() > nm_before || opened_solid {
-            // The draw crossed/touched a solid face boundary → an edge now
-            // bears ≥3 faces (non-manifold) OR the closed solid was opened.
+        if self.mesh.collect_non_manifold_edges().len() > nm_before {
+            // The draw introduced a non-manifold edge (≥3 faces) — genuine
+            // corruption. Roll back + reject (surfaced as a Toast by the bridge
+            // via surfaceDrawReject). A mere open (deformation) is NOT rejected.
             self.restore_scene_snapshot(&before_snapshot);
             self.transactions.discard_last_undo();
             return CommandResult::Error(
-                "도형이 면 경계를 넘어 솔리드를 열거나 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
+                "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
             );
         }
         result
@@ -3381,10 +3363,11 @@ impl Scene {
             Command::SetEdgeClass { edge_id, class_raw } => {
                 self.exec_set_edge_class(edge_id, class_raw)
             }
-            // ADR-258 β-1 — face-creating coplanar draws are guarded: a draw
-            // that introduces a non-manifold edge (crossing/touching a solid
-            // face boundary) is rolled back + rejected. Line/Point create no
-            // face → not guarded.
+            // ADR-258 β-1 + ADR-282 — face-creating coplanar draws are guarded:
+            // a draw that introduces a NON-MANIFOLD edge (genuine corruption) is
+            // rolled back + rejected. A draw that merely deforms/opens a solid
+            // passes through (ADR-282 removed the opened-solid decline). Line/
+            // Point create no face → not guarded.
             Command::DrawRectAsShape { center, normal, up, width, height } => {
                 self.guard_imprint(|s| s.exec_draw_rect_as_shape(center, normal, up, width, height))
             }
@@ -13119,12 +13102,17 @@ mod tests {
         assert!(closed0, "ADR-281 β-1: split stays a closed solid");
         assert_eq!(nm0, 0, "ADR-281 β-1: split is manifold");
 
-        // CONTAINED rect fully inside the circle → SAFE (closed): β-1 targets the
-        // crossing case; the contained-inside-a-shape sub-case takes the
-        // early-return path and is safely declined by Level 1 (never opens). It
-        // may split in a later β step — for now it must at least stay closed.
-        let (_b1, _a1, closed1, nm1) = build(DVec3::new(0.0, 0.0, 110.0), (20.0, 20.0));
-        assert!(closed1 && nm1 == 0, "contained rect stays watertight (closed={closed1}, nm={nm1})");
+        // CONTAINED rect fully inside the circle → CONTAINMENT (not partial
+        // overlap). ADR-101 §L6 / LOCKED #1 disable auto hole-injection for
+        // containment, so the rect is added as an un-integrated coplanar sheet
+        // (its edges are free boundary) → the whole is not a closed solid yet.
+        // ADR-282 removed the opened-solid decline (the former guard MASKED this
+        // by rolling it back), so it now surfaces as a valid deformation. It is
+        // NOT corruption (nm == 0) — the closed-split is the pending ADR-283 work
+        // (containment auto-split, a user-approved LOCKED #1 change). When ADR-283
+        // lands this tightens to assert `closed1`.
+        let (_b1, _a1, _closed1, nm1) = build(DVec3::new(0.0, 0.0, 110.0), (20.0, 20.0));
+        assert_eq!(nm1, 0, "contained rect must not corrupt the mesh (nm={nm1}); closed-split is ADR-283");
     }
 
     /// ADR-280 Level 1 — a crossing shape on a solid top must NEVER open the
