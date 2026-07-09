@@ -9,6 +9,9 @@ import * as THREE from 'three';
 import { DrawFreehandTool } from './DrawFreehandTool';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
+vi.mock('../ui/Toast', () => ({
+  Toast: { info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn() },
+}));
 
 // Stub curve helpers so commitFreehand path doesn't depend on heavy modules.
 vi.mock('../curves/Curve', () => ({
@@ -153,5 +156,21 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
     expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0);
     expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
+  });
+
+  it('β-4-4 — OPEN stroke on a CYLINDER face (surfaceKind 2) → guidance, no split, no stray wire', () => {
+    const ctx = sphereCtx();
+    ctx.getDrawPlane = vi.fn().mockReturnValue({
+      normal: new THREE.Vector3(0, 0, 1),
+      up: new THREE.Vector3(0, 1, 0),
+      origin: new THREE.Vector3(),
+      surfaceKind: 2, // Cylinder
+    });
+    // open stroke top→bottom: a tube can't be split by one open cut.
+    draw(ctx, [[10, 0, 0], [10, 0, 10], [0, 10, 20]]);
+    // Neither a seam split NOR a stray planar wire — the guidance branch returns.
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+    expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
+    expect(ctx.bridge.drawPolylineOnCurved).not.toHaveBeenCalled();
   });
 });

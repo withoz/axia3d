@@ -14,6 +14,7 @@ import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { freehandFromPoints, tessellateCurve } from '../curves/Curve';
 import { getCurveRegistry } from '../curves/CurveRegistry';
+import { Toast } from '../ui/Toast';
 
 /** 연속 점 사이 최소 거리 (mm) — 너무 촘촘한 샘플링 방지 */
 const MIN_SAMPLE_DISTANCE = 0.5;
@@ -183,6 +184,14 @@ export class DrawFreehandTool implements ITool {
           debugLog(`[Freehand] open seam split on ${this.curvedKind} host=${this.curvedHostFace}`);
         }
         this.ctx.syncMesh();
+        return;
+      }
+      // ADR-284 β-4-4 — an OPEN stroke on a cylinder/torus can't split it (a
+      // single open cut can't disconnect a tube; a torus has no rim — see the
+      // `adr284_beta44_sim_cylinder_torus_not_open_splittable` proof). Guide the
+      // user to a closed loop (S9) instead of silently drawing a stray wire.
+      if (!closed && (this.curvedKind === 'cylinder' || this.curvedKind === 'torus')) {
+        Toast.info('원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.');
         return;
       }
     }

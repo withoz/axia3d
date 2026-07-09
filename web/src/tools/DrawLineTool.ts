@@ -94,6 +94,8 @@ export class DrawLineTool implements ITool {
   private chainPoints: THREE.Vector3[] = [];
   /** Last loop-close target type (for Toast/UI differentiation) */
   private lastCloseKind: 'chain-start' | 'chain-mid' | 'free' | null = null;
+  /** ADR-284 β-4-4 — curved-face hint fired once per tool activation. */
+  private curvedHintShown = false;
   /**
    * Drawing plane locked on first click.
    * Subsequent clicks/moves project the mouse ray onto THIS plane instead of
@@ -122,6 +124,7 @@ export class DrawLineTool implements ITool {
   onActivate(): void {
     // Line 도구 진입 시 face-creation 최적 snap 프리셋 적용.
     // 기존 snap 설정은 onDeactivate에서 원복.
+    this.curvedHintShown = false; // ADR-284 β-4-4 — re-arm the once-per-activation hint
     this._savedSnapModes = this.ctx.snap.saveSnapConfig();
     this.ctx.snap.applyFaceCreationPreset();
 
@@ -830,6 +833,14 @@ export class DrawLineTool implements ITool {
       debugLog('[Line] Drawing plane locked from face pick (ADR-140 ε-1), surfaceKind=',
         dp.surfaceKind, 'normal=',
         worldNormal.toArray().map(v => v.toFixed(3)));
+      // ADR-284 β-4-4 — a straight line on a CURVED face (surfaceKind ≥ 2) is a
+      // planar construction line, NOT a surface split (a 2-point straight seam is
+      // degenerate — §β-4-1). Hint once toward the tools that DO split a curved
+      // face: freehand/bezier (sphere/cone) or a closed circle (cylinder/torus).
+      if (dp.onFace && (dp.surfaceKind ?? 0) >= 2 && !this.curvedHintShown) {
+        this.curvedHintShown = true;
+        Toast.info('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.', 3000);
+      }
     } else {
       // Fall back to view-based workplane through the computed click point.
       // ADR-103-δ-1 (Z-up):

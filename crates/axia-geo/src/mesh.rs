@@ -16530,6 +16530,62 @@ mod tests {
             "the rebuilt base disk stays Plane");
     }
 
+    /// ADR-284 β-4-4 (measure-first) — WHY a cylinder side + a torus CANNOT be
+    /// split into two by a single OPEN stroke. This is a TOPOLOGICAL fact, not a
+    /// missing feature — the structure below shows why, and `split_curved_face_by_
+    /// open_seam` correctly rejects both (guard = Sphere|Cone only):
+    ///
+    /// - **Cylinder side = a TUBE (annulus)**: 2 self-loop rims (top + bottom),
+    ///   each SHARED with a cap. A single open cut rim→rim connects the two loops,
+    ///   turning the tube into a slit DISK (1 face, hole removed) — NOT 2 faces.
+    ///   To split a tube you draw a CLOSED loop around/on it = S9
+    ///   (`drawCircleOnCylinder`, already works).
+    /// - **Torus = a CLOSED surface** (single face, self-loop SEAM, `inners = 0`).
+    ///   No bounding rim to trim; an open curve never disconnects a closed surface.
+    ///
+    /// Unlike a sphere hemisphere / cone side (1 rim + a degenerate interior point
+    /// = pole/apex), these have no "1 rim + degenerate point" structure, so the
+    /// shared-rim open-seam mechanism does not apply.
+    #[test]
+    fn adr284_beta44_sim_cylinder_torus_not_open_splittable() {
+        use crate::surfaces::AnalyticSurface;
+        let mat = MaterialId::new(0);
+
+        // ── Cylinder side = annulus (outer rim + 1 inner rim, both self-loops).
+        let mut cm = Mesh::new();
+        cm.set_cylinder_path_b_default(true);
+        let cf = cm.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
+        let side = *cf.iter()
+            .find(|&&f| matches!(cm.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .expect("cylinder side (annulus)");
+        let outer = cm.collect_loop_verts(cm.faces[side].outer().start).unwrap();
+        let inners = cm.faces[side].inners().len();
+        eprintln!("[β-4-4 sim] cyl side: outer_verts={} inners={} (annulus = 2 rims)", outer.len(), inners);
+        assert_eq!(inners, 1, "cylinder side is an annulus: outer rim + 1 inner rim");
+        // A rim→rim open seam (endpoints on the two DIFFERENT rims) is rejected —
+        // a single open cut cannot disconnect a tube.
+        let seam = [
+            DVec3::new(10.0, 0.0, 0.0),   // bottom rim
+            DVec3::new(10.0, 0.0, 10.0),  // mid wall
+            DVec3::new(0.0, 10.0, 20.0),  // top rim
+        ];
+        assert!(cm.split_curved_face_by_open_seam(side, &seam).is_none(),
+            "cylinder open seam rejected — a single open cut cannot split a tube (use a closed circle, S9)");
+
+        // ── Torus = closed surface, single face, self-loop seam, no bounding rim.
+        let mut tm = Mesh::new();
+        let tf = tm.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).unwrap();
+        let t_inners = tm.faces[tf].inners().len();
+        eprintln!("[β-4-4 sim] torus: inners={} (closed surface, self-loop seam, no rim)", t_inners);
+        let seam_t = [
+            DVec3::new(13.0, 0.0, 0.0),
+            DVec3::new(0.0, 13.0, 0.0),
+            DVec3::new(-13.0, 0.0, 0.0),
+        ];
+        assert!(tm.split_curved_face_by_open_seam(tf, &seam_t).is_none(),
+            "torus open seam rejected — a closed surface has no rim to cut open");
+    }
+
     #[test]
     fn adr257_beta3_split_rejects_non_cylinder() {
         // A planar (non-Cylinder) face is rejected.

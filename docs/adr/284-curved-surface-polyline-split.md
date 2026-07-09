@@ -301,12 +301,40 @@ verify:** `create_cone` → base (Plane) + side (Cone) → `drawOpenSeamOnCurved
 non_manifold_edge_count=0, verifyInvariants valid (3 faces, 0 violations). Sphere
 re-verified identical under the renamed export.
 
-**Still deferred:** open seams on **cylinder** (annulus = 2 rims; a top→bottom cut
-UNROLLS it into one sheet rather than splitting in two — needs 2 cuts or a
-same-rim seam) and **torus** (closed surface, single face, no rim — an open curve
-doesn't partition it); plus a straight-`DrawLine` reject/re-interpret UX polish.
-These are genuinely different topologies, not the shared-rim + degenerate-point
-pattern that sphere and cone share.
+### β-4-4 cylinder / torus / DrawLine — measure-first CLOSURE (2026-07-09)
+
+A detailed simulation (`adr284_beta44_sim_cylinder_torus_not_open_splittable`)
+settled the deferred items: cylinder + torus **cannot** be split by a single open
+stroke — this is a **topological fact, not a missing feature**:
+
+- **Cylinder side = a TUBE (annulus)** — measured: outer rim self-loop + **1 inner
+  rim** self-loop (both shared with caps). A single open cut rim→rim connects the
+  two loops → the tube becomes a slit DISK (1 face, hole removed), NOT 2 faces. To
+  split a tube you draw a **closed loop** around/on it = S9
+  (`drawCircleOnCylinder`, already works).
+- **Torus = a CLOSED surface** — measured: single face, self-loop SEAM, `inners =
+  0`, no bounding rim. An open curve never disconnects a closed surface.
+
+Neither has the "1 rim + degenerate interior point (pole/apex)" structure that the
+shared-rim mechanism needs, so `split_curved_face_by_open_seam` correctly rejects
+both (guard = Sphere|Cone; regression locks both `None`).
+
+**UX (replacing the misleading planar-wire fall-through):**
+- DrawFreehandTool + DrawBezierTool: an OPEN stroke on a **cylinder / torus** face
+  now shows a Toast — *"원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌
+  원(곡선)을 그려 포트홀을 만들어 보세요."* — and skips the stray wire. (Closed
+  loops on cylinder/torus still → `drawPolylineOnCurved` = S9 porthole.)
+- DrawLineTool: a straight line on ANY curved face (surfaceKind ≥ 2) is re-
+  interpreted as a **planar construction line** (unchanged) with a one-per-
+  activation Toast hint pointing to freehand/bezier (sphere/cone) or a closed
+  circle (cylinder/torus). A 2-point straight seam is degenerate (§β-4-1).
+
+**Regression:** axia-geo `adr284_beta44_sim_cylinder_torus_not_open_splittable`
+(structural measurement + both reject) + vitest DrawFreehandTool +1 (cylinder open
+→ guidance, no split, no stray wire). This CLOSES ADR-284 β-4: sphere + cone open
+seams land; cylinder + torus + straight-DrawLine are resolved as
+topology-appropriate guidance. The full curved-sketch matrix (S9 closed shapes ×
+4 surfaces × 4 tools; S3 open seams × sphere/cone × freehand/bezier) is complete.
 
 ## Lock-ins (α)
 
