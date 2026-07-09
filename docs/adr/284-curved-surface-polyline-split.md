@@ -170,6 +170,41 @@ the surface, which also should clear the 1 invariant violation.
 β-4-2 cone; β-4-3 dispatch (DrawLineTool / open freehand / open bezier on a
 curved face); β-4-4 cylinder/torus multi-rim. Each measure-first + de-risk.
 
+### β-4-1 attempt — deeper finding (2026-07-09): the shared self-loop rim
+
+The β-4-1 geodesic-seam implementation (`split_sphere_face_by_seam`, attempted +
+reverted) **disproved the scoped design's core assumption** that
+`trim_circle_face_at_crossings` is reusable for a hemisphere. Two blockers, both
+now measured:
+
+1. **Shared self-loop equator (the real blocker).** A Path B sphere is TWO
+   hemispheres sharing ONE equator self-loop edge (`create_sphere_kernel_native`
+   mesh.rs:7367 — `he_fwd` = north outer, `he_bwd` = south outer, same edge).
+   `trim_circle_face_at_crossings` (mesh.rs:8199-8201) does `remove_face(north)`
+   **+ `remove_edge_and_halfedges(equator)`** — removing the shared edge breaks
+   the SOUTH hemisphere's boundary (`verify_face_invariants` → "face FaceId(1):
+   … HalfEdge HeId(1) not found"). The trim machinery is built for a STANDALONE
+   self-loop circle (a flat cap / drawn disk), NOT a shared-boundary hemisphere.
+   This is exactly why S9 (interior circle) works — the circle is interior, the
+   equator is untouched — and S3 (rim-to-rim line) does not: it must operate ON
+   the shared rim.
+2. **Equator-geodesic degeneracy (ADR-202 S3 resurfacing).** The great circle
+   between two equator points IS the equator (both lie in the z=0 plane through
+   the center) → a slerp geodesic seam lands ON the rim, so its interior verts
+   sit on the boundary loop → `split_face_by_chain` rejects ("intermediate chain
+   vert on chosen loop"). Corollary: the seam is NOT a geodesic — it is the
+   **user's drawn stroke** projected onto the sphere (rim → interior → rim), so
+   the API must take seam POINTS, not endpoints + a computed geodesic.
+
+**Revised β-4-1 scope (the real work).** A rim-to-rim split on a hemisphere must
+**split the shared self-loop equator in-place at the 2 endpoints** (both twin HEs
+→ 2 arc edges, so BOTH hemispheres see the 2 arcs) WITHOUT removing it, then
+insert the projected interior seam into only the target hemisphere and re-tile
+that one side. This is substantial shared-boundary DCEL surgery — a dedicated
+focused pass, distinct from the standalone-circle trim machinery. Deferred with
+this precise blocker documented; S9 (closed shapes, all 4 surfaces, all 4 tools)
+remains complete and unaffected.
+
 ## Lock-ins (α)
 
 - **L-284-1** Engine split is shape-agnostic (de-risk proven) — closed shapes
