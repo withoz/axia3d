@@ -150,6 +150,37 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
   explicit 결재.
 - **L-284-7** 절대 #[ignore] 금지.
 
+## Wiring + menu/toolbar re-review (2026-07-08, post-β-3)
+
+Full re-verification of the curved-sketch closed-shape path:
+
+**Layers — all present + consistent:**
+- Engine: `polyline_on_{cylinder,cone,torus,sphere}` (project) + split
+  (`split_{cyl,cone,torus}_face_by_circle` reused, `split_sphere_face_by_polyline`
+  new).
+- Scene: `draw_polyline_on_{cylinder,cone,torus,sphere}` (4) + shared
+  `finish_polyline_split`.
+- WASM: `drawPolylineOn{Cylinder,Cone,Torus,Sphere}` (4);
+  `wasm_export_baseline_unchanged` passes (additive).
+- Bridge: `drawPolylineOnCurved(kind,…)` dispatcher + 4 interface decls.
+
+**Tool dispatch — consistent across all draw tools:**
+- Circle → `drawCircleOn{surface}` (analytic Circle, ADR-202/257/263).
+- Rect / Polygon / Freehand / Bezier → `drawPolylineOnCurved` (polyline,
+  ADR-284) — each has the `surfaceKind 2/3/4/5` detect + host pick + closed-loop
+  dispatch (freehand/bezier gate on closure). grep-confirmed 4/4.
+
+**Menu/toolbar — UNCHANGED (additive-only, ADR-046 P31 #4):** the curved branch
+is INTERNAL to the existing rect/polygon/freehand/bezier tools — no new command,
+export-on-menu, `MenuBar` entry, `index.html` toolbar entry, or ActionCatalog
+/CommandCatalog change (grep-confirmed empty). ActionCatalog ⊇ CommandCatalog
+intact (CatalogConsistency 3/3).
+
+**Verified:** full workspace cargo (axia-geo 2206 / core / wasm / transaction)
+0 failed; vitest 2508 / 1 skipped; tsc 0; ADR-catalog check pass; browser
+(on-surface AND tangent-plane corners) → `{cap, annulus}` + verifyInvariants
+valid.
+
 ## Cross-link
 
 - ADR-202 (sphere circle, S3/S6 deferred — this ADR takes them up).
