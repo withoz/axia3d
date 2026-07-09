@@ -821,6 +821,11 @@ type AxiaEngineExtended = AxiaEngine & {
   drawCircleOnCone?(faceId: number, cx: number, cy: number, cz: number, rx: number, ry: number, rz: number): string;
   // ADR-263 β-6 — draw a closed circle on a Torus face (곡면 위 직접 그리기 #5 P3-C).
   drawCircleOnTorus?(faceId: number, cx: number, cy: number, cz: number, rx: number, ry: number, rz: number): string;
+  // ADR-284 β-3 — draw a closed POLYLINE (rect/polygon/freehand/bezier, flat xyz) on a curved face → split.
+  drawPolylineOnCylinder?(faceId: number, flat: Float64Array, closed: boolean): string;
+  drawPolylineOnCone?(faceId: number, flat: Float64Array, closed: boolean): string;
+  drawPolylineOnTorus?(faceId: number, flat: Float64Array, closed: boolean): string;
+  drawPolylineOnSphere?(faceId: number, flat: Float64Array, closed: boolean): string;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3011,6 +3016,34 @@ export class WasmBridge {
       centerPt[0], centerPt[1], centerPt[2],
       radiusPt[0], radiusPt[1], radiusPt[2],
     );
+  }
+
+  /**
+   * ADR-284 β-3 — draw a closed POLYLINE (rect / polygon / freehand / bezier
+   * world corners) on a curved surface face → split into cap + remainder. `kind`
+   * selects the surface export. Returns the JSON `{cap, annulus}` / `{error}`,
+   * or null if the export is unavailable (legacy / mock build).
+   */
+  drawPolylineOnCurved(
+    kind: 'cylinder' | 'cone' | 'torus' | 'sphere',
+    faceId: number,
+    pts: Array<[number, number, number]>,
+    closed = true,
+  ): string | null {
+    const fn =
+      kind === 'cylinder' ? this.engine?.drawPolylineOnCylinder
+      : kind === 'cone' ? this.engine?.drawPolylineOnCone
+      : kind === 'torus' ? this.engine?.drawPolylineOnTorus
+      : this.engine?.drawPolylineOnSphere;
+    if (!fn || pts.length < 2) return null;
+    this.markDirty();
+    const flat = new Float64Array(pts.length * 3);
+    for (let i = 0; i < pts.length; i++) {
+      flat[i * 3] = pts[i][0];
+      flat[i * 3 + 1] = pts[i][1];
+      flat[i * 3 + 2] = pts[i][2];
+    }
+    return fn.call(this.engine, faceId, flat, closed);
   }
 
   /**

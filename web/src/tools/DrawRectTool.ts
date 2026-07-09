@@ -82,6 +82,12 @@ interface CardinalPlane {
    * projection is trusted as-is (no axis force).
    */
   forceCardinal: boolean;
+  /**
+   * ADR-284 β-3 — the picked face's analytic surface kind (from getDrawPlane):
+   * 2=Cylinder, 3=Sphere, 4=Cone, 5=Torus (else planar/undefined). Drives the
+   * curved-surface polyline split (draw a rect ON a cylinder/sphere/…).
+   */
+  surfaceKind?: number;
 }
 
 export class DrawRectTool implements ITool {
@@ -92,6 +98,9 @@ export class DrawRectTool implements ITool {
   private plane: CardinalPlane | null = null;
   private rectPreview: THREE.Mesh | null = null;
   private rectOutline: THREE.LineLoop | null = null;
+  // ADR-284 β-3 — curved-surface draw: rect ON a cylinder/sphere/cone/torus.
+  private curvedKind: 'cylinder' | 'cone' | 'torus' | 'sphere' | null = null;
+  private curvedHostFace = -1;
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx;
@@ -116,6 +125,24 @@ export class DrawRectTool implements ITool {
       if (!start) return;
       this.plane = plane;
       this.rectStart = start;
+      // ADR-284 β-3 — first click on a curved face (Cylinder=2 / Sphere=3 /
+      // Cone=4 / Torus=5) → draw the rect ON the surface (project its corners +
+      // split). Mirror of DrawCircleTool's curved dispatch. Capture the host.
+      this.curvedKind = null;
+      this.curvedHostFace = -1;
+      const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
+        plane.surfaceKind as 2 | 3 | 4 | 5
+      ];
+      if (ck && typeof this.ctx.viewport?.pick === 'function') {
+        const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+        if (hit && hit.faceIndex != null) {
+          const fid = this.ctx.getFaceId(hit.faceIndex);
+          if (fid >= 0) {
+            this.curvedKind = ck;
+            this.curvedHostFace = fid;
+          }
+        }
+      }
       this.ctx.snap.setReferencePoint(start);
       // ADR-166 β-2 — first_click plane lock (idempotent: no-op when
       // already locked, L-166-2). Cross-tool 유지 활성화: 후속 도구
@@ -141,6 +168,38 @@ export class DrawRectTool implements ITool {
       const absH = Math.abs(height);
 
       if (absW >= MIN_RECT_DIMENSION && absH >= MIN_RECT_DIMENSION) {
+        // ADR-284 β-3 — curved-surface path: the rect's 4 tangent-plane corners
+        // are projected onto the surface + the face is split (cap + remainder).
+        if (this.curvedKind && this.curvedHostFace >= 0
+            && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+          const start = this.rectStart;
+          const d = planePoint.clone().sub(start);
+          const wl = d.dot(this.plane!.right);
+          const hl = d.dot(this.plane!.up);
+          const r = this.plane!.right;
+          const up2 = this.plane!.up;
+          const corner = (a: number, b: number): [number, number, number] => {
+            const p = start.clone().addScaledVector(r, a).addScaledVector(up2, b);
+            return [p.x, p.y, p.z];
+          };
+          const corners: Array<[number, number, number]> = [
+            [start.x, start.y, start.z],
+            corner(wl, 0),
+            corner(wl, hl),
+            corner(0, hl),
+          ];
+          const res = this.ctx.bridge.drawPolylineOnCurved(this.curvedKind, this.curvedHostFace, corners, true);
+          if (!res || res.includes('"error"')) {
+            // eslint-disable-next-line no-console
+            console.warn(`[DrawRectTool] curved split on ${this.curvedKind} failed: ${res}`);
+          } else {
+            debugLog(`[Rect] curved split on ${this.curvedKind} host=${this.curvedHostFace}`);
+          }
+          this.ctx.syncMesh();
+          this.cleanup();
+          return;
+        }
+
         const center = this.computeCenter(this.rectStart, planePoint, this.plane!);
         const n = this.plane!.normal;
         const u = this.plane!.up;
@@ -234,6 +293,8 @@ export class DrawRectTool implements ITool {
   cleanup(): void {
     this.rectStart = null;
     this.plane = null;
+    this.curvedKind = null;
+    this.curvedHostFace = -1;
     this.removePreview();
     this.ctx.dimLabel.clear();
     this.ctx.snap.setReferencePoint(null);
@@ -368,7 +429,7 @@ export class DrawRectTool implements ITool {
       zeroValue = normal.dot(ref);
     }
 
-    return { normal, up, right, zeroAxis, zeroValue, isSketch, forceCardinal, isFace: onFace };
+    return { normal, up, right, zeroAxis, zeroValue, isSketch, forceCardinal, isFace: onFace, surfaceKind: dp.surfaceKind };
   }
 
   /**

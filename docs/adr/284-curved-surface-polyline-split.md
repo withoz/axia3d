@@ -100,7 +100,24 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
 - **β-1 COMPLETE — all 4 surfaces** (cylinder / cone / torus / sphere) project +
   split a closed polyline (rect / polygon / freehand / bezier) → cap + remainder,
   manifold, surface inherited. axia-geo **2206**.
-- **β-3 dispatch/bridge (browser demo), β-4 open line (S3)**: next.
+- **β-3 dispatch/bridge (landed 2026-07-08)** — the closed-shape path is now
+  wired end-to-end:
+  - Scene: `draw_polyline_on_{cylinder,cone,torus,sphere}(host, pts, closed)` +
+    shared `finish_polyline_split` (dual-path owner reconcile + transaction,
+    mirror of `draw_circle_on_*`).
+  - WASM: `drawPolylineOn{Cylinder,Cone,Torus,Sphere}(face, flat, closed)`
+    (flat `[x,y,z,…]`); `wasm_export_baseline_unchanged` still passes (additive).
+  - Bridge: `drawPolylineOnCurved(kind, faceId, pts, closed)` dispatcher.
+  - Tool: `DrawRectTool` — first click on a curved face (surfaceKind 2/3/4/5)
+    captures the host + kind; second click projects the 4 tangent-plane corners
+    + calls `drawPolylineOnCurved` (draw a rect ON a cylinder/sphere/cone/torus).
+  - **Browser-verified** (Path B cylinder side face): `drawPolylineOnCurved(
+    'cylinder', …)` → `{cap:3, annulus:2}`, `verifyInvariants` valid (0
+    violations). (`meshManifoldInfo` nm=1 is the PRE-EXISTING Path B cylinder
+    self-loop-rim discrepancy — present before the split too, not added by it.)
+  - Remaining tools (Polygon / Freehand / Bezier) mirror DrawRectTool (the
+    bridge dispatcher already accepts any closed polyline) — follow-up.
+- **β-4 open line (S3)**: next (rim-to-rim boundary-split + insert).
 
 ## Lock-ins (α)
 

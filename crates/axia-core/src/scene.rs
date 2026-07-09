@@ -2999,6 +2999,159 @@ impl Scene {
         }
     }
 
+    /// ADR-284 β-3 — shared tail for the `draw_polyline_on_{surface}` family:
+    /// run the surface's samples-based split inside a self-owned transaction (if
+    /// not already recording) + dual-path owner reconcile (Shape first, else
+    /// XIA), exactly like `draw_circle_on_{surface}`. `split` is the mesh method
+    /// pointer for this surface (cylinder/cone/torus = `split_*_face_by_circle`,
+    /// sphere = `split_sphere_face_by_polyline`).
+    fn finish_polyline_split(
+        &mut self,
+        host_face: FaceId,
+        samples: Vec<DVec3>,
+        split: fn(&mut axia_geo::mesh::Mesh, FaceId, &[DVec3]) -> Option<(FaceId, FaceId)>,
+    ) -> Option<(FaceId, FaceId)> {
+        if samples.len() < 3 {
+            return None;
+        }
+        let owning_shape = self.face_to_shape.get(&host_face).copied();
+        let owning_xia = self.face_to_xia.get(&host_face).copied();
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        match split(&mut self.mesh, host_face, &samples) {
+            Some((cap, remainder)) => {
+                if let Some(sid) = owning_shape {
+                    if let Some(shape) = self.shapes.get_mut(&sid) {
+                        if !shape.face_ids.contains(&cap) {
+                            shape.face_ids.push(cap);
+                        }
+                    }
+                    self.face_to_shape.insert(cap, sid);
+                } else if let Some(xid) = owning_xia {
+                    self.register_faces_to_xia(xid, &[cap]);
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        if !xia.face_ids.contains(&cap) {
+                            xia.face_ids.push(cap);
+                        }
+                    }
+                }
+                if own {
+                    self.transactions.set_after_snapshot(self.scene_snapshot());
+                    self.transactions.commit();
+                }
+                Some((cap, remainder))
+            }
+            None => {
+                if own {
+                    self.transactions.cancel();
+                }
+                None
+            }
+        }
+    }
+
+    /// ADR-284 β-3 — split a Cylinder face by a drawn closed POLYLINE (rect /
+    /// polygon / freehand / bezier corners), projecting it onto the cylinder
+    /// (`polyline_on_cylinder`) then reusing the shape-agnostic split. The
+    /// polyline analogue of `draw_circle_on_cylinder`.
+    pub fn draw_polyline_on_cylinder(
+        &mut self,
+        host_face: FaceId,
+        pts: Vec<DVec3>,
+        closed: bool,
+    ) -> Option<(FaceId, FaceId)> {
+        if pts.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        use axia_geo::surfaces::{cylinder, AnalyticSurface};
+        let (ax_o, ax_d, rad, refd) =
+            match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. }) => {
+                    (*axis_origin, *axis_dir, *radius, *ref_dir)
+                }
+                _ => return None,
+            };
+        let chord_tol = (rad * 0.02).clamp(0.05, 0.5);
+        let samples =
+            cylinder::polyline_on_cylinder(ax_o, ax_d, rad, refd, &pts, closed, chord_tol)?;
+        self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_cylinder_face_by_circle)
+    }
+
+    /// ADR-284 β-3 — split a Cone face by a drawn closed POLYLINE.
+    pub fn draw_polyline_on_cone(
+        &mut self,
+        host_face: FaceId,
+        pts: Vec<DVec3>,
+        closed: bool,
+    ) -> Option<(FaceId, FaceId)> {
+        if pts.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        use axia_geo::surfaces::{cone, AnalyticSurface};
+        let (apex, ax_d, ha, refd) =
+            match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. }) => {
+                    (*apex, *axis_dir, *half_angle, *ref_dir)
+                }
+                _ => return None,
+            };
+        let samples = cone::polyline_on_cone(apex, ax_d, ha, refd, &pts, closed, 0.5)?;
+        self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_cone_face_by_circle)
+    }
+
+    /// ADR-284 β-3 — split a Torus face by a drawn closed POLYLINE.
+    pub fn draw_polyline_on_torus(
+        &mut self,
+        host_face: FaceId,
+        pts: Vec<DVec3>,
+        closed: bool,
+    ) -> Option<(FaceId, FaceId)> {
+        if pts.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        use axia_geo::surfaces::{torus, AnalyticSurface};
+        let (center, ax_d, refd, mr, nr) =
+            match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. }) => {
+                    (*center, *axis_dir, *ref_dir, *major_radius, *minor_radius)
+                }
+                _ => return None,
+            };
+        let chord_tol = (nr * 0.02).clamp(0.05, 0.5);
+        let samples =
+            torus::polyline_on_torus(center, ax_d, refd, mr, nr, &pts, closed, chord_tol)?;
+        self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_torus_face_by_circle)
+    }
+
+    /// ADR-284 β-3 — split a Sphere face by a drawn closed POLYLINE (uses the
+    /// samples-based `split_sphere_face_by_polyline` — the sphere circle-split
+    /// takes an analytic Circle, so a polyline needs the N-edge path).
+    pub fn draw_polyline_on_sphere(
+        &mut self,
+        host_face: FaceId,
+        pts: Vec<DVec3>,
+        closed: bool,
+    ) -> Option<(FaceId, FaceId)> {
+        if pts.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        use axia_geo::surfaces::{sphere, AnalyticSurface};
+        let (center, rad, ax_d, refd) =
+            match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Sphere { center, radius, axis_dir, ref_dir, .. }) => {
+                    (*center, *radius, *axis_dir, *ref_dir)
+                }
+                _ => return None,
+            };
+        let chord_tol = (rad * 0.02).clamp(0.05, 0.5);
+        let samples =
+            sphere::polyline_on_sphere(center, rad, ax_d, refd, &pts, closed, chord_tol)?;
+        self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_sphere_face_by_polyline)
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 

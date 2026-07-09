@@ -5003,6 +5003,78 @@ impl AxiaEngine {
         }
     }
 
+    /// **ADR-284 β-3** — draw a closed POLYLINE (rect / polygon / freehand /
+    /// bezier corners, flat `[x0,y0,z0, x1,y1,z1, …]`) on a curved surface face,
+    /// splitting it into cap + remainder. `closed` closes the loop. Returns
+    /// `{"cap":N,"annulus":M}` or `{"error":"..."}`. One export per surface.
+    #[wasm_bindgen(js_name = "drawPolylineOnCylinder")]
+    pub fn draw_polyline_on_cylinder(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
+        let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        match self.scene.draw_polyline_on_cylinder(FaceId::new(face_id_raw), pts, closed) {
+            Some((cap, ann)) => {
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
+            }
+            None => {
+                let msg = "drawPolylineOnCylinder failed (not a Cylinder face / off-surface / wraps)";
+                self.set_error(msg.to_string());
+                format!("{{\"error\":\"{}\"}}", msg)
+            }
+        }
+    }
+
+    #[wasm_bindgen(js_name = "drawPolylineOnCone")]
+    pub fn draw_polyline_on_cone(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
+        let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        match self.scene.draw_polyline_on_cone(FaceId::new(face_id_raw), pts, closed) {
+            Some((cap, ann)) => {
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
+            }
+            None => {
+                let msg = "drawPolylineOnCone failed (not a Cone face / off-surface / wraps)";
+                self.set_error(msg.to_string());
+                format!("{{\"error\":\"{}\"}}", msg)
+            }
+        }
+    }
+
+    #[wasm_bindgen(js_name = "drawPolylineOnTorus")]
+    pub fn draw_polyline_on_torus(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
+        let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        match self.scene.draw_polyline_on_torus(FaceId::new(face_id_raw), pts, closed) {
+            Some((cap, ann)) => {
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
+            }
+            None => {
+                let msg = "drawPolylineOnTorus failed (not a Torus face / off-surface / wraps)";
+                self.set_error(msg.to_string());
+                format!("{{\"error\":\"{}\"}}", msg)
+            }
+        }
+    }
+
+    #[wasm_bindgen(js_name = "drawPolylineOnSphere")]
+    pub fn draw_polyline_on_sphere(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
+        let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        match self.scene.draw_polyline_on_sphere(FaceId::new(face_id_raw), pts, closed) {
+            Some((cap, ann)) => {
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
+            }
+            None => {
+                let msg = "drawPolylineOnSphere failed (not a Sphere face / off-surface / pole / wraps)";
+                self.set_error(msg.to_string());
+                format!("{{\"error\":\"{}\"}}", msg)
+            }
+        }
+    }
+
     /// Test if a 3D point lies within a face's boundary.
     ///
     /// Returns true if the point is on the face's plane and inside its edges.
