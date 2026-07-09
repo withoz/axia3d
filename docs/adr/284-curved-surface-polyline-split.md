@@ -67,6 +67,20 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
 - **β-5** regression + browser (draw a rect/freehand/bezier loop on a cylinder /
   sphere → cap + remainder, manifold) + LOCKED note.
 
+## β progress
+
+- **β-1 cylinder (landed 2026-07-08)**: `cylinder::polyline_on_cylinder(pts,
+  closed, chord_tol)` — projects arbitrary world points onto the cylinder,
+  unrolls `u` continuously, chord-samples each edge in flat UV, maps back. Wrap
+  guard: CLOSED loops reject when the signed angular winding `> π` (a simple
+  non-encircling loop winds ≈ 0, an encircling one ≈ ±2π); OPEN loops reject a
+  ≥ full-turn span. Tests: `polyline_on_cylinder_rect_samples_on_surface` /
+  `_rejects_full_wrap`; the de-risk sim `adr284_sim_rect_polyline_on_cylinder_
+  splits` now drives the REAL function end-to-end (rect world corners →
+  polyline_on_cylinder → split_cylinder_face_by_circle → cap + remainder,
+  manifold, Cylinder inherited). axia-geo **2198**.
+- **β-1 cone/sphere/torus, β-3 dispatch/bridge, β-4 open line**: next.
+
 ## Lock-ins (α)
 
 - **L-284-1** Engine split is shape-agnostic (de-risk proven) — closed shapes

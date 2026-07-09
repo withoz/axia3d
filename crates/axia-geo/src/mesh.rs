@@ -15970,25 +15970,17 @@ mod tests {
         };
         let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
 
-        // A small RECT on the cylinder wall: 4 corners in (u, v) param space,
-        // each edge sampled (mimics projecting a drawn rect + geodesic sampling).
+        // A small RECT on the cylinder wall: 4 world corners (as a draw tool
+        // would capture them), projected + geodesically sampled by the real
+        // β-1 `polyline_on_cylinder` (closed).
         let vmid = 0.5 * (vlo + vhi);
         let (du, dv) = (0.30_f64, 3.0_f64); // small angular + height half-extents
-        let corners = [
-            (-du, -dv), (du, -dv), (du, dv), (-du, dv),
-        ];
-        let mut samples: Vec<DVec3> = Vec::new();
-        let per_edge = 3;
-        for c in 0..4 {
-            let (u0, w0) = corners[c];
-            let (u1, w1) = corners[(c + 1) % 4];
-            for s in 0..per_edge {
-                let t = s as f64 / per_edge as f64;
-                let u = u0 + (u1 - u0) * t;
-                let w = w0 + (w1 - w0) * t;
-                samples.push(cylinder::evaluate(ax_o, ax_d, rad, refd, u, vmid + w));
-            }
-        }
+        let corners: Vec<DVec3> = [(-du, -dv), (du, -dv), (du, dv), (-du, dv)]
+            .iter()
+            .map(|&(u, w)| cylinder::evaluate(ax_o, ax_d, rad, refd, u, vmid + w))
+            .collect();
+        let samples = cylinder::polyline_on_cylinder(ax_o, ax_d, rad, refd, &corners, true, 0.5)
+            .expect("rect polyline projects onto the cylinder");
 
         let (cap, host) = mesh
             .split_cylinder_face_by_circle(annulus, &samples)

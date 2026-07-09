@@ -164,6 +164,108 @@ pub fn circle_on_cylinder(
     Some(pts)
 }
 
+/// ADR-284 β-1 — project a drawn POLYLINE (arbitrary world points: rect corners,
+/// polygon verts, freehand / bezier tessellation) onto this cylinder and
+/// geodesically sample it into on-surface points, ready for
+/// [`crate::mesh::Mesh::split_cylinder_face_by_circle`] (the shape-agnostic
+/// closed-polyline splitter). Generalizes [`circle_on_cylinder`] from a circle
+/// to any polyline.
+///
+/// `closed` appends the closing edge (last → first). The cylinder is developable,
+/// so a geodesic edge = a straight segment in flat (u·radius, v) space; each edge
+/// is chord-sampled. `u` is unrolled continuously across points so a shape
+/// spanning the ref_dir seam is handled.
+///
+/// `None` if fewer than 2 points, any point is not on this cylinder (> 1e-3 mm),
+/// the loop wraps ≥ full circumference (ill-defined inside/outside), or fewer
+/// than 3 output samples.
+pub fn polyline_on_cylinder(
+    axis_origin: DVec3,
+    axis_dir: DVec3,
+    radius: f64,
+    ref_dir: DVec3,
+    pts: &[DVec3],
+    closed: bool,
+    chord_tol: f64,
+) -> Option<Vec<DVec3>> {
+    use std::f64::consts::{PI, TAU};
+    if pts.len() < 2 {
+        return None;
+    }
+    // Project every point to (u, v), unrolling u continuously from the first.
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    let mut u_prev = 0.0;
+    for (i, &p) in pts.iter().enumerate() {
+        let (sp, u, v) = project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
+        if (sp - p).length() > 1e-3 {
+            return None; // not on this cylinder (lenient tol for drawn points)
+        }
+        let u_cont = if i == 0 {
+            u
+        } else {
+            let mut uu = u;
+            while uu - u_prev > PI {
+                uu -= TAU;
+            }
+            while uu - u_prev < -PI {
+                uu += TAU;
+            }
+            uu
+        };
+        u_prev = u_cont;
+        uv.push((u_cont, v));
+    }
+    let n = uv.len();
+    // Wrap guard. CLOSED: the loop must not ENCIRCLE the axis — a simple
+    // non-encircling loop has total signed angular winding ≈ 0, an encircling
+    // one ≈ ±2π (no in-between for a simple curve), so reject |winding| > π.
+    // OPEN: the vertex angular span must stay under a full turn.
+    if closed {
+        let mut winding = 0.0;
+        for e in 0..n {
+            let mut du = (uv[(e + 1) % n].0 - uv[e].0) % TAU;
+            if du > PI {
+                du -= TAU;
+            } else if du < -PI {
+                du += TAU;
+            }
+            winding += du;
+        }
+        if winding.abs() > PI {
+            return None;
+        }
+    } else {
+        let (umin, umax) = uv
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), &(u, _)| (a.min(u), b.max(u)));
+        if umax - umin >= TAU - 1e-6 {
+            return None;
+        }
+    }
+    // Chord-sample each edge in flat UV; map back with `evaluate`. Each edge
+    // emits its START plus interior points (NOT its end) so the concatenation
+    // has no duplicate vertices (the split expects a clean loop).
+    let n = uv.len();
+    let edge_count = if closed { n } else { n - 1 };
+    let mut out: Vec<DVec3> = Vec::new();
+    for e in 0..edge_count {
+        let (u0, v0) = uv[e];
+        let (u1, v1) = uv[(e + 1) % n];
+        let flat = (((u1 - u0) * radius).powi(2) + (v1 - v0).powi(2)).sqrt();
+        let k = ((flat / chord_tol.max(1e-6)).ceil() as usize).clamp(1, 64);
+        for s in 0..k {
+            let t = s as f64 / k as f64;
+            let u = u0 + (u1 - u0) * t;
+            let v = v0 + (v1 - v0) * t;
+            out.push(evaluate(axis_origin, axis_dir, radius, ref_dir, u, v));
+        }
+    }
+    if out.len() < 3 {
+        return None;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +454,40 @@ mod tests {
             DVec3::new(10.0, 0.0, 5.0), DVec3::new(10.0, 0.0, 5.0), 0.05,
         )
         .is_none());
+    }
+
+    #[test]
+    fn polyline_on_cylinder_rect_samples_on_surface() {
+        // ADR-284 β-1 — a rect (4 world corners) projects to a closed on-surface
+        // loop; every sample lies on the cylinder + the loop is non-empty.
+        let (ax_o, ax_d, rad, refd) = (DVec3::ZERO, DVec3::Z, 10.0, DVec3::X);
+        let corners: Vec<DVec3> = [(-0.3, -3.0), (0.3, -3.0), (0.3, 3.0), (-0.3, 3.0)]
+            .iter()
+            .map(|&(u, v)| evaluate(ax_o, ax_d, rad, refd, u, v))
+            .collect();
+        let samples = polyline_on_cylinder(ax_o, ax_d, rad, refd, &corners, true, 0.5)
+            .expect("rect projects onto cylinder");
+        assert!(samples.len() >= 4, "closed rect loop has ≥4 samples");
+        for &p in &samples {
+            let (sp, _u, _v) = project_to_cylinder(ax_o, ax_d, rad, refd, p).unwrap();
+            assert!((sp - p).length() < 1e-9, "every sample lies on the cylinder");
+        }
+    }
+
+    #[test]
+    fn polyline_on_cylinder_rejects_full_wrap() {
+        // A loop spanning the whole circumference (4 corners at 0, π/2, π, 3π/2)
+        // wraps → ill-defined inside/outside → None.
+        let (ax_o, ax_d, rad, refd) = (DVec3::ZERO, DVec3::Z, 10.0, DVec3::X);
+        use std::f64::consts::FRAC_PI_2;
+        let corners: Vec<DVec3> = [0.0, FRAC_PI_2, 2.0 * FRAC_PI_2, 3.0 * FRAC_PI_2]
+            .iter()
+            .map(|&u| evaluate(ax_o, ax_d, rad, refd, u, 0.0))
+            .collect();
+        assert!(
+            polyline_on_cylinder(ax_o, ax_d, rad, refd, &corners, true, 0.5).is_none(),
+            "full-circumference loop → None (wrap guard)"
+        );
     }
 
     #[test]
