@@ -1,6 +1,6 @@
 # ADR-284 — Curved-Surface Polyline Split (line / crossing / freehand / bezier on sphere·cylinder·cone·torus) — α spec + de-risk sim
 
-- **Status**: Proposed (α spec + de-risk sim landed 2026-07-08; β implementation pending 결재)
+- **Status**: Accepted (β CLOSED 2026-07-09 — closed shapes × 4 surfaces × 4 tools; open seam S3 × sphere/cone; cylinder/torus/DrawLine = topology-appropriate guidance)
 
 ## Context
 

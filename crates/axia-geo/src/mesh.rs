@@ -16586,6 +16586,67 @@ mod tests {
             "torus open seam rejected — a closed surface has no rim to cut open");
     }
 
+    /// ADR-285 α (de-risk sim) — PARAMETRIC direct edit of a curved analytic face.
+    /// Proves the core mechanism: changing a Sphere's RADIUS in place updates the
+    /// analytic surface + the rim geometry WITHOUT rebuilding topology (FaceId /
+    /// edges / anchor all preserved → owner tracking + selection survive).
+    ///
+    /// The building blocks already exist:
+    ///   - `set_curve_radius(edge)` — updates the equator Circle curve radius AND
+    ///     moves the anchor vertex to `center + basis_u * r'` (one call).
+    ///   - `set_face_surface(face)` — swaps the Sphere surface (radius r') + bumps
+    ///     `surface_version` so the render cache re-tessellates.
+    /// Topology is IDENTICAL before/after (2 hemispheres + 1 equator self-loop +
+    /// 1 anchor), so manifold validity is preserved by construction.
+    #[test]
+    fn adr285_sim_sphere_radius_parametric_edit() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let sf = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        let (north, south) = (sf[0], sf[1]);
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let eq_edge = mesh.hes[mesh.faces[north].outer().start].edge();
+
+        // ── PARAMETRIC EDIT: radius 10 → 15, in place ──────────────────────────
+        let new_r = 15.0;
+        // 1. rim Circle curve radius + anchor position (single call).
+        mesh.set_curve_radius(eq_edge, new_r).unwrap();
+        // 2. both hemisphere Sphere surfaces → new radius (keep center/axis/ranges).
+        for &f in &[north, south] {
+            if let Some(AnalyticSurface::Sphere { center, axis_dir, ref_dir, u_range, v_range, .. }) =
+                mesh.face_surface(f).cloned()
+            {
+                mesh.set_face_surface(f, Some(AnalyticSurface::Sphere {
+                    center, radius: new_r, axis_dir, ref_dir, u_range, v_range,
+                }));
+            }
+        }
+
+        // ── MEASURE ────────────────────────────────────────────────────────────
+        let inv = mesh.verify_face_invariants();
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let r_after = match mesh.face_surface(north) {
+            Some(AnalyticSurface::Sphere { radius, .. }) => *radius,
+            _ => 0.0,
+        };
+        // Anchor moved to the new radius on +X.
+        let anchor_pos = mesh.vertex_pos(mesh.edges[eq_edge].v_small()).unwrap();
+        // Tessellation now reflects r=15: every tessellated vertex sits at |p|≈15.
+        let tess = mesh.tessellate_face_surface(north, 0.1).expect("sphere tessellation");
+        let max_dev = tess.vertices.iter()
+            .map(|p| (p.length() - new_r).abs())
+            .fold(0.0_f64, f64::max);
+
+        assert!(inv.is_valid(), "parametric radius edit stays manifold: {:?}", inv.violations);
+        assert_eq!(faces_after, faces_before, "topology unchanged (same 2 hemispheres)");
+        assert_eq!(faces_before, 2, "sphere = 2 hemispheres");
+        assert!((r_after - new_r).abs() < 1e-9, "north surface radius updated to 15");
+        assert!((anchor_pos - DVec3::new(new_r, 0.0, 0.0)).length() < 1e-6,
+            "equator anchor moved to center + X*15");
+        assert!(max_dev < 0.15, "tessellated surface now lies on r=15 sphere (max dev {max_dev})");
+    }
+
     #[test]
     fn adr257_beta3_split_rejects_non_cylinder() {
         // A planar (non-Cylinder) face is rejected.
