@@ -103,7 +103,7 @@ updates both incident faces).
 
 - **β-1 Sphere** radius — ✅ **LANDED (2026-07-09)**.
 - **β-2 Cylinder** radius + height — ✅ **LANDED (2026-07-09)**.
-- **β-3 Cone** radius + height (half_angle recompute; apex move).
+- **β-3 Cone** radius + height — ✅ **LANDED (2026-07-09)**.
 - **β-4 Torus** major + minor.
 - **β-5** Inspector UX polish + real-Chromium demo sweep.
 
@@ -159,6 +159,32 @@ with a cap).
   6/30. (Note: `meshManifoldInfo` reports nm=1 on a Path B cylinder — the known
   self-loop-rim artifact, pre-existing + independent of this edit;
   `verify_face_invariants` is authoritative + valid.)
+
+### β-3 Cone radius + height — LANDED (2026-07-09)
+
+Path B cone (measured): base disk (Plane z=0, −Z) + side (Cone: apex, axis_dir,
+half_angle, `v_range=(0,h)`) + base rim (self-loop Circle, shared with disk). The
+**apex is a degenerate parameter point (no DCEL vertex)**. Relationships:
+`base_radius = h·tan(half_angle)`, `h = v_range span`, `apex = base_center −
+axis_dir·h`.
+
+- **Engine** `Mesh::set_cone_radius(side, r)` — `set_curve_radius(base_rim)` +
+  recompute `half_angle = atan(r/h)` (apex + height fixed); base disk follows via
+  the shared rim. `Mesh::set_cone_height(side, h)` — a **pure surface update**
+  (apex is degenerate, base fixed): move apex to `base_center − axis_dir·h`,
+  recompute `half_angle = atan(r/h)`, set `v_range → (v_lo, v_lo+h)`. Base rim/disk
+  untouched. Reject non-Cone / ≤0.
+- **Scene** `set_cone_radius` / `set_cone_height` — transaction-wrapped.
+- **WASM** `setConeRadius` / `setConeHeight` (additive).
+- **Bridge** `WasmBridge.setConeRadius` / `setConeHeight` (guard >0).
+- **UI** XiaInspector — Cone side (kind 4) selection shows **밑면 반지름 + 높이**
+  fields (base radius computed `h·tan(halfAngle)` from the surface JSON).
+- **Regression**: axia-geo `adr285_beta3_set_cone_radius_and_height` + de-risk sims
+  (`adr285_beta3_sim_cone_structure`, `..._radius_height_edit`) + vitest WasmBridge.
+- **Real-WASM browser**: `create_cone(r5,h20)` → `setConeRadius(side,8)` +
+  `setConeHeight(side,12)` → base radius 8 / height 12 / apex z=12 (base fixed),
+  faces 2, `verifyInvariants` valid (0 viol). Inspector: select side → 2 fields
+  (밑면 반지름/높이) = 8/12.
 
 ## 8. Cross-link
 

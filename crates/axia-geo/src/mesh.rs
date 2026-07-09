@@ -4568,6 +4568,84 @@ impl Mesh {
         true
     }
 
+    /// **ADR-285 β-3** — parametric direct edit: change a Path B **Cone**'s base
+    /// RADIUS in place (apex + height fixed). `side_face` is the Cone-surface
+    /// face; its base rim gets `set_curve_radius` and the cone's `half_angle` is
+    /// recomputed to `atan(r'/h)`. Base disk (Plane) follows via the shared rim.
+    /// Topology unchanged → manifold. Returns `false` if not a Cone face / r'≤0.
+    pub fn set_cone_radius(&mut self, side_face: FaceId, new_radius: f64) -> bool {
+        use crate::surfaces::AnalyticSurface;
+        if !(new_radius > 1e-9) {
+            return false;
+        }
+        let (apex, axis_dir, ref_dir, u_range, v_range) =
+            match self.faces.get(side_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Cone { apex, axis_dir, ref_dir, u_range, v_range, .. }) =>
+                    (*apex, *axis_dir, *ref_dir, *u_range, *v_range),
+                _ => return false,
+            };
+        let outer_start = self.faces[side_face].outer().start;
+        if outer_start.is_null() {
+            return false;
+        }
+        let base_rim = self.hes[outer_start].edge();
+        let height = v_range.1 - v_range.0;
+        if height <= 1e-9 {
+            return false;
+        }
+        if self.set_curve_radius(base_rim, new_radius).is_err() {
+            return false;
+        }
+        let new_half_angle = (new_radius / height).atan();
+        self.set_face_surface(side_face, Some(AnalyticSurface::Cone {
+            apex, axis_dir, half_angle: new_half_angle, ref_dir, u_range, v_range,
+        }));
+        true
+    }
+
+    /// **ADR-285 β-3** — parametric direct edit: change a Path B **Cone**'s HEIGHT
+    /// in place (base radius fixed). `side_face` is the Cone-surface face. The apex
+    /// is a degenerate parameter point (no DCEL vertex), so this is a pure surface
+    /// update: move the apex along the axis so the base stays put, recompute
+    /// `half_angle = atan(r/h')`, and set `v_range → (v_lo, v_lo+h')`. Base rim/disk
+    /// untouched. Topology unchanged → manifold. Returns `false` if not a Cone
+    /// face / h'≤0.
+    pub fn set_cone_height(&mut self, side_face: FaceId, new_height: f64) -> bool {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        if !(new_height > 1e-9) {
+            return false;
+        }
+        let (apex, axis_dir, half_angle, ref_dir, u_range, v_range) =
+            match self.faces.get(side_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) =>
+                    (*apex, *axis_dir, *half_angle, *ref_dir, *u_range, *v_range),
+                _ => return false,
+            };
+        let old_h = v_range.1 - v_range.0;
+        if old_h <= 1e-9 {
+            return false;
+        }
+        // Base radius: prefer the base rim Circle; fall back to old_h·tan(half_angle).
+        let outer_start = self.faces[side_face].outer().start;
+        let base_r = if !outer_start.is_null() {
+            match self.edges[self.hes[outer_start].edge()].curve() {
+                Some(AnalyticCurve::Circle { radius, .. }) => *radius,
+                _ => old_h * half_angle.tan(),
+            }
+        } else {
+            old_h * half_angle.tan()
+        };
+        let base_center = apex + axis_dir * old_h;
+        let new_apex = base_center - axis_dir * new_height;
+        let new_half_angle = (base_r / new_height).atan();
+        self.set_face_surface(side_face, Some(AnalyticSurface::Cone {
+            apex: new_apex, axis_dir, half_angle: new_half_angle, ref_dir, u_range,
+            v_range: (v_range.0, v_range.0 + new_height),
+        }));
+        true
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16857,6 +16935,42 @@ mod tests {
         assert!(cf.len() >= 3, "cylinder Path B = base + top + side");
     }
 
+    /// ADR-285 β-3 (measure-first probe) — dump the Path B cone structure: base
+    /// disk (Plane) + side (Cone: apex / axis_dir / half_angle / v_range) + base
+    /// rim (Circle center / radius / anchor). Establishes the (apex, half_angle,
+    /// v_range) ↔ (base radius, height) relationship for the radius+height edits.
+    #[test]
+    fn adr285_beta3_sim_cone_structure() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let cf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
+        eprintln!("[β-3 sim] create_cone(r=5,h=20) → {} faces {:?}", cf.len(), cf);
+        for (i, &f) in cf.iter().enumerate() {
+            let kind = match mesh.face_surface(f) {
+                Some(AnalyticSurface::Plane { origin, normal, .. }) =>
+                    format!("Plane(origin={origin:?} n={normal:?})"),
+                Some(AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) =>
+                    format!("Cone(apex={apex:?} axis={axis_dir:?} half_angle={:.4}rad tan={:.4} ref={ref_dir:?} u={u_range:?} v={v_range:?})",
+                        half_angle, half_angle.tan()),
+                other => format!("{other:?}"),
+            };
+            let vs = mesh.collect_loop_verts(mesh.faces[f].outer().start).map(|v| v.len()).unwrap_or(0);
+            eprintln!("  face[{i}]={f:?} outer_verts={vs} inners={} surface={kind}",
+                mesh.faces[f].inners().len());
+        }
+        for (eid, e) in mesh.edges.iter() {
+            if e.is_active() && e.is_self_loop() {
+                if let Some(AnalyticCurve::Circle { center, radius, .. }) = e.curve() {
+                    eprintln!("  rim edge={eid:?} center={center:?} r={radius} anchor={:?}",
+                        mesh.vertex_pos(e.v_small()).ok());
+                }
+            }
+        }
+        assert!(cf.len() >= 2, "cone Path B = base + side");
+    }
+
     /// ADR-285 β-2 (de-risk sim) — parametric radius + height edit of a Path B
     /// cylinder, in place. RADIUS = `set_curve_radius` on both rims + side surface
     /// (caps follow via shared anchors). HEIGHT = move the TOP rim (anchor + Circle
@@ -16942,6 +17056,73 @@ mod tests {
         assert!((top_anchor_after.z - 30.0).abs() < 1e-6, "top rim moved to z=30");
         assert!((side_vr.0 - 30.0).abs() < 1e-6, "side height = 30");
         assert!((side_vr.1 - 6.0).abs() < 1e-9, "radius preserved at 6");
+    }
+
+    /// ADR-285 β-3 (de-risk sim) — parametric radius + height edit of a Path B
+    /// cone. RADIUS = `set_curve_radius(base_rim)` + recompute `half_angle =
+    /// atan(r'/h)` (apex + height fixed). HEIGHT = move the apex along the axis
+    /// (base fixed) + recompute `half_angle = atan(r/h')` + `v_range`. The apex is
+    /// a degenerate parameter point (no DCEL vertex) so HEIGHT is a pure surface
+    /// param update. Base rim/disk untouched by height. Topology unchanged.
+    #[test]
+    fn adr285_beta3_sim_cone_radius_height_edit() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let cf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
+        let side = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .expect("cone side");
+        let base_rim = mesh.hes[mesh.faces[side].outer().start].edge();
+
+        let cone0 = match mesh.face_surface(side).cloned() {
+            Some(AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) =>
+                (apex, axis_dir, half_angle, ref_dir, u_range, v_range),
+            _ => panic!("Cone"),
+        };
+        let (apex0, axis_dir, _ha0, ref_dir, u_range, v_range0) = cone0;
+        let height0 = v_range0.1 - v_range0.0;
+
+        // ── RADIUS 5 → 8 (apex + height fixed) ─────────────────────────────────
+        mesh.set_curve_radius(base_rim, 8.0).unwrap();
+        let new_ha = (8.0_f64 / height0).atan();
+        mesh.set_face_surface(side, Some(AnalyticSurface::Cone {
+            apex: apex0, axis_dir, half_angle: new_ha, ref_dir, u_range, v_range: v_range0,
+        }));
+        let inv1 = mesh.verify_face_invariants();
+        let base_r = match mesh.edges[base_rim].curve() {
+            Some(AnalyticCurve::Circle { radius, .. }) => *radius, _ => 0.0,
+        };
+        eprintln!("[β-3 sim] after radius→8: valid={} base_r={} half_angle_tan={:.3}",
+            inv1.is_valid(), base_r, new_ha.tan());
+        assert!(inv1.is_valid(), "radius edit manifold: {:?}", inv1.violations);
+        assert!((base_r - 8.0).abs() < 1e-9, "base rim radius → 8");
+        assert!((new_ha.tan() - 8.0 / 20.0).abs() < 1e-9, "half_angle = atan(8/20)");
+
+        // ── HEIGHT 20 → 12 (base radius 8 fixed, move apex) ────────────────────
+        let base_center = apex0 + axis_dir * height0; // (0,0,0)
+        let new_h = 12.0;
+        let new_apex = base_center - axis_dir * new_h; // (0,0,12)
+        let new_ha2 = (8.0_f64 / new_h).atan();
+        mesh.set_face_surface(side, Some(AnalyticSurface::Cone {
+            apex: new_apex, axis_dir, half_angle: new_ha2, ref_dir, u_range,
+            v_range: (v_range0.0, v_range0.0 + new_h),
+        }));
+        let inv2 = mesh.verify_face_invariants();
+        let (apex_after, vr_after) = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cone { apex, v_range, .. }) => (*apex, *v_range), _ => panic!(),
+        };
+        eprintln!("[β-3 sim] after height→12: valid={} apex_z={:.1} v_range={:?}",
+            inv2.is_valid(), apex_after.z, vr_after);
+        assert!(inv2.is_valid(), "height edit manifold: {:?}", inv2.violations);
+        assert!((apex_after.z - 12.0).abs() < 1e-6, "apex moved to z=12 (base fixed)");
+        assert!((vr_after.1 - vr_after.0 - 12.0).abs() < 1e-9, "v_range height = 12");
+        // base rim still r=8 (height edit doesn't touch the base).
+        let base_r2 = match mesh.edges[base_rim].curve() {
+            Some(AnalyticCurve::Circle { radius, .. }) => *radius, _ => 0.0,
+        };
+        assert!((base_r2 - 8.0).abs() < 1e-9, "base radius preserved at 8 after height edit");
     }
 
     /// ADR-285 β-1 — `set_sphere_radius` production API: given ONE hemisphere
@@ -17036,6 +17217,55 @@ mod tests {
             .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Plane { .. })))
             .expect("a cap");
         assert!(!mesh.set_cylinder_radius(cap, 5.0), "cap (Plane) rejected — needs the side face");
+    }
+
+    /// ADR-285 β-3 — `set_cone_radius` + `set_cone_height` production APIs (given
+    /// the Cone side face). Locks: base radius + half_angle update for radius;
+    /// apex moves + half_angle + v_range update for height (base fixed); topology
+    /// unchanged, manifold; rejects non-Cone / non-positive.
+    #[test]
+    fn adr285_beta3_set_cone_radius_and_height() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let cf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
+        let side = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .expect("cone side");
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        // RADIUS 5 → 8 (apex + height fixed).
+        assert!(mesh.set_cone_radius(side, 8.0), "set_cone_radius must succeed");
+        let (ha1, h1) = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cone { half_angle, v_range, .. }) => (*half_angle, v_range.1 - v_range.0),
+            _ => (0.0, 0.0),
+        };
+        assert!((ha1.tan() - 8.0 / 20.0).abs() < 1e-9, "half_angle = atan(8/20)");
+        assert!((h1 - 20.0).abs() < 1e-9, "height preserved at 20");
+        assert!(mesh.verify_face_invariants().is_valid(), "radius edit manifold");
+
+        // HEIGHT 20 → 12 (base radius 8 fixed).
+        assert!(mesh.set_cone_height(side, 12.0), "set_cone_height must succeed");
+        let (apex2, ha2, h2) = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cone { apex, half_angle, v_range, .. }) =>
+                (*apex, *half_angle, v_range.1 - v_range.0),
+            _ => (DVec3::ZERO, 0.0, 0.0),
+        };
+        assert!((h2 - 12.0).abs() < 1e-9, "height → 12");
+        assert!((apex2.z - 12.0).abs() < 1e-6, "apex moved to z=12 (base fixed at z=0)");
+        assert!((ha2.tan() - 8.0 / 12.0).abs() < 1e-9, "half_angle = atan(8/12)");
+        let inv = mesh.verify_face_invariants();
+        assert!(inv.is_valid(), "height edit manifold: {:?}", inv.violations);
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), faces_before,
+            "topology unchanged (base + side)");
+
+        // Rejects.
+        assert!(!mesh.set_cone_radius(side, 0.0), "non-positive radius rejected");
+        assert!(!mesh.set_cone_height(side, -1.0), "non-positive height rejected");
+        let base = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Plane { .. })))
+            .expect("base disk");
+        assert!(!mesh.set_cone_radius(base, 5.0), "base disk (Plane) rejected — needs the side face");
     }
 
     #[test]

@@ -5136,6 +5136,30 @@ impl AxiaEngine {
         ok
     }
 
+    /// ADR-285 β-3 — parametric direct edit: Path B Cone base RADIUS in place
+    /// (given the Cone side face). Transaction-wrapped.
+    #[wasm_bindgen(js_name = "setConeRadius")]
+    pub fn set_cone_radius(&mut self, side_face_raw: u32, radius: f64) -> bool {
+        let ok = self.scene.set_cone_radius(FaceId::new(side_face_raw), radius);
+        if ok {
+            self.mark_topology_changed();
+            self.invalidate_cache();
+        }
+        ok
+    }
+
+    /// ADR-285 β-3 — parametric direct edit: Path B Cone HEIGHT in place
+    /// (given the Cone side face). Transaction-wrapped.
+    #[wasm_bindgen(js_name = "setConeHeight")]
+    pub fn set_cone_height(&mut self, side_face_raw: u32, height: f64) -> bool {
+        let ok = self.scene.set_cone_height(FaceId::new(side_face_raw), height);
+        if ok {
+            self.mark_topology_changed();
+            self.invalidate_cache();
+        }
+        ok
+    }
+
     /// Test if a 3D point lies within a face's boundary.
     ///
     /// Returns true if the point is on the face's plane and inside its edges.

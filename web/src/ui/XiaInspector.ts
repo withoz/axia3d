@@ -196,6 +196,12 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       const h = Array.isArray(surf.vRange) ? surf.vRange[1] - surf.vRange[0] : 0;
       rows.push({ label: '반지름 (mm)', value: surf.radius || 0, apply: (v) => !!bridge.setCylinderRadius?.(fid, v) });
       rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setCylinderHeight?.(fid, v) });
+    } else if (kind === 4 && typeof bridge.setConeRadius === 'function') {
+      // Cone side (kind 4): base radius = height·tan(half_angle); height = v_range span.
+      const h = Array.isArray(surf.vRange) ? surf.vRange[1] - surf.vRange[0] : 0;
+      const baseR = typeof surf.halfAngle === 'number' ? h * Math.tan(surf.halfAngle) : 0;
+      rows.push({ label: '밑면 반지름 (mm)', value: baseR, apply: (v) => !!bridge.setConeRadius?.(fid, v) });
+      rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setConeHeight?.(fid, v) });
     }
     if (rows.length === 0) {
       if (box) box.style.display = 'none';

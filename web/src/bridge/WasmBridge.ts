@@ -833,6 +833,9 @@ type AxiaEngineExtended = AxiaEngine & {
   // ADR-285 β-2 — parametric direct edit: change a cylinder's radius/height in place.
   setCylinderRadius?(sideFaceId: number, radius: number): boolean;
   setCylinderHeight?(sideFaceId: number, height: number): boolean;
+  // ADR-285 β-3 — parametric direct edit: change a cone's base radius/height in place.
+  setConeRadius?(sideFaceId: number, radius: number): boolean;
+  setConeHeight?(sideFaceId: number, height: number): boolean;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3112,6 +3115,28 @@ export class WasmBridge {
    */
   setCylinderHeight(sideFaceId: number, height: number): boolean {
     const fn = this.engine?.setCylinderHeight;
+    if (!fn || !(height > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, sideFaceId, height);
+  }
+
+  /**
+   * ADR-285 β-3 — parametric direct edit of a Path B cone's base RADIUS in place
+   * (given the Cone side face; apex + height fixed, half_angle recomputed).
+   */
+  setConeRadius(sideFaceId: number, radius: number): boolean {
+    const fn = this.engine?.setConeRadius;
+    if (!fn || !(radius > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, sideFaceId, radius);
+  }
+
+  /**
+   * ADR-285 β-3 — parametric direct edit of a Path B cone's HEIGHT in place
+   * (given the Cone side face; base fixed, apex moves + half_angle recomputed).
+   */
+  setConeHeight(sideFaceId: number, height: number): boolean {
+    const fn = this.engine?.setConeHeight;
     if (!fn || !(height > 0)) return false;
     this.markDirty();
     return fn.call(this.engine, sideFaceId, height);

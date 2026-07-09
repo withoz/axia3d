@@ -1042,6 +1042,28 @@ describe('WasmBridge', () => {
       expect(called).toBe(false);
     });
 
+    // ADR-285 β-3 — parametric cone base radius + height.
+    it('setConeRadius()/setConeHeight() forward for positive values, reject ≤0', () => {
+      const calls: Array<[string, number, number]> = [];
+      let called = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setConeRadius: (f: number, r: number) => { calls.push(['r', f, r]); return true; },
+        setConeHeight: (f: number, h: number) => { calls.push(['h', f, h]); return true; },
+      };
+      expect(bridge.setConeRadius(1, 8.0)).toBe(true);
+      expect(bridge.setConeHeight(1, 12.0)).toBe(true);
+      expect(calls).toEqual([['r', 1, 8.0], ['h', 1, 12.0]]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setConeRadius: () => { called = true; return true; },
+        setConeHeight: () => { called = true; return true; },
+      };
+      expect(bridge.setConeRadius(1, 0)).toBe(false);
+      expect(bridge.setConeHeight(1, -2)).toBe(false);
+      expect(called).toBe(false);
+    });
+
     it('faceSurfaceKind() returns engine value', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (bridge as any).engine = {
