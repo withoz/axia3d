@@ -232,9 +232,40 @@ axis_dir·h`.
   faces 2, `verifyInvariants` valid (0 viol). Inspector: select side → 2 fields
   (밑면 반지름/높이) = 8/12.
 
+## 7b. Cross-track integration finding (2026-07-10) — sketch ⊗ parametric edit
+
+A detailed cross-track simulation (ADR-284 sketch ⊗ ADR-285 edit) surfaced a real
+but **out-of-scope** interaction, and — more importantly — established that a
+structural guard for it is **not viable** with the current architecture:
+
+- **The corruption (measured)**: sketch a circle on a sphere (`drawCircleOnSphere`
+  → cap + annulus), then `set_sphere_radius(annulus)`. The edit moves only the
+  equator twin (annulus + south hemisphere + equator), leaving the sketched **cap
+  floating at the old radius** → a geometrically inconsistent sphere.
+  `verify_face_invariants` still passes (topology is intact), so it is a *silent*
+  inconsistency, not a crash. Same shape for cylinder/cone/torus.
+- **Why a structural guard was attempted then REVERTED**: the natural guard is
+  "reject unless the host is a pristine primitive" — detected via inner-loop count
+  (+ seam radius). It works at the raw-engine level (`create_*_kernel_native`),
+  but the **production draw path runs `intersect_faces_inner` with
+  `face_rederive_on_draw` ON (ADR-176), which restructures inner-loop counts** —
+  measured: a Path B cylinder side goes from **1 inner (pristine) → 2 inners
+  (post-rederive)**. So the clean/sketched inner-count signal is unstable, and the
+  guard rejected *clean production primitives* (cone + cylinder E2E failed). It was
+  reverted to keep the shipped β-1~β-5 editing working (E2E back to 4/4).
+- **Decision / scope**: L-285-7 stands — parametric edit targets **pristine
+  primitive faces**. Editing a **sketched** primitive is **out of scope**
+  (behavior undefined; a real user rarely sketches a primitive then parametrically
+  resizes the same one). A robust cross-track guard needs a **rederive-stable
+  signal** (e.g., Xia/Shape owner face-set membership, not raw DCEL structure) —
+  deferred to a future ADR. No guard shipped; the finding is documented here.
+
 ## 8. Cross-link
 
 - Audit (this session) — surfaces already analytic; `fold_across_edge` absent.
+- ADR-284 (curved sketch) ⊗ ADR-285 (this) — cross-track interaction above.
+- ADR-176 (`face_rederive_on_draw` production default ON) — the rederive path that
+  makes DCEL inner-loop counts unstable for a structural guard.
 - ADR-031 Phase D (AnalyticSurface storage), ADR-033 (NURBS surfaces).
 - ADR-094/104/113/114/115 (Path B primitives — the edit targets).
 - ADR-284 β-4 (shared-rim insight — rim edge shared by two faces).
