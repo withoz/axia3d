@@ -133,7 +133,42 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
     the real tool path work.
   - **β-3 COMPLETE — closed shapes (rect / polygon / freehand / bezier) on all 4
     curved surfaces from the UI.** axia-geo 2206, vitest 2508.
-- **β-4 open line (S3)**: next (rim-to-rim boundary-split + insert).
+## β-4 (open line S3) — measure-first findings (2026-07-08)
+
+Two probe sims (axia-geo `mesh::tests`, landed) scoped β-4 before implementation:
+
+- **`adr284_sim_curved_face_boundary_characterization`** — ALL curved faces have
+  a **self-loop (1-HE) analytic rim** boundary: hemisphere = 1 equator (Sphere,
+  inners=0); cylinder side = 1 outer rim + **inners=1** (2 rims = annulus); cone
+  side = 1 base rim (Cone, apex degenerate); torus = 1 seam. So "open line
+  rim-to-rim" must SPLIT a self-loop rim at 2 points — the planar
+  `split_face_by_chain` polygonizes the rim (loses the surface), so it is NOT
+  directly reusable.
+- **`adr284_sim_open_chord_on_hemisphere_probe`** — the EXISTING
+  `split_circle_face_by_chord` (trim rim → arcs via `trim_circle_face_at_
+  crossings` (surface-preserving) → straight chord → `split_face_by_chain`)
+  ALREADY works on a hemisphere: `Ok(Some(2))`, faces 2→3, **both pieces inherit
+  Sphere** (`sphere_faces=3`). BUT `verify_face_invariants` = **1 violation** —
+  the straight chord is a secant THROUGH the sphere (off-surface), and the seam
+  is a chord, not a geodesic.
+
+**β-4 design (scoped):** reuse the rim-trim + sub-face + surface-inherit machinery
+(`trim_circle_face_at_crossings` + `split_face_by_chain`); replace the straight
+chord with an on-surface **geodesic seam** — `sphere_great_circle_arc` (exists!)
+for the sphere, `polyline_on_{cone}` (open) for the cone. That lands the seam on
+the surface, which also should clear the 1 invariant violation.
+
+**β-4 tractability by surface:**
+- **hemisphere / cone side** (1 rim, inners=0) → a rim-to-rim seam splits into 2.
+  TRACTABLE (chord machinery + geodesic seam).
+- **cylinder side** (2 rims, annulus) → a top-rim→bottom-rim cut UNROLLS the
+  annulus into 1 sheet (not 2); 2 pieces need 2 cuts, or a same-rim seam —
+  different topology, separate sub-step.
+- **torus** (seam) → similar multi-loop subtlety, separate sub-step.
+
+**β-4 β plan:** β-4-1 sphere geodesic-seam rim split (hemisphere) + viol fix;
+β-4-2 cone; β-4-3 dispatch (DrawLineTool / open freehand / open bezier on a
+curved face); β-4-4 cylinder/torus multi-rim. Each measure-first + de-risk.
 
 ## Lock-ins (α)
 

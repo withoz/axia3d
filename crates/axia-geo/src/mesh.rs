@@ -16195,6 +16195,86 @@ mod tests {
             "cap inherits Sphere (ADR-089 A-χ)");
     }
 
+    /// ADR-284 β-4 (characterization sim) — measure the BOUNDARY structure of
+    /// curved faces so we know what "open line rim-to-rim" must attach to. Prints
+    /// each curved face's outer-loop HE count + surface kind + inner count.
+    /// Expectation (drives the β-4 design): hemisphere / cone-side / cylinder-side
+    /// / torus boundaries are self-loop (1-HE) analytic rims — an open chain must
+    /// SPLIT that self-loop rim at its 2 endpoints (a NEW surface-aware op; the
+    /// planar `split_face_by_chain` polygonizes the rim → loses the surface).
+    #[test]
+    fn adr284_sim_curved_face_boundary_characterization() {
+        use crate::surfaces::AnalyticSurface;
+        let dump = |mesh: &Mesh, fid: FaceId, tag: &str| {
+            let f = mesh.faces.get(fid).unwrap();
+            let hes = mesh.collect_loop_hes(f.outer().start).map(|h| h.len()).unwrap_or(0);
+            let vs = mesh.collect_loop_verts(f.outer().start).map(|v| v.len()).unwrap_or(0);
+            let kind = match f.surface() {
+                Some(AnalyticSurface::Sphere { .. }) => "Sphere",
+                Some(AnalyticSurface::Cylinder { .. }) => "Cylinder",
+                Some(AnalyticSurface::Cone { .. }) => "Cone",
+                Some(AnalyticSurface::Torus { .. }) => "Torus",
+                Some(AnalyticSurface::Plane { .. }) => "Plane",
+                _ => "None/other",
+            };
+            eprintln!("[β-4 char] {tag}: outer_hes={hes} outer_verts={vs} surface={kind} inners={}", f.inners().len());
+        };
+        let mat = MaterialId::new(0);
+        // Sphere → 2 hemisphere faces (share the equator self-loop).
+        let mut sm = Mesh::new();
+        let sf = sm.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        for (i, &f) in sf.iter().enumerate() { dump(&sm, f, &format!("sphere.face[{i}]")); }
+        // Cylinder Path B → base / top / side annulus.
+        let mut cm = Mesh::new();
+        cm.set_cylinder_path_b_default(true);
+        let cf = cm.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
+        for (i, &f) in cf.iter().enumerate() { dump(&cm, f, &format!("cyl.face[{i}]")); }
+        // Cone Path B → base / side.
+        let mut km = Mesh::new();
+        let kf = km.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
+        for (i, &f) in kf.iter().enumerate() { dump(&km, f, &format!("cone.face[{i}]")); }
+        // Torus → single face.
+        let mut tm = Mesh::new();
+        let tf = tm.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).unwrap();
+        dump(&tm, tf, "torus.face");
+        // No assertion — this is a measurement probe (run with --nocapture).
+        assert!(!sf.is_empty() && !cf.is_empty() && !kf.is_empty());
+    }
+
+    /// ADR-284 β-4 (de-risk sim) — does the EXISTING `split_circle_face_by_chord`
+    /// (planar: trim rim into arcs → straight chord → split_face_by_chain) work
+    /// on a CURVED hemisphere face (equator = circle boundary + Sphere surface)?
+    /// This probes how much of "open line rim-to-rim" already exists. Measures
+    /// the resulting face count, manifold validity, and whether the sub-faces
+    /// keep the Sphere surface. Findings drive the β-4 design (geodesic seam +
+    /// surface-preserving sub-faces vs the straight-chord planar result).
+    #[test]
+    fn adr284_sim_open_chord_on_hemisphere_probe() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let sf = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        let hemi = sf[0];
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        // Two equator points (z=0 plane): A=(10,0,0), B=(-10,0,0).
+        let a = DVec3::new(10.0, 0.0, 0.0);
+        let b = DVec3::new(-10.0, 0.0, 0.0);
+        let res = mesh.split_circle_face_by_chord(hemi, &[a, b], mat);
+        let after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let inv = mesh.verify_face_invariants();
+        // How many result faces inherit the Sphere surface?
+        let sphere_faces = mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .count();
+        eprintln!(
+            "[β-4 chord probe] res={:?} faces {}→{} inv_valid={} viol={} sphere_faces={}",
+            res.as_ref().map(|o| o.as_ref().map(|v| v.len())),
+            before, after, inv.is_valid(), inv.violations.len(), sphere_faces,
+        );
+        // Probe only — no hard assertion on the split shape (findings documented).
+        assert!(res.is_ok(), "split_circle_face_by_chord must not error on a hemisphere");
+    }
+
     #[test]
     fn adr257_beta3_split_rejects_non_cylinder() {
         // A planar (non-Cylinder) face is rejected.
