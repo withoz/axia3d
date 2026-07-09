@@ -5075,22 +5075,23 @@ impl AxiaEngine {
         }
     }
 
-    /// ADR-284 β-4-3 — split a Path B Sphere hemisphere by an OPEN drawn seam
-    /// (rim → interior → rim, the S3 open-line case). `flat` is the raw drawn
-    /// stroke (xyz triples, NOT pre-projected); the first + last are the rim
-    /// endpoints, the interior points arc over the hemisphere. Returns
-    /// `{"a":FaceId,"b":FaceId}` (the two host pieces) or `{"error":...}`.
-    #[wasm_bindgen(js_name = "drawOpenSeamOnSphere")]
-    pub fn draw_open_seam_on_sphere(&mut self, face_id_raw: u32, flat: &[f64]) -> String {
+    /// ADR-284 β-4-3/β-4-4 — split a curved self-loop face (Sphere hemisphere or
+    /// Cone side) by an OPEN drawn seam (rim → interior → rim, the S3 open-line
+    /// case). `flat` is the raw drawn stroke (xyz triples, NOT pre-projected); the
+    /// first + last are the rim endpoints, the interior points arc over the
+    /// surface. Returns `{"a":FaceId,"b":FaceId}` (the two host pieces) or
+    /// `{"error":...}`. (Cylinder/Torus are multi-rim → rejected.)
+    #[wasm_bindgen(js_name = "drawOpenSeamOnCurved")]
+    pub fn draw_open_seam_on_curved(&mut self, face_id_raw: u32, flat: &[f64]) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
-        match self.scene.draw_open_seam_on_sphere(FaceId::new(face_id_raw), pts) {
+        match self.scene.draw_open_seam_on_curved(FaceId::new(face_id_raw), pts) {
             Some((a, b)) => {
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"a\":{},\"b\":{}}}", a.raw(), b.raw())
             }
             None => {
-                let msg = "drawOpenSeamOnSphere failed (not a Sphere face / < 3 pts / degenerate seam)";
+                let msg = "drawOpenSeamOnCurved failed (not a Sphere/Cone face / < 3 pts / degenerate seam)";
                 self.set_error(msg.to_string());
                 format!("{{\"error\":\"{}\"}}", msg)
             }

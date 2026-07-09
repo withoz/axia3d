@@ -826,8 +826,8 @@ type AxiaEngineExtended = AxiaEngine & {
   drawPolylineOnCone?(faceId: number, flat: Float64Array, closed: boolean): string;
   drawPolylineOnTorus?(faceId: number, flat: Float64Array, closed: boolean): string;
   drawPolylineOnSphere?(faceId: number, flat: Float64Array, closed: boolean): string;
-  // ADR-284 β-4-3 — split a sphere hemisphere by an OPEN drawn seam (rim→interior→rim, flat xyz).
-  drawOpenSeamOnSphere?(faceId: number, flat: Float64Array): string;
+  // ADR-284 β-4-3/β-4-4 — split a curved self-loop face (sphere/cone) by an OPEN drawn seam (flat xyz).
+  drawOpenSeamOnCurved?(faceId: number, flat: Float64Array): string;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3049,18 +3049,18 @@ export class WasmBridge {
   }
 
   /**
-   * ADR-284 β-4-3 — split a Path B sphere hemisphere by an OPEN drawn seam
-   * (rim → interior → rim, the S3 open-line case). `pts` is the raw drawn
-   * stroke: first + last are the rim endpoints, the interior points arc over
-   * the hemisphere (a straight 2-point stroke is degenerate — see ADR-284
-   * §β-4-1). Requires ≥ 3 points. Returns `{"a":FaceId,"b":FaceId}` /
+   * ADR-284 β-4-3/β-4-4 — split a curved self-loop face (Path B sphere hemisphere
+   * or cone side) by an OPEN drawn seam (rim → interior → rim, the S3 open-line
+   * case). `pts` is the raw drawn stroke: first + last are the rim endpoints, the
+   * interior points arc over the surface (a straight 2-point stroke is degenerate
+   * — see ADR-284 §β-4-1). Requires ≥ 3 points. Returns `{"a":FaceId,"b":FaceId}` /
    * `{"error":...}`, or null if the export is absent / too few points.
    */
-  drawOpenSeamOnSphere(
+  drawOpenSeamOnCurved(
     faceId: number,
     pts: Array<[number, number, number]>,
   ): string | null {
-    const fn = this.engine?.drawOpenSeamOnSphere;
+    const fn = this.engine?.drawOpenSeamOnCurved;
     if (!fn || pts.length < 3) return null;
     this.markDirty();
     const flat = new Float64Array(pts.length * 3);

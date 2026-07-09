@@ -4259,20 +4259,23 @@ impl Mesh {
         Some((cap, host_face))
     }
 
-    /// **ADR-284 β-4-1** — split a Path B Sphere hemisphere by an OPEN drawn
-    /// seam from rim to rim (the S3 "draw a line A→…→B on a curved face" case).
+    /// **ADR-284 β-4-1 / β-4-4** — split a curved self-loop face (a Path B Sphere
+    /// hemisphere, or a Cone side) by an OPEN drawn seam from rim to rim (the S3
+    /// "draw a line A→…→B on a curved face" case).
     ///
     /// `seam_pts` is the drawn stroke (world points): FIRST and LAST are the rim
-    /// (equator) endpoints, the interior points arc OVER the hemisphere. All are
-    /// projected onto the sphere.
+    /// endpoints (equator for a sphere, base circle for a cone), the interior
+    /// points arc OVER the surface (toward the pole / apex). All are projected
+    /// onto the host surface (radial for a sphere, onto the cone for a cone).
     ///
-    /// The equator is a self-loop edge **shared** by both hemispheres, so the
-    /// standalone-circle trim ([`Self::trim_circle_face_at_crossings`], which
-    /// REMOVES the self-loop) breaks the twin hemisphere. This handles the shared
-    /// boundary in three steps (de-risk sim `adr284_beta4_sim_shared_equator_split`,
-    /// finding 780a050):
-    ///   1. capture the twin hemisphere (radial twin of the host's equator HE) +
-    ///      its surface BEFORE any mutation;
+    /// The rim is a self-loop edge **shared** with a twin face (the other
+    /// hemisphere for a sphere; the base disk for a cone), so the standalone-circle
+    /// trim ([`Self::trim_circle_face_at_crossings`], which REMOVES the self-loop)
+    /// breaks the twin. This handles the shared boundary in three steps (de-risk
+    /// sims `adr284_beta4_sim_shared_equator_split` / `..._cone_seam`, finding
+    /// 780a050):
+    ///   1. capture the twin (radial twin of the host's rim HE) + its surface
+    ///      BEFORE any mutation;
     ///   2. trim the host self-loop at the 2 endpoints → an arc ring (this breaks
     ///      the twin's loop);
     ///   3. rebuild the twin from the arc ring (reversed → twin-facing, reusing the
@@ -4280,36 +4283,46 @@ impl Mesh {
     ///      projected interior seam via
     ///      [`split_face_by_chain`](crate::operations::face_split::split_face_by_chain).
     ///
-    /// Both host pieces inherit the host `Sphere`; the twin keeps its `Sphere`
+    /// Both host pieces inherit the host surface; the twin keeps its own surface
     /// (ADR-089 A-χ). Returns `(host_piece_a, host_piece_b, rebuilt_twin)` — the
     /// twin's FaceId changes (it is deactivated + rebuilt), so callers must
     /// reconcile owner tracking with all three. `rebuilt_twin` is `None` if the
-    /// host had no twin (a standalone Sphere self-loop face). `None` overall if
-    /// the host is not a Path B Sphere self-loop face, < 3 seam points (2 rim +
-    /// ≥1 interior), a projection fails, or a step fails.
-    pub fn split_sphere_face_by_open_seam(
+    /// host had no twin. `None` overall if the host is not a Path B Sphere/Cone
+    /// self-loop face, < 3 seam points (2 rim + ≥1 interior), a projection fails,
+    /// or a step fails. (Cylinder/Torus open seams are multi-rim — deferred.)
+    pub fn split_curved_face_by_open_seam(
         &mut self,
         host_face: FaceId,
         seam_pts: &[DVec3],
     ) -> Option<(FaceId, FaceId, Option<FaceId>)> {
-        use crate::surfaces::{sphere, AnalyticSurface};
+        use crate::surfaces::{cone, sphere, AnalyticSurface};
         if seam_pts.len() < 3 {
             return None; // 2 rim endpoints + ≥1 interior point
         }
+        // Host must be a curved self-loop face with a degenerate interior point
+        // (sphere pole / cone apex) and a rim-sharing twin. Cylinder/Torus are
+        // multi-rim (β-4-4 deferred) → rejected here.
         let host_sph = match self.faces.get(host_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
-            Some(s @ AnalyticSurface::Sphere { .. }) => s.clone(),
-            _ => return None,
-        };
-        let (sc, sr) = match &host_sph {
-            AnalyticSurface::Sphere { center, radius, .. } => (*center, *radius),
+            Some(s @ (AnalyticSurface::Sphere { .. } | AnalyticSurface::Cone { .. })) => s.clone(),
             _ => return None,
         };
         let material = self.faces.get(host_face)?.material();
-        // Project every seam point onto the sphere.
-        let proj: Vec<DVec3> = seam_pts
-            .iter()
-            .filter_map(|&p| sphere::project_to_surface(sc, sr, p))
-            .collect();
+        // Project every seam point onto the host surface (surface-specific — radial
+        // for a sphere, onto the cone slant for a cone; no longitude unroll so an
+        // over-pole / over-apex seam is fine).
+        let proj: Vec<DVec3> = match &host_sph {
+            AnalyticSurface::Sphere { center, radius, .. } => seam_pts
+                .iter()
+                .filter_map(|&p| sphere::project_to_surface(*center, *radius, p))
+                .collect(),
+            AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } => seam_pts
+                .iter()
+                .filter_map(|&p| {
+                    cone::project_to_cone(*apex, *axis_dir, *half_angle, *ref_dir, p).map(|(sp, _, _)| sp)
+                })
+                .collect(),
+            _ => return None,
+        };
         if proj.len() != seam_pts.len() {
             return None;
         }
@@ -16403,7 +16416,7 @@ mod tests {
     /// ADR-284 β-4-1 — SHARED-equator rim-to-rim split of a Path B hemisphere by
     /// an open drawn seam. The equator is a self-loop edge SHARED by both
     /// hemispheres, so the standalone-circle trim breaks the twin (finding
-    /// 780a050); [`Mesh::split_sphere_face_by_open_seam`] handles it by trimming
+    /// 780a050); [`Mesh::split_curved_face_by_open_seam`] handles it by trimming
     /// the host + rebuilding the twin + splitting the host by the interior seam.
     /// Locks: 3 result faces, manifold-valid, all inherit Sphere (host twin +
     /// both host pieces).
@@ -16428,7 +16441,7 @@ mod tests {
         ];
 
         let (fa, fb, twin) = mesh
-            .split_sphere_face_by_open_seam(north, &seam)
+            .split_curved_face_by_open_seam(north, &seam)
             .expect("open-seam split must succeed on a hemisphere");
 
         let inv = mesh.verify_face_invariants();
@@ -16456,7 +16469,7 @@ mod tests {
         let vaxis = nrm.cross(u).normalize();
         let cpt = |ang: f64| c + r * (u * ang.cos() + vaxis * ang.sin());
         // Only 2 points (no interior) → reject.
-        assert!(mesh.split_sphere_face_by_open_seam(north, &[cpt(0.0), cpt(1.0)]).is_none());
+        assert!(mesh.split_curved_face_by_open_seam(north, &[cpt(0.0), cpt(1.0)]).is_none());
         // A planar face → reject.
         let mut pm = Mesh::new();
         let v0 = pm.add_vertex(DVec3::new(0.0, 0.0, 0.0));
@@ -16465,7 +16478,56 @@ mod tests {
         let v3 = pm.add_vertex(DVec3::new(0.0, 10.0, 0.0));
         let pf = pm.add_face(&[v0, v1, v2, v3], mat).unwrap();
         let seam = [DVec3::new(0.0, 5.0, 0.0), DVec3::new(5.0, 5.0, 0.0), DVec3::new(10.0, 5.0, 0.0)];
-        assert!(pm.split_sphere_face_by_open_seam(pf, &seam).is_none());
+        assert!(pm.split_curved_face_by_open_seam(pf, &seam).is_none());
+    }
+
+    /// ADR-284 β-4-4 — SHARED-rim rim-to-rim split of a Cone SIDE by an open drawn
+    /// seam. The cone base rim is a self-loop edge SHARED by the side (Cone) + the
+    /// base disk (Plane) — the same shared-boundary topology as the sphere equator
+    /// — so `split_curved_face_by_open_seam` trims the side + rebuilds the base
+    /// disk + splits the side. Locks: 3 result faces, manifold-valid, both side
+    /// pieces inherit Cone (the rebuilt base stays Plane).
+    #[test]
+    fn adr284_beta4_cone_open_seam_splits_manifold() {
+        use crate::surfaces::AnalyticSurface;
+        use std::f64::consts::FRAC_PI_2;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        // Path B cone: base disk (Plane) + side (Cone, apex degenerate). Z-up.
+        let kf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
+        let side = *kf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .expect("cone side face");
+        let apex = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cone { apex, .. }) => *apex,
+            _ => panic!("Cone"),
+        };
+        // Base rim frame (the side's self-loop boundary circle).
+        let (c, r, n, u) = mesh.circle_of_self_loop_face(side).expect("cone side base circle");
+        let vaxis = n.cross(u).normalize();
+        let rim = |ang: f64| c + r * (u * ang.cos() + vaxis * ang.sin());
+        // Seam: base rim A → a point partway up the cone toward the apex → base rim B.
+        let midrim = rim(FRAC_PI_2 * 0.5);
+        let interior = apex + (midrim - apex) * 0.5; // on the slant → on the cone surface
+        let seam = [rim(0.0), interior, rim(FRAC_PI_2)];
+
+        let (fa, fb, twin) = mesh
+            .split_curved_face_by_open_seam(side, &seam)
+            .expect("cone open-seam split must succeed");
+
+        let inv = mesh.verify_face_invariants();
+        let faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let cone_faces = mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Cone { .. })))
+            .count();
+        assert!(inv.is_valid(), "cone open-seam split must be manifold: {:?}", inv.violations);
+        assert_eq!(faces, 3, "2 side pieces + 1 base disk");
+        assert_eq!(cone_faces, 2, "both side pieces inherit Cone (ADR-089 A-χ)");
+        assert_ne!(fa, fb, "two distinct side pieces");
+        let twin = twin.expect("the base disk twin is rebuilt");
+        assert!(twin != fa && twin != fb, "twin (base disk) is distinct");
+        assert!(matches!(mesh.face_surface(twin), Some(AnalyticSurface::Plane { .. })),
+            "the rebuilt base disk stays Plane");
     }
 
     #[test]

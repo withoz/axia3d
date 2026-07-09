@@ -92,7 +92,7 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
         drawPolyline: vi.fn().mockReturnValue(0),
         drawPolylineAsShape: vi.fn().mockReturnValue(0),
         drawPolylineOnCurved: vi.fn().mockReturnValue('{"cap":4,"annulus":0}'),
-        drawOpenSeamOnSphere: vi.fn().mockReturnValue('{"a":4,"b":5}'),
+        drawOpenSeamOnCurved: vi.fn().mockReturnValue('{"a":4,"b":5}'),
       },
       viewport: {
         scene: { add: vi.fn(), remove: vi.fn() },
@@ -121,12 +121,12 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
     tool.onMouseUp({} as MouseEvent);
   }
 
-  it('OPEN stroke on a sphere face → drawOpenSeamOnSphere (not planar wire)', () => {
+  it('OPEN stroke on a sphere face → drawOpenSeamOnCurved (not planar wire)', () => {
     const ctx = sphereCtx();
     // rim A → interior(z>0) → rim B: first/last far apart → open.
     draw(ctx, [[10, 0, 0], [3, 3, 8], [0, 10, 0]]);
-    expect(ctx.bridge.drawOpenSeamOnSphere).toHaveBeenCalledTimes(1);
-    expect(ctx.bridge.drawOpenSeamOnSphere.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0); // host face id
     expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
     expect(ctx.bridge.drawPolylineOnCurved).not.toHaveBeenCalled();
   });
@@ -137,6 +137,21 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
     draw(ctx, [[5, 0, 8], [5, 2, 7], [3, 2, 8], [5, 0.1, 8]]);
     expect(ctx.bridge.drawPolylineOnCurved).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.drawPolylineOnCurved.mock.calls[0][0]).toBe('sphere');
-    expect(ctx.bridge.drawOpenSeamOnSphere).not.toHaveBeenCalled();
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+  });
+
+  it('β-4-4 — OPEN stroke on a CONE face (surfaceKind 4) → drawOpenSeamOnCurved', () => {
+    const ctx = sphereCtx();
+    ctx.getDrawPlane = vi.fn().mockReturnValue({
+      normal: new THREE.Vector3(0, 0, 1),
+      up: new THREE.Vector3(0, 1, 0),
+      origin: new THREE.Vector3(),
+      surfaceKind: 4, // Cone
+    });
+    // base rim A → point up the cone toward apex → base rim B (open).
+    draw(ctx, [[5, 0, 0], [2, 2, 10], [0, 5, 0]]);
+    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0);
+    expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
   });
 });

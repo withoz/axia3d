@@ -109,8 +109,8 @@ describe('DrawBezierTool (ADR-089 A-ψ-β closure detection)', () => {
     expect(ctx.bridge.drawClosedBezierAsCurve).not.toHaveBeenCalled();
   });
 
-  it('ADR-284 β-4-3 — open Bezier on a sphere face → drawOpenSeamOnSphere', () => {
-    ctx.bridge.drawOpenSeamOnSphere = vi.fn().mockReturnValue('{"a":4,"b":5}');
+  it('ADR-284 β-4-3 — open Bezier on a sphere face → drawOpenSeamOnCurved', () => {
+    ctx.bridge.drawOpenSeamOnCurved = vi.fn().mockReturnValue('{"a":4,"b":5}');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (tool as any).plane = { normal: new THREE.Vector3(0, 0, 1) };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,8 +129,8 @@ describe('DrawBezierTool (ADR-089 A-ψ-β closure detection)', () => {
     ];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (tool as any).commit();
-    expect(ctx.bridge.drawOpenSeamOnSphere).toHaveBeenCalledTimes(1);
-    expect(ctx.bridge.drawOpenSeamOnSphere.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0); // host face id
     expect(ctx.bridge.drawBezierWithCurve).not.toHaveBeenCalled();
   });
 });

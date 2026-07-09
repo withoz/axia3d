@@ -272,10 +272,41 @@ SOFT-hidden per sphere convention). Regression: vitest DrawFreehandTool +2
 `Box3` added to the three test-mock. S9 (closed shapes, all 4 surfaces, 4 tools)
 remains complete and unaffected.
 
-**Deferred (β-4-4):** open seams on cylinder / cone / torus (their rims are
-multi-loop — a top-rim→bottom-rim cut UNROLLS the annulus rather than splitting it
-in two; needs a different topology), and a straight-`DrawLine` reject/re-interpret
-UX polish.
+### β-4-4 CONE LANDED (2026-07-09) + generic `split_curved_face_by_open_seam`
+
+The cone side is the **same shared-rim topology** as the sphere: a self-loop
+circle face (the base circle) with a **degenerate interior point** (the apex,
+mirroring the sphere's pole) and a **rim-sharing twin** (the base disk, `Plane`).
+So β-4-1's mechanism generalizes verbatim — the only surface-specific step is the
+point projection.
+
+- Engine: `split_sphere_face_by_open_seam` → **`split_curved_face_by_open_seam`**
+  (surface-aware). The guard now accepts `Sphere | Cone`; projection matches on the
+  kind (`sphere::project_to_surface` radial / `cone::project_to_cone` onto the
+  slant — no longitude unroll, so an over-pole / over-apex seam is fine). Trim +
+  twin-rebuild + split + inherit are unchanged (surface-agnostic). The twin keeps
+  its own surface (sphere → Sphere; cone base → **Plane**).
+- Scene `draw_open_seam_on_sphere` → **`draw_open_seam_on_curved`** (guard
+  `Sphere | Cone`; owner reconcile unchanged).
+- WASM `drawOpenSeamOnSphere` → **`drawOpenSeamOnCurved`**; Bridge
+  `drawOpenSeamOnCurved`; tools gate `curvedKind === 'sphere' || 'cone'`.
+  (These β-4-3 names were 2 commits old this session — renamed to match the
+  now-generic capability, not a released API.)
+
+**Regression:** axia-geo `adr284_beta4_cone_open_seam_splits_manifold` (3 faces /
+manifold / 2 side pieces inherit Cone / base disk stays Plane) + vitest
+DrawFreehandTool +1 (cone-gate surfaceKind 4 → seam). **Real-WASM browser
+verify:** `create_cone` → base (Plane) + side (Cone) → `drawOpenSeamOnCurved(side,
+[rim, up-toward-apex, rim])` → `{"a":4,"b":5}`, face_count 2→3,
+non_manifold_edge_count=0, verifyInvariants valid (3 faces, 0 violations). Sphere
+re-verified identical under the renamed export.
+
+**Still deferred:** open seams on **cylinder** (annulus = 2 rims; a top→bottom cut
+UNROLLS it into one sheet rather than splitting in two — needs 2 cuts or a
+same-rim seam) and **torus** (closed surface, single face, no rim — an open curve
+doesn't partition it); plus a straight-`DrawLine` reject/re-interpret UX polish.
+These are genuinely different topologies, not the shared-rim + degenerate-point
+pattern that sphere and cone share.
 
 ## Lock-ins (α)
 

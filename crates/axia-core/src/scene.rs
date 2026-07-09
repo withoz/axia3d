@@ -3152,17 +3152,19 @@ impl Scene {
         self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_sphere_face_by_polyline)
     }
 
-    /// ADR-284 β-4-3 — split a Path B Sphere hemisphere by an OPEN drawn seam
-    /// (rim → interior → rim), the S3 "draw a line on a curved face" case. Unlike
-    /// the closed path (which reuses `host_face` for the remainder), the open seam
-    /// TRIMS the host + REBUILDS the shared-equator twin, so all three result
-    /// faces are new — this reconciles owner tracking for all of them.
+    /// ADR-284 β-4-3/β-4-4 — split a curved self-loop face (Sphere hemisphere or
+    /// Cone side) by an OPEN drawn seam (rim → interior → rim), the S3 "draw a line
+    /// on a curved face" case. Unlike the closed path (which reuses `host_face` for
+    /// the remainder), the open seam TRIMS the host + REBUILDS the shared-rim twin
+    /// (the other hemisphere / the base disk), so all three result faces are new —
+    /// this reconciles owner tracking for all of them.
     ///
     /// `pts` is the raw drawn stroke (NOT pre-projected); the engine projects onto
-    /// the sphere internally and needs the interior points that arc over the
-    /// hemisphere. A straight 2-point stroke is degenerate (see ADR-284 §β-4-1
-    /// tool-dispatch finding) → `< 3` points reject. Returns `(piece_a, piece_b)`.
-    pub fn draw_open_seam_on_sphere(
+    /// the host surface internally and needs the interior points that arc over it
+    /// (toward the pole / apex). A straight 2-point stroke is degenerate (see
+    /// ADR-284 §β-4-1) → `< 3` points reject. Returns `(piece_a, piece_b)`.
+    /// (Cylinder/Torus are multi-rim → rejected here, β-4-4 deferred.)
+    pub fn draw_open_seam_on_curved(
         &mut self,
         host_face: FaceId,
         pts: Vec<DVec3>,
@@ -3171,18 +3173,19 @@ impl Scene {
         if pts.len() < 3 || pts.iter().any(|p| !p.is_finite()) {
             return None;
         }
-        // Host must be a Sphere face; capture its equator HE to find the twin.
+        // Host must be a Sphere/Cone self-loop face; capture its rim HE → the twin.
         let outer_start = self
             .mesh
             .faces
             .get(host_face)
             .filter(|f| f.is_active())
-            .filter(|f| matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .filter(|f| matches!(f.surface(),
+                Some(AnalyticSurface::Sphere { .. } | AnalyticSurface::Cone { .. })))
             .map(|f| f.outer().start)?;
         if outer_start.is_null() {
             return None;
         }
-        // Twin hemisphere (radial twin of the host equator HE) — same Shape/Xia.
+        // Twin (radial twin of the host rim HE) — same Shape/Xia.
         let twin_old: Option<FaceId> = {
             let th = self.mesh.hes.get(outer_start)?.next_rad();
             if !th.is_null() && th != outer_start {
@@ -3198,7 +3201,7 @@ impl Scene {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
         }
-        match self.mesh.split_sphere_face_by_open_seam(host_face, &pts) {
+        match self.mesh.split_curved_face_by_open_seam(host_face, &pts) {
             Some((fa, fb, twin_new)) => {
                 // Reconcile owner: {host_face, twin_old} → {fa, fb, twin_new}.
                 let new_faces: Vec<FaceId> =

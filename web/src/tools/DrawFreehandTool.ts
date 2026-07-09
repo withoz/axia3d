@@ -168,18 +168,19 @@ export class DrawFreehandTool implements ITool {
         this.ctx.syncMesh();
         return;
       }
-      // ADR-284 β-4-3 — OPEN stroke on a Sphere face → rim-to-rim seam split.
-      // (Cylinder/cone/torus open = multi-rim, β-4-4; those fall through to a
+      // ADR-284 β-4-3/β-4-4 — OPEN stroke on a Sphere OR Cone face → rim-to-rim
+      // seam split (both are self-loop rim faces with a rim-sharing twin).
+      // (Cylinder/torus open = multi-rim, deferred; those fall through to a
       // planar wire. A straight 2-click line is degenerate — ADR-284 §β-4-1 —
       // so this is the freehand/bezier path.)
-      if (!closed && this.curvedKind === 'sphere'
-          && typeof this.ctx.bridge.drawOpenSeamOnSphere === 'function') {
-        const res = this.ctx.bridge.drawOpenSeamOnSphere(this.curvedHostFace, pts);
+      if (!closed && (this.curvedKind === 'sphere' || this.curvedKind === 'cone')
+          && typeof this.ctx.bridge.drawOpenSeamOnCurved === 'function') {
+        const res = this.ctx.bridge.drawOpenSeamOnCurved(this.curvedHostFace, pts);
         if (!res || res.includes('"error"')) {
           // eslint-disable-next-line no-console
-          console.warn(`[Freehand] open seam on sphere failed: ${res}`);
+          console.warn(`[Freehand] open seam on ${this.curvedKind} failed: ${res}`);
         } else {
-          debugLog(`[Freehand] open seam split on sphere host=${this.curvedHostFace}`);
+          debugLog(`[Freehand] open seam split on ${this.curvedKind} host=${this.curvedHostFace}`);
         }
         this.ctx.syncMesh();
         return;

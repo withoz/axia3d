@@ -213,12 +213,13 @@ export class DrawBezierTool implements ITool {
       return;
     }
 
-    // ADR-284 β-4-3 — OPEN bezier on a Sphere face → rim-to-rim seam split.
-    // The curve arcs from P0 over the hemisphere (P1/P2 pull it into the
-    // interior) to P3; tessellate + project/split. (Cylinder/cone/torus open =
-    // multi-rim β-4-4; a straight 2-click line is degenerate — ADR-284 §β-4-1.)
-    if (this.curvedKind === 'sphere' && this.curvedHostFace >= 0
-        && typeof this.ctx.bridge.drawOpenSeamOnSphere === 'function') {
+    // ADR-284 β-4-3/β-4-4 — OPEN bezier on a Sphere OR Cone face → rim-to-rim
+    // seam split. The curve arcs from P0 over the surface (P1/P2 pull it into
+    // the interior toward the pole/apex) to P3; tessellate + project/split.
+    // (Cylinder/torus open = multi-rim deferred; a straight 2-click line is
+    // degenerate — ADR-284 §β-4-1.)
+    if ((this.curvedKind === 'sphere' || this.curvedKind === 'cone') && this.curvedHostFace >= 0
+        && typeof this.ctx.bridge.drawOpenSeamOnCurved === 'function') {
       const openCurve: BezierCurve = {
         kind: 'bezier',
         id: nextCurveId(),
@@ -237,12 +238,12 @@ export class DrawBezierTool implements ITool {
         }
       }
       if (pts.length >= 3) {
-        const res = this.ctx.bridge.drawOpenSeamOnSphere(this.curvedHostFace, pts);
+        const res = this.ctx.bridge.drawOpenSeamOnCurved(this.curvedHostFace, pts);
         if (!res || res.includes('"error"')) {
           // eslint-disable-next-line no-console
-          console.warn(`[Bezier] open seam on sphere failed: ${res}`);
+          console.warn(`[Bezier] open seam on ${this.curvedKind} failed: ${res}`);
         } else {
-          debugLog(`[Bezier] open seam split on sphere host=${this.curvedHostFace}`);
+          debugLog(`[Bezier] open seam split on ${this.curvedKind} host=${this.curvedHostFace}`);
         }
         this.ctx.syncMesh();
         return;
