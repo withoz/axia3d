@@ -115,8 +115,24 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
     'cylinder', …)` → `{cap:3, annulus:2}`, `verifyInvariants` valid (0
     violations). (`meshManifoldInfo` nm=1 is the PRE-EXISTING Path B cylinder
     self-loop-rim discrepancy — present before the split too, not added by it.)
-  - Remaining tools (Polygon / Freehand / Bezier) mirror DrawRectTool (the
-    bridge dispatcher already accepts any closed polyline) — follow-up.
+- **β-3 tools + projection fix (landed 2026-07-08)**:
+  - **Projection relaxed**: `polyline_on_{surface}` no longer rejects a point
+    that is off the surface by > 1e-3 — tool-drawn points lie on the TANGENT
+    plane at the pick (off by the sagitta), so the function now PROJECTS them
+    (its actual job); `project_to_{surface}` still returns None for
+    un-projectable input (axis / apex / center / NaN). Without this the real
+    tools (which pass tangent-plane points) would always be rejected.
+  - **DrawPolygonTool / DrawFreehandTool / DrawBezierTool** wired (mirror
+    DrawRectTool): first click on a curved face captures host + kind; on commit
+    the shape's world boundary points → `drawPolylineOnCurved`. Freehand/Bezier
+    only dispatch when the loop is CLOSED (freehand: ends within 20% of bbox
+    diagonal; bezier: A-ψ P3≈P0 closure) — open strokes are β-4.
+  - **Browser-verified** with TANGENT-PLANE (off-surface) corners:
+    `drawPolylineOnCurved('cylinder', …)` → `{cap:3, annulus:2}`,
+    `verifyInvariants` valid (0 violations) — confirms the projection fix makes
+    the real tool path work.
+  - **β-3 COMPLETE — closed shapes (rect / polygon / freehand / bezier) on all 4
+    curved surfaces from the UI.** axia-geo 2206, vitest 2508.
 - **β-4 open line (S3)**: next (rim-to-rim boundary-split + insert).
 
 ## Lock-ins (α)

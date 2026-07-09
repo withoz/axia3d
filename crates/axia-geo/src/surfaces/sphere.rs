@@ -227,10 +227,10 @@ pub fn polyline_on_sphere(
     let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
     let mut u_prev = 0.0;
     for (i, &p) in pts.iter().enumerate() {
+        // Project each drawn point onto the sphere (radial). Tool points are on
+        // the tangent plane, off the surface by the sagitta — project them.
+        // `project_to_surface` returns None only for a point at the center.
         let sp = project_to_surface(center, radius, p)?;
-        if (sp - p).length() > 1e-3 {
-            return None; // not on this sphere
-        }
         let unit = (sp - center) / radius;
         let v = unit.dot(ab).clamp(-1.0, 1.0).asin();
         if v.abs() > FRAC_PI_2 - 1e-3 {

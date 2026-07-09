@@ -27,6 +27,9 @@ export class DrawFreehandTool implements ITool {
   private drawPlane3: THREE.Plane | null = null;
   private rawPoints: THREE.Vector3[] = [];
   private previewLine: THREE.Line | null = null;
+  // ADR-284 β-3 — curved-surface draw: a CLOSED freehand loop ON a curved face.
+  private curvedKind: 'cylinder' | 'cone' | 'torus' | 'sphere' | null = null;
+  private curvedHostFace = -1;
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx;
@@ -48,6 +51,20 @@ export class DrawFreehandTool implements ITool {
     );
     this.drawing = true;
     this.rawPoints = [point.clone()];
+    // ADR-284 β-3 — first click on a curved face → a CLOSED freehand loop will
+    // be projected + split onto the surface. Capture host + kind.
+    this.curvedKind = null;
+    this.curvedHostFace = -1;
+    const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
+      this.plane.surfaceKind as 2 | 3 | 4 | 5
+    ];
+    if (ck && typeof this.ctx.viewport?.pick === 'function') {
+      const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+      if (hit && hit.faceIndex != null) {
+        const fid = this.ctx.getFaceId(hit.faceIndex);
+        if (fid >= 0) { this.curvedKind = ck; this.curvedHostFace = fid; }
+      }
+    }
     this.ctx.snap.setReferencePoint(point);
     // ADR-166 β-2 — first_click plane lock (idempotent, L-166-2).
     this.ctx.lockPlane?.({
@@ -94,6 +111,8 @@ export class DrawFreehandTool implements ITool {
     this.plane = null;
     this.drawPlane3 = null;
     this.rawPoints = [];
+    this.curvedKind = null;
+    this.curvedHostFace = -1;
     this.removePreview();
     this.ctx.snap.setReferencePoint(null);
   }
@@ -127,6 +146,32 @@ export class DrawFreehandTool implements ITool {
         filtered.push(p);
       }
     }
+    // ADR-284 β-3 — curved-surface path: a CLOSED freehand loop on a curved
+    // face is projected + split (cap + remainder). "Closed" = the stroke's ends
+    // are near each other (≤ 20% of its bbox diagonal). Open strokes on a curved
+    // face fall through (planar wire; on-surface open lines are β-4).
+    if (this.curvedKind && this.curvedHostFace >= 0 && filtered.length >= 3
+        && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+      const first = this.rawPoints[0];
+      const lastRaw = this.rawPoints[this.rawPoints.length - 1];
+      const bb = new THREE.Box3().setFromPoints(this.rawPoints);
+      const diag = bb.getSize(new THREE.Vector3()).length();
+      const closed = first.distanceTo(lastRaw) <= Math.max(diag * 0.2, 1);
+      if (closed) {
+        const pts: Array<[number, number, number]> =
+          filtered.map((p) => [p.x, p.y, p.z]);
+        const res = this.ctx.bridge.drawPolylineOnCurved(this.curvedKind, this.curvedHostFace, pts, true);
+        if (!res || res.includes('"error"')) {
+          // eslint-disable-next-line no-console
+          console.warn(`[Freehand] curved split on ${this.curvedKind} failed: ${res}`);
+        } else {
+          debugLog(`[Freehand] curved closed loop split on ${this.curvedKind} host=${this.curvedHostFace}`);
+        }
+        this.ctx.syncMesh();
+        return;
+      }
+    }
+
     let edgeCount = 0;
     if (filtered.length >= 2) {
       const flat = new Float64Array(filtered.length * 3);

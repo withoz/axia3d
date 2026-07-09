@@ -31,6 +31,9 @@ export class DrawBezierTool implements ITool {
   private drawPlane3: THREE.Plane | null = null;
   private previewLine: THREE.Line | null = null;
   private controlHandles: THREE.Object3D[] = [];
+  // ADR-284 β-3 — curved-surface draw: a CLOSED bezier loop ON a curved face.
+  private curvedKind: 'cylinder' | 'cone' | 'torus' | 'sphere' | null = null;
+  private curvedHostFace = -1;
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx;
@@ -53,6 +56,20 @@ export class DrawBezierTool implements ITool {
         this.plane.normal, point,
       );
       this.points.push(point.clone());
+      // ADR-284 β-3 — first click (P0) on a curved face → a CLOSED bezier loop
+      // will be projected + split onto the surface. Capture host + kind.
+      this.curvedKind = null;
+      this.curvedHostFace = -1;
+      const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
+        this.plane.surfaceKind as 2 | 3 | 4 | 5
+      ];
+      if (ck && typeof this.ctx.viewport?.pick === 'function') {
+        const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+        if (hit && hit.faceIndex != null) {
+          const fid = this.ctx.getFaceId(hit.faceIndex);
+          if (fid >= 0) { this.curvedKind = ck; this.curvedHostFace = fid; }
+        }
+      }
       this.ctx.snap.setReferencePoint(point);
       // ADR-166 β-2 — first_click plane lock (idempotent, L-166-2).
       this.ctx.lockPlane?.({
@@ -104,6 +121,8 @@ export class DrawBezierTool implements ITool {
     this.points = [];
     this.plane = null;
     this.drawPlane3 = null;
+    this.curvedKind = null;
+    this.curvedHostFace = -1;
     this.removePreview();
     this.ctx.snap.setReferencePoint(null);
   }
@@ -124,6 +143,44 @@ export class DrawBezierTool implements ITool {
       getDrawCurveMode() && closureGap < BEZIER_CLOSURE_EPSILON_MM;
 
     if (isClosed) {
+      // ADR-284 β-3 — closed bezier on a CURVED face → tessellate the loop +
+      // project/split onto the surface (cap + remainder).
+      if (this.curvedKind && this.curvedHostFace >= 0
+          && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+        const loopCurve: BezierCurve = {
+          kind: 'bezier',
+          id: nextCurveId(),
+          controlPoints: [
+            [this.points[0].x, this.points[0].y, this.points[0].z],
+            [this.points[1].x, this.points[1].y, this.points[1].z],
+            [this.points[2].x, this.points[2].y, this.points[2].z],
+            [p0.x, p0.y, p0.z],
+          ],
+          segments: 32,
+          planeNormal: this.plane
+            ? [this.plane.normal.x, this.plane.normal.y, this.plane.normal.z]
+            : [0, 1, 0],
+          closed: true,
+        };
+        const tp = tessellateCurve(loopCurve);
+        const pts: Array<[number, number, number]> = [];
+        for (const p of tp) {
+          if (pts.length === 0 || p.distanceTo(new THREE.Vector3(...pts[pts.length - 1])) >= 0.1) {
+            pts.push([p.x, p.y, p.z]);
+          }
+        }
+        if (pts.length >= 3) {
+          const res = this.ctx.bridge.drawPolylineOnCurved(this.curvedKind, this.curvedHostFace, pts, true);
+          if (!res || res.includes('"error"')) {
+            // eslint-disable-next-line no-console
+            console.warn(`[Bezier] curved split on ${this.curvedKind} failed: ${res}`);
+          } else {
+            debugLog(`[Bezier] curved closed loop split on ${this.curvedKind} host=${this.curvedHostFace}`);
+          }
+          this.ctx.syncMesh();
+          return;
+        }
+      }
       // Closed Bezier: forward to drawClosedBezierAsCurve with P0
       // duplicated as last control point (ensures exact closure on
       // engine side regardless of f32 drift).

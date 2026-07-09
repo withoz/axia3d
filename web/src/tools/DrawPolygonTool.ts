@@ -31,6 +31,9 @@ export class DrawPolygonTool implements ITool {
   private preview: THREE.Line | null = null;
   private plane: DrawPlaneInfo | null = null;
   private drawPlane3: THREE.Plane | null = null;
+  // ADR-284 β-3 — curved-surface draw: N-gon ON a cylinder/sphere/cone/torus.
+  private curvedKind: 'cylinder' | 'cone' | 'torus' | 'sphere' | null = null;
+  private curvedHostFace = -1;
 
   /** Number of sides — asked once per activation, stored for the session. */
   private sides: number = 6;
@@ -77,6 +80,20 @@ export class DrawPolygonTool implements ITool {
       this.drawPlane3 = new THREE.Plane().setFromNormalAndCoplanarPoint(
         this.plane.normal, this.center,
       );
+      // ADR-284 β-3 — first click on a curved face → draw the N-gon ON the
+      // surface (project verts + split). Capture host + kind.
+      this.curvedKind = null;
+      this.curvedHostFace = -1;
+      const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
+        this.plane.surfaceKind as 2 | 3 | 4 | 5
+      ];
+      if (ck && typeof this.ctx.viewport?.pick === 'function') {
+        const hit = this.ctx.viewport.pick(_e.clientX, _e.clientY);
+        if (hit && hit.faceIndex != null) {
+          const fid = this.ctx.getFaceId(hit.faceIndex);
+          if (fid >= 0) { this.curvedKind = ck; this.curvedHostFace = fid; }
+        }
+      }
       this.ctx.snap.setReferencePoint(point);
     } else {
       // Second click — commit.
@@ -84,6 +101,22 @@ export class DrawPolygonTool implements ITool {
       if (!planePoint || !this.plane) { this.cleanup(); return; }
       const radius = this.center.distanceTo(planePoint);
       if (radius > 1) {
+        // ADR-284 β-3 — curved path: build the N-gon's world verts in the
+        // tangent plane + project/split onto the surface.
+        if (this.curvedKind && this.curvedHostFace >= 0
+            && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+          const verts = this.ngonWorldVerts(this.center, radius, this.plane);
+          const res = this.ctx.bridge.drawPolylineOnCurved(this.curvedKind, this.curvedHostFace, verts, true);
+          if (!res || res.includes('"error"')) {
+            // eslint-disable-next-line no-console
+            console.warn(`[Polygon] curved split on ${this.curvedKind} failed: ${res}`);
+          } else {
+            debugLog(`[Polygon] curved ${this.sides}-gon split on ${this.curvedKind} host=${this.curvedHostFace}`);
+          }
+          this.ctx.syncMesh();
+          this.cleanup();
+          return;
+        }
         const n = this.plane.normal;
         // 다각형 fix (2026-06-10) — dedicated drawPolygonAsShape (plain Line
         // segments, NO Arc metadata / NO ≥12 circle threshold). Reusing
@@ -139,9 +172,28 @@ export class DrawPolygonTool implements ITool {
     this.center = null;
     this.plane = null;
     this.drawPlane3 = null;
+    this.curvedKind = null;
+    this.curvedHostFace = -1;
     this.removePreview();
     this.ctx.dimLabel.clear();
     this.ctx.snap.setReferencePoint(null);
+  }
+
+  /** ADR-284 β-3 — the N-gon's world vertices in the plane's (right, up) basis. */
+  private ngonWorldVerts(
+    center: THREE.Vector3,
+    radius: number,
+    plane: DrawPlaneInfo,
+  ): Array<[number, number, number]> {
+    const out: Array<[number, number, number]> = [];
+    for (let i = 0; i < this.sides; i++) {
+      const t = (2 * Math.PI * i) / this.sides;
+      const p = center.clone()
+        .addScaledVector(plane.right, radius * Math.cos(t))
+        .addScaledVector(plane.up, radius * Math.sin(t));
+      out.push([p.x, p.y, p.z]);
+    }
+    return out;
   }
 
   // ──────────────────────────────────────────────────────

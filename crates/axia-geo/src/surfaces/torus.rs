@@ -238,11 +238,10 @@ pub fn polyline_on_torus(
     let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
     let (mut up, mut vp) = (0.0, 0.0);
     for (i, &p) in pts.iter().enumerate() {
-        let (sp, u, v) =
+        // Project each drawn point onto the torus (tool points are on the tangent
+        // plane — project them). None only for un-projectable input (axis / NaN).
+        let (_sp, u, v) =
             project_to_torus(center, axis_dir, ref_dir, major_radius, minor_radius, p)?;
-        if (sp - p).length() > 1e-3 {
-            return None; // not on this torus
-        }
         let (uc, vc) = if i == 0 { (u, v) } else { (unroll(u, up), unroll(v, vp)) };
         up = uc;
         vp = vc;

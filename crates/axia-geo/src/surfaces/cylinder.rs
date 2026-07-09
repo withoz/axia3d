@@ -196,10 +196,12 @@ pub fn polyline_on_cylinder(
     let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
     let mut u_prev = 0.0;
     for (i, &p) in pts.iter().enumerate() {
-        let (sp, u, v) = project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
-        if (sp - p).length() > 1e-3 {
-            return None; // not on this cylinder (lenient tol for drawn points)
-        }
+        // Project each drawn point onto the cylinder (radial). Tool-drawn points
+        // lie on the tangent plane at the pick, so they are off the surface by
+        // the sagitta — we PROJECT them (that is this function's job: map a drawn
+        // shape onto the surface). `project_to_cylinder` returns None only for
+        // un-projectable / degenerate input (axis / NaN), which we still reject.
+        let (_sp, u, v) = project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
         let u_cont = if i == 0 {
             u
         } else {

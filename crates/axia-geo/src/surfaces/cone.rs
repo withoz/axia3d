@@ -232,10 +232,10 @@ pub fn polyline_on_cone(
     let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
     let mut u_prev = 0.0;
     for (i, &p) in pts.iter().enumerate() {
-        let (sp, u, v) = project_to_cone(apex, axis_dir, half_angle, ref_dir, p)?;
-        if (sp - p).length() > 1e-3 {
-            return None; // not on this cone
-        }
+        // Project each drawn point onto the cone (tool points are on the tangent
+        // plane, off the surface by the sagitta — project them). None only for
+        // un-projectable input (apex / axis / NaN).
+        let (_sp, u, v) = project_to_cone(apex, axis_dir, half_angle, ref_dir, p)?;
         let u_cont = if i == 0 {
             u
         } else {
