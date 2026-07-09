@@ -4259,6 +4259,125 @@ impl Mesh {
         Some((cap, host_face))
     }
 
+    /// **ADR-284 β-4-1** — split a Path B Sphere hemisphere by an OPEN drawn
+    /// seam from rim to rim (the S3 "draw a line A→…→B on a curved face" case).
+    ///
+    /// `seam_pts` is the drawn stroke (world points): FIRST and LAST are the rim
+    /// (equator) endpoints, the interior points arc OVER the hemisphere. All are
+    /// projected onto the sphere.
+    ///
+    /// The equator is a self-loop edge **shared** by both hemispheres, so the
+    /// standalone-circle trim ([`Self::trim_circle_face_at_crossings`], which
+    /// REMOVES the self-loop) breaks the twin hemisphere. This handles the shared
+    /// boundary in three steps (de-risk sim `adr284_beta4_sim_shared_equator_split`,
+    /// finding 780a050):
+    ///   1. capture the twin hemisphere (radial twin of the host's equator HE) +
+    ///      its surface BEFORE any mutation;
+    ///   2. trim the host self-loop at the 2 endpoints → an arc ring (this breaks
+    ///      the twin's loop);
+    ///   3. rebuild the twin from the arc ring (reversed → twin-facing, reusing the
+    ///      arc edges' free twin HEs → manifold) and split the host arc-face by the
+    ///      projected interior seam via
+    ///      [`split_face_by_chain`](crate::operations::face_split::split_face_by_chain).
+    ///
+    /// Both host pieces inherit the host `Sphere`; the twin keeps its `Sphere`
+    /// (ADR-089 A-χ). `None` if the host is not a Path B Sphere self-loop face,
+    /// < 3 seam points (2 rim + ≥1 interior), a projection fails, or a step fails.
+    pub fn split_sphere_face_by_open_seam(
+        &mut self,
+        host_face: FaceId,
+        seam_pts: &[DVec3],
+    ) -> Option<(FaceId, FaceId)> {
+        use crate::surfaces::{sphere, AnalyticSurface};
+        if seam_pts.len() < 3 {
+            return None; // 2 rim endpoints + ≥1 interior point
+        }
+        let host_sph = match self.faces.get(host_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+            Some(s @ AnalyticSurface::Sphere { .. }) => s.clone(),
+            _ => return None,
+        };
+        let (sc, sr) = match &host_sph {
+            AnalyticSurface::Sphere { center, radius, .. } => (*center, *radius),
+            _ => return None,
+        };
+        let material = self.faces.get(host_face)?.material();
+        // Project every seam point onto the sphere.
+        let proj: Vec<DVec3> = seam_pts
+            .iter()
+            .filter_map(|&p| sphere::project_to_surface(sc, sr, p))
+            .collect();
+        if proj.len() != seam_pts.len() {
+            return None;
+        }
+        let a = proj[0];
+        let b = *proj.last().unwrap();
+
+        // 1. Twin hemisphere = the radial twin of the host's equator self-loop HE
+        //    (captured BEFORE trim removes the edge). FaceId stays valid across
+        //    the trim (trim breaks its loop but does not remove the face).
+        let outer_start = self.faces[host_face].outer().start;
+        if outer_start.is_null() {
+            return None;
+        }
+        let twin_he = self.hes.get(outer_start)?.next_rad();
+        let twin_face = if !twin_he.is_null() && twin_he != outer_start {
+            self.hes.get(twin_he).map(|h| h.face())
+        } else {
+            None
+        };
+        let twin_surface = twin_face
+            .and_then(|tf| self.faces.get(tf))
+            .and_then(|f| f.surface().cloned());
+
+        // 2. Trim the host self-loop at A,B → arc ring (breaks the twin's loop).
+        let (arc_face, crossing) = match self.trim_circle_face_at_crossings(host_face, &[a, b], material) {
+            Ok(Some(x)) => x,
+            _ => return None,
+        };
+        if crossing.len() < 2 {
+            return None;
+        }
+
+        // 3a. Rebuild the twin: deactivate its now-broken face + re-add the arc
+        //     ring reversed (twin-facing HEs reuse the arc edges' free twin slots).
+        if let Some(tf) = twin_face {
+            if self.faces.contains(tf) && self.faces[tf].is_active() {
+                let ring = self.collect_loop_verts(self.faces[arc_face].outer().start).ok()?;
+                self.faces[tf].set_active(false);
+                let mut rev = ring;
+                rev.reverse();
+                let new_twin = self.add_face_with_holes(&rev, &[], material).ok()?;
+                if let Some(s) = &twin_surface {
+                    if let Some(fm) = self.faces.get_mut(new_twin) {
+                        fm.set_surface(Some(s.clone()));
+                    }
+                }
+            }
+        }
+
+        // 3b. Split the host arc-face by the drawn seam [vA, interior…, vB].
+        let (va, vb) = (crossing[0], crossing[1]);
+        let mut chain: Vec<VertId> = vec![va];
+        for &p in &proj[1..proj.len() - 1] {
+            chain.push(self.add_vertex(p));
+        }
+        chain.push(vb);
+        for w in chain.windows(2) {
+            self.add_edge(w[0], w[1]).ok()?;
+        }
+        let res = crate::operations::face_split::split_face_by_chain(self, arc_face, &chain, material).ok()?;
+        if res.new_faces.len() < 2 {
+            return None;
+        }
+        // Both host pieces inherit the host Sphere surface (ADR-089 A-χ).
+        for &f in &res.new_faces {
+            if let Some(fm) = self.faces.get_mut(f) {
+                fm.set_surface(Some(host_sph.clone()));
+            }
+        }
+        Some((res.new_faces[0], res.new_faces[1]))
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16273,6 +16392,72 @@ mod tests {
         );
         // Probe only — no hard assertion on the split shape (findings documented).
         assert!(res.is_ok(), "split_circle_face_by_chord must not error on a hemisphere");
+    }
+
+    /// ADR-284 β-4-1 — SHARED-equator rim-to-rim split of a Path B hemisphere by
+    /// an open drawn seam. The equator is a self-loop edge SHARED by both
+    /// hemispheres, so the standalone-circle trim breaks the twin (finding
+    /// 780a050); [`Mesh::split_sphere_face_by_open_seam`] handles it by trimming
+    /// the host + rebuilding the twin + splitting the host by the interior seam.
+    /// Locks: 3 result faces, manifold-valid, all inherit Sphere (host twin +
+    /// both host pieces).
+    #[test]
+    fn adr284_beta4_sphere_open_seam_splits_manifold() {
+        use crate::surfaces::AnalyticSurface;
+        use std::f64::consts::FRAC_PI_2;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let sf = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        let north = sf[0];
+
+        // Equator frame → seam endpoints A,B on the equator + 1 interior point
+        // over the north hemisphere (off-surface; the fn projects it).
+        let (c, r, n, u) = mesh.circle_of_self_loop_face(north).expect("north circle");
+        let vaxis = n.cross(u).normalize();
+        let cpt = |ang: f64| c + r * (u * ang.cos() + vaxis * ang.sin());
+        let seam = [
+            cpt(0.0),                           // rim A (equator)
+            DVec3::new(3.0, 3.0, 8.0),          // interior over the hemisphere (z>0)
+            cpt(FRAC_PI_2),                     // rim B (equator)
+        ];
+
+        let (fa, fb) = mesh
+            .split_sphere_face_by_open_seam(north, &seam)
+            .expect("open-seam split must succeed on a hemisphere");
+
+        let inv = mesh.verify_face_invariants();
+        let faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let sphere_faces = mesh.faces.iter()
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .count();
+        assert!(inv.is_valid(), "open-seam split must be manifold: {:?}", inv.violations);
+        assert_eq!(faces, 3, "2 host pieces + 1 twin hemisphere");
+        assert_eq!(sphere_faces, 3, "all 3 faces inherit Sphere (ADR-089 A-χ)");
+        assert_ne!(fa, fb, "two distinct host pieces");
+    }
+
+    /// ADR-284 β-4-1 — reject guards: < 3 seam points (no interior) and a
+    /// non-Sphere face are both declined (graceful `None`, no mutation).
+    #[test]
+    fn adr284_beta4_open_seam_rejects_bad_input() {
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let sf = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        let north = sf[0];
+        let (c, r, nrm, u) = mesh.circle_of_self_loop_face(north).unwrap();
+        let vaxis = nrm.cross(u).normalize();
+        let cpt = |ang: f64| c + r * (u * ang.cos() + vaxis * ang.sin());
+        // Only 2 points (no interior) → reject.
+        assert!(mesh.split_sphere_face_by_open_seam(north, &[cpt(0.0), cpt(1.0)]).is_none());
+        // A planar face → reject.
+        let mut pm = Mesh::new();
+        let v0 = pm.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = pm.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let v2 = pm.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let v3 = pm.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        let pf = pm.add_face(&[v0, v1, v2, v3], mat).unwrap();
+        let seam = [DVec3::new(0.0, 5.0, 0.0), DVec3::new(5.0, 5.0, 0.0), DVec3::new(10.0, 5.0, 0.0)];
+        assert!(pm.split_sphere_face_by_open_seam(pf, &seam).is_none());
     }
 
     #[test]

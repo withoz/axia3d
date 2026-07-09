@@ -200,10 +200,51 @@ now measured:
 **split the shared self-loop equator in-place at the 2 endpoints** (both twin HEs
 → 2 arc edges, so BOTH hemispheres see the 2 arcs) WITHOUT removing it, then
 insert the projected interior seam into only the target hemisphere and re-tile
-that one side. This is substantial shared-boundary DCEL surgery — a dedicated
-focused pass, distinct from the standalone-circle trim machinery. Deferred with
-this precise blocker documented; S9 (closed shapes, all 4 surfaces, all 4 tools)
-remains complete and unaffected.
+that one side. This is substantial shared-boundary DCEL surgery, distinct from
+the standalone-circle trim machinery.
+
+### β-4-1 ENGINE LANDED (2026-07-09): `split_sphere_face_by_open_seam`
+
+De-risk sim (`adr284_beta4_sim_shared_equator_split`, in the transcript) proved a
+**rebuild** realization of the shared-boundary split — manifold-clean on the first
+iteration (contrary to the "several de-risk iterations" estimate). The mechanism
+avoids a bespoke in-place self-loop split by reusing the standalone trim + a twin
+rebuild:
+
+1. Capture the **twin hemisphere** = the radial twin (`next_rad`) of the host's
+   equator self-loop HE, plus its surface, BEFORE any mutation (the twin `FaceId`
+   stays valid across the trim — trim breaks its loop but does not remove the face).
+2. `trim_circle_face_at_crossings(host, [A, B])` → an arc ring (4-vert, D7
+   midpoints) + the 2 crossing verts. This breaks the twin's loop as expected.
+3. **Rebuild the twin**: deactivate the broken face + `add_face_with_holes(ring
+   reversed)` — the reversed ring reuses the arc edges' FREE twin HE slots, so each
+   arc edge ends up with 2 HEs (host-side + twin-side) → manifold.
+4. Split the host arc-face by the drawn seam `[vA, interior…, vB]` via
+   `split_face_by_chain`. Both host pieces inherit the host `Sphere`; the twin keeps
+   its `Sphere` (ADR-089 A-χ).
+
+Result: **3 faces (2 host pieces + 1 twin), `verify_face_invariants` valid, all 3
+inherit Sphere.** Regression: `adr284_beta4_sphere_open_seam_splits_manifold`
+(3 faces / valid / 3 sphere) + `adr284_beta4_open_seam_rejects_bad_input` (< 3
+seam points, non-Sphere → graceful `None`). axia-geo 2208 → 2210, 0 fail.
+
+### β-4-1 tool-dispatch geometry finding (deferred to β-4-3)
+
+`split_sphere_face_by_open_seam` requires ≥ 3 seam points (2 rim + **≥ 1 interior
+point arcing OVER the hemisphere**). This surfaces a UX subtlety for the draw
+tools: **a straight 2-click `DrawLine` between two equator points is degenerate.**
+Both endpoints lie in the z=0 plane, the straight chord between them lies in z=0,
+and radial projection preserves z=0 → every projected point lands back on the
+equator (no interior). This is the ADR-202 S3 degeneracy again: there is no
+canonical geodesic between two equator points that arcs over the hemisphere (the
+unique great circle through them IS the equator). So a valid interior seam must be
+a **drawn multi-point stroke** that leaves the equator plane — the natural fit is
+**open Freehand / open Bezier** (which already produce multi-point strokes), NOT a
+straight `DrawLine`. β-4-3 tool dispatch should route open freehand/bezier strokes
+on a Sphere face to `split_sphere_face_by_open_seam`, and either reject or
+re-interpret a straight rim-to-rim `DrawLine`. (Engine capability is complete +
+tested; the tool UX is a distinct decision.) S9 (closed shapes, all 4 surfaces, 4
+tools) remains complete and unaffected.
 
 ## Lock-ins (α)
 
