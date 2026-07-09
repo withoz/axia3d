@@ -15945,6 +15945,62 @@ mod tests {
         }
     }
 
+    /// ADR-284 α (de-risk sim) — the curved-face split is SHAPE-AGNOSTIC: it
+    /// splits a curved face by ANY closed on-surface polyline, not just a circle.
+    /// `split_cylinder_face_by_circle` (misnomer — it's a closed-polyline
+    /// splitter) is fed a RECT-shaped geodesic loop (4 corners unrolled in flat
+    /// UV + edge-sampled, exactly how a rect / freehand / bezier-closed shape
+    /// would project) → cap + remainder, manifold, Cylinder inherited. This
+    /// proves S6 (crossing/closed shape on a curved face) + closed freehand /
+    /// bezier reuse the EXISTING split; the only new work is the projection of a
+    /// non-circle shape + the tool dispatch (ADR-284 β). (S3 open line = Phase 2.)
+    #[test]
+    fn adr284_sim_rect_polyline_on_cylinder_splits() {
+        use crate::surfaces::{cylinder, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let faces = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).expect("cylinder");
+        let annulus = faces[2];
+        let cyl = mesh.face_surface(annulus).cloned().expect("surface");
+        let (ax_o, ax_d, rad, refd, vlo, vhi) = match &cyl {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (*axis_origin, *axis_dir, *radius, *ref_dir, v_range.0, v_range.1),
+            _ => panic!("Cylinder"),
+        };
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        // A small RECT on the cylinder wall: 4 corners in (u, v) param space,
+        // each edge sampled (mimics projecting a drawn rect + geodesic sampling).
+        let vmid = 0.5 * (vlo + vhi);
+        let (du, dv) = (0.30_f64, 3.0_f64); // small angular + height half-extents
+        let corners = [
+            (-du, -dv), (du, -dv), (du, dv), (-du, dv),
+        ];
+        let mut samples: Vec<DVec3> = Vec::new();
+        let per_edge = 3;
+        for c in 0..4 {
+            let (u0, w0) = corners[c];
+            let (u1, w1) = corners[(c + 1) % 4];
+            for s in 0..per_edge {
+                let t = s as f64 / per_edge as f64;
+                let u = u0 + (u1 - u0) * t;
+                let w = w0 + (w1 - w0) * t;
+                samples.push(cylinder::evaluate(ax_o, ax_d, rad, refd, u, vmid + w));
+            }
+        }
+
+        let (cap, host) = mesh
+            .split_cylinder_face_by_circle(annulus, &samples)
+            .expect("rect-polyline split must succeed (split is shape-agnostic)");
+        assert_eq!(host, annulus, "remainder is the host face");
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 face (cap)");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after rect-polyline split");
+        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cylinder { .. })),
+            "cap inherits Cylinder (ADR-089 A-χ)");
+    }
+
     #[test]
     fn adr257_beta3_split_rejects_non_cylinder() {
         // A planar (non-Cylinder) face is rejected.
