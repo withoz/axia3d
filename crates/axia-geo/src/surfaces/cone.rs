@@ -203,10 +203,126 @@ pub fn circle_on_cone(
     Some(pts)
 }
 
+/// ADR-284 β-1 — project a drawn POLYLINE (rect / polygon / freehand / bezier
+/// corners) onto this cone and geodesically sample it into on-surface points,
+/// ready for [`crate::mesh::Mesh::split_cone_face_by_circle`] (shape-agnostic
+/// closed-polyline split). Mirror of
+/// [`crate::surfaces::cylinder::polyline_on_cylinder`]; the cone is developable
+/// so parametric `(u, v)` edge sampling gives on-surface points, and the wrap
+/// guard is the same signed-`u`-winding test (the axial `v·tanα` radius scaling
+/// does not affect whether the loop ENCIRCLES the axis).
+///
+/// `None` if < 2 points, any point is not on this cone (> 1e-3 mm), a CLOSED loop
+/// encircles the axis (`|winding| > π`), an OPEN loop spans ≥ a full turn, or
+/// fewer than 3 samples.
+pub fn polyline_on_cone(
+    apex: DVec3,
+    axis_dir: DVec3,
+    half_angle: f64,
+    ref_dir: DVec3,
+    pts: &[DVec3],
+    closed: bool,
+    chord_tol: f64,
+) -> Option<Vec<DVec3>> {
+    use std::f64::consts::{PI, TAU};
+    if pts.len() < 2 {
+        return None;
+    }
+    // Project every point → (u, v), unrolling u continuously from the first.
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    let mut u_prev = 0.0;
+    for (i, &p) in pts.iter().enumerate() {
+        let (sp, u, v) = project_to_cone(apex, axis_dir, half_angle, ref_dir, p)?;
+        if (sp - p).length() > 1e-3 {
+            return None; // not on this cone
+        }
+        let u_cont = if i == 0 {
+            u
+        } else {
+            let mut uu = u;
+            while uu - u_prev > PI {
+                uu -= TAU;
+            }
+            while uu - u_prev < -PI {
+                uu += TAU;
+            }
+            uu
+        };
+        u_prev = u_cont;
+        uv.push((u_cont, v));
+    }
+    let n = uv.len();
+    // Wrap guard (encircle test on u), identical to the cylinder.
+    if closed {
+        let mut winding = 0.0;
+        for e in 0..n {
+            let mut du = (uv[(e + 1) % n].0 - uv[e].0) % TAU;
+            if du > PI {
+                du -= TAU;
+            } else if du < -PI {
+                du += TAU;
+            }
+            winding += du;
+        }
+        if winding.abs() > PI {
+            return None;
+        }
+    } else {
+        let (umin, umax) = uv
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), &(u, _)| (a.min(u), b.max(u)));
+        if umax - umin >= TAU - 1e-6 {
+            return None;
+        }
+    }
+    // Chord-sample each edge in (u, v); map back with `evaluate`. Each edge emits
+    // its START + interior points (not its end) → no duplicate loop vertices.
+    let edge_count = if closed { n } else { n - 1 };
+    let mut out: Vec<DVec3> = Vec::new();
+    for e in 0..edge_count {
+        let (u0, v0) = uv[e];
+        let (u1, v1) = uv[(e + 1) % n];
+        // approximate slant-space edge length for sampling density.
+        let l0 = v0 / half_angle.cos();
+        let flat = (((u1 - u0) * l0 * half_angle.sin()).powi(2)
+            + ((v1 - v0) / half_angle.cos()).powi(2))
+        .sqrt();
+        let k = ((flat / chord_tol.max(1e-6)).ceil() as usize).clamp(1, 64);
+        for s in 0..k {
+            let t = s as f64 / k as f64;
+            let u = u0 + (u1 - u0) * t;
+            let v = v0 + (v1 - v0) * t;
+            out.push(evaluate(apex, axis_dir, half_angle, ref_dir, u, v));
+        }
+    }
+    if out.len() < 3 {
+        return None;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_4, FRAC_PI_2};
+
+    #[test]
+    fn polyline_on_cone_rect_samples_on_surface() {
+        // ADR-284 β-1 — a rect (4 corners) on a cone wall projects to a closed
+        // on-surface loop; every sample lies on the cone.
+        let (apex, ax, ha, refd) = (DVec3::ZERO, DVec3::Z, FRAC_PI_4, DVec3::X);
+        let corners: Vec<DVec3> = [(-0.25, 8.0), (0.25, 8.0), (0.25, 12.0), (-0.25, 12.0)]
+            .iter()
+            .map(|&(u, v)| evaluate(apex, ax, ha, refd, u, v))
+            .collect();
+        let samples = polyline_on_cone(apex, ax, ha, refd, &corners, true, 0.5)
+            .expect("rect projects onto cone");
+        assert!(samples.len() >= 4);
+        for &p in &samples {
+            let (sp, _u, _v) = project_to_cone(apex, ax, ha, refd, p).unwrap();
+            assert!((sp - p).length() < 1e-9, "every sample lies on the cone");
+        }
+    }
 
     #[test]
     fn evaluate_apex_at_v_zero() {

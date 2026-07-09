@@ -15993,6 +15993,42 @@ mod tests {
             "cap inherits Cylinder (ADR-089 A-χ)");
     }
 
+    /// ADR-284 β-1 (cone) — a rect polyline projected onto a cone side face
+    /// (via `cone::polyline_on_cone`) splits it → cap + remainder, manifold,
+    /// Cone inherited. Mirror of the cylinder sim; cone is developable too.
+    #[test]
+    fn adr284_sim_rect_polyline_on_cone_splits() {
+        use crate::surfaces::{cone, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let faces = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).expect("cone");
+        let side = faces[1]; // faces[0]=base disk (Plane), faces[1]=cone side (Cone)
+        let cone_s = mesh.face_surface(side).cloned().expect("surface");
+        let (apex, ax_d, ha, refd) = match &cone_s {
+            AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } =>
+                (*apex, *axis_dir, *half_angle, *ref_dir),
+            _ => panic!("Cone, got {:?}", cone_s),
+        };
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        // small rect on the wall at mid-height (v around the mid slant).
+        let vmid = 10.0_f64;
+        let corners: Vec<DVec3> = [(-0.25, -2.0), (0.25, -2.0), (0.25, 2.0), (-0.25, 2.0)]
+            .iter()
+            .map(|&(u, w)| cone::evaluate(apex, ax_d, ha, refd, u, vmid + w))
+            .collect();
+        let samples = cone::polyline_on_cone(apex, ax_d, ha, refd, &corners, true, 0.5)
+            .expect("rect polyline projects onto the cone");
+        let (cap, host) = mesh
+            .split_cone_face_by_circle(side, &samples)
+            .expect("rect-polyline split on cone must succeed");
+        assert_eq!(host, side, "remainder is the host face");
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after cone rect split");
+        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cone { .. })),
+            "cap inherits Cone (ADR-089 A-χ)");
+    }
+
     #[test]
     fn adr257_beta3_split_rejects_non_cylinder() {
         // A planar (non-Cylinder) face is rejected.

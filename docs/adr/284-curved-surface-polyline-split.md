@@ -79,7 +79,14 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
   splits` now drives the REAL function end-to-end (rect world corners →
   polyline_on_cylinder → split_cylinder_face_by_circle → cap + remainder,
   manifold, Cylinder inherited). axia-geo **2198**.
-- **β-1 cone/sphere/torus, β-3 dispatch/bridge, β-4 open line**: next.
+- **β-1 cone (landed 2026-07-08)**: `cone::polyline_on_cone(...)` — same
+  technique (cone is developable); wrap guard = signed-`u`-winding (the
+  `v·tanα` radius scaling doesn't change encircling). Tests:
+  `polyline_on_cone_rect_samples_on_surface` + end-to-end sim
+  `adr284_sim_rect_polyline_on_cone_splits` (rect → split_cone_face_by_circle →
+  cap + remainder, manifold, Cone inherited). axia-geo **2200**.
+- **β-1 sphere/torus (non-developable — pole/seam care), β-3 dispatch/bridge,
+  β-4 open line**: next.
 
 ## Lock-ins (α)
 
