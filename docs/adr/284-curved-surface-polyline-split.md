@@ -85,8 +85,22 @@ endpoints + insert the polyline), not the closed-loop cap. ADR-202's degeneracy
   `polyline_on_cone_rect_samples_on_surface` + end-to-end sim
   `adr284_sim_rect_polyline_on_cone_splits` (rect → split_cone_face_by_circle →
   cap + remainder, manifold, Cone inherited). axia-geo **2200**.
-- **β-1 sphere/torus (non-developable — pole/seam care), β-3 dispatch/bridge,
-  β-4 open line**: next.
+- **β-1 torus (landed 2026-07-08)**: `torus::polyline_on_torus(...)` — torus is
+  doubly-periodic, so BOTH `u` (major) and `v` (minor) are unrolled + the
+  encircle guard checks BOTH windings. Reuses the samples-based
+  `split_torus_face_by_circle`. Tests: `polyline_on_torus_rect_samples_on_surface`
+  / `_rejects_major_wrap` + end-to-end `adr284_sim_rect_polyline_on_torus_splits`.
+- **β-1 sphere (landed 2026-07-08)**: `sphere::polyline_on_sphere(...)` — `u`
+  (longitude) wraps, `v` (latitude) is pole-bounded (reject `|v| → π/2`). The
+  sphere `split_by_circle` takes an analytic `Circle`, so a polyline needs the
+  NEW samples-based `Mesh::split_sphere_face_by_polyline` (N-edge loop +
+  twin-reparent, the sphere analogue of the cylinder split). Tests:
+  `polyline_on_sphere_rect_samples_on_surface` / `_rejects_pole` + end-to-end
+  `adr284_sim_rect_polyline_on_sphere_splits`.
+- **β-1 COMPLETE — all 4 surfaces** (cylinder / cone / torus / sphere) project +
+  split a closed polyline (rect / polygon / freehand / bezier) → cap + remainder,
+  manifold, surface inherited. axia-geo **2206**.
+- **β-3 dispatch/bridge (browser demo), β-4 open line (S3)**: next.
 
 ## Lock-ins (α)
 

@@ -198,6 +198,145 @@ pub fn circle_on_sphere(
     })
 }
 
+/// ADR-284 β-1 — project a drawn POLYLINE (rect / polygon / freehand / bezier
+/// corners) onto this sphere and sample it into on-surface points, ready for
+/// [`crate::mesh::Mesh::split_sphere_face_by_polyline`]. Mirror of the cylinder
+/// version, but the sphere is non-developable: `u` (longitude) wraps, `v`
+/// (latitude ∈ (-π/2, π/2)) does not. Parameter-space edge sampling (map back
+/// via `evaluate`) is a first-order approximation, sufficient for a simple
+/// on-surface split loop.
+///
+/// `None` if < 2 points, any point is not on this sphere (> 1e-3 mm), a point is
+/// within 1e-3 rad of a pole (`|v| → π/2` — the longitude singularity), a CLOSED
+/// loop encircles a pole (`|u-winding| > π`), an OPEN loop spans ≥ a full turn in
+/// longitude, or fewer than 3 samples.
+pub fn polyline_on_sphere(
+    center: DVec3,
+    radius: f64,
+    axis_dir: DVec3,
+    ref_dir: DVec3,
+    pts: &[DVec3],
+    closed: bool,
+    chord_tol: f64,
+) -> Option<Vec<DVec3>> {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    if pts.len() < 2 || !(radius > 0.0) {
+        return None;
+    }
+    let (rb, bb, ab) = sphere_basis(axis_dir, ref_dir);
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    let mut u_prev = 0.0;
+    for (i, &p) in pts.iter().enumerate() {
+        let sp = project_to_surface(center, radius, p)?;
+        if (sp - p).length() > 1e-3 {
+            return None; // not on this sphere
+        }
+        let unit = (sp - center) / radius;
+        let v = unit.dot(ab).clamp(-1.0, 1.0).asin();
+        if v.abs() > FRAC_PI_2 - 1e-3 {
+            return None; // too close to a pole (longitude undefined)
+        }
+        let u_raw = unit.dot(bb).atan2(unit.dot(rb));
+        let u_cont = if i == 0 {
+            u_raw
+        } else {
+            let mut uu = u_raw;
+            while uu - u_prev > PI {
+                uu -= TAU;
+            }
+            while uu - u_prev < -PI {
+                uu += TAU;
+            }
+            uu
+        };
+        u_prev = u_cont;
+        uv.push((u_cont, v));
+    }
+    let n = uv.len();
+    // Wrap guard: CLOSED loop must not encircle a pole (u winds ≈ ±2π); OPEN
+    // loop must span < a full turn in longitude.
+    if closed {
+        let mut winding = 0.0;
+        for e in 0..n {
+            let mut du = (uv[(e + 1) % n].0 - uv[e].0) % TAU;
+            if du > PI {
+                du -= TAU;
+            } else if du < -PI {
+                du += TAU;
+            }
+            winding += du;
+        }
+        if winding.abs() > PI {
+            return None;
+        }
+    } else {
+        let (umin, umax) = uv
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), &(u, _)| (a.min(u), b.max(u)));
+        if umax - umin >= TAU - 1e-6 {
+            return None;
+        }
+    }
+    // Chord-sample each edge parametrically (arc-length ≈ radius·Δparam). Each
+    // edge emits its START + interior points (not its end) → no duplicate verts.
+    let edge_count = if closed { n } else { n - 1 };
+    let mut out: Vec<DVec3> = Vec::new();
+    for e in 0..edge_count {
+        let (u0, v0) = uv[e];
+        let (u1, v1) = uv[(e + 1) % n];
+        let flat = radius * (((u1 - u0) * v0.cos()).powi(2) + (v1 - v0).powi(2)).sqrt();
+        let k = ((flat / chord_tol.max(1e-6)).ceil() as usize).clamp(1, 64);
+        for s in 0..k {
+            let t = s as f64 / k as f64;
+            let u = u0 + (u1 - u0) * t;
+            let v = v0 + (v1 - v0) * t;
+            out.push(evaluate(center, radius, axis_dir, ref_dir, u, v));
+        }
+    }
+    if out.len() < 3 {
+        return None;
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests_adr284 {
+    use super::*;
+
+    #[test]
+    fn polyline_on_sphere_rect_samples_on_surface() {
+        // ADR-284 β-1 — a rect (4 corners) on a sphere projects to a closed
+        // on-surface loop; every sample lies on the sphere.
+        let (c, rad, ax, refd) = (DVec3::ZERO, 10.0, DVec3::Z, DVec3::X);
+        let corners: Vec<DVec3> = [(-0.2, 0.3), (0.2, 0.3), (0.2, 0.6), (-0.2, 0.6)]
+            .iter()
+            .map(|&(u, v)| evaluate(c, rad, ax, refd, u, v))
+            .collect();
+        let samples = polyline_on_sphere(c, rad, ax, refd, &corners, true, 0.3)
+            .expect("rect projects onto sphere");
+        assert!(samples.len() >= 4);
+        for &p in &samples {
+            let sp = project_to_surface(c, rad, p).unwrap();
+            assert!((sp - p).length() < 1e-9, "every sample lies on the sphere");
+        }
+    }
+
+    #[test]
+    fn polyline_on_sphere_rejects_pole() {
+        // A rect straddling the north pole (v near π/2) → pole singularity → None.
+        let (c, rad, ax, refd) = (DVec3::ZERO, 10.0, DVec3::Z, DVec3::X);
+        let vp = std::f64::consts::FRAC_PI_2 - 5e-4;
+        let corners: Vec<DVec3> = [(-0.2, vp), (0.2, vp), (0.2, vp - 0.1), (-0.2, vp - 0.1)]
+            .iter()
+            .map(|&(u, v)| evaluate(c, rad, ax, refd, u, v))
+            .collect();
+        assert!(
+            polyline_on_sphere(c, rad, ax, refd, &corners, true, 0.3).is_none(),
+            "near-pole loop → None (longitude singularity guard)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

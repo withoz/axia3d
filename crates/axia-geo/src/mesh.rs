@@ -4164,6 +4164,101 @@ impl Mesh {
         Some((cap_face, host_face))
     }
 
+    /// **ADR-284 β-1** — split a Sphere-surface face by a closed on-surface
+    /// POLYLINE (rect / polygon / freehand / bezier — NOT necessarily an analytic
+    /// circle). Unlike [`Self::split_sphere_face_by_circle`] (which takes an
+    /// `AnalyticCurve::Circle`), this is the N-edge samples-based split — the
+    /// sphere analogue of [`Self::split_cylinder_face_by_circle`]: build the loop
+    /// face + reparent its N twin HEs as the host's inner hole (cap + remainder,
+    /// both inherit the host's `Sphere`, ADR-089 A-χ). `samples`
+    /// (from [`crate::surfaces::sphere::polyline_on_sphere`]) lie on the sphere.
+    ///
+    /// `None` if the host is missing/inactive/not a Sphere; < 3 distinct
+    /// on-sphere samples; or the loop's vertices dedup-collapse.
+    pub fn split_sphere_face_by_polyline(
+        &mut self,
+        host_face: FaceId,
+        samples: &[DVec3],
+    ) -> Option<(FaceId, FaceId)> {
+        use crate::surfaces::AnalyticSurface;
+        let face = self.faces.get(host_face)?;
+        if !face.is_active() {
+            return None;
+        }
+        let material = face.material();
+        let sph = match face.surface() {
+            Some(s @ AnalyticSurface::Sphere { .. }) => s.clone(),
+            _ => return None,
+        };
+        let (sc, sr) = match &sph {
+            AnalyticSurface::Sphere { center, radius, .. } => (*center, *radius),
+            _ => return None,
+        };
+        // Drop a closing duplicate sample if present.
+        let pts: Vec<DVec3> = {
+            let m = samples.len();
+            if m >= 4 && (samples[0] - samples[m - 1]).length() < crate::tolerances::EPSILON_LENGTH {
+                samples[..m - 1].to_vec()
+            } else {
+                samples.to_vec()
+            }
+        };
+        let n = pts.len();
+        if n < 3 {
+            return None;
+        }
+        // Every sample must lie on THIS sphere.
+        for &p in &pts {
+            if ((p - sc).length() - sr).abs() > 1e-4 {
+                return None;
+            }
+        }
+        // Orientation: the cap normal must point radially OUTWARD (away from the
+        // sphere center at the loop centroid); reverse the loop if it faces inward.
+        let centroid = pts.iter().fold(DVec3::ZERO, |a, &p| a + p) / (n as f64);
+        let outward = (centroid - sc).normalize_or_zero();
+        let mut newell = DVec3::ZERO;
+        for i in 0..n {
+            newell += pts[i].cross(pts[(i + 1) % n]);
+        }
+        let mut ordered = pts;
+        if newell.dot(outward) < 0.0 {
+            ordered.reverse();
+        }
+        // Build the closed loop (reuse add_vertex dedup + add_edge).
+        let loop_verts: Vec<VertId> = ordered.iter().map(|&p| self.add_vertex(p)).collect();
+        for i in 0..n {
+            if loop_verts[i] == loop_verts[(i + 1) % n] {
+                return None; // dedup collapsed consecutive samples → degenerate
+            }
+        }
+        for i in 0..n {
+            self.add_edge(loop_verts[i], loop_verts[(i + 1) % n]).ok()?;
+        }
+        let cap = self.add_face_with_holes(&loop_verts, &[], material).ok()?;
+        self.faces[cap].set_surface(Some(sph.clone()));
+        // Wire the N twin HEs into a closed inner loop on the host.
+        let cap_hes = self.collect_loop_hes(self.faces[cap].outer().start).ok()?;
+        let twins: Vec<HeId> = cap_hes.iter().map(|&h| self.hes[h].next_rad()).collect();
+        let m = twins.len();
+        if m == 0 {
+            return None;
+        }
+        for k in 0..m {
+            let cur = twins[(m - k) % m];
+            let nxt = twins[(m - k - 1 + m) % m];
+            if !self.hes.contains(cur) || !self.hes.contains(nxt) {
+                return None;
+            }
+            self.hes[cur].set_face(host_face);
+            self.hes[cur].set_outer(false);
+            self.hes[cur].set_next(nxt);
+            self.hes[nxt].set_prev(cur);
+        }
+        self.faces[host_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+        Some((cap, host_face))
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16027,6 +16122,77 @@ mod tests {
         assert!(mesh.verify_face_invariants().is_valid(), "manifold after cone rect split");
         assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cone { .. })),
             "cap inherits Cone (ADR-089 A-χ)");
+    }
+
+    /// ADR-284 β-1 (torus) — a rect polyline projected onto a torus face (via
+    /// `torus::polyline_on_torus`, doubly-periodic) splits it → cap + remainder,
+    /// manifold, Torus inherited. Torus split already takes samples (shape-
+    /// agnostic), like cylinder/cone.
+    #[test]
+    fn adr284_sim_rect_polyline_on_torus_splits() {
+        use crate::surfaces::{torus, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let face = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).expect("torus");
+        let tor = mesh.face_surface(face).cloned().expect("surface");
+        let (c, ax, refd, rmaj, rmin) = match &tor {
+            AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                (*center, *axis_dir, *ref_dir, *major_radius, *minor_radius),
+            _ => panic!("Torus, got {:?}", tor),
+        };
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let corners: Vec<DVec3> = [(-0.2, -0.3), (0.2, -0.3), (0.2, 0.3), (-0.2, 0.3)]
+            .iter()
+            .map(|&(u, v)| torus::evaluate(c, ax, refd, rmaj, rmin, u, v))
+            .collect();
+        let samples = torus::polyline_on_torus(c, ax, refd, rmaj, rmin, &corners, true, 0.3)
+            .expect("rect polyline projects onto the torus");
+        let (cap, host) = mesh
+            .split_torus_face_by_circle(face, &samples)
+            .expect("rect-polyline split on torus must succeed");
+        assert_eq!(host, face, "remainder is the host face");
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after torus rect split");
+        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Torus { .. })),
+            "cap inherits Torus (ADR-089 A-χ)");
+    }
+
+    /// ADR-284 β-1 (sphere) — a rect polyline projected onto a sphere hemisphere
+    /// (via `sphere::polyline_on_sphere`) splits it via the NEW samples-based
+    /// `split_sphere_face_by_polyline` (the sphere split-by-circle takes an
+    /// analytic Circle, so a rect needs the N-edge samples path) → cap +
+    /// remainder, manifold, Sphere inherited.
+    #[test]
+    fn adr284_sim_rect_polyline_on_sphere_splits() {
+        use crate::surfaces::{sphere, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let faces = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).expect("sphere");
+        let hemi = faces[0];
+        let s = mesh.face_surface(hemi).cloned().expect("surface");
+        let (c, rad, ax, refd) = match &s {
+            AnalyticSurface::Sphere { center, radius, axis_dir, ref_dir, .. } =>
+                (*center, *radius, *axis_dir, *ref_dir),
+            _ => panic!("Sphere, got {:?}", s),
+        };
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        // rect at latitude v ∈ [0.3, 0.6] (north hemisphere, away from pole/equator).
+        let corners: Vec<DVec3> = [(-0.2, 0.3), (0.2, 0.3), (0.2, 0.6), (-0.2, 0.6)]
+            .iter()
+            .map(|&(u, v)| sphere::evaluate(c, rad, ax, refd, u, v))
+            .collect();
+        let samples = sphere::polyline_on_sphere(c, rad, ax, refd, &corners, true, 0.3)
+            .expect("rect polyline projects onto the sphere");
+        let (cap, host) = mesh
+            .split_sphere_face_by_polyline(hemi, &samples)
+            .expect("rect-polyline split on sphere must succeed");
+        assert_eq!(host, hemi, "remainder is the host hemisphere");
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after sphere rect split");
+        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Sphere { .. })),
+            "cap inherits Sphere (ADR-089 A-χ)");
     }
 
     #[test]

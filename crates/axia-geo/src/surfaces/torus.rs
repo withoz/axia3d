@@ -197,10 +197,150 @@ pub fn circle_on_torus(
     Some(pts)
 }
 
+/// ADR-284 β-1 — project a drawn POLYLINE (rect / polygon / freehand / bezier
+/// corners) onto this torus and sample it into on-surface points, ready for
+/// [`crate::mesh::Mesh::split_torus_face_by_circle`] (shape-agnostic closed-
+/// polyline split). Mirror of [`crate::surfaces::cylinder::polyline_on_cylinder`],
+/// but the torus is **doubly-periodic** — BOTH `u` (major) and `v` (minor) wrap —
+/// so both params are unrolled continuously and the encircle guard checks BOTH
+/// windings. The torus is non-developable, so parameter-space edge sampling is a
+/// first-order approximation (sufficient for a simple on-surface split loop).
+///
+/// `None` if < 2 points, any point is not on this torus (> 1e-3 mm), a CLOSED
+/// loop encircles the major OR the minor circle (`|winding| > π`), an OPEN loop
+/// spans ≥ a full turn in either param, or fewer than 3 samples.
+#[allow(clippy::too_many_arguments)]
+pub fn polyline_on_torus(
+    center: DVec3,
+    axis_dir: DVec3,
+    ref_dir: DVec3,
+    major_radius: f64,
+    minor_radius: f64,
+    pts: &[DVec3],
+    closed: bool,
+    chord_tol: f64,
+) -> Option<Vec<DVec3>> {
+    use std::f64::consts::{PI, TAU};
+    if pts.len() < 2 {
+        return None;
+    }
+    let unroll = |cur: f64, prev: f64| -> f64 {
+        let mut x = cur;
+        while x - prev > PI {
+            x -= TAU;
+        }
+        while x - prev < -PI {
+            x += TAU;
+        }
+        x
+    };
+    // Project each point → (u, v), unrolling BOTH params continuously.
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    let (mut up, mut vp) = (0.0, 0.0);
+    for (i, &p) in pts.iter().enumerate() {
+        let (sp, u, v) =
+            project_to_torus(center, axis_dir, ref_dir, major_radius, minor_radius, p)?;
+        if (sp - p).length() > 1e-3 {
+            return None; // not on this torus
+        }
+        let (uc, vc) = if i == 0 { (u, v) } else { (unroll(u, up), unroll(v, vp)) };
+        up = uc;
+        vp = vc;
+        uv.push((uc, vc));
+    }
+    let n = uv.len();
+    // Wrap guard on BOTH windings (major u + minor v).
+    if closed {
+        let (mut wu, mut wv) = (0.0, 0.0);
+        for e in 0..n {
+            let (u0, v0) = uv[e];
+            let (u1, v1) = uv[(e + 1) % n];
+            let mut du = (u1 - u0) % TAU;
+            if du > PI {
+                du -= TAU;
+            } else if du < -PI {
+                du += TAU;
+            }
+            let mut dv = (v1 - v0) % TAU;
+            if dv > PI {
+                dv -= TAU;
+            } else if dv < -PI {
+                dv += TAU;
+            }
+            wu += du;
+            wv += dv;
+        }
+        if wu.abs() > PI || wv.abs() > PI {
+            return None;
+        }
+    } else {
+        let (umin, umax) = uv.iter().fold((f64::MAX, f64::MIN), |(a, b), &(u, _)| (a.min(u), b.max(u)));
+        let (vmin, vmax) = uv.iter().fold((f64::MAX, f64::MIN), |(a, b), &(_, v)| (a.min(v), b.max(v)));
+        if umax - umin >= TAU - 1e-6 || vmax - vmin >= TAU - 1e-6 {
+            return None;
+        }
+    }
+    // Chord-sample each edge parametrically; map back with `evaluate`. Each edge
+    // emits its START + interior points (not its end) → no duplicate vertices.
+    let edge_count = if closed { n } else { n - 1 };
+    let mut out: Vec<DVec3> = Vec::new();
+    for e in 0..edge_count {
+        let (u0, v0) = uv[e];
+        let (u1, v1) = uv[(e + 1) % n];
+        // first-order metric length: ds² = (R + r·cos v0)²du² + r²dv².
+        let scale = (major_radius + minor_radius * v0.cos()).abs();
+        let flat = (((u1 - u0) * scale).powi(2) + ((v1 - v0) * minor_radius).powi(2)).sqrt();
+        let k = ((flat / chord_tol.max(1e-6)).ceil() as usize).clamp(1, 64);
+        for s in 0..k {
+            let t = s as f64 / k as f64;
+            let u = u0 + (u1 - u0) * t;
+            let v = v0 + (v1 - v0) * t;
+            out.push(evaluate(center, axis_dir, ref_dir, major_radius, minor_radius, u, v));
+        }
+    }
+    if out.len() < 3 {
+        return None;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+    #[test]
+    fn polyline_on_torus_rect_samples_on_surface() {
+        // ADR-284 β-1 — a small rect (4 corners) on a torus wall projects to a
+        // closed on-surface loop; every sample lies on the torus.
+        let (c, ax, refd, rmaj, rmin) = (DVec3::ZERO, DVec3::Z, DVec3::X, 10.0, 3.0);
+        let corners: Vec<DVec3> = [(-0.2, -0.3), (0.2, -0.3), (0.2, 0.3), (-0.2, 0.3)]
+            .iter()
+            .map(|&(u, v)| evaluate(c, ax, refd, rmaj, rmin, u, v))
+            .collect();
+        let samples = polyline_on_torus(c, ax, refd, rmaj, rmin, &corners, true, 0.3)
+            .expect("rect projects onto torus");
+        assert!(samples.len() >= 4);
+        for &p in &samples {
+            let (sp, _u, _v) = project_to_torus(c, ax, refd, rmaj, rmin, p).unwrap();
+            assert!((sp - p).length() < 1e-9, "every sample lies on the torus");
+        }
+    }
+
+    #[test]
+    fn polyline_on_torus_rejects_major_wrap() {
+        // A loop spanning the whole MAJOR circle (u = 0, π/2, π, 3π/2) → encircle
+        // → None.
+        let (c, ax, refd, rmaj, rmin) = (DVec3::ZERO, DVec3::Z, DVec3::X, 10.0, 3.0);
+        let corners: Vec<DVec3> = [0.0, FRAC_PI_2, PI, 3.0 * FRAC_PI_2]
+            .iter()
+            .map(|&u| evaluate(c, ax, refd, rmaj, rmin, u, 0.0))
+            .collect();
+        assert!(
+            polyline_on_torus(c, ax, refd, rmaj, rmin, &corners, true, 0.3).is_none(),
+            "full major-circle loop → None (encircle guard)"
+        );
+    }
 
     #[test]
     fn evaluate_outermost_equator_u_zero_v_zero() {
