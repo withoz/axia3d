@@ -4397,6 +4397,62 @@ impl Mesh {
         Some((res.new_faces[0], res.new_faces[1], rebuilt_twin))
     }
 
+    /// **ADR-285 β-1** — parametric direct edit: change a Path B **Sphere**'s
+    /// RADIUS in place. Given any one hemisphere face, finds the shared equator
+    /// edge + the twin hemisphere (radial twin of the equator HE), then:
+    ///   - `set_curve_radius(equator)` — updates the equator `Circle` curve radius
+    ///     AND moves the anchor vertex to `center + basis_u · r'`;
+    ///   - `set_face_surface` on BOTH hemispheres — new `Sphere { radius: r' }`,
+    ///     bumping `surface_version` so the render cache re-tessellates.
+    ///
+    /// Topology is UNCHANGED (same 2 hemispheres + 1 equator self-loop + 1 anchor)
+    /// → manifold preserved by construction, FaceId / owner / selection survive.
+    /// Returns `false` if `face_id` is not an active Sphere self-loop face or
+    /// `new_radius <= 0`. De-risked by `adr285_sim_sphere_radius_parametric_edit`.
+    pub fn set_sphere_radius(&mut self, face_id: FaceId, new_radius: f64) -> bool {
+        use crate::surfaces::AnalyticSurface;
+        if !(new_radius > 1e-9) {
+            return false;
+        }
+        // Host must be an active Sphere face.
+        if !matches!(
+            self.faces.get(face_id).filter(|f| f.is_active()).and_then(|f| f.surface()),
+            Some(AnalyticSurface::Sphere { .. })
+        ) {
+            return false;
+        }
+        let outer_start = self.faces[face_id].outer().start;
+        if outer_start.is_null() {
+            return false;
+        }
+        let eq_edge = match self.hes.get(outer_start) {
+            Some(h) => h.edge(),
+            None => return false,
+        };
+        // Twin hemisphere = radial twin of the equator HE (shares the edge).
+        let twin_he = self.hes[outer_start].next_rad();
+        let twin_face = if !twin_he.is_null() && twin_he != outer_start {
+            self.hes.get(twin_he).map(|h| h.face())
+        } else {
+            None
+        };
+        // 1. Equator Circle curve radius + anchor position (one call).
+        if self.set_curve_radius(eq_edge, new_radius).is_err() {
+            return false;
+        }
+        // 2. Both hemisphere Sphere surfaces → new radius (keep center/axis/ranges).
+        for f in [Some(face_id), twin_face].into_iter().flatten() {
+            if let Some(AnalyticSurface::Sphere { center, axis_dir, ref_dir, u_range, v_range, .. }) =
+                self.face_surface(f).cloned()
+            {
+                self.set_face_surface(f, Some(AnalyticSurface::Sphere {
+                    center, radius: new_radius, axis_dir, ref_dir, u_range, v_range,
+                }));
+            }
+        }
+        true
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16645,6 +16701,51 @@ mod tests {
         assert!((anchor_pos - DVec3::new(new_r, 0.0, 0.0)).length() < 1e-6,
             "equator anchor moved to center + X*15");
         assert!(max_dev < 0.15, "tessellated surface now lies on r=15 sphere (max dev {max_dev})");
+    }
+
+    /// ADR-285 β-1 — `set_sphere_radius` production API: given ONE hemisphere
+    /// face, it finds the twin + shared equator and updates radius on all three
+    /// (both surfaces + the equator Circle/anchor). Locks: both hemispheres +
+    /// equator anchor + tessellation reflect the new radius, topology unchanged,
+    /// manifold valid; rejects non-Sphere faces + non-positive radius.
+    #[test]
+    fn adr285_beta1_set_sphere_radius() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let sf = mesh.create_sphere_kernel_native(DVec3::ZERO, 10.0, mat).unwrap();
+        let (north, south) = (sf[0], sf[1]);
+        let eq_edge = mesh.hes[mesh.faces[north].outer().start].edge();
+
+        // Edit via ONLY the north face id (twin found internally).
+        assert!(mesh.set_sphere_radius(north, 15.0), "set_sphere_radius must succeed");
+
+        let radius_of = |m: &Mesh, f| match m.face_surface(f) {
+            Some(AnalyticSurface::Sphere { radius, .. }) => *radius,
+            _ => 0.0,
+        };
+        let inv = mesh.verify_face_invariants();
+        assert!(inv.is_valid(), "radius edit stays manifold: {:?}", inv.violations);
+        assert!((radius_of(&mesh, north) - 15.0).abs() < 1e-9, "north surface radius");
+        assert!((radius_of(&mesh, south) - 15.0).abs() < 1e-9, "twin (south) surface radius");
+        let anchor = mesh.vertex_pos(mesh.edges[eq_edge].v_small()).unwrap();
+        assert!((anchor - DVec3::new(15.0, 0.0, 0.0)).length() < 1e-6, "equator anchor moved");
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 2, "topology unchanged");
+        let tess = mesh.tessellate_face_surface(north, 0.1).unwrap();
+        let max_dev = tess.vertices.iter().map(|p| (p.length() - 15.0).abs()).fold(0.0_f64, f64::max);
+        assert!(max_dev < 0.15, "tessellation on r=15");
+
+        // Rejects.
+        assert!(!mesh.set_sphere_radius(north, 0.0), "non-positive radius rejected");
+        assert!(!mesh.set_sphere_radius(north, -5.0), "negative radius rejected");
+        // A planar face → rejected.
+        let mut pm = Mesh::new();
+        let v0 = pm.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = pm.add_vertex(DVec3::new(1.0, 0.0, 0.0));
+        let v2 = pm.add_vertex(DVec3::new(1.0, 1.0, 0.0));
+        let v3 = pm.add_vertex(DVec3::new(0.0, 1.0, 0.0));
+        let pf = pm.add_face(&[v0, v1, v2, v3], mat).unwrap();
+        assert!(!pm.set_sphere_radius(pf, 5.0), "non-Sphere face rejected");
     }
 
     #[test]

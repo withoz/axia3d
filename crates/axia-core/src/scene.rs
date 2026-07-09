@@ -3257,6 +3257,29 @@ impl Scene {
         }
     }
 
+    /// ADR-285 β-1 — parametric direct edit: change a Path B Sphere's RADIUS in
+    /// place (given any one hemisphere face). Transaction-wrapped for a single
+    /// Undo step. Topology is unchanged (both hemispheres + equator update), so
+    /// owner tracking / selection survive — no reconcile needed. Returns `false`
+    /// if the face is not a Sphere or the radius is non-positive.
+    pub fn set_sphere_radius(&mut self, face_id: FaceId, new_radius: f64) -> bool {
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let ok = self.mesh.set_sphere_radius(face_id, new_radius);
+        if own {
+            if ok {
+                self.transactions.set_after_snapshot(self.scene_snapshot());
+                self.transactions.commit();
+            } else {
+                self.transactions.cancel();
+            }
+        }
+        ok
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 

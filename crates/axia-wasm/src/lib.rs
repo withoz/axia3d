@@ -5098,6 +5098,20 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-285 β-1 — parametric direct edit: change a Path B Sphere's RADIUS in
+    /// place (given any one hemisphere face). Updates both hemispheres + the
+    /// shared equator, topology unchanged. Transaction-wrapped (single Undo).
+    /// Returns true on success, false if not a Sphere face / non-positive radius.
+    #[wasm_bindgen(js_name = "setSphereRadius")]
+    pub fn set_sphere_radius(&mut self, face_id_raw: u32, radius: f64) -> bool {
+        let ok = self.scene.set_sphere_radius(FaceId::new(face_id_raw), radius);
+        if ok {
+            self.mark_topology_changed();
+            self.invalidate_cache();
+        }
+        ok
+    }
+
     /// Test if a 3D point lies within a face's boundary.
     ///
     /// Returns true if the point is on the face's plane and inside its edges.

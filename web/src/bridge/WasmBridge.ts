@@ -828,6 +828,8 @@ type AxiaEngineExtended = AxiaEngine & {
   drawPolylineOnSphere?(faceId: number, flat: Float64Array, closed: boolean): string;
   // ADR-284 β-4-3/β-4-4 — split a curved self-loop face (sphere/cone) by an OPEN drawn seam (flat xyz).
   drawOpenSeamOnCurved?(faceId: number, flat: Float64Array): string;
+  // ADR-285 β-1 — parametric direct edit: change a sphere's radius in place.
+  setSphereRadius?(faceId: number, radius: number): boolean;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3070,6 +3072,20 @@ export class WasmBridge {
       flat[i * 3 + 2] = pts[i][2];
     }
     return fn.call(this.engine, faceId, flat);
+  }
+
+  /**
+   * ADR-285 β-1 — parametric direct edit: change a Path B sphere's RADIUS in
+   * place (given any one hemisphere face; the twin + shared equator update
+   * automatically). Topology unchanged, transaction-wrapped (single Undo).
+   * Returns true on success, false if not a sphere face / non-positive radius /
+   * the export is absent.
+   */
+  setSphereRadius(faceId: number, radius: number): boolean {
+    const fn = this.engine?.setSphereRadius;
+    if (!fn || !(radius > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, faceId, radius);
   }
 
   /**

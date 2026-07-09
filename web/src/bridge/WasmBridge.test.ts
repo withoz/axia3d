@@ -988,6 +988,35 @@ describe('WasmBridge', () => {
       expect(captured[4]).toBe(7.0);
     });
 
+    // ADR-285 β-1 — parametric direct edit of a sphere's radius.
+    it('setSphereRadius() forwards (faceId, radius) for a positive radius', () => {
+      let captured: number[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setSphereRadius: (fid: number, r: number) => {
+          captured = [fid, r];
+          return true;
+        },
+      };
+      const ok = bridge.setSphereRadius(5, 18.0);
+      expect(ok).toBe(true);
+      expect(captured).toEqual([5, 18.0]);
+    });
+
+    it('setSphereRadius() rejects a non-positive radius without calling the engine', () => {
+      let called = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setSphereRadius: () => {
+          called = true;
+          return true;
+        },
+      };
+      expect(bridge.setSphereRadius(5, 0)).toBe(false);
+      expect(bridge.setSphereRadius(5, -3)).toBe(false);
+      expect(called).toBe(false);
+    });
+
     it('faceSurfaceKind() returns engine value', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (bridge as any).engine = {

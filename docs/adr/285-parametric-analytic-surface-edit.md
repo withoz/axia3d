@@ -99,14 +99,37 @@ updates both incident faces).
 - **L-285-8** Additive (ADR-046 P31 #4) — new APIs, existing ops UNCHANGED.
 - **L-285-9** 절대 #[ignore] 금지.
 
-## 7. β sub-step roadmap (제안, 각 atomic PR)
+## 7. β sub-step roadmap (각 atomic PR)
 
-- **β-1 Sphere** radius — engine `set_sphere_radius(face, r)` + WASM + bridge +
-  Inspector numeric field + regression (in-place, manifold, tessellation).
+- **β-1 Sphere** radius — ✅ **LANDED (2026-07-09)**.
 - **β-2 Cylinder** radius + height (2-rim + caps; height moves top rim + v_range).
 - **β-3 Cone** radius + height (half_angle recompute; apex move).
 - **β-4 Torus** major + minor.
-- **β-5** Inspector UX polish + real-Chromium demo.
+- **β-5** Inspector UX polish + real-Chromium demo sweep.
+
+### β-1 Sphere radius — LANDED (2026-07-09)
+
+Full stack, all 5/5 Q recommendations:
+- **Engine** `Mesh::set_sphere_radius(face, r)` — given any one hemisphere, finds
+  the twin (radial twin of the equator HE) + does `set_curve_radius(equator)` (rim
+  Circle + anchor) + `set_face_surface` on both hemispheres. Rejects non-Sphere /
+  r≤0. Topology unchanged → manifold by construction.
+- **Scene** `Scene::set_sphere_radius` — transaction-wrapped (single Undo). No
+  owner reconcile needed (faces unchanged).
+- **WASM** `setSphereRadius(faceId, radius) -> bool` (additive).
+- **Bridge** `WasmBridge.setSphereRadius(faceId, radius)` (guards r>0).
+- **UI** XiaInspector — a single Sphere-face selection injects a "곡면 반지름 (mm)"
+  numeric field (`#xi-curved-edit`) into `#xi-content`; change/Enter →
+  `bridge.setSphereRadius` + `toolManager.syncMesh()`. Hidden for non-Sphere /
+  empty / edge selections.
+- **Regression**: axia-geo `adr285_beta1_set_sphere_radius` (one-face API →
+  both hemispheres + equator + tessellation update, topology unchanged, manifold;
+  reject non-Sphere/r≤0) + `adr285_sim_sphere_radius_parametric_edit` (de-risk) +
+  vitest WasmBridge ×2 (forwards / rejects r≤0).
+- **Real-WASM browser**: `create_sphere` → bridge `setSphereRadius(0, 18)` → both
+  hemispheres r=18, faces 2, nm=0, valid; **Undo → r=10**. Inspector UI: select
+  hemisphere → radius field shows "10" → type "20" + change → both hemispheres
+  r=20, faces 2, nm=0, valid, viewport synced.
 
 ## 8. Cross-link
 

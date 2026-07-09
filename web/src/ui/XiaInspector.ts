@@ -166,6 +166,65 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     viewport.refreshMaterialColors();
   };
 
+  // ── ADR-285 β-1 — 파라메트릭 직접 편집: 선택된 Sphere 면의 반지름 편집기.
+  // 곡면 face(surfaceKind 3=Sphere) 단일 선택 시 반지름 입력 필드를 xi-content
+  // 에 주입(최초 1회) → 값 변경 시 bridge.setSphereRadius + syncMesh. 그 외
+  // 선택(빈 선택 / edge / 비-Sphere face)에서는 숨김. (β-2~4에서 cylinder/
+  // cone/torus params 확장 예정.)
+  const updateCurvedEditor = (faceIds: number[]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const eng = bridge.engine as any;
+    let box = document.getElementById('xi-curved-edit') as HTMLElement | null;
+    const isSphere =
+      faceIds.length === 1 &&
+      !!eng &&
+      typeof eng.faceSurfaceKind === 'function' &&
+      eng.faceSurfaceKind(faceIds[0]) === 3 &&
+      typeof bridge.setSphereRadius === 'function';
+    if (!isSphere) {
+      if (box) box.style.display = 'none';
+      return;
+    }
+    let radius = 0;
+    try {
+      radius = JSON.parse(eng.getFaceSurfaceJson(faceIds[0])).radius || 0;
+    } catch {
+      /* leave 0 */
+    }
+    if (!box) {
+      const contentEl = document.getElementById('xi-content');
+      if (!contentEl) return;
+      box = document.createElement('div');
+      box.id = 'xi-curved-edit';
+      box.className = 'xi-computed-box';
+      box.innerHTML =
+        '<div style="font-size:11px;opacity:0.7;margin-bottom:4px;">곡면 반지름 (mm)</div>' +
+        '<input id="xi-radius-input" type="number" step="1" min="0.1" ' +
+        'style="width:100%;box-sizing:border-box;padding:4px;background:#2a2a2a;' +
+        'color:#eee;border:1px solid #444;border-radius:4px;" />';
+      contentEl.appendChild(box);
+      const input = box.querySelector('#xi-radius-input') as HTMLInputElement;
+      const apply = () => {
+        const val = parseFloat(input.value);
+        const fid = parseInt(input.dataset.faceId || '-1', 10);
+        if (fid >= 0 && val > 0 && bridge.setSphereRadius?.(fid, val)) {
+          toolManager.syncMesh();
+        }
+      };
+      input.addEventListener('change', apply);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          apply();
+          input.blur();
+        }
+      });
+    }
+    box.style.display = '';
+    const input = box.querySelector('#xi-radius-input') as HTMLInputElement;
+    input.value = String(Math.round(radius * 100) / 100);
+    input.dataset.faceId = String(faceIds[0]);
+  };
+
   // MaterialLibrary 변경 이벤트 → Viewport 동기화
   matLib.onChange(refreshViewportColors);
 
@@ -257,6 +316,9 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     const edgeIds = toolManager.selection.getSelectedEdges();
     const emptyEl = document.getElementById('xi-empty');
     const contentEl = document.getElementById('xi-content');
+
+    // ADR-285 β-1 — parametric radius editor (shows only for a single Sphere face).
+    updateCurvedEditor(faceIds);
 
     // 1) 아무것도 선택 안 됨 — 모든 상태 비활성 (Point 강제 표시 금지)
     if (faceIds.length === 0 && edgeIds.length === 0) {
