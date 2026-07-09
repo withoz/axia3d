@@ -1,6 +1,6 @@
 # ADR-283 — Containment Auto-Split (shape inside a shape on a solid) — α spec + de-risk sim
 
-- **Status**: Proposed (α spec + de-risk simulation landed 2026-07-08; β implementation pending 결재)
+- **Status**: Accepted (α spec + de-risk sim + β implementation landed 2026-07-08; browser-verified)
 
 ## Context
 
@@ -79,6 +79,32 @@ Result: the twin-loop reparent is the correct, manifold-safe mechanism.
   box+circle+contained-rect → closed nm=0; rect-in-rect → closed; corruption
   guard (ADR-282) unaffected. LOCKED #1 amendment (containment auto-split
   re-enabled on solid tops, user-approved) + CLAUDE.md.
+
+## β implementation — landed 2026-07-08
+
+- **β-1 engine** (`annulus.rs`): `detect_polygon_containment` +
+  `split_face_by_inner_polygon` + `assign_polygon_holes`. The reparent LINKS the
+  N-HE twin loop's next/prev (byte-for-byte the cylinder/cone porthole pattern,
+  mesh.rs:4276-4293) — merely setting face/outer left a broken 1-vert loop
+  (caught by rect-in-rect). Containment is **hole-aware** (`polygon_inside` +
+  `loop_contains_all`): a rect inside a ring's circle hole is NOT "in the ring"
+  (it belongs to the disk), so the scan reparents it into the disk, not the ring
+  — this was the decisive fix for the closed result.
+- **β-2 Scene wiring**: the production draw path is `face_rederive_on_draw` →
+  `rederive_coplanar_on_draw` (NOT the legacy `intersect_faces_inner` pairwise
+  scan — that early-returns at scene.rs:3026). So `assign_polygon_holes` runs as
+  a **post-step right after `assign_circle_holes_innermost`** in
+  `rederive_coplanar_on_draw`, over all active coplanar faces. (The legacy scan
+  also got the branch for the face_rederive-OFF path.)
+- **β-3 regression + browser**:
+  - engine: `adr283_sim_*` (2, α) + `adr283_split_rect_in_circle_manifold` /
+    `_rect_in_rect_manifold` / `_rejects_partial_overlap` (3). axia-geo **2195**.
+  - scene: `adr281_b1_crossing_shape_on_solid_splits_watertight` tightened —
+    contained rect now asserts SPLIT + `closed1` + nm 0. axia-core **436**.
+  - browser (production path, all 4 flags): box+circle+CONTAINED rect →
+    result 2, no error, **8 faces closed nm=0 boundary=0** (was open); CROSSING
+    rect → **9 faces closed nm=0** (β-1 preserved, no regression).
+- 0 failed / 0 ignored across axia-core + axia-geo.
 
 ## Lock-ins (α)
 

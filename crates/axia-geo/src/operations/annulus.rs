@@ -544,6 +544,64 @@ pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize
     count
 }
 
+/// ADR-283 β — assign every POLYGON inner (rect / N-gon) to its INNERMOST
+/// containing coplanar face as a HOLE (reparent the inner's twin loop). The
+/// polygon-inner mirror of `assign_circle_holes_innermost`, for the containment
+/// the circle paths don't cover (a rect drawn inside a circle / rect on a solid
+/// top). Area-ascending so a polygon nested at depth ≥ 2 binds to its innermost
+/// parent only; the hole-aware `polygon_inside` (via `split_face_by_inner_
+/// polygon`) additionally excludes a container whose HOLE already contains the
+/// inner (e.g. a rect sitting in a ring's circle hole belongs to the disk, not
+/// the ring). Re-running is safe: an already-integrated inner's twins bound a
+/// face → the reparent rejects it. Returns the number assigned.
+pub fn assign_polygon_holes(mesh: &mut Mesh, faces: &[FaceId]) -> usize {
+    use std::cmp::Ordering;
+    let mut sized: Vec<(FaceId, f64)> = faces
+        .iter()
+        .copied()
+        .filter(|&f| mesh.faces.get(f).map_or(false, |x| x.is_active()))
+        .map(|f| (f, face_containment_size(mesh, f)))
+        .collect();
+    sized.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut processed: std::collections::HashSet<FaceId> = std::collections::HashSet::new();
+    let mut count = 0usize;
+    for i in 0..sized.len() {
+        let inner = sized[i].0;
+        if processed.contains(&inner) {
+            continue;
+        }
+        // inner must be a POLYGON (≥3-vert loop; a circle self-loop = 1 is
+        // handled by assign_circle_holes_innermost).
+        let is_poly = mesh
+            .faces
+            .get(inner)
+            .and_then(|f| mesh.collect_loop_verts(f.outer().start).ok())
+            .map_or(false, |v| v.len() >= 3);
+        if !is_poly {
+            continue;
+        }
+        // First (smallest ascending) larger face that materially contains the
+        // polygon = its innermost parent. split validates containment + hole-
+        // awareness; on success reparent the twin loop there ONLY, then break.
+        for j in (i + 1)..sized.len() {
+            let outer = sized[j].0;
+            if !mesh.faces.get(inner).map_or(false, |x| x.is_active()) {
+                break;
+            }
+            if !mesh.faces.get(outer).map_or(false, |x| x.is_active()) {
+                continue;
+            }
+            if split_face_by_inner_polygon(mesh, outer, inner).is_ok() {
+                processed.insert(inner);
+                count += 1;
+                break; // innermost container — do NOT assign to grandparents.
+            }
+        }
+    }
+    count
+}
+
 /// ADR-185 — 두 face 가 coplanar Circle 이고 한쪽이 다른쪽을 완전 포함하면
 /// `(outer, inner)` 반환. partial overlap / disjoint / non-circle → `None`.
 ///
@@ -772,6 +830,243 @@ pub fn split_face_by_inner_closed_curve_generic(
 }
 
 // ════════════════════════════════════════════════════════════════════
+// ADR-283 β — Containment auto-split for a POLYGON inner (rect / N-gon).
+// ════════════════════════════════════════════════════════════════════
+
+/// ADR-283 β-1 — is `inner` a POLYGON (multi-edge loop) fully contained in
+/// `outer` (a circle self-loop OR another polygon)? Returns `(outer, inner)`.
+///
+/// This is the containment case the circle paths (`detect_circle_containment`,
+/// self-loop-inner `split_face_by_inner_circle*`) do NOT cover: a rect/N-gon
+/// drawn inside another coplanar shape on a solid top. `auto_intersect_coplanar`
+/// treats it as a 0-crossing no-op → the inner stays a free sheet → the solid
+/// opens (ADR-282). Here we detect it so `split_face_by_inner_polygon` can
+/// integrate the inner as a hole.
+///
+/// A face is a "polygon" if its outer loop has ≥ 3 verts (a Circle self-loop has
+/// 1 → not a polygon inner, handled by the circle paths). Containment = EVERY
+/// inner vert lies inside `outer` (point-in-circle for a circle outer,
+/// point-in-polygon otherwise). Requiring ALL verts (not just a centroid)
+/// naturally rejects partial overlap — that stays with `auto_intersect_coplanar`.
+pub fn detect_polygon_containment(
+    mesh: &Mesh,
+    fid_a: FaceId,
+    fid_b: FaceId,
+) -> Option<(FaceId, FaceId)> {
+    // Try both orderings; the polygon inner must be fully inside the other.
+    if polygon_inside(mesh, fid_b, fid_a) {
+        Some((fid_a, fid_b)) // a = outer, b = inner
+    } else if polygon_inside(mesh, fid_a, fid_b) {
+        Some((fid_b, fid_a)) // b = outer, a = inner
+    } else {
+        None
+    }
+}
+
+/// Helper: is `inner` a polygon (≥3-vert loop) whose every vertex is inside
+/// the MATERIAL of coplanar face `outer` — i.e. inside `outer`'s outer loop AND
+/// outside every one of `outer`'s HOLE loops? The hole exclusion is essential
+/// on a solid top: the ring face (box-square outer + circle hole) "contains" a
+/// rect by its outer square, but if the rect sits in the circle hole it really
+/// belongs to the disk filling that hole, not the ring — without this the scan
+/// could reparent the rect into the wrong (ring) face and leave the solid open.
+fn polygon_inside(mesh: &Mesh, inner: FaceId, outer: FaceId) -> bool {
+    let (Some(fi), Some(fo)) = (mesh.faces.get(inner), mesh.faces.get(outer)) else {
+        return false;
+    };
+    if !fi.is_active() || !fo.is_active() {
+        return false;
+    }
+    // inner must be a polygon (≥3-vert outer loop; a circle self-loop = 1).
+    let Ok(inner_verts) = mesh.collect_loop_verts(fi.outer().start) else {
+        return false;
+    };
+    if inner_verts.len() < 3 {
+        return false;
+    }
+    // coplanar (normals parallel + inner on outer's plane).
+    let outer_n = fo.normal().normalize_or_zero();
+    let inner_n = fi.normal().normalize_or_zero();
+    if (1.0 - outer_n.dot(inner_n).abs()) > NORMAL_PARITY_TOL {
+        return false;
+    }
+    let inner_pts: Vec<DVec3> = inner_verts
+        .iter()
+        .filter_map(|&v| mesh.verts.get(v).map(|x| x.pos()))
+        .collect();
+    if inner_pts.len() != inner_verts.len() {
+        return false;
+    }
+    // 2D basis + origin from the outer normal.
+    let origin = extract_circle(mesh, outer)
+        .map(|c| c.center)
+        .or_else(|| {
+            mesh.collect_loop_verts(fo.outer().start)
+                .ok()
+                .and_then(|vs| vs.first().and_then(|&v| mesh.verts.get(v)).map(|x| x.pos()))
+        })
+        .unwrap_or(DVec3::ZERO);
+    // plane offset gate — inner must be ON outer's plane.
+    for &p in &inner_pts {
+        if (p - origin).dot(outer_n).abs() > crate::plane::EPS_PLANE_OFFSET {
+            return false;
+        }
+    }
+    let aux = if outer_n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+    let u = outer_n.cross(aux).normalize_or_zero();
+    let v = outer_n.cross(u).normalize_or_zero();
+
+    // inside the outer's OUTER loop …
+    if !loop_contains_all(mesh, outer, fo.outer().start, &inner_pts, u, v) {
+        return false;
+    }
+    // … and OUTSIDE every hole (else the inner belongs to the hole-filling face).
+    for hole in fo.inners() {
+        if hole.start.is_null() {
+            continue;
+        }
+        if loop_contains_all(mesh, outer, hole.start, &inner_pts, u, v) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Helper: are ALL `pts` inside the loop starting at `loop_start` on `owner`'s
+/// plane? A self-loop Circle edge → analytic center/radius (point_in_face can't
+/// test a 1-vert loop); a polygon loop (≥3 verts) → even-odd point-in-polygon.
+fn loop_contains_all(
+    mesh: &Mesh,
+    _owner: FaceId,
+    loop_start: crate::HeId,
+    pts: &[DVec3],
+    u: DVec3,
+    v: DVec3,
+) -> bool {
+    use crate::boundary_kernel::geom2::{point_in_polygon_even_odd, Pip, Vec2};
+    let Ok(hes) = mesh.collect_loop_hes(loop_start) else {
+        return false;
+    };
+    // Circle self-loop (1 HE with an AnalyticCurve::Circle) → analytic disk test.
+    if hes.len() == 1 {
+        if let Some(curve) = mesh.edge_curve(mesh.hes[hes[0]].edge()) {
+            if let crate::curves::AnalyticCurve::Circle { center, radius, .. } = curve {
+                let (center, radius) = (*center, *radius);
+                return pts.iter().all(|&p| {
+                    let d = p - center;
+                    let (du, dv) = (d.dot(u), d.dot(v));
+                    (du * du + dv * dv).sqrt() <= radius + crate::plane::EPS_PLANE_OFFSET
+                });
+            }
+        }
+        return false; // 1-vert non-circle loop → can't test
+    }
+    // Polygon loop → point-in-polygon (even-odd).
+    let Ok(verts) = mesh.collect_loop_verts(loop_start) else {
+        return false;
+    };
+    if verts.len() < 3 {
+        return false;
+    }
+    let origin = mesh.verts.get(verts[0]).map(|x| x.pos()).unwrap_or(DVec3::ZERO);
+    let poly2d: Vec<Vec2> = verts
+        .iter()
+        .filter_map(|&vid| mesh.verts.get(vid).map(|x| x.pos()))
+        .map(|p| {
+            let d = p - origin;
+            Vec2::new(d.dot(u), d.dot(v))
+        })
+        .collect();
+    pts.iter().all(|&p| {
+        let d = p - origin;
+        let p2 = Vec2::new(d.dot(u), d.dot(v));
+        point_in_polygon_even_odd(p2, &poly2d, 1e-6) != Pip::Outside
+    })
+}
+
+/// ADR-283 β-1 — split `outer` by a contained POLYGON `inner`: reparent the
+/// inner's N-HE twin loop into `outer` as a HOLE. Generalizes the circle
+/// `split_face_by_inner_circle*` (single self-loop twin, annulus.rs:420-428) to
+/// a multi-edge inner loop. Both faces stay active; the inner's edges become
+/// 2-face (inner + outer hole) → manifold; the inner fills its own hole → the
+/// solid stays closed. No geometry is created and no analytic boundary is
+/// polygonized (the outer's Circle self-loop, shared with a ring on a solid top,
+/// is untouched — this is why the reparent avoids the ADR-282 open).
+///
+/// De-risk proven: `adr283_sim_rect_in_circle_reparent_manifold`.
+pub fn split_face_by_inner_polygon(
+    mesh: &mut Mesh,
+    outer_face: FaceId,
+    inner_face: FaceId,
+) -> Result<(), AnnulusError> {
+    // 1. active
+    let outer = mesh.faces.get(outer_face).ok_or(AnnulusError::InactiveFace {
+        face_id: outer_face.raw(),
+        role: "outer",
+    })?;
+    if !outer.is_active() {
+        return Err(AnnulusError::InactiveFace { face_id: outer_face.raw(), role: "outer" });
+    }
+    let inner = mesh.faces.get(inner_face).ok_or(AnnulusError::InactiveFace {
+        face_id: inner_face.raw(),
+        role: "inner",
+    })?;
+    if !inner.is_active() {
+        return Err(AnnulusError::InactiveFace { face_id: inner_face.raw(), role: "inner" });
+    }
+
+    // 2. inner must be a polygon fully contained in outer (all verts inside).
+    if !polygon_inside(mesh, inner_face, outer_face) {
+        return Err(AnnulusError::InnerNotContained {
+            center_distance: 0.0,
+            inner_radius: 0.0,
+            outer_radius: 0.0,
+        });
+    }
+
+    // 3. reparent the inner's N-HE twin loop → outer's hole. Generalizes the
+    //    single-twin circle reparent to a multi-edge loop, and — critically —
+    //    LINKS the twins' next/prev into a closed loop (inner face CCW ⇒ the
+    //    host hole is CW). Byte-for-byte the canonical pattern used by the
+    //    cylinder/cone porthole split (mesh.rs:4276-4293). Merely setting
+    //    face/outer without wiring next/prev leaves a 1-vert (broken) inner loop.
+    let inner_start = mesh.faces[inner_face].outer().start;
+    let inner_hes = mesh
+        .collect_loop_hes(inner_start)
+        .map_err(|_| AnnulusError::InactiveFace { face_id: inner_face.raw(), role: "inner" })?;
+    if inner_hes.len() < 3 {
+        return Err(AnnulusError::NotCircleFace { face_id: inner_face.raw(), role: "inner" });
+    }
+    let twins: Vec<crate::HeId> = inner_hes.iter().map(|&h| mesh.hes[h].next_rad()).collect();
+    let m = twins.len();
+    // Validate every twin exists + is free (not already bounding another face)
+    // BEFORE mutating, so a bad case leaves the mesh untouched.
+    for (i, &twin) in twins.iter().enumerate() {
+        if twin == inner_hes[i] || !mesh.hes.contains(twin) {
+            return Err(AnnulusError::NotCircleFace { face_id: inner_face.raw(), role: "inner" });
+        }
+        if !mesh.hes[twin].face().is_null() {
+            // twin already bounds a face → reparenting would make it non-manifold.
+            return Err(AnnulusError::InnerNotContained {
+                center_distance: 0.0,
+                inner_radius: 0.0,
+                outer_radius: 0.0,
+            });
+        }
+    }
+    for k in 0..m {
+        let cur = twins[(m - k) % m];
+        let nxt = twins[(m - k - 1 + m) % m];
+        mesh.hes[cur].set_face(outer_face);
+        mesh.hes[cur].set_outer(false);
+        mesh.hes[cur].set_next(nxt);
+        mesh.hes[nxt].set_prev(cur);
+    }
+    mesh.faces[outer_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Tests (ADR-145 β-1 — 5 회귀 자산)
 // ════════════════════════════════════════════════════════════════════
 #[cfg(test)]
@@ -971,14 +1266,17 @@ mod tests {
         let inner_start = mesh.faces[rect].outer().start;
         let inner_hes = mesh.collect_loop_hes(inner_start).expect("rect loop");
         assert_eq!(inner_hes.len(), 4, "rect outer loop = 4 HEs");
-        let twin0 = mesh.hes[inner_hes[0]].next_rad();
-        for &he in &inner_hes {
-            let twin = mesh.hes[he].next_rad();
-            assert!(twin != he && mesh.hes.contains(twin), "each rect HE has a twin");
-            mesh.hes[twin].set_face(circle);
-            mesh.hes[twin].set_outer(false);
+        let twins: Vec<crate::HeId> = inner_hes.iter().map(|&h| mesh.hes[h].next_rad()).collect();
+        let m = twins.len();
+        for k in 0..m {
+            let cur = twins[(m - k) % m];
+            let nxt = twins[(m - k - 1 + m) % m];
+            mesh.hes[cur].set_face(circle);
+            mesh.hes[cur].set_outer(false);
+            mesh.hes[cur].set_next(nxt);
+            mesh.hes[nxt].set_prev(cur);
         }
-        mesh.faces[circle].add_inner(LoopRef { start: twin0, is_outer: false });
+        mesh.faces[circle].add_inner(LoopRef { start: twins[0], is_outer: false });
 
         // === verify: manifold, circle has a rect hole, both faces active ===
         assert_eq!(mesh.faces[circle].inners().len(), 1, "circle gained a rect hole");
@@ -990,6 +1288,66 @@ mod tests {
         let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
         assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0,
             "ADR-283: no non-manifold edge after reparent (authoritative ManifoldInfo)");
+    }
+
+    /// ADR-283 β — the real `split_face_by_inner_polygon` integrates a rect
+    /// inner into a circle outer (rect-in-circle, the failing ADR-282 case) →
+    /// manifold, circle gains a rect hole, both faces active.
+    #[test]
+    fn adr283_split_rect_in_circle_manifold() {
+        let mut mesh = Mesh::new();
+        let circle = build_circle_face(&mut mesh, DVec3::ZERO, 40.0, DVec3::Z);
+        let rect = build_rect_face(&mut mesh, DVec3::ZERO, 10.0);
+
+        assert_eq!(
+            detect_polygon_containment(&mesh, circle, rect),
+            Some((circle, rect)),
+            "detect: rect is a polygon inside the circle → (circle=outer, rect=inner)"
+        );
+        split_face_by_inner_polygon(&mut mesh, circle, rect).expect("rect-in-circle split");
+
+        assert_eq!(mesh.faces[circle].inners().len(), 1, "circle gained a rect hole");
+        assert!(mesh.faces[circle].is_active() && mesh.faces[rect].is_active(), "both active");
+        assert_eq!(mesh.verify_face_invariants().violations.len(), 0, "manifold-safe");
+        let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0, "nm=0");
+    }
+
+    /// ADR-283 β — rect inside a RECT outer (polygon-in-polygon containment).
+    #[test]
+    fn adr283_split_rect_in_rect_manifold() {
+        let mut mesh = Mesh::new();
+        let big = build_rect_face(&mut mesh, DVec3::ZERO, 40.0);
+        let small = build_rect_face(&mut mesh, DVec3::ZERO, 10.0);
+
+        assert_eq!(
+            detect_polygon_containment(&mesh, big, small),
+            Some((big, small)),
+            "detect: small rect inside big rect → (big=outer, small=inner)"
+        );
+        split_face_by_inner_polygon(&mut mesh, big, small).expect("rect-in-rect split");
+        assert_eq!(mesh.faces[big].inners().len(), 1, "big rect gained a small-rect hole");
+        assert!(mesh.faces[big].is_active() && mesh.faces[small].is_active());
+        assert_eq!(mesh.verify_face_invariants().violations.len(), 0, "manifold-safe");
+        let active: Vec<FaceId> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(mesh.face_set_manifold_info(&active).non_manifold_edge_count, 0, "nm=0");
+    }
+
+    /// ADR-283 β — a rect that only PARTIALLY overlaps the circle (not fully
+    /// contained) is NOT a containment → detect None + split rejects, so it falls
+    /// through to `auto_intersect_coplanar` (partial-overlap 3-split, ADR-101).
+    #[test]
+    fn adr283_split_rejects_partial_overlap() {
+        let mut mesh = Mesh::new();
+        let circle = build_circle_face(&mut mesh, DVec3::ZERO, 10.0, DVec3::Z);
+        // rect centered at (8,0) half-extent 6 → spans x∈[2,14]: pokes outside r=10.
+        let rect = build_rect_face(&mut mesh, DVec3::new(8.0, 0.0, 0.0), 6.0);
+        assert_eq!(detect_polygon_containment(&mesh, circle, rect), None,
+            "partial overlap is not containment");
+        assert!(matches!(
+            split_face_by_inner_polygon(&mut mesh, circle, rect),
+            Err(AnnulusError::InnerNotContained { .. })
+        ), "partial overlap → InnerNotContained (falls through to auto_intersect)");
     }
 
     #[test]

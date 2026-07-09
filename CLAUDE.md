@@ -4578,8 +4578,8 @@ PR 시리즈.
 | **2D BOUNDARY algorithm** | Planar graph face traversal (DCEL 기존 자산 + Cardinal + BVH) — O(N) per query |
 | **3D BOUNDARY** | Phase 2 future (closed shell → volume) |
 | **자동 cycle detection** | **폐기** (`resolve_planar_free_faces` Step 4.99 disable, Step 4.95 second-pass disable) |
-| **자동 containment split** | **폐기** (LOCKED #1 P7 supersede) |
-| **자동 coplanar overlap intersect** | **폐기** (LOCKED #41 supersede) |
+| **자동 containment split** | ~~폐기~~ → **ADR-283 재활성 (2026-07-08, 사용자 결재 LOCKED #1 변경)**: 도형 안 도형(polygon inner in circle/polygon) coplanar containment 자동분할 (inner twin loop → outer hole reparent, hole-aware innermost-parent, analytic 경계 보존). ADR-176 auto-behaviors ON 맥락 정합. circle-in-circle=ADR-185, polygon inner=ADR-283. |
+| **자동 coplanar overlap intersect** | ~~폐기~~ → **ADR-176 재활성** (production default ON, Phase 1-4 견고화 후) |
 | **STEP/IGES import free edges** | Boundary 명시로 face 가능 (가치 unlock — 이전엔 무시) |
 | **결과 face** | simple (single closed loop) — multi-loop face 자체 안 생성 (ADR-138 Path B 자연 달성) |
 | **LOCKED #63 z=0 invariant** | **직교 보존** ✅ |

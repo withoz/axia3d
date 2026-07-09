@@ -2516,6 +2516,18 @@ impl Scene {
                 &mut self.mesh,
                 &fids,
             );
+            // ADR-283 — POLYGON containment (rect / N-gon inside a circle or
+            // another polygon on a solid top). The circle assignment above only
+            // handles circle holes; the boundary-kernel rebuild leaves a
+            // contained polygon as an un-integrated free sheet (→ the solid
+            // opens, ADR-282). Reparent each contained polygon's twin loop as its
+            // innermost container's HOLE — the analytic Circle boundary shared
+            // with a ring is preserved (no polygonization). User-approved LOCKED
+            // #1 change (containment auto-split on solid tops).
+            let _ = axia_geo::operations::annulus::assign_polygon_holes(
+                &mut self.mesh,
+                &fids,
+            );
         }
 
         // δ-4c XIA reconcile — 비활성 face 링크 제거.
@@ -3166,6 +3178,32 @@ impl Scene {
                     )
                 {
                     if axia_geo::operations::annulus::split_face_by_inner_circle(
+                        &mut self.mesh, outer_c, inner_c,
+                    )
+                    .is_ok()
+                    {
+                        annulus_count += 1;
+                        break; // first match per fid
+                    }
+                    // split 실패 시 fall through (auto_intersect_coplanar 시도).
+                }
+
+                // ADR-283 — Containment (POLYGON inner in any coplanar outer):
+                // a rect / N-gon fully inside another shape on a solid top. The
+                // circle-containment branch above only covers circle-in-circle;
+                // `auto_intersect_coplanar` treats containment as a 0-crossing
+                // no-op (after polygonizing the Path B boundary) → the inner
+                // stays a free sheet → the solid opens (ADR-282). Detect + split
+                // (reparent the inner's twin loop as the outer's HOLE) BEFORE
+                // auto_intersect so the outer's analytic Circle boundary — shared
+                // with a ring on a solid top — is preserved (no polygonization).
+                // Both faces keep their IDs (reparent only) so XIA links stand.
+                if let Some((outer_c, inner_c)) =
+                    axia_geo::operations::annulus::detect_polygon_containment(
+                        &self.mesh, fid, other_fid,
+                    )
+                {
+                    if axia_geo::operations::annulus::split_face_by_inner_polygon(
                         &mut self.mesh, outer_c, inner_c,
                     )
                     .is_ok()
@@ -13102,17 +13140,15 @@ mod tests {
         assert!(closed0, "ADR-281 β-1: split stays a closed solid");
         assert_eq!(nm0, 0, "ADR-281 β-1: split is manifold");
 
-        // CONTAINED rect fully inside the circle → CONTAINMENT (not partial
-        // overlap). ADR-101 §L6 / LOCKED #1 disable auto hole-injection for
-        // containment, so the rect is added as an un-integrated coplanar sheet
-        // (its edges are free boundary) → the whole is not a closed solid yet.
-        // ADR-282 removed the opened-solid decline (the former guard MASKED this
-        // by rolling it back), so it now surfaces as a valid deformation. It is
-        // NOT corruption (nm == 0) — the closed-split is the pending ADR-283 work
-        // (containment auto-split, a user-approved LOCKED #1 change). When ADR-283
-        // lands this tightens to assert `closed1`.
-        let (_b1, _a1, _closed1, nm1) = build(DVec3::new(0.0, 0.0, 110.0), (20.0, 20.0));
-        assert_eq!(nm1, 0, "contained rect must not corrupt the mesh (nm={nm1}); closed-split is ADR-283");
+        // CONTAINED rect fully inside the circle → CONTAINMENT. ADR-283
+        // (user-approved LOCKED #1 change) auto-splits it: `detect_polygon_
+        // containment` + `split_face_by_inner_polygon` reparent the rect's twin
+        // loop as the circle's HOLE (before auto_intersect polygonizes the Path
+        // B boundary), so the rect integrates and the solid stays CLOSED.
+        let (b1, a1, closed1, nm1) = build(DVec3::new(0.0, 0.0, 110.0), (20.0, 20.0));
+        assert!(a1 > b1, "ADR-283: contained rect must SPLIT (faces {b1}→{a1})");
+        assert!(closed1, "ADR-283: contained rect auto-splits + stays a closed solid");
+        assert_eq!(nm1, 0, "ADR-283: contained split is manifold");
     }
 
     /// ADR-280 Level 1 — a crossing shape on a solid top must NEVER open the
