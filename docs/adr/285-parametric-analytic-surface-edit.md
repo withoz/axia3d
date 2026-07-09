@@ -102,7 +102,7 @@ updates both incident faces).
 ## 7. β sub-step roadmap (각 atomic PR)
 
 - **β-1 Sphere** radius — ✅ **LANDED (2026-07-09)**.
-- **β-2 Cylinder** radius + height (2-rim + caps; height moves top rim + v_range).
+- **β-2 Cylinder** radius + height — ✅ **LANDED (2026-07-09)**.
 - **β-3 Cone** radius + height (half_angle recompute; apex move).
 - **β-4 Torus** major + minor.
 - **β-5** Inspector UX polish + real-Chromium demo sweep.
@@ -130,6 +130,35 @@ Full stack, all 5/5 Q recommendations:
   hemispheres r=18, faces 2, nm=0, valid; **Undo → r=10**. Inspector UI: select
   hemisphere → radius field shows "10" → type "20" + change → both hemispheres
   r=20, faces 2, nm=0, valid, viewport synced.
+
+### β-2 Cylinder radius + height — LANDED (2026-07-09)
+
+Path B cylinder (measured): base cap (Plane z=0) + top cap (Plane z=h) + side
+(Cylinder, `v_range=(0,h)`) + 2 rims (bottom/top self-loop Circles, each shared
+with a cap).
+
+- **Engine** `Mesh::set_cylinder_radius(side, r)` — `set_curve_radius` on BOTH
+  rims (moves anchors) + side surface radius; caps follow via shared anchors.
+  `Mesh::set_cylinder_height(side, h)` — keeps base fixed, moves the TOP rim
+  (anchor + Circle center by `axis_dir·Δh`) + side `v_range → (v_lo, v_lo+h)` +
+  top cap Plane origin `+Δh`. Top rim/cap found by axial coord. Reject non-Cylinder
+  annulus / non-positive. Topology unchanged → manifold.
+- **Scene** `set_cylinder_radius` / `set_cylinder_height` — transaction-wrapped.
+- **WASM** `setCylinderRadius` / `setCylinderHeight` (additive).
+- **Bridge** `WasmBridge.setCylinderRadius` / `setCylinderHeight` (guard >0).
+- **UI** XiaInspector — the curved editor is now surface-kind-aware: a Cylinder
+  side (kind 2) selection shows **radius + height** fields; Sphere (kind 3) shows
+  radius. Change/Enter → the matching bridge call + `syncMesh`.
+- **Regression**: axia-geo `adr285_beta2_set_cylinder_radius_and_height`
+  (radius+height update, topology unchanged, manifold; reject non-Cylinder/≤0) +
+  de-risk sims (`adr285_beta2_sim_cylinder_structure`,
+  `..._radius_height_edit`) + vitest WasmBridge ×2.
+- **Real-WASM browser**: `create_cylinder(r10,h20)` → `setCylinderRadius(side,6)`
+  + `setCylinderHeight(side,30)` → radius 6 / height 30, faces 3, `verifyInvariants`
+  valid (0 viol). Inspector: select side → 2 fields ("반지름"/"높이") showing
+  6/30. (Note: `meshManifoldInfo` reports nm=1 on a Path B cylinder — the known
+  self-loop-rim artifact, pre-existing + independent of this edit;
+  `verify_face_invariants` is authoritative + valid.)
 
 ## 8. Cross-link
 

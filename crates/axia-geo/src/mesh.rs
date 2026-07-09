@@ -4453,6 +4453,121 @@ impl Mesh {
         true
     }
 
+    /// **ADR-285 β-2** — parametric direct edit: change a Path B **Cylinder**'s
+    /// RADIUS in place. `side_face` is the Cylinder-surface (annulus) face; its
+    /// two rims (outer + inner self-loop Circles) both get `set_curve_radius`
+    /// (moving their anchors) and the side surface radius is updated. The two caps
+    /// (Plane) follow automatically — their boundary IS the rim edge. Topology
+    /// unchanged → manifold preserved. Returns `false` if `side_face` is not a
+    /// Cylinder annulus face or `new_radius <= 0`.
+    pub fn set_cylinder_radius(&mut self, side_face: FaceId, new_radius: f64) -> bool {
+        use crate::surfaces::AnalyticSurface;
+        if !(new_radius > 1e-9) {
+            return false;
+        }
+        let cyl = match self.faces.get(side_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+            Some(s @ AnalyticSurface::Cylinder { .. }) => s.clone(),
+            _ => return false,
+        };
+        let outer_start = self.faces[side_face].outer().start;
+        if outer_start.is_null() {
+            return false;
+        }
+        let inner_start = match self.faces[side_face].inners().first() {
+            Some(l) => l.start,
+            None => return false, // not an annulus (needs 2 rims)
+        };
+        let rim_a = self.hes[outer_start].edge();
+        let rim_b = self.hes[inner_start].edge();
+        if self.set_curve_radius(rim_a, new_radius).is_err() {
+            return false;
+        }
+        if self.set_curve_radius(rim_b, new_radius).is_err() {
+            return false;
+        }
+        if let AnalyticSurface::Cylinder { axis_origin, axis_dir, ref_dir, u_range, v_range, .. } = cyl {
+            self.set_face_surface(side_face, Some(AnalyticSurface::Cylinder {
+                axis_origin, axis_dir, radius: new_radius, ref_dir, u_range, v_range,
+            }));
+        }
+        true
+    }
+
+    /// **ADR-285 β-2** — parametric direct edit: change a Path B **Cylinder**'s
+    /// HEIGHT in place. Keeps the base fixed and moves the TOP rim (anchor +
+    /// Circle center) along the axis, updates the side `v_range`, and moves the
+    /// top cap Plane origin. `side_face` is the Cylinder-surface (annulus) face.
+    /// Topology unchanged → manifold preserved. Returns `false` if not a Cylinder
+    /// annulus face or `new_height <= 0`.
+    pub fn set_cylinder_height(&mut self, side_face: FaceId, new_height: f64) -> bool {
+        use crate::surfaces::{AnalyticSurface};
+        use crate::curves::AnalyticCurve;
+        if !(new_height > 1e-9) {
+            return false;
+        }
+        let (axis_origin, axis_dir, radius, ref_dir, u_range, v_range) =
+            match self.faces.get(side_face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_range, v_range }) =>
+                    (*axis_origin, *axis_dir, *radius, *ref_dir, *u_range, *v_range),
+                _ => return false,
+            };
+        let outer_start = self.faces[side_face].outer().start;
+        if outer_start.is_null() {
+            return false;
+        }
+        let inner_start = match self.faces[side_face].inners().first() {
+            Some(l) => l.start,
+            None => return false,
+        };
+        let rim_a = self.hes[outer_start].edge();
+        let rim_b = self.hes[inner_start].edge();
+        let old_h = v_range.1 - v_range.0;
+        let delta = axis_dir * (new_height - old_h);
+        // Top rim = the one whose Circle center has the larger axial coordinate.
+        let axial = |m: &Mesh, e: EdgeId| match m.edges[e].curve() {
+            Some(AnalyticCurve::Circle { center, .. }) => (*center - axis_origin).dot(axis_dir),
+            _ => f64::NAN,
+        };
+        let top_rim = if axial(self, rim_a) >= axial(self, rim_b) { rim_a } else { rim_b };
+        // Top cap = the top rim's incident face that is NOT the side annulus.
+        let tr_he = self.edges[top_rim].any_he();
+        let tr_twin = self.hes[tr_he].next_rad();
+        let top_cap = if self.hes[tr_he].face() == side_face {
+            self.hes[tr_twin].face()
+        } else {
+            self.hes[tr_he].face()
+        };
+        // Move top rim anchor + Circle center by delta.
+        let top_anchor = self.edges[top_rim].v_small();
+        let top_anchor_pos = match self.vertex_pos(top_anchor) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        if self.move_vertex(top_anchor, top_anchor_pos + delta).is_err() {
+            return false;
+        }
+        if let Some(AnalyticCurve::Circle { center, radius: r, normal, basis_u }) =
+            self.edges[top_rim].curve().cloned()
+        {
+            self.edges[top_rim].set_curve(Some(AnalyticCurve::Circle {
+                center: center + delta, radius: r, normal, basis_u,
+            }));
+        }
+        // Side v_range → (v_lo, v_lo + new_height).
+        self.set_face_surface(side_face, Some(AnalyticSurface::Cylinder {
+            axis_origin, axis_dir, radius, ref_dir, u_range, v_range: (v_range.0, v_range.0 + new_height),
+        }));
+        // Top cap Plane origin += delta.
+        if let Some(AnalyticSurface::Plane { origin, normal, basis_u, u_range: pu, v_range: pv }) =
+            self.face_surface(top_cap).cloned()
+        {
+            self.set_face_surface(top_cap, Some(AnalyticSurface::Plane {
+                origin: origin + delta, normal, basis_u, u_range: pu, v_range: pv,
+            }));
+        }
+        true
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16703,6 +16818,132 @@ mod tests {
         assert!(max_dev < 0.15, "tessellated surface now lies on r=15 sphere (max dev {max_dev})");
     }
 
+    /// ADR-285 β-2 (measure-first probe) — dump the Path B cylinder structure:
+    /// face order + surface kinds, the two rims (self-loop Circles) + their
+    /// centers/radii, and the side Cylinder's axis/radius/v_range. Drives the
+    /// radius + height edit design.
+    #[test]
+    fn adr285_beta2_sim_cylinder_structure() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let cf = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
+        eprintln!("[β-2 sim] create_cylinder(r=10,h=20) → {} faces {:?}", cf.len(), cf);
+        for (i, &f) in cf.iter().enumerate() {
+            let kind = match mesh.face_surface(f) {
+                Some(AnalyticSurface::Plane { origin, normal, .. }) =>
+                    format!("Plane(origin={origin:?} n={normal:?})"),
+                Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, v_range, .. }) =>
+                    format!("Cylinder(axis_o={axis_origin:?} axis_d={axis_dir:?} r={radius} v_range={v_range:?})"),
+                other => format!("{other:?}"),
+            };
+            let vs = mesh.collect_loop_verts(mesh.faces[f].outer().start).map(|v| v.len()).unwrap_or(0);
+            let inners = mesh.faces[f].inners().len();
+            eprintln!("  face[{i}]={f:?} outer_verts={vs} inners={inners} surface={kind}");
+        }
+        // Rims: each self-loop Circle edge (with its center = base/top z).
+        let mut rim_n = 0;
+        for (eid, e) in mesh.edges.iter() {
+            if e.is_active() && e.is_self_loop() {
+                if let Some(AnalyticCurve::Circle { center, radius, .. }) = e.curve() {
+                    eprintln!("  rim[{rim_n}] edge={eid:?} center={center:?} r={radius} anchor={:?}",
+                        mesh.vertex_pos(e.v_small()).ok());
+                    rim_n += 1;
+                }
+            }
+        }
+        assert!(cf.len() >= 3, "cylinder Path B = base + top + side");
+    }
+
+    /// ADR-285 β-2 (de-risk sim) — parametric radius + height edit of a Path B
+    /// cylinder, in place. RADIUS = `set_curve_radius` on both rims + side surface
+    /// (caps follow via shared anchors). HEIGHT = move the TOP rim (anchor + Circle
+    /// center) along the axis + update side `v_range` + top cap Plane origin.
+    /// Bottom rim / base cap / axis_origin fixed. Topology unchanged → manifold.
+    #[test]
+    fn adr285_beta2_sim_cylinder_radius_height_edit() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let cf = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
+        let side = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .expect("cylinder side");
+
+        // Two rims = side's outer self-loop + inner self-loop.
+        let outer_start = mesh.faces[side].outer().start;
+        let rim_a = mesh.hes[outer_start].edge();
+        let inner_start = mesh.faces[side].inners()[0].start;
+        let rim_b = mesh.hes[inner_start].edge();
+
+        // ── RADIUS 10 → 6 ──────────────────────────────────────────────────────
+        mesh.set_curve_radius(rim_a, 6.0).unwrap();
+        mesh.set_curve_radius(rim_b, 6.0).unwrap();
+        if let Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, ref_dir, u_range, v_range, .. }) =
+            mesh.face_surface(side).cloned()
+        {
+            mesh.set_face_surface(side, Some(AnalyticSurface::Cylinder {
+                axis_origin, axis_dir, radius: 6.0, ref_dir, u_range, v_range,
+            }));
+        }
+        let inv1 = mesh.verify_face_invariants();
+        eprintln!("[β-2 sim] after radius→6: valid={} viol={}", inv1.is_valid(), inv1.violations.len());
+        assert!(inv1.is_valid(), "radius edit manifold: {:?}", inv1.violations);
+
+        // ── HEIGHT 20 → 30 ─────────────────────────────────────────────────────
+        let (axis_origin, axis_dir, radius, ref_dir, u_range, v_range) =
+            match mesh.face_surface(side).cloned() {
+                Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_range, v_range }) =>
+                    (axis_origin, axis_dir, radius, ref_dir, u_range, v_range),
+                _ => panic!("Cylinder"),
+            };
+        let old_h = v_range.1 - v_range.0;
+        let new_h = 30.0;
+        let delta = axis_dir * (new_h - old_h);
+        // Identify the TOP rim (Circle center with the larger axial coord).
+        let axial = |e: EdgeId| match mesh.edges[e].curve() {
+            Some(AnalyticCurve::Circle { center, .. }) => (*center - axis_origin).dot(axis_dir),
+            _ => f64::NAN,
+        };
+        let (top_rim, _bot_rim) = if axial(rim_a) >= axial(rim_b) { (rim_a, rim_b) } else { (rim_b, rim_a) };
+        // Top cap = the top rim's other incident face (radial twin's face, not `side`).
+        let tr_he = mesh.edges[top_rim].any_he();
+        let tr_twin = mesh.hes[tr_he].next_rad();
+        let top_cap = if mesh.hes[tr_he].face() == side { mesh.hes[tr_twin].face() } else { mesh.hes[tr_he].face() };
+        // Move top rim: anchor + Circle center by delta.
+        let top_anchor = mesh.edges[top_rim].v_small();
+        let top_anchor_pos = mesh.vertex_pos(top_anchor).unwrap();
+        mesh.move_vertex(top_anchor, top_anchor_pos + delta).unwrap();
+        if let Some(AnalyticCurve::Circle { center, radius: r, normal, basis_u }) = mesh.edges[top_rim].curve().cloned() {
+            mesh.edges[top_rim].set_curve(Some(AnalyticCurve::Circle { center: center + delta, radius: r, normal, basis_u }));
+        }
+        // Side v_range → (v_lo, v_lo + new_h).
+        mesh.set_face_surface(side, Some(AnalyticSurface::Cylinder {
+            axis_origin, axis_dir, radius, ref_dir, u_range, v_range: (v_range.0, v_range.0 + new_h),
+        }));
+        // Top cap Plane origin += delta.
+        if let Some(AnalyticSurface::Plane { origin, normal, basis_u, u_range: pu, v_range: pv }) = mesh.face_surface(top_cap).cloned() {
+            mesh.set_face_surface(top_cap, Some(AnalyticSurface::Plane { origin: origin + delta, normal, basis_u, u_range: pu, v_range: pv }));
+        }
+
+        let inv2 = mesh.verify_face_invariants();
+        let top_anchor_after = mesh.vertex_pos(top_anchor).unwrap();
+        let side_vr = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cylinder { v_range, radius, .. }) => (v_range.1 - v_range.0, *radius),
+            _ => (0.0, 0.0),
+        };
+        eprintln!("[β-2 sim] after height→30: valid={} viol={} top_anchor_z={:.1} side_height={:.1} side_r={:.1}",
+            inv2.is_valid(), inv2.violations.len(), top_anchor_after.z, side_vr.0, side_vr.1);
+        assert!(inv2.is_valid(), "height edit manifold: {:?}", inv2.violations);
+        assert!((top_anchor_after.z - 30.0).abs() < 1e-6, "top rim moved to z=30");
+        assert!((side_vr.0 - 30.0).abs() < 1e-6, "side height = 30");
+        assert!((side_vr.1 - 6.0).abs() < 1e-9, "radius preserved at 6");
+    }
+
     /// ADR-285 β-1 — `set_sphere_radius` production API: given ONE hemisphere
     /// face, it finds the twin + shared equator and updates radius on all three
     /// (both surfaces + the equator Circle/anchor). Locks: both hemispheres +
@@ -16746,6 +16987,55 @@ mod tests {
         let v3 = pm.add_vertex(DVec3::new(0.0, 1.0, 0.0));
         let pf = pm.add_face(&[v0, v1, v2, v3], mat).unwrap();
         assert!(!pm.set_sphere_radius(pf, 5.0), "non-Sphere face rejected");
+    }
+
+    /// ADR-285 β-2 — `set_cylinder_radius` + `set_cylinder_height` production APIs
+    /// (given the Cylinder side face). Locks: both rims + side + caps update, top
+    /// rim moves for height, topology unchanged, manifold valid; rejects
+    /// non-Cylinder / non-positive.
+    #[test]
+    fn adr285_beta2_set_cylinder_radius_and_height() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let cf = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
+        let side = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .expect("cylinder side");
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        // RADIUS 10 → 6.
+        assert!(mesh.set_cylinder_radius(side, 6.0), "set_cylinder_radius must succeed");
+        let (r1, h1) = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cylinder { radius, v_range, .. }) => (*radius, v_range.1 - v_range.0),
+            _ => (0.0, 0.0),
+        };
+        assert!((r1 - 6.0).abs() < 1e-9, "radius → 6");
+        assert!((h1 - 20.0).abs() < 1e-9, "height preserved at 20");
+        assert!(mesh.verify_face_invariants().is_valid(), "radius edit manifold");
+
+        // HEIGHT 20 → 30.
+        assert!(mesh.set_cylinder_height(side, 30.0), "set_cylinder_height must succeed");
+        let (r2, h2) = match mesh.face_surface(side) {
+            Some(AnalyticSurface::Cylinder { radius, v_range, .. }) => (*radius, v_range.1 - v_range.0),
+            _ => (0.0, 0.0),
+        };
+        assert!((r2 - 6.0).abs() < 1e-9, "radius preserved at 6");
+        assert!((h2 - 30.0).abs() < 1e-9, "height → 30");
+        let inv = mesh.verify_face_invariants();
+        assert!(inv.is_valid(), "height edit manifold: {:?}", inv.violations);
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), faces_before,
+            "topology unchanged (base + top + side)");
+
+        // Rejects.
+        assert!(!mesh.set_cylinder_radius(side, 0.0), "non-positive radius rejected");
+        assert!(!mesh.set_cylinder_height(side, -1.0), "non-positive height rejected");
+        // Base cap (Plane) is not the side annulus → rejected.
+        let cap = *cf.iter()
+            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Plane { .. })))
+            .expect("a cap");
+        assert!(!mesh.set_cylinder_radius(cap, 5.0), "cap (Plane) rejected — needs the side face");
     }
 
     #[test]

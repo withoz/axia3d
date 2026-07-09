@@ -3280,6 +3280,46 @@ impl Scene {
         ok
     }
 
+    /// ADR-285 β-2 — parametric direct edit: change a Path B Cylinder's RADIUS
+    /// in place (given the Cylinder side face). Transaction-wrapped (single Undo).
+    pub fn set_cylinder_radius(&mut self, side_face: FaceId, new_radius: f64) -> bool {
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let ok = self.mesh.set_cylinder_radius(side_face, new_radius);
+        if own {
+            if ok {
+                self.transactions.set_after_snapshot(self.scene_snapshot());
+                self.transactions.commit();
+            } else {
+                self.transactions.cancel();
+            }
+        }
+        ok
+    }
+
+    /// ADR-285 β-2 — parametric direct edit: change a Path B Cylinder's HEIGHT
+    /// in place (given the Cylinder side face). Transaction-wrapped (single Undo).
+    pub fn set_cylinder_height(&mut self, side_face: FaceId, new_height: f64) -> bool {
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let ok = self.mesh.set_cylinder_height(side_face, new_height);
+        if own {
+            if ok {
+                self.transactions.set_after_snapshot(self.scene_snapshot());
+                self.transactions.commit();
+            } else {
+                self.transactions.cancel();
+            }
+        }
+        ok
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 

@@ -830,6 +830,9 @@ type AxiaEngineExtended = AxiaEngine & {
   drawOpenSeamOnCurved?(faceId: number, flat: Float64Array): string;
   // ADR-285 β-1 — parametric direct edit: change a sphere's radius in place.
   setSphereRadius?(faceId: number, radius: number): boolean;
+  // ADR-285 β-2 — parametric direct edit: change a cylinder's radius/height in place.
+  setCylinderRadius?(sideFaceId: number, radius: number): boolean;
+  setCylinderHeight?(sideFaceId: number, height: number): boolean;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3086,6 +3089,32 @@ export class WasmBridge {
     if (!fn || !(radius > 0)) return false;
     this.markDirty();
     return fn.call(this.engine, faceId, radius);
+  }
+
+  /**
+   * ADR-285 β-2 — parametric direct edit of a Path B cylinder's RADIUS in place
+   * (given the Cylinder side/annulus face; both rims + caps follow). Returns true
+   * on success, false if not a cylinder side face / non-positive radius / export
+   * absent.
+   */
+  setCylinderRadius(sideFaceId: number, radius: number): boolean {
+    const fn = this.engine?.setCylinderRadius;
+    if (!fn || !(radius > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, sideFaceId, radius);
+  }
+
+  /**
+   * ADR-285 β-2 — parametric direct edit of a Path B cylinder's HEIGHT in place
+   * (given the Cylinder side/annulus face; base fixed, top rim + top cap move).
+   * Returns true on success, false if not a cylinder side face / non-positive
+   * height / export absent.
+   */
+  setCylinderHeight(sideFaceId: number, height: number): boolean {
+    const fn = this.engine?.setCylinderHeight;
+    if (!fn || !(height > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, sideFaceId, height);
   }
 
   /**

@@ -166,50 +166,70 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     viewport.refreshMaterialColors();
   };
 
-  // ── ADR-285 β-1 — 파라메트릭 직접 편집: 선택된 Sphere 면의 반지름 편집기.
-  // 곡면 face(surfaceKind 3=Sphere) 단일 선택 시 반지름 입력 필드를 xi-content
-  // 에 주입(최초 1회) → 값 변경 시 bridge.setSphereRadius + syncMesh. 그 외
-  // 선택(빈 선택 / edge / 비-Sphere face)에서는 숨김. (β-2~4에서 cylinder/
-  // cone/torus params 확장 예정.)
+  // ── ADR-285 β-1/β-2 — 파라메트릭 직접 편집: 선택된 곡면 face 의 정의
+  // 파라미터(반지름/높이) 직접 편집. Sphere(kind 3)=반지름, Cylinder side
+  // (kind 2)=반지름+높이. 단일 곡면 face 선택 시 xi-content 에 입력 필드를
+  // 주입 → 값 변경 시 bridge.set{Sphere,Cylinder}* + syncMesh (in-place, 위상
+  // 불변). 그 외 선택(빈 선택 / edge / 비-지원 face)에서는 숨김. (β-3 cone /
+  // β-4 torus 확장 예정.)
   const updateCurvedEditor = (faceIds: number[]) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const eng = bridge.engine as any;
     let box = document.getElementById('xi-curved-edit') as HTMLElement | null;
-    const isSphere =
-      faceIds.length === 1 &&
-      !!eng &&
-      typeof eng.faceSurfaceKind === 'function' &&
-      eng.faceSurfaceKind(faceIds[0]) === 3 &&
-      typeof bridge.setSphereRadius === 'function';
-    if (!isSphere) {
+    const fid = faceIds.length === 1 ? faceIds[0] : -1;
+    const kind =
+      fid >= 0 && !!eng && typeof eng.faceSurfaceKind === 'function'
+        ? eng.faceSurfaceKind(fid)
+        : -1;
+    // Rows: { label, value, apply(val)->bool }. Sphere(3) radius; Cylinder(2) radius+height.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let surf: any = {};
+    try {
+      surf = JSON.parse(eng.getFaceSurfaceJson(fid));
+    } catch {
+      /* leave {} */
+    }
+    const rows: Array<{ label: string; value: number; apply: (v: number) => boolean }> = [];
+    if (kind === 3 && typeof bridge.setSphereRadius === 'function') {
+      rows.push({ label: '반지름 (mm)', value: surf.radius || 0, apply: (v) => !!bridge.setSphereRadius?.(fid, v) });
+    } else if (kind === 2 && typeof bridge.setCylinderRadius === 'function') {
+      const h = Array.isArray(surf.vRange) ? surf.vRange[1] - surf.vRange[0] : 0;
+      rows.push({ label: '반지름 (mm)', value: surf.radius || 0, apply: (v) => !!bridge.setCylinderRadius?.(fid, v) });
+      rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setCylinderHeight?.(fid, v) });
+    }
+    if (rows.length === 0) {
       if (box) box.style.display = 'none';
       return;
     }
-    let radius = 0;
-    try {
-      radius = JSON.parse(eng.getFaceSurfaceJson(faceIds[0])).radius || 0;
-    } catch {
-      /* leave 0 */
-    }
+    const contentEl = document.getElementById('xi-content');
     if (!box) {
-      const contentEl = document.getElementById('xi-content');
       if (!contentEl) return;
       box = document.createElement('div');
       box.id = 'xi-curved-edit';
       box.className = 'xi-computed-box';
-      box.innerHTML =
-        '<div style="font-size:11px;opacity:0.7;margin-bottom:4px;">곡면 반지름 (mm)</div>' +
-        '<input id="xi-radius-input" type="number" step="1" min="0.1" ' +
-        'style="width:100%;box-sizing:border-box;padding:4px;background:#2a2a2a;' +
-        'color:#eee;border:1px solid #444;border-radius:4px;" />';
       contentEl.appendChild(box);
-      const input = box.querySelector('#xi-radius-input') as HTMLInputElement;
+    }
+    box.style.display = '';
+    // Rebuild the fields for the current face (selection-change only — during
+    // typing, updateInspector is not re-fired, so focus is preserved).
+    box.innerHTML = '';
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.style.marginBottom = '6px';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:11px;opacity:0.7;margin-bottom:2px;';
+      lbl.textContent = r.label;
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = '1';
+      input.min = '0.1';
+      input.value = String(Math.round(r.value * 100) / 100);
+      input.style.cssText =
+        'width:100%;box-sizing:border-box;padding:4px;background:#2a2a2a;' +
+        'color:#eee;border:1px solid #444;border-radius:4px;';
       const apply = () => {
         const val = parseFloat(input.value);
-        const fid = parseInt(input.dataset.faceId || '-1', 10);
-        if (fid >= 0 && val > 0 && bridge.setSphereRadius?.(fid, val)) {
-          toolManager.syncMesh();
-        }
+        if (val > 0 && r.apply(val)) toolManager.syncMesh();
       };
       input.addEventListener('change', apply);
       input.addEventListener('keydown', (e) => {
@@ -218,11 +238,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
           input.blur();
         }
       });
+      row.appendChild(lbl);
+      row.appendChild(input);
+      box.appendChild(row);
     }
-    box.style.display = '';
-    const input = box.querySelector('#xi-radius-input') as HTMLInputElement;
-    input.value = String(Math.round(radius * 100) / 100);
-    input.dataset.faceId = String(faceIds[0]);
   };
 
   // MaterialLibrary 변경 이벤트 → Viewport 동기화

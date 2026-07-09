@@ -1017,6 +1017,31 @@ describe('WasmBridge', () => {
       expect(called).toBe(false);
     });
 
+    // ADR-285 β-2 — parametric cylinder radius + height.
+    it('setCylinderRadius()/setCylinderHeight() forward for positive values', () => {
+      const calls: Array<[string, number, number]> = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setCylinderRadius: (f: number, r: number) => { calls.push(['r', f, r]); return true; },
+        setCylinderHeight: (f: number, h: number) => { calls.push(['h', f, h]); return true; },
+      };
+      expect(bridge.setCylinderRadius(2, 6.0)).toBe(true);
+      expect(bridge.setCylinderHeight(2, 30.0)).toBe(true);
+      expect(calls).toEqual([['r', 2, 6.0], ['h', 2, 30.0]]);
+    });
+
+    it('setCylinderRadius()/setCylinderHeight() reject non-positive without calling engine', () => {
+      let called = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setCylinderRadius: () => { called = true; return true; },
+        setCylinderHeight: () => { called = true; return true; },
+      };
+      expect(bridge.setCylinderRadius(2, 0)).toBe(false);
+      expect(bridge.setCylinderHeight(2, -5)).toBe(false);
+      expect(called).toBe(false);
+    });
+
     it('faceSurfaceKind() returns engine value', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (bridge as any).engine = {
