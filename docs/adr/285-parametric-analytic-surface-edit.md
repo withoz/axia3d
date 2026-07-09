@@ -1,6 +1,7 @@
 # ADR-285 — Parametric Direct Edit of Analytic Curved Faces (α spec)
 
-**Status:** Proposed (α spec + de-risk sim only — β implementation needs 결재)
+**Status:** Accepted (β-1~β-4 landed 2026-07-09 — all 4 curved primitives
+editable; β-5 UX polish optional)
 **Date:** 2026-07-09
 **Track:** "진짜 analytic 곡면 커널 편집" — 사용자 결재 방향 = **파라메트릭 직접 편집**
 
@@ -104,8 +105,38 @@ updates both incident faces).
 - **β-1 Sphere** radius — ✅ **LANDED (2026-07-09)**.
 - **β-2 Cylinder** radius + height — ✅ **LANDED (2026-07-09)**.
 - **β-3 Cone** radius + height — ✅ **LANDED (2026-07-09)**.
-- **β-4 Torus** major + minor.
-- **β-5** Inspector UX polish + real-Chromium demo sweep.
+- **β-4 Torus** major + minor — ✅ **LANDED (2026-07-09)**.
+- **β-5** Inspector UX polish + real-Chromium demo sweep — optional follow-up
+  (the editor is already functional for all 4 primitives).
+
+### β-4 Torus major + minor — LANDED (2026-07-09)
+
+Path B torus (measured): a **single face** (Torus: center/axis/ref/major/minor,
+full u/v periodic) + a **self-loop seam** = the outer-equator Circle (radius =
+major + minor, anchor at `center + ref·(major+minor)`). No caps, no twin — the
+simplest structure of the four.
+
+- **Engine** `Mesh::set_torus_major_radius` / `set_torus_minor_radius` (shared
+  `set_torus_radii` helper) — `set_curve_radius(seam, major'+minor')` (moves the
+  anchor) + update the Torus surface param. Reject non-Torus / ≤0. Topology
+  unchanged → manifold.
+- **Scene** `set_torus_major_radius` / `set_torus_minor_radius` — transaction-wrapped.
+- **WASM** `setTorusMajorRadius` / `setTorusMinorRadius` (additive).
+- **Bridge** `WasmBridge.setTorusMajorRadius` / `setTorusMinorRadius` (guard >0).
+- **UI** XiaInspector — Torus (kind 5) selection shows **주 반지름 + 부 반지름** fields.
+- **Regression**: axia-geo `adr285_beta4_set_torus_radii` + de-risk sims
+  (`adr285_beta4_sim_torus_structure`, `..._torus_edit`) + vitest WasmBridge.
+- **Real-WASM browser**: `createTorus(major10,minor3)` → `setTorusMajorRadius(tf,15)`
+  + `setTorusMinorRadius(tf,5)` → major 15 / minor 5, faces 1, `verifyInvariants`
+  valid (0 viol). Inspector: select → 2 fields (주/부 반지름) = 15/5.
+
+### 🎉 ADR-285 β-1~β-4 complete — all 4 curved primitives editable
+
+Sphere (radius) · Cylinder (radius+height) · Cone (base radius+height) · Torus
+(major+minor) — parametric direct edit in place (topology preserved, single Undo,
+manifold), all browser-verified via a surface-kind-aware XiaInspector. Engine
+building blocks (`set_curve_radius` + `set_face_surface`) reused throughout; no
+DCEL surgery. β-5 (UX polish) optional.
 
 ### β-1 Sphere radius — LANDED (2026-07-09)
 

@@ -4646,6 +4646,52 @@ impl Mesh {
         true
     }
 
+    /// **ADR-285 β-4** — parametric direct edit: change a Path B **Torus**'s
+    /// MAJOR radius in place (minor fixed). The single face's self-loop seam is the
+    /// outer-equator Circle (radius = major + minor); it gets `set_curve_radius`
+    /// to `major' + minor` and the Torus surface `major_radius` is updated.
+    /// Topology unchanged → manifold. Returns `false` if not a Torus face / R'≤0.
+    pub fn set_torus_major_radius(&mut self, face: FaceId, new_major: f64) -> bool {
+        self.set_torus_radii(face, Some(new_major), None)
+    }
+
+    /// **ADR-285 β-4** — parametric direct edit: change a Path B **Torus**'s
+    /// MINOR radius in place (major fixed). See [`Self::set_torus_major_radius`].
+    /// Returns `false` if not a Torus face / r'≤0.
+    pub fn set_torus_minor_radius(&mut self, face: FaceId, new_minor: f64) -> bool {
+        self.set_torus_radii(face, None, Some(new_minor))
+    }
+
+    /// Shared helper for the two torus radius edits. `new_major`/`new_minor` each
+    /// `None` = keep. Updates the seam Circle (outer equator = major+minor) + the
+    /// Torus surface. Rejects non-Torus faces or non-positive results.
+    fn set_torus_radii(&mut self, face: FaceId, new_major: Option<f64>, new_minor: Option<f64>) -> bool {
+        use crate::surfaces::AnalyticSurface;
+        let (center, axis_dir, ref_dir, major, minor, u_range, v_range) =
+            match self.faces.get(face).filter(|f| f.is_active()).and_then(|f| f.surface()) {
+                Some(AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range }) =>
+                    (*center, *axis_dir, *ref_dir, *major_radius, *minor_radius, *u_range, *v_range),
+                _ => return false,
+            };
+        let maj = new_major.unwrap_or(major);
+        let min = new_minor.unwrap_or(minor);
+        if !(maj > 1e-9) || !(min > 1e-9) {
+            return false;
+        }
+        let outer_start = self.faces[face].outer().start;
+        if outer_start.is_null() {
+            return false;
+        }
+        let seam = self.hes[outer_start].edge();
+        if self.set_curve_radius(seam, maj + min).is_err() {
+            return false;
+        }
+        self.set_face_surface(face, Some(AnalyticSurface::Torus {
+            center, axis_dir, ref_dir, major_radius: maj, minor_radius: min, u_range, v_range,
+        }));
+        true
+    }
+
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
     /// geodesic "porthole" polyline drawn ON the cylinder wall. `samples`
     /// (from [`crate::surfaces::cylinder::circle_on_cylinder`], β-2) lie on the
@@ -16935,6 +16981,35 @@ mod tests {
         assert!(cf.len() >= 3, "cylinder Path B = base + top + side");
     }
 
+    /// ADR-285 β-4 (measure-first probe) — dump the Path B torus structure: the
+    /// single face (Torus: center / axis / major / minor / u/v range) + the
+    /// self-loop seam edge (Circle center / radius / anchor). Establishes the
+    /// seam-Circle-radius ↔ (major, minor) relationship for the edits.
+    #[test]
+    fn adr285_beta4_sim_torus_structure() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let tf = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).unwrap();
+        let kind = match mesh.face_surface(tf) {
+            Some(AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range }) =>
+                format!("Torus(center={center:?} axis={axis_dir:?} ref={ref_dir:?} major={major_radius} minor={minor_radius} u={u_range:?} v={v_range:?})"),
+            other => format!("{other:?}"),
+        };
+        let vs = mesh.collect_loop_verts(mesh.faces[tf].outer().start).map(|v| v.len()).unwrap_or(0);
+        eprintln!("[β-4 sim] create_torus(major=10,minor=3) → face={tf:?} outer_verts={vs} inners={} surface={kind}",
+            mesh.faces[tf].inners().len());
+        for (eid, e) in mesh.edges.iter() {
+            if e.is_active() && e.is_self_loop() {
+                if let Some(AnalyticCurve::Circle { center, radius, .. }) = e.curve() {
+                    eprintln!("  seam edge={eid:?} center={center:?} r={radius} anchor={:?}",
+                        mesh.vertex_pos(e.v_small()).ok());
+                }
+            }
+        }
+    }
+
     /// ADR-285 β-3 (measure-first probe) — dump the Path B cone structure: base
     /// disk (Plane) + side (Cone: apex / axis_dir / half_angle / v_range) + base
     /// rim (Circle center / radius / anchor). Establishes the (apex, half_angle,
@@ -17056,6 +17131,55 @@ mod tests {
         assert!((top_anchor_after.z - 30.0).abs() < 1e-6, "top rim moved to z=30");
         assert!((side_vr.0 - 30.0).abs() < 1e-6, "side height = 30");
         assert!((side_vr.1 - 6.0).abs() < 1e-9, "radius preserved at 6");
+    }
+
+    /// ADR-285 β-4 (de-risk sim) — parametric major + minor radius edit of a Path
+    /// B torus. The seam (self-loop Circle) radius = major + minor (outer equator).
+    /// MAJOR/MINOR = `set_curve_radius(seam, major'+minor')` (moves anchor) +
+    /// update the Torus surface param. Single face + single seam → topology
+    /// unchanged → manifold preserved.
+    #[test]
+    fn adr285_beta4_sim_torus_edit() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let tf = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).unwrap();
+        let seam = mesh.hes[mesh.faces[tf].outer().start].edge();
+        let (center, axis_dir, ref_dir, _major0, minor0, u_range, v_range) =
+            match mesh.face_surface(tf).cloned() {
+                Some(AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range }) =>
+                    (center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range),
+                _ => panic!("Torus"),
+            };
+
+        // ── MAJOR 10 → 15 (minor 3 fixed) ──────────────────────────────────────
+        mesh.set_curve_radius(seam, 15.0 + minor0).unwrap(); // outer eq = 15+3 = 18
+        mesh.set_face_surface(tf, Some(AnalyticSurface::Torus {
+            center, axis_dir, ref_dir, major_radius: 15.0, minor_radius: minor0, u_range, v_range,
+        }));
+        let inv1 = mesh.verify_face_invariants();
+        let seam_r1 = match mesh.edges[seam].curve() { Some(AnalyticCurve::Circle { radius, .. }) => *radius, _ => 0.0 };
+        eprintln!("[β-4 sim] after major→15: valid={} seam_r={} (expect 18)", inv1.is_valid(), seam_r1);
+        assert!(inv1.is_valid(), "major edit manifold: {:?}", inv1.violations);
+        assert!((seam_r1 - 18.0).abs() < 1e-9, "seam = major+minor = 18");
+
+        // ── MINOR 3 → 5 (major 15 fixed) ───────────────────────────────────────
+        mesh.set_curve_radius(seam, 15.0 + 5.0).unwrap(); // outer eq = 15+5 = 20
+        mesh.set_face_surface(tf, Some(AnalyticSurface::Torus {
+            center, axis_dir, ref_dir, major_radius: 15.0, minor_radius: 5.0, u_range, v_range,
+        }));
+        let inv2 = mesh.verify_face_invariants();
+        let (maj2, min2) = match mesh.face_surface(tf) {
+            Some(AnalyticSurface::Torus { major_radius, minor_radius, .. }) => (*major_radius, *minor_radius),
+            _ => (0.0, 0.0),
+        };
+        let anchor = mesh.vertex_pos(mesh.edges[seam].v_small()).unwrap();
+        eprintln!("[β-4 sim] after minor→5: valid={} major={} minor={} anchor_x={:.1}",
+            inv2.is_valid(), maj2, min2, anchor.x);
+        assert!(inv2.is_valid(), "minor edit manifold: {:?}", inv2.violations);
+        assert!((maj2 - 15.0).abs() < 1e-9 && (min2 - 5.0).abs() < 1e-9, "major=15 minor=5");
+        assert!((anchor.x - 20.0).abs() < 1e-6, "anchor at outer equator = major+minor = 20");
     }
 
     /// ADR-285 β-3 (de-risk sim) — parametric radius + height edit of a Path B
@@ -17266,6 +17390,52 @@ mod tests {
             .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Plane { .. })))
             .expect("base disk");
         assert!(!mesh.set_cone_radius(base, 5.0), "base disk (Plane) rejected — needs the side face");
+    }
+
+    /// ADR-285 β-4 — `set_torus_major_radius` + `set_torus_minor_radius` APIs.
+    /// Locks: seam (outer equator) = major+minor + surface params update, topology
+    /// unchanged, manifold; rejects non-Torus / non-positive.
+    #[test]
+    fn adr285_beta4_set_torus_radii() {
+        use crate::surfaces::AnalyticSurface;
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let tf = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).unwrap();
+        let seam = mesh.hes[mesh.faces[tf].outer().start].edge();
+        let seam_r = |m: &Mesh| match m.edges[seam].curve() {
+            Some(AnalyticCurve::Circle { radius, .. }) => *radius, _ => 0.0,
+        };
+        let radii = |m: &Mesh| match m.face_surface(tf) {
+            Some(AnalyticSurface::Torus { major_radius, minor_radius, .. }) => (*major_radius, *minor_radius),
+            _ => (0.0, 0.0),
+        };
+
+        // MAJOR 10 → 15 (minor 3 fixed).
+        assert!(mesh.set_torus_major_radius(tf, 15.0), "major edit must succeed");
+        assert_eq!(radii(&mesh), (15.0, 3.0));
+        assert!((seam_r(&mesh) - 18.0).abs() < 1e-9, "seam = major+minor = 18");
+        assert!(mesh.verify_face_invariants().is_valid(), "major edit manifold");
+
+        // MINOR 3 → 5 (major 15 fixed).
+        assert!(mesh.set_torus_minor_radius(tf, 5.0), "minor edit must succeed");
+        assert_eq!(radii(&mesh), (15.0, 5.0));
+        assert!((seam_r(&mesh) - 20.0).abs() < 1e-9, "seam = major+minor = 20");
+        let inv = mesh.verify_face_invariants();
+        assert!(inv.is_valid(), "minor edit manifold: {:?}", inv.violations);
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 1, "single torus face");
+
+        // Rejects.
+        assert!(!mesh.set_torus_major_radius(tf, 0.0), "non-positive major rejected");
+        assert!(!mesh.set_torus_minor_radius(tf, -1.0), "non-positive minor rejected");
+        // A planar face → rejected.
+        let mut pm = Mesh::new();
+        let v0 = pm.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = pm.add_vertex(DVec3::new(1.0, 0.0, 0.0));
+        let v2 = pm.add_vertex(DVec3::new(1.0, 1.0, 0.0));
+        let v3 = pm.add_vertex(DVec3::new(0.0, 1.0, 0.0));
+        let pf = pm.add_face(&[v0, v1, v2, v3], mat).unwrap();
+        assert!(!pm.set_torus_major_radius(pf, 5.0), "non-Torus face rejected");
     }
 
     #[test]

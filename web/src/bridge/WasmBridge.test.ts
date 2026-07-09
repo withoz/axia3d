@@ -1064,6 +1064,28 @@ describe('WasmBridge', () => {
       expect(called).toBe(false);
     });
 
+    // ADR-285 β-4 — parametric torus major + minor radius.
+    it('setTorusMajorRadius()/setTorusMinorRadius() forward for positive values, reject ≤0', () => {
+      const calls: Array<[string, number, number]> = [];
+      let called = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setTorusMajorRadius: (f: number, r: number) => { calls.push(['maj', f, r]); return true; },
+        setTorusMinorRadius: (f: number, r: number) => { calls.push(['min', f, r]); return true; },
+      };
+      expect(bridge.setTorusMajorRadius(0, 15.0)).toBe(true);
+      expect(bridge.setTorusMinorRadius(0, 5.0)).toBe(true);
+      expect(calls).toEqual([['maj', 0, 15.0], ['min', 0, 5.0]]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        setTorusMajorRadius: () => { called = true; return true; },
+        setTorusMinorRadius: () => { called = true; return true; },
+      };
+      expect(bridge.setTorusMajorRadius(0, 0)).toBe(false);
+      expect(bridge.setTorusMinorRadius(0, -1)).toBe(false);
+      expect(called).toBe(false);
+    });
+
     it('faceSurfaceKind() returns engine value', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (bridge as any).engine = {

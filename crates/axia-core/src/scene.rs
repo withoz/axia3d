@@ -3360,6 +3360,46 @@ impl Scene {
         ok
     }
 
+    /// ADR-285 β-4 — parametric direct edit: Path B Torus MAJOR radius in place.
+    /// Transaction-wrapped (single Undo).
+    pub fn set_torus_major_radius(&mut self, face: FaceId, new_major: f64) -> bool {
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let ok = self.mesh.set_torus_major_radius(face, new_major);
+        if own {
+            if ok {
+                self.transactions.set_after_snapshot(self.scene_snapshot());
+                self.transactions.commit();
+            } else {
+                self.transactions.cancel();
+            }
+        }
+        ok
+    }
+
+    /// ADR-285 β-4 — parametric direct edit: Path B Torus MINOR radius in place.
+    /// Transaction-wrapped (single Undo).
+    pub fn set_torus_minor_radius(&mut self, face: FaceId, new_minor: f64) -> bool {
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let ok = self.mesh.set_torus_minor_radius(face, new_minor);
+        if own {
+            if ok {
+                self.transactions.set_after_snapshot(self.scene_snapshot());
+                self.transactions.commit();
+            } else {
+                self.transactions.cancel();
+            }
+        }
+        ok
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 

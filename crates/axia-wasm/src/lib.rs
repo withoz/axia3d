@@ -5160,6 +5160,28 @@ impl AxiaEngine {
         ok
     }
 
+    /// ADR-285 β-4 — parametric direct edit: Path B Torus MAJOR radius in place.
+    #[wasm_bindgen(js_name = "setTorusMajorRadius")]
+    pub fn set_torus_major_radius(&mut self, face_raw: u32, major: f64) -> bool {
+        let ok = self.scene.set_torus_major_radius(FaceId::new(face_raw), major);
+        if ok {
+            self.mark_topology_changed();
+            self.invalidate_cache();
+        }
+        ok
+    }
+
+    /// ADR-285 β-4 — parametric direct edit: Path B Torus MINOR radius in place.
+    #[wasm_bindgen(js_name = "setTorusMinorRadius")]
+    pub fn set_torus_minor_radius(&mut self, face_raw: u32, minor: f64) -> bool {
+        let ok = self.scene.set_torus_minor_radius(FaceId::new(face_raw), minor);
+        if ok {
+            self.mark_topology_changed();
+            self.invalidate_cache();
+        }
+        ok
+    }
+
     /// Test if a 3D point lies within a face's boundary.
     ///
     /// Returns true if the point is on the face's plane and inside its edges.

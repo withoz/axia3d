@@ -836,6 +836,9 @@ type AxiaEngineExtended = AxiaEngine & {
   // ADR-285 β-3 — parametric direct edit: change a cone's base radius/height in place.
   setConeRadius?(sideFaceId: number, radius: number): boolean;
   setConeHeight?(sideFaceId: number, height: number): boolean;
+  // ADR-285 β-4 — parametric direct edit: change a torus's major/minor radius in place.
+  setTorusMajorRadius?(faceId: number, major: number): boolean;
+  setTorusMinorRadius?(faceId: number, minor: number): boolean;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
@@ -3140,6 +3143,28 @@ export class WasmBridge {
     if (!fn || !(height > 0)) return false;
     this.markDirty();
     return fn.call(this.engine, sideFaceId, height);
+  }
+
+  /**
+   * ADR-285 β-4 — parametric direct edit of a Path B torus's MAJOR radius in
+   * place (given the Torus face; minor fixed, outer-equator seam + surface update).
+   */
+  setTorusMajorRadius(faceId: number, major: number): boolean {
+    const fn = this.engine?.setTorusMajorRadius;
+    if (!fn || !(major > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, faceId, major);
+  }
+
+  /**
+   * ADR-285 β-4 — parametric direct edit of a Path B torus's MINOR radius in
+   * place (given the Torus face; major fixed).
+   */
+  setTorusMinorRadius(faceId: number, minor: number): boolean {
+    const fn = this.engine?.setTorusMinorRadius;
+    if (!fn || !(minor > 0)) return false;
+    this.markDirty();
+    return fn.call(this.engine, faceId, minor);
   }
 
   /**

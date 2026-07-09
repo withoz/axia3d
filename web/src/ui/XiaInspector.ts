@@ -202,6 +202,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       const baseR = typeof surf.halfAngle === 'number' ? h * Math.tan(surf.halfAngle) : 0;
       rows.push({ label: '밑면 반지름 (mm)', value: baseR, apply: (v) => !!bridge.setConeRadius?.(fid, v) });
       rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setConeHeight?.(fid, v) });
+    } else if (kind === 5 && typeof bridge.setTorusMajorRadius === 'function') {
+      // Torus (kind 5): major + minor radius.
+      rows.push({ label: '주 반지름 (mm)', value: surf.majorRadius || 0, apply: (v) => !!bridge.setTorusMajorRadius?.(fid, v) });
+      rows.push({ label: '부 반지름 (mm)', value: surf.minorRadius || 0, apply: (v) => !!bridge.setTorusMinorRadius?.(fid, v) });
     }
     if (rows.length === 0) {
       if (box) box.style.display = 'none';
