@@ -119,6 +119,27 @@ Result: the twin-loop reparent is the correct, manifold-safe mechanism.
   (메타-원칙 #10). This α is spec + sim only (no production change).
 - **L-283-6** 절대 #[ignore] 금지.
 
+## Wiring + menu/toolbar re-review (2026-07-08, post-β)
+
+- **Engine-only change.** ADR-283 touches `annulus.rs` + `scene.rs` (+ docs)
+  ONLY. No `axia-wasm` export, no `WasmBridge` method, no tool, no `MenuBar`,
+  no `index.html` toolbar, no ActionCatalog/CommandCatalog entry (grep-confirmed
+  empty). Containment auto-split is INTERNAL to the draw pipeline — no new UI
+  surface to wire.
+- **Reachability.** `assign_polygon_holes` runs in `rederive_coplanar_on_draw`
+  (scene.rs:2527), which every face-creating draw reaches via
+  `exec_draw_* → intersect_faces_inner → rederive_coplanar_on_draw` (the
+  face_rederive-ON production path). The legacy face_rederive-OFF path got the
+  `detect_polygon_containment` + `split_face_by_inner_polygon` branch in the
+  pairwise scan (scene.rs:3202). So a contained rect/circle/polygon auto-splits
+  identically from ALL draw tools — no per-tool wiring needed.
+- **Existing draw surface unchanged.** The rect/circle/polygon `*AsShape` /
+  `*AsCurve` routing (kernel-aware, guard_imprint-wrapped, surfaceDrawReject)
+  verified in ADR-282's review still holds; ADR-283 adds no draw entry.
+- **Verified:** ActionCatalog ⊇ CommandCatalog (CatalogConsistency 3/3);
+  axia-core 436 / axia-geo 2195, vitest 2508 / 1 skipped, tsc 0, ADR-catalog
+  check pass; browser (production, all 4 flags) contained→closed / crossing→closed.
+
 ## Cross-link
 
 - ADR-282 (guard non-manifold-only — the deform-not-decline predecessor).
