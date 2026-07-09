@@ -3152,6 +3152,108 @@ impl Scene {
         self.finish_polyline_split(host_face, samples, axia_geo::mesh::Mesh::split_sphere_face_by_polyline)
     }
 
+    /// ADR-284 β-4-3 — split a Path B Sphere hemisphere by an OPEN drawn seam
+    /// (rim → interior → rim), the S3 "draw a line on a curved face" case. Unlike
+    /// the closed path (which reuses `host_face` for the remainder), the open seam
+    /// TRIMS the host + REBUILDS the shared-equator twin, so all three result
+    /// faces are new — this reconciles owner tracking for all of them.
+    ///
+    /// `pts` is the raw drawn stroke (NOT pre-projected); the engine projects onto
+    /// the sphere internally and needs the interior points that arc over the
+    /// hemisphere. A straight 2-point stroke is degenerate (see ADR-284 §β-4-1
+    /// tool-dispatch finding) → `< 3` points reject. Returns `(piece_a, piece_b)`.
+    pub fn draw_open_seam_on_sphere(
+        &mut self,
+        host_face: FaceId,
+        pts: Vec<DVec3>,
+    ) -> Option<(FaceId, FaceId)> {
+        use axia_geo::surfaces::AnalyticSurface;
+        if pts.len() < 3 || pts.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        // Host must be a Sphere face; capture its equator HE to find the twin.
+        let outer_start = self
+            .mesh
+            .faces
+            .get(host_face)
+            .filter(|f| f.is_active())
+            .filter(|f| matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .map(|f| f.outer().start)?;
+        if outer_start.is_null() {
+            return None;
+        }
+        // Twin hemisphere (radial twin of the host equator HE) — same Shape/Xia.
+        let twin_old: Option<FaceId> = {
+            let th = self.mesh.hes.get(outer_start)?.next_rad();
+            if !th.is_null() && th != outer_start {
+                self.mesh.hes.get(th).map(|h| h.face())
+            } else {
+                None
+            }
+        };
+        let owning_shape = self.face_to_shape.get(&host_face).copied();
+        let owning_xia = self.face_to_xia.get(&host_face).copied();
+        let own = !self.transactions.is_recording();
+        if own {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        match self.mesh.split_sphere_face_by_open_seam(host_face, &pts) {
+            Some((fa, fb, twin_new)) => {
+                // Reconcile owner: {host_face, twin_old} → {fa, fb, twin_new}.
+                let new_faces: Vec<FaceId> =
+                    [Some(fa), Some(fb), twin_new].into_iter().flatten().collect();
+                if let Some(sid) = owning_shape {
+                    if let Some(shape) = self.shapes.get_mut(&sid) {
+                        shape
+                            .face_ids
+                            .retain(|&f| f != host_face && Some(f) != twin_old);
+                        for &nf in &new_faces {
+                            if !shape.face_ids.contains(&nf) {
+                                shape.face_ids.push(nf);
+                            }
+                        }
+                    }
+                    self.face_to_shape.remove(&host_face);
+                    if let Some(t) = twin_old {
+                        self.face_to_shape.remove(&t);
+                    }
+                    for &nf in &new_faces {
+                        self.face_to_shape.insert(nf, sid);
+                    }
+                } else if let Some(xid) = owning_xia {
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        xia.face_ids
+                            .retain(|&f| f != host_face && Some(f) != twin_old);
+                    }
+                    self.face_to_xia.remove(&host_face);
+                    if let Some(t) = twin_old {
+                        self.face_to_xia.remove(&t);
+                    }
+                    self.register_faces_to_xia(xid, &new_faces);
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        for &nf in &new_faces {
+                            if !xia.face_ids.contains(&nf) {
+                                xia.face_ids.push(nf);
+                            }
+                        }
+                    }
+                }
+                if own {
+                    self.transactions.set_after_snapshot(self.scene_snapshot());
+                    self.transactions.commit();
+                }
+                Some((fa, fb))
+            }
+            None => {
+                if own {
+                    self.transactions.cancel();
+                }
+                None
+            }
+        }
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 

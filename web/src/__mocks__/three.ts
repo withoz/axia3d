@@ -47,6 +47,30 @@ export class Vector3 {
   toArray() { return [this.x, this.y, this.z]; }
 }
 
+export class Box3 {
+  min = new Vector3(Infinity, Infinity, Infinity);
+  max = new Vector3(-Infinity, -Infinity, -Infinity);
+  setFromPoints(pts: Vector3[]) {
+    this.min = new Vector3(Infinity, Infinity, Infinity);
+    this.max = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const p of pts) {
+      this.min.x = Math.min(this.min.x, p.x);
+      this.min.y = Math.min(this.min.y, p.y);
+      this.min.z = Math.min(this.min.z, p.z);
+      this.max.x = Math.max(this.max.x, p.x);
+      this.max.y = Math.max(this.max.y, p.y);
+      this.max.z = Math.max(this.max.z, p.z);
+    }
+    return this;
+  }
+  getSize(target: Vector3) {
+    target.x = this.max.x - this.min.x;
+    target.y = this.max.y - this.min.y;
+    target.z = this.max.z - this.min.z;
+    return target;
+  }
+}
+
 // Phase I — Curve 지원 (CatmullRomCurve3 최소 구현: 선형 보간 approximation)
 export class CatmullRomCurve3 {
   points: Vector3[];

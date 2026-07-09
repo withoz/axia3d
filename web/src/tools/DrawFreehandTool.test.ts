@@ -82,3 +82,61 @@ describe('DrawFreehandTool — ADR-087 K-ε kernel-aware dispatch', () => {
     expect(flat[7]).toBe(5);  // y2
   });
 });
+
+describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
+  // A mock context whose draw plane reports a SPHERE face (surfaceKind 3) and
+  // whose pick resolves a host face → the curved branch engages.
+  function sphereCtx() {
+    return {
+      bridge: {
+        drawPolyline: vi.fn().mockReturnValue(0),
+        drawPolylineAsShape: vi.fn().mockReturnValue(0),
+        drawPolylineOnCurved: vi.fn().mockReturnValue('{"cap":4,"annulus":0}'),
+        drawOpenSeamOnSphere: vi.fn().mockReturnValue('{"a":4,"b":5}'),
+      },
+      viewport: {
+        scene: { add: vi.fn(), remove: vi.fn() },
+        pick: vi.fn().mockReturnValue({ faceIndex: 0 }),
+      },
+      syncMesh: vi.fn(),
+      snap: { setReferencePoint: vi.fn() },
+      lockPlane: vi.fn(),
+      getFaceId: vi.fn().mockReturnValue(0),
+      getDrawPlane: vi.fn().mockReturnValue({
+        normal: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0),
+        origin: new THREE.Vector3(),
+        surfaceKind: 3, // Sphere
+      }),
+      get3DPoint: vi.fn(),
+      getSnappedPoint: vi.fn(),
+      getRay: vi.fn(),
+    } as any;
+  }
+
+  function draw(ctx: any, pts: [number, number, number][]) {
+    const tool = new DrawFreehandTool(ctx);
+    tool.onMouseDown({ clientX: 5, clientY: 5 } as MouseEvent, new THREE.Vector3(...pts[0]));
+    (tool as any).rawPoints = pts.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+    tool.onMouseUp({} as MouseEvent);
+  }
+
+  it('OPEN stroke on a sphere face → drawOpenSeamOnSphere (not planar wire)', () => {
+    const ctx = sphereCtx();
+    // rim A → interior(z>0) → rim B: first/last far apart → open.
+    draw(ctx, [[10, 0, 0], [3, 3, 8], [0, 10, 0]]);
+    expect(ctx.bridge.drawOpenSeamOnSphere).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawOpenSeamOnSphere.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
+    expect(ctx.bridge.drawPolylineOnCurved).not.toHaveBeenCalled();
+  });
+
+  it('CLOSED loop on a sphere face → drawPolylineOnCurved (cap+remainder)', () => {
+    const ctx = sphereCtx();
+    // near-closed loop (first ≈ last) around a small region.
+    draw(ctx, [[5, 0, 8], [5, 2, 7], [3, 2, 8], [5, 0.1, 8]]);
+    expect(ctx.bridge.drawPolylineOnCurved).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawPolylineOnCurved.mock.calls[0][0]).toBe('sphere');
+    expect(ctx.bridge.drawOpenSeamOnSphere).not.toHaveBeenCalled();
+  });
+});

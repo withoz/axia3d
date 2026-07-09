@@ -228,7 +228,7 @@ inherit Sphere.** Regression: `adr284_beta4_sphere_open_seam_splits_manifold`
 (3 faces / valid / 3 sphere) + `adr284_beta4_open_seam_rejects_bad_input` (< 3
 seam points, non-Sphere → graceful `None`). axia-geo 2208 → 2210, 0 fail.
 
-### β-4-1 tool-dispatch geometry finding (deferred to β-4-3)
+### β-4-1 tool-dispatch geometry finding
 
 `split_sphere_face_by_open_seam` requires ≥ 3 seam points (2 rim + **≥ 1 interior
 point arcing OVER the hemisphere**). This surfaces a UX subtlety for the draw
@@ -240,11 +240,42 @@ canonical geodesic between two equator points that arcs over the hemisphere (the
 unique great circle through them IS the equator). So a valid interior seam must be
 a **drawn multi-point stroke** that leaves the equator plane — the natural fit is
 **open Freehand / open Bezier** (which already produce multi-point strokes), NOT a
-straight `DrawLine`. β-4-3 tool dispatch should route open freehand/bezier strokes
-on a Sphere face to `split_sphere_face_by_open_seam`, and either reject or
-re-interpret a straight rim-to-rim `DrawLine`. (Engine capability is complete +
-tested; the tool UX is a distinct decision.) S9 (closed shapes, all 4 surfaces, 4
-tools) remains complete and unaffected.
+straight `DrawLine`.
+
+### β-4-3 TOOL DISPATCH LANDED (2026-07-09): open Freehand / Bezier on a sphere
+
+The engine capability is wired end-to-end for the natural tools:
+
+- **Scene** `Scene::draw_open_seam_on_sphere(host, pts)` — sphere-face guard +
+  transaction + **owner reconcile**. Unlike the closed path (which reuses
+  `host_face` for the remainder via `finish_polyline_split`), the open seam trims
+  the host AND rebuilds the twin, so all three result faces are new; this captures
+  the twin (radial-twin FaceId) pre-op and reconciles the owning Shape/Xia's
+  `face_ids` from `{host, twin_old}` → `{piece_a, piece_b, twin_new}`.
+- **WASM** `drawOpenSeamOnSphere(face_id, flat) → {"a","b"} / {"error"}`
+  (additive — export baseline unchanged).
+- **Bridge** `WasmBridge.drawOpenSeamOnSphere(faceId, pts)` (≥ 3 pts, graceful
+  null).
+- **Tools** DrawFreehandTool + DrawBezierTool: an **OPEN** stroke (first/last far
+  apart; bezier P3≠P0) on a **Sphere** face routes to `drawOpenSeamOnSphere`. The
+  closed-loop branch (→ `drawPolylineOnCurved`, S9) is unchanged. Cylinder/cone/
+  torus open strokes = multi-rim (β-4-4, deferred) → fall through to a planar
+  wire; a straight `DrawLine` is left as-is (degenerate, documented above).
+
+**Real-WASM browser verification** (preview :3000, reloaded after `build:wasm`):
+`create_sphere` Path B (2 hemisphere faces) → `drawOpenSeamOnSphere(0, [A,
+interior, B])` → `{"a":4,"b":5}`, `meshManifoldInfo` **face_count=3,
+non_manifold_edge_count=0**, `verifyInvariants` **valid=true, checkedFaces=3, 0
+violations**; viewport synced (4828 tris of the split sphere surface; equator seam
+SOFT-hidden per sphere convention). Regression: vitest DrawFreehandTool +2
+(open-sphere → seam / closed → curved) + DrawBezierTool +1 (open-sphere → seam) +
+`Box3` added to the three test-mock. S9 (closed shapes, all 4 surfaces, 4 tools)
+remains complete and unaffected.
+
+**Deferred (β-4-4):** open seams on cylinder / cone / torus (their rims are
+multi-loop — a top-rim→bottom-rim cut UNROLLS the annulus rather than splitting it
+in two; needs a different topology), and a straight-`DrawLine` reject/re-interpret
+UX polish.
 
 ## Lock-ins (α)
 

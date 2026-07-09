@@ -4281,13 +4281,17 @@ impl Mesh {
     ///      [`split_face_by_chain`](crate::operations::face_split::split_face_by_chain).
     ///
     /// Both host pieces inherit the host `Sphere`; the twin keeps its `Sphere`
-    /// (ADR-089 A-χ). `None` if the host is not a Path B Sphere self-loop face,
-    /// < 3 seam points (2 rim + ≥1 interior), a projection fails, or a step fails.
+    /// (ADR-089 A-χ). Returns `(host_piece_a, host_piece_b, rebuilt_twin)` — the
+    /// twin's FaceId changes (it is deactivated + rebuilt), so callers must
+    /// reconcile owner tracking with all three. `rebuilt_twin` is `None` if the
+    /// host had no twin (a standalone Sphere self-loop face). `None` overall if
+    /// the host is not a Path B Sphere self-loop face, < 3 seam points (2 rim +
+    /// ≥1 interior), a projection fails, or a step fails.
     pub fn split_sphere_face_by_open_seam(
         &mut self,
         host_face: FaceId,
         seam_pts: &[DVec3],
-    ) -> Option<(FaceId, FaceId)> {
+    ) -> Option<(FaceId, FaceId, Option<FaceId>)> {
         use crate::surfaces::{sphere, AnalyticSurface};
         if seam_pts.len() < 3 {
             return None; // 2 rim endpoints + ≥1 interior point
@@ -4340,6 +4344,7 @@ impl Mesh {
 
         // 3a. Rebuild the twin: deactivate its now-broken face + re-add the arc
         //     ring reversed (twin-facing HEs reuse the arc edges' free twin slots).
+        let mut rebuilt_twin: Option<FaceId> = None;
         if let Some(tf) = twin_face {
             if self.faces.contains(tf) && self.faces[tf].is_active() {
                 let ring = self.collect_loop_verts(self.faces[arc_face].outer().start).ok()?;
@@ -4352,6 +4357,7 @@ impl Mesh {
                         fm.set_surface(Some(s.clone()));
                     }
                 }
+                rebuilt_twin = Some(new_twin);
             }
         }
 
@@ -4375,7 +4381,7 @@ impl Mesh {
                 fm.set_surface(Some(host_sph.clone()));
             }
         }
-        Some((res.new_faces[0], res.new_faces[1]))
+        Some((res.new_faces[0], res.new_faces[1], rebuilt_twin))
     }
 
     /// **ADR-257 β-3 (P3-B)** — split a Cylinder-surface face by a closed
@@ -16421,7 +16427,7 @@ mod tests {
             cpt(FRAC_PI_2),                     // rim B (equator)
         ];
 
-        let (fa, fb) = mesh
+        let (fa, fb, twin) = mesh
             .split_sphere_face_by_open_seam(north, &seam)
             .expect("open-seam split must succeed on a hemisphere");
 
@@ -16434,6 +16440,8 @@ mod tests {
         assert_eq!(faces, 3, "2 host pieces + 1 twin hemisphere");
         assert_eq!(sphere_faces, 3, "all 3 faces inherit Sphere (ADR-089 A-χ)");
         assert_ne!(fa, fb, "two distinct host pieces");
+        let twin = twin.expect("a Path B hemisphere has a twin, rebuilt");
+        assert!(twin != fa && twin != fb, "twin is distinct from both host pieces");
     }
 
     /// ADR-284 β-4-1 — reject guards: < 3 seam points (no interior) and a

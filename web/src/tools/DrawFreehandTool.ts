@@ -150,22 +150,36 @@ export class DrawFreehandTool implements ITool {
     // face is projected + split (cap + remainder). "Closed" = the stroke's ends
     // are near each other (≤ 20% of its bbox diagonal). Open strokes on a curved
     // face fall through (planar wire; on-surface open lines are β-4).
-    if (this.curvedKind && this.curvedHostFace >= 0 && filtered.length >= 3
-        && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+    if (this.curvedKind && this.curvedHostFace >= 0 && filtered.length >= 3) {
       const first = this.rawPoints[0];
       const lastRaw = this.rawPoints[this.rawPoints.length - 1];
       const bb = new THREE.Box3().setFromPoints(this.rawPoints);
       const diag = bb.getSize(new THREE.Vector3()).length();
       const closed = first.distanceTo(lastRaw) <= Math.max(diag * 0.2, 1);
-      if (closed) {
-        const pts: Array<[number, number, number]> =
-          filtered.map((p) => [p.x, p.y, p.z]);
+      const pts: Array<[number, number, number]> = filtered.map((p) => [p.x, p.y, p.z]);
+      if (closed && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
         const res = this.ctx.bridge.drawPolylineOnCurved(this.curvedKind, this.curvedHostFace, pts, true);
         if (!res || res.includes('"error"')) {
           // eslint-disable-next-line no-console
           console.warn(`[Freehand] curved split on ${this.curvedKind} failed: ${res}`);
         } else {
           debugLog(`[Freehand] curved closed loop split on ${this.curvedKind} host=${this.curvedHostFace}`);
+        }
+        this.ctx.syncMesh();
+        return;
+      }
+      // ADR-284 β-4-3 — OPEN stroke on a Sphere face → rim-to-rim seam split.
+      // (Cylinder/cone/torus open = multi-rim, β-4-4; those fall through to a
+      // planar wire. A straight 2-click line is degenerate — ADR-284 §β-4-1 —
+      // so this is the freehand/bezier path.)
+      if (!closed && this.curvedKind === 'sphere'
+          && typeof this.ctx.bridge.drawOpenSeamOnSphere === 'function') {
+        const res = this.ctx.bridge.drawOpenSeamOnSphere(this.curvedHostFace, pts);
+        if (!res || res.includes('"error"')) {
+          // eslint-disable-next-line no-console
+          console.warn(`[Freehand] open seam on sphere failed: ${res}`);
+        } else {
+          debugLog(`[Freehand] open seam split on sphere host=${this.curvedHostFace}`);
         }
         this.ctx.syncMesh();
         return;

@@ -108,4 +108,29 @@ describe('DrawBezierTool (ADR-089 A-ψ-β closure detection)', () => {
     expect(ctx.bridge.drawBezierWithCurve).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.drawClosedBezierAsCurve).not.toHaveBeenCalled();
   });
+
+  it('ADR-284 β-4-3 — open Bezier on a sphere face → drawOpenSeamOnSphere', () => {
+    ctx.bridge.drawOpenSeamOnSphere = vi.fn().mockReturnValue('{"a":4,"b":5}');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).plane = { normal: new THREE.Vector3(0, 0, 1) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).drawPlane3 = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).curvedKind = 'sphere';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).curvedHostFace = 0;
+    // rim P0 → P1/P2 pull over the hemisphere → rim P3 (far from P0 → open).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).points = [
+      new THREE.Vector3(10, 0, 0),
+      new THREE.Vector3(6, 4, 8),
+      new THREE.Vector3(2, 8, 8),
+      new THREE.Vector3(0, 10, 0),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tool as any).commit();
+    expect(ctx.bridge.drawOpenSeamOnSphere).toHaveBeenCalledTimes(1);
+    expect(ctx.bridge.drawOpenSeamOnSphere.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawBezierWithCurve).not.toHaveBeenCalled();
+  });
 });
