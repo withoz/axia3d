@@ -798,6 +798,7 @@ type AxiaEngineExtended = AxiaEngine & {
   setFaceSurfaceTorus?(...args: number[]): boolean;
   clearFaceSurface?(faceId: number): boolean;
   faceSurfaceKind?(faceId: number): number;
+  getFaceSurfaceJson?(faceId: number): string;
   // ADR-232 — NURBS-class face control-net read-back (JSON)
   getNurbsSurfaceParams?(faceId: number): string;
   tessellateFaceSurface?(faceId: number, chordTol: number): Float64Array;
@@ -2819,6 +2820,18 @@ export class WasmBridge {
       faceSurfaceKind?: (id: number) => number;
     }).faceSurfaceKind;
     return fn ? fn.call(this.engine, faceId) : -1;
+  }
+
+  /**
+   * ADR-285 β-5 — mangling-safe forwarder for a face's analytic-surface JSON
+   * (`{ kind, radius, vRange, halfAngle, majorRadius, minorRadius, ... }`).
+   * Used by the Inspector's parametric editor + E2E. Returns `null` if the
+   * face has no analytic surface / no engine.
+   */
+  getFaceSurfaceJson(faceId: number): string | null {
+    const fn = this.engine?.getFaceSurfaceJson;
+    if (!fn) return null;
+    return fn.call(this.engine, faceId);
   }
 
   /**

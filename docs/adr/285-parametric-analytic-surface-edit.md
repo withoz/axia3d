@@ -1,7 +1,7 @@
 # ADR-285 — Parametric Direct Edit of Analytic Curved Faces (α spec)
 
-**Status:** Accepted (β-1~β-4 landed 2026-07-09 — all 4 curved primitives
-editable; β-5 UX polish optional)
+**Status:** Accepted (β-1~β-5 landed 2026-07-09~10 — all 4 curved primitives
+editable in place, Inspector polish + real-Chromium E2E complete)
 **Date:** 2026-07-09
 **Track:** "진짜 analytic 곡면 커널 편집" — 사용자 결재 방향 = **파라메트릭 직접 편집**
 
@@ -106,8 +106,23 @@ updates both incident faces).
 - **β-2 Cylinder** radius + height — ✅ **LANDED (2026-07-09)**.
 - **β-3 Cone** radius + height — ✅ **LANDED (2026-07-09)**.
 - **β-4 Torus** major + minor — ✅ **LANDED (2026-07-09)**.
-- **β-5** Inspector UX polish + real-Chromium demo sweep — optional follow-up
-  (the editor is already functional for all 4 primitives).
+- **β-5** Inspector UX polish + real-Chromium E2E — ✅ **LANDED (2026-07-10)**.
+
+### β-5 Inspector polish + real-Chromium E2E — LANDED (2026-07-10)
+
+- **Bridge** `WasmBridge.getFaceSurfaceJson(faceId)` — mangling-safe forwarder for
+  a face's analytic-surface JSON (the editor + E2E read params through it instead
+  of the fragile `bridge.engine.*`).
+- **UI** XiaInspector — the curved editor now reads via the mangling-safe bridge
+  methods (`faceSurfaceKind` + `getFaceSurfaceJson`) and shows a titled section
+  **"곡면 파라미터 (직접 편집)"** above the numeric fields.
+- **E2E** `web/e2e/adr-285-parametric-curved-edit.spec.ts` — 4 real-Chromium tests
+  (production build + compiled WASM), one per primitive: create → find the curved
+  face → edit param(s) via the bridge → assert the surface param changed
+  (`getFaceSurfaceJson`), the mesh is manifold (`verifyInvariants` valid, 0 viol),
+  and topology is unchanged (face count constant). All 4 pass.
+- **Regression**: Playwright +4 (sphere/cylinder/cone/torus) + vitest WasmBridge
+  +1 (`getFaceSurfaceJson` forwarder).
 
 ### β-4 Torus major + minor — LANDED (2026-07-09)
 

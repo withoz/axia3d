@@ -1086,6 +1086,18 @@ describe('WasmBridge', () => {
       expect(called).toBe(false);
     });
 
+    // ADR-285 β-5 — getFaceSurfaceJson mangling-safe forwarder.
+    it('getFaceSurfaceJson() forwards to the engine, null when absent', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        getFaceSurfaceJson: (f: number) => `{"kind":"Sphere","radius":${f + 10}}`,
+      };
+      expect(bridge.getFaceSurfaceJson(5)).toBe('{"kind":"Sphere","radius":15}');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {};
+      expect(bridge.getFaceSurfaceJson(5)).toBeNull();
+    });
+
     it('faceSurfaceKind() returns engine value', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (bridge as any).engine = {

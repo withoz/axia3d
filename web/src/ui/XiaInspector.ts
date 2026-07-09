@@ -173,19 +173,17 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
   // 불변). 그 외 선택(빈 선택 / edge / 비-지원 face)에서는 숨김. (β-3 cone /
   // β-4 torus 확장 예정.)
   const updateCurvedEditor = (faceIds: number[]) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const eng = bridge.engine as any;
     let box = document.getElementById('xi-curved-edit') as HTMLElement | null;
     const fid = faceIds.length === 1 ? faceIds[0] : -1;
-    const kind =
-      fid >= 0 && !!eng && typeof eng.faceSurfaceKind === 'function'
-        ? eng.faceSurfaceKind(fid)
-        : -1;
+    // Mangling-safe bridge methods (β-5): faceSurfaceKind + getFaceSurfaceJson.
+    const kind = fid >= 0 && typeof bridge.faceSurfaceKind === 'function'
+      ? bridge.faceSurfaceKind(fid)
+      : -1;
     // Rows: { label, value, apply(val)->bool }. Sphere(3) radius; Cylinder(2) radius+height.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let surf: any = {};
     try {
-      surf = JSON.parse(eng.getFaceSurfaceJson(fid));
+      surf = JSON.parse((bridge.getFaceSurfaceJson?.(fid) as string) ?? '{}');
     } catch {
       /* leave {} */
     }
@@ -223,6 +221,13 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     // Rebuild the fields for the current face (selection-change only — during
     // typing, updateInspector is not re-fired, so focus is preserved).
     box.innerHTML = '';
+    // β-5 — titled section so the numeric fields read as "직접 편집" params.
+    const title = document.createElement('div');
+    title.style.cssText =
+      'font-size:11px;font-weight:600;letter-spacing:0.02em;opacity:0.85;' +
+      'margin-bottom:6px;color:#9cc4ff;';
+    title.textContent = '곡면 파라미터 (직접 편집)';
+    box.appendChild(title);
     for (const r of rows) {
       const row = document.createElement('div');
       row.style.marginBottom = '6px';
