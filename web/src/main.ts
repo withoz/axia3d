@@ -739,14 +739,25 @@ async function main() {
       const lodTol = bridge.lodChordTol(camDistance);
       // Only push when change is > 5% (avoids per-frame churn on slow zoom).
       if (Math.abs(lodTol / lodLastPushedTol - 1) > 0.05) {
-        bridge.setRenderChordTol(lodTol);
         lodLastPushedTol = lodTol;
-        // ADR-135 amendment — debounced geometry refresh so the new LOD
-        // tessellation becomes visible once the camera settles.
+        // ADR-286 hardening (dev-preview HeId-panic race) — push
+        // `setRenderChordTol` INSIDE the debounced callback, together with the
+        // geometry refresh, so cache-invalidation (setRenderChordTol marks the
+        // render cache dirty, LOCKED #62 L-135-5) and re-tessellation happen
+        // ATOMICALLY in one task. Previously setRenderChordTol fired immediately
+        // on every 5% step during a continuous zoom → many cache invalidations,
+        // each leaving the cache invalid across a frame boundary until the
+        // debounced syncMesh landed 160ms later; a WASM export pull in that
+        // window ran on the invalidated cache → `HeId not found` panic →
+        // poisoned RefCell → "recursive use" cascade (2026-05-24 audit §2).
+        // The visible geometry already only reflected the tol at the (debounced)
+        // syncMesh, so folding setRenderChordTol into the same task is a
+        // zero-visible-behavior change that closes the stale-cache window.
         if (lodRefreshTimer !== null) clearTimeout(lodRefreshTimer);
         lodRefreshTimer = setTimeout(() => {
           lodRefreshTimer = null;
           try {
+            bridge.setRenderChordTol(lodTol);
             bridge.markDirty();
             toolManager.syncMesh();
           } catch {
