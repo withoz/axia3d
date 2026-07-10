@@ -8107,6 +8107,74 @@ impl Scene {
         }
     }
 
+    /// ADR-286 β — raise a curved BOSS (outward) from a sketched Cylinder cap: the
+    /// mirror of [`Scene::carve_curved_pocket_from_cap`], delegating to
+    /// [`axia_geo::Mesh::add_curved_boss`]. Owns the transaction + reconciles the
+    /// cap's owner (Shape XOR XIA) — the cap is consumed, the raised roof + side
+    /// walls join the same owner. There is no through-routing (a boss only grows
+    /// outward). Manifold/watertight is enforced by the mesh op (bails) + the WASM
+    /// integrity gate (ADR-267).
+    pub fn add_curved_boss_from_cap(&mut self, cap_face: FaceId, height: f64) -> CommandResult {
+        let cap_shape = self.face_to_shape.get(&cap_face).copied();
+        let cap_xia = self.face_to_xia.get(&cap_face).copied();
+
+        let own_transaction = !self.transactions.is_recording();
+        let before = self.scene_snapshot();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(before.clone());
+        }
+
+        match self.mesh.add_curved_boss(cap_face, height) {
+            Ok(result) => {
+                let new_faces: Vec<FaceId> = std::iter::once(result.floor_face)
+                    .chain(result.wall_faces.iter().copied())
+                    .collect();
+                if let Some(sid) = cap_shape {
+                    if let Some(shape) = self.shapes.get_mut(&sid) {
+                        shape.face_ids.retain(|&f| f != cap_face);
+                        for &nf in &new_faces {
+                            if !shape.face_ids.contains(&nf) {
+                                shape.face_ids.push(nf);
+                            }
+                        }
+                    }
+                    for &nf in &new_faces {
+                        self.face_to_shape.insert(nf, sid);
+                    }
+                    self.face_to_shape.remove(&cap_face);
+                } else if let Some(xid) = cap_xia {
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        xia.face_ids.retain(|&f| f != cap_face);
+                        xia.face_ids.extend(new_faces.iter());
+                    }
+                    for &nf in &new_faces {
+                        self.face_to_xia.insert(nf, xid);
+                    }
+                    self.face_to_xia.remove(&cap_face);
+                }
+
+                if own_transaction {
+                    self.transactions.set_after_snapshot(self.scene_snapshot());
+                    self.transactions.commit();
+                }
+                CommandResult::PushPullDone {
+                    sides_created: result.wall_faces.len(),
+                    adj_splits: 0,
+                    base_removed: true,
+                    split_debug: Vec::new(),
+                }
+            }
+            Err(e) => {
+                self.restore_scene_snapshot(&before);
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                CommandResult::Error(e.to_string())
+            }
+        }
+    }
+
     /// ADR-252 — drop a consumed profile sheet from its Shape (form-layer) + the
     /// reverse indices (shared by the pocket + through carve paths).
     fn cleanup_consumed_sheet(&mut self, source_face: FaceId, source_shape: Option<crate::ShapeId>) {

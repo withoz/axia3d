@@ -787,6 +787,123 @@ impl Mesh {
         })
     }
 
+    /// ADR-286 β — raise a curved BOSS (outward protrusion) from a sketched
+    /// Cylinder cap (ADR-263 split): the mirror of [`Mesh::carve_curved_pocket`].
+    /// The cap boundary is pushed **per-vertex radially OUTWARD** by `height`
+    /// (to radius + height), forming a roof patch on the outer cylinder; N side
+    /// walls bridge the opening loop to the roof loop → a watertight raised boss.
+    ///
+    /// Topology is identical to the pocket carve (remove cap → walls weld to the
+    /// freed cap-side half-edges in cap-loop order → roof caps the walls), so the
+    /// wall winding `[a, a2, b2, b]` + forward roof order are FORCED to match the
+    /// remainder's hole loop (manifold by construction). Only the new ring sits
+    /// at radius + height (outward) instead of radius − depth. Unlike the pocket
+    /// there is no `< radius` bound — a boss may rise arbitrarily far.
+    pub fn add_curved_boss(
+        &mut self,
+        cap_face: FaceId,
+        height: f64,
+    ) -> Result<PocketResult> {
+        use crate::surfaces::AnalyticSurface as S;
+        use std::f64::consts::TAU;
+        if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
+            bail!("curved boss: cap face inactive/missing");
+        }
+        // MVP — Cylinder surface only. Sphere/Cone/Torus mirror is ADR-286 ε.
+        let (axis_o, axis_d, radius, ref_dir, v_range) = match self.faces[cap_face].surface() {
+            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
+                (*axis_origin, axis_dir.normalize_or_zero(), *radius, *ref_dir, *v_range)
+            }
+            _ => bail!("curved boss MVP: cap must be a Cylinder-surface face"),
+        };
+        if !(height > 1e-6) {
+            bail!("curved boss: height must be positive, got {height}");
+        }
+
+        // Opening = cap boundary loop (verts on the cylinder at `radius`).
+        let opening = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
+        let cnt = opening.len();
+        if cnt < 3 {
+            bail!("curved boss: cap boundary too small ({cnt} verts)");
+        }
+        let material = self.faces[cap_face].material();
+
+        // Host (remainder/annulus) captured BEFORE removing the cap (XIA reconcile).
+        let first_he = self.faces[cap_face].outer().start;
+        let host = {
+            let tw = self.hes[first_he].next_rad();
+            if tw.is_null() || tw == first_he {
+                FaceId::new(u32::MAX)
+            } else {
+                self.hes[tw].face()
+            }
+        };
+
+        // Per-vertex radial-OUTWARD (away from the axis) — mirror of the pocket's
+        // radial-inward.
+        let radial_outward = |p: DVec3| -> DVec3 {
+            let rel = p - axis_o;
+            let radial_out = rel - axis_d * rel.dot(axis_d);
+            radial_out.normalize_or_zero()
+        };
+        // Roof verts = opening pushed radially outward by `height` (radius+height).
+        let roof: Vec<VertId> = opening
+            .iter()
+            .map(|&v| {
+                let p = self.vertex_pos(v).unwrap();
+                self.add_vertex(p + radial_outward(p) * height)
+            })
+            .collect();
+
+        // Remove the cap face — its boundary becomes the boss base opening.
+        self.remove_face(cap_face);
+
+        // Side walls — bridge opening[i] → roof[i], traversing the opening edge in
+        // cap-loop order to reuse the freed cap-side half-edge (welds to the
+        // remainder). Same winding as the pocket (topology identical); the roof
+        // simply sits outside.
+        let mut wall_faces = Vec::with_capacity(cnt);
+        for i in 0..cnt {
+            let a = opening[i];
+            let a2 = opening[(i + 1) % cnt];
+            let b = roof[i];
+            let b2 = roof[(i + 1) % cnt];
+            wall_faces.push(self.add_face(&[a, a2, b2, b], material)?);
+        }
+
+        // Roof cap (curved patch on the outer cylinder, radius+height). Forward
+        // `roof` order → its edges twin the walls' (roof[i+1]→roof[i]).
+        let roof_face = self.add_face(&roof, material)?;
+        // Inherit the Cylinder surface at the raised radius so the roof renders
+        // curved (ADR-263 surface inheritance).
+        let _ = self.set_face_surface(
+            roof_face,
+            Some(S::Cylinder {
+                axis_origin: axis_o,
+                axis_dir: axis_d,
+                radius: radius + height,
+                ref_dir,
+                u_range: (0.0, TAU),
+                v_range,
+            }),
+        );
+
+        // Manifold guard (ADR-190 P0.2 — the caller's snapshot rolls back).
+        let report = self.verify_face_invariants();
+        if !report.is_valid() {
+            bail!(
+                "curved boss: result not manifold ({} violations)",
+                report.violations.len()
+            );
+        }
+        Ok(PocketResult {
+            ring_face: host,
+            floor_face: roof_face,
+            wall_faces,
+            depth: height,
+        })
+    }
+
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
     /// straight bore along the cap-center radial, entering at the cap and exiting
     /// the opposite side of the cylinder. The cap + a mirrored exit patch are
@@ -2262,6 +2379,77 @@ mod tests {
             cylinder::evaluate(a2o, a2d, r2, rd2, 0.4, vm2), 0.05).unwrap();
         let (cap2, _) = m2.split_cylinder_face_by_circle(f2[2], &s2).unwrap();
         assert!(m2.carve_curved_pocket(cap2, 10.0).is_err(), "depth reaching the axis must be rejected");
+    }
+
+    /// ADR-286 β — raise a curved BOSS from a sketched Cylinder cap (the pocket
+    /// mirror). The result must be a watertight manifold solid, add N side walls
+    /// + 1 roof, the roof must sit at radius + height, and the roof must face
+    /// radially OUTWARD (correct exterior orientation, ADR-268 "topology ≠
+    /// orientation" lesson — check the normal, not just closed-solid).
+    #[test]
+    fn adr286_add_curved_boss_cylinder() {
+        use crate::surfaces::{cylinder, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let faces = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 24, mat).expect("cylinder");
+        let annulus = faces[2];
+        let (ax_o, ax_d, rad, refd, vlo, vhi) = match mesh.face_surface(annulus).cloned().expect("surf") {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (axis_origin, axis_dir, radius, ref_dir, v_range.0, v_range.1),
+            other => panic!("Cylinder, got {other:?}"),
+        };
+        let vmid = 0.5 * (vlo + vhi);
+        let cp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.0, vmid);
+        let rp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.4, vmid);
+        let samples = cylinder::circle_on_cylinder(ax_o, ax_d, rad, refd, cp, rp, 0.05).expect("circle");
+        let (cap, _host) = mesh.split_cylinder_face_by_circle(annulus, &samples).expect("split");
+
+        let n_wall_expect = mesh.collect_loop_verts(mesh.faces[cap].outer().start).unwrap().len();
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, "closed before");
+
+        let height = 5.0;
+        let res = mesh.add_curved_boss(cap, height).expect("curved boss must raise");
+
+        // N walls + 1 roof.
+        assert_eq!(res.wall_faces.len(), n_wall_expect, "one wall per cap boundary edge");
+        assert!((res.depth - height).abs() < 1e-9);
+
+        // Manifold (add_curved_boss bails if not) + still a closed watertight solid.
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after curved boss");
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid,
+            "bossed cylinder stays a watertight closed solid");
+
+        // Roof sits at the raised radius (r + height): every roof vertex is
+        // `radius + height` from the axis.
+        let roof_vs = mesh.collect_loop_verts(mesh.faces[res.floor_face].outer().start).unwrap();
+        for &v in &roof_vs {
+            let p = mesh.vertex_pos(v).unwrap();
+            let rel = p - ax_o;
+            let r = (rel - ax_d * rel.dot(ax_d)).length();
+            assert!((r - (rad + height)).abs() < 1e-6, "roof vert at radius {r}, want {}", rad + height);
+        }
+
+        // Orientation (ADR-268 lesson): the roof's geometric normal must point
+        // radially OUTWARD (exterior of the boss), not inward. Compute the face
+        // normal from its loop and compare with the radial-out direction at the
+        // roof centroid.
+        let centroid = {
+            let mut c = DVec3::ZERO;
+            for &v in &roof_vs { c += mesh.vertex_pos(v).unwrap(); }
+            c / roof_vs.len() as f64
+        };
+        let rel_c = centroid - ax_o;
+        let radial_out = (rel_c - ax_d * rel_c.dot(ax_d)).normalize();
+        let n = mesh.compute_normal(&roof_vs).expect("roof normal");
+        assert!(n.dot(radial_out) > 0.5,
+            "roof faces radially outward (n·out={}, n={n:?}, out={radial_out:?})", n.dot(radial_out));
+
+        // height must be positive.
+        assert!(mesh.add_curved_boss(res.floor_face, -1.0).is_err(), "negative height rejected");
     }
 
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap:

@@ -520,6 +520,8 @@ type AxiaEngineExtended = AxiaEngine & {
   carvePocketFromSourceFace?(sourceFaceRaw: number, depth: number): number;
   /** ADR-271 — carve a blind radial pocket into a curved (Cylinder) wall from a sketched cap. */
   carveCurvedPocket?(capFaceRaw: number, depth: number): number;
+  /** ADR-286 — raise a curved boss (outward protrusion) from a sketched (Cylinder) cap. */
+  carveCurvedBoss?(capFaceRaw: number, height: number): number;
   /** ADR-252 — true if the face is a coplanar profile contained in a LARGER face (pocket candidate). */
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
@@ -4394,6 +4396,20 @@ export class WasmBridge {
       return this.engine.carveCurvedPocket(capFace, depth) ?? -1;
     } catch (e) {
       this.recordBridgeError('carveCurvedPocket', e);
+      return -1;
+    }
+  }
+
+  /** ADR-286 β — raise a curved BOSS (outward protrusion) from a sketched
+   *  (Cylinder) cap face — the mirror of {@link carveCurvedPocket}. Returns the
+   *  side-wall count, or -1 on rejection. */
+  carveCurvedBoss(capFace: number, height: number): number {
+    if (!this.engine?.carveCurvedBoss) return -1;
+    this.markDirty();
+    try {
+      return this.engine.carveCurvedBoss(capFace, height) ?? -1;
+    } catch (e) {
+      this.recordBridgeError('carveCurvedBoss', e);
       return -1;
     }
   }

@@ -8804,6 +8804,57 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-286 β — raise a curved BOSS (outward protrusion) from a sketched
+    /// (Cylinder) cap face (ADR-263): the mirror of `carveCurvedPocket`. Returns
+    /// the side-wall count, or -1 on rejection (non-Cylinder cap / height ≤ 0 /
+    /// non-manifold). Same defense-in-depth integrity + closure gate (ADR-267 /
+    /// ADR-273) as the pocket carve.
+    #[wasm_bindgen(js_name = "carveCurvedBoss")]
+    pub fn carve_curved_boss(&mut self, cap_face_raw: u32, height: f64) -> i32 {
+        let fid = FaceId::new(cap_face_raw);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
+        let integrity_snapshot = self.scene.scene_snapshot();
+        match self.scene.add_curved_boss_from_cap(fid, height) {
+            CommandResult::PushPullDone { sides_created, .. } => {
+                if !self.integrity_gate_passed(
+                    integrity_before,
+                    &integrity_snapshot,
+                    "add curved boss",
+                    false,
+                ) {
+                    return -1;
+                }
+                if !self.closure_preserving_gate_passed(
+                    before_boundary,
+                    before_si,
+                    &integrity_snapshot,
+                    "add curved boss",
+                    false,
+                ) {
+                    return -1;
+                }
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                sides_created as i32
+            }
+            CommandResult::Error(e) => {
+                self.set_error(e);
+                self.invalidate_cache();
+                -1
+            }
+            _ => {
+                self.invalidate_cache();
+                -1
+            }
+        }
+    }
+
     /// ADR-252 — `true` if the face is a coplanar profile contained in a LARGER
     /// face on the same plane (the "rect drawn on a wall" signal). The Push/Pull
     /// tool uses this to route an inward push to a pocket carve. Read-only.

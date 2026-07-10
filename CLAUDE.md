@@ -6714,6 +6714,68 @@ Phase 5 repo 위생 (옛 repo dir 삭제·브랜치 486→~5·npm install↔open
 tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]
 메모리 + 세션 감사.
 
+### 89. ADR-286 — Curved-Surface Boss (outward) + Cut Completion ("완벽한 extrude" #5 곡면 Phase 2, 2026-07-10) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-10)**: AskUserQuestion "다음 작업" → **곡면 cut/boss**.
+
+**Measure-first 감사 (doc-lag 확인)**: ADR-271 카탈로그 표기 "α spec, code 0"
+는 stale — 실측 = **Cylinder 곡면 cut(blind pocket + through auto-route)이
+이미 완전 구현 + WASM + bridge + PushPullTool 배선**(carve.rs:679 /
+scene.rs:7989 / lib.rs:8756 / PushPullTool.ts:217). 진짜 gap = **곡면
+BOSS(outward) 전무** — 곡면 cap 바깥 밀기(dist>0)가 planar box(잘못된 형상)로
+fallback 되던 **실제 버그**.
+
+**scope**: Cylinder 곡면 BOSS = 기존 pocket 함수의 깨끗한 mirror (radial-inward
+→ radial-outward, floor r−depth → roof r+height, `depth<radius` 제약 제거).
+
+#### Lock-ins (L-286-1 ~ L-286-8)
+
+- **L-286-1** `carve.rs` `add_curved_boss(cap, height)` = `carve_curved_pocket`
+  mirror (signed radial outward). winding은 remainder hole-loop welding에 의해
+  강제 → `[a,a2,b2,b]` + forward roof가 pocket과 동일 (별도 flip 불필요, de-risk
+  실증).
+- **L-286-2** roof cap Cylinder surface(radius+height) 상속 (ADR-263 A-χ).
+- **L-286-3** PushPullTool outward(`isCurvedCap && dist>0`) → `carveCurvedBoss`
+  (planar-box fallback 버그 해소). preview = dimension-label only (commit-only v1).
+- **L-286-4** watertight (ADR-267 integrity + ADR-273 closure gate) +
+  verify_face_invariants + snapshot rollback (ADR-190 P0.2). **roof normal이
+  radial-OUTWARD**임을 명시 검증 (ADR-268 "topology ≠ orientation").
+- **L-286-5** Scene `add_curved_boss_from_cap` transaction-wrap + owner reconcile
+  (Shape XOR XIA, pocket_from_cap 미러, through-routing 없음).
+- **L-286-6** additive (ADR-046 P31 #4) — planar extrude / pocket / through 무회귀.
+  신규 menu/toolbar entry 없음 (PushPullTool 재사용, CatalogConsistency 3/3).
+- **L-286-7** Cylinder MVP; Sphere/Cone/Torus boss+cut = ε (별도 ADR).
+- **L-286-8** 절대 #[ignore] 금지. 사용자 시연 게이트 = E2E(real Chromium).
+
+#### 회귀 (절대 #[ignore] 금지)
+
+- axia-geo `adr286_add_curved_boss_cylinder` (de-risk = watertight manifold +
+  is_closed_solid + roof at r+height + roof normal radial-outward + 음수 reject).
+- E2E `web/e2e/adr-286-curved-boss.spec.ts` 2 tests (real Chromium production:
+  sketch circle → push out → boss roof r+height=15 Cylinder-inherited manifold
+  0 viol +faces / 음수 height reject mesh untouched) 2/2.
+- 전체 sweep: cargo **3003 passed / 0 failed / 1 ignored**(선재 slow-channel),
+  vitest **2520 / 1 skip**, 곡면 E2E **13/13**(202/257/263/285/286), tsc 0,
+  build ✓, CatalogConsistency 3/3.
+
+#### 시연 참고 (선재 artifact, boss 무관)
+
+dev-preview(port 3000)에서 eval-driven `syncMesh`가 onFrame LOD
+(`setRenderChordTol`, ADR-135)와 race → `HeId(63) not found in storage` panic.
+**Control로 shipped `carveCurvedPocket`(ADR-271)도 동일 panic 재현 → boss 무관,
+선재 dev-preview 재진입 artifact**(ADR-111/112 deferred render × ADR-135 LOD).
+별도 task로 flag. boss geometry는 engine test + E2E로 manifold-valid 증명.
+
+#### Cross-link
+
+- ADR-286 본문 (`docs/adr/286-curved-boss-and-cut-completion.md`) §D Acceptance Log
+- ADR-271 (Cylinder curved cut — pocket mirror source, doc-lag 실측)
+- ADR-263 (곡면 sketch-split — cap 생성 source, LOCKED #87) / ADR-257 (Cylinder sketch)
+- ADR-089 A-χ (surface 상속, LOCKED #35) / ADR-268 (topology≠orientation 교훈)
+- ADR-267 (watertight gate) / ADR-273 (self-intersection) / ADR-190 P0.2 (snapshot rollback)
+- ADR-259/260/261/262/263 ("완벽한 extrude" 로드맵 #1~#5 자매, LOCKED #84~#87)
+- ADR-046 P31 #4 (additive only) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")

@@ -235,6 +235,32 @@ export class PushPullTool implements ITool {
         return;
       }
 
+      // ── ADR-286 β — CURVED boss (outward) ──
+      // A curved (Cylinder) cap (isCurvedCap), pushed OUTWARD (dist > 0), is
+      // raised radially away from the wall → a curved boss (the pocket mirror).
+      // Previously this fell through to a planar extrude → a wrong box; now it
+      // routes to carveCurvedBoss. On decline, surface the reason and abort.
+      if (this.isCurvedCap && dist > 0 && Math.abs(dist) >= PushPullTool.MIN_COMMIT_DIST) {
+        if (this.liveActive) {
+          this.ctx.bridge.cancelLiveExtrude();
+          this.liveActive = false;
+          this.liveTopFace = -1;
+        }
+        const walls = this.ctx.bridge.carveCurvedBoss?.(this.ppFaceId, dist) ?? -1;
+        if (walls > 0) {
+          debugLog(`[PP] Curved boss raised → ${walls} side walls (height ${dist.toFixed(1)})`);
+          Toast.success('곡면 보스를 세웠습니다');
+          this.ctx.syncMesh();
+          this.cleanup();
+          return;
+        }
+        const why = this.ctx.bridge.lastError();
+        debugWarn('[PP] carveCurvedBoss declined:', why);
+        Toast.error(why && why.length > 0 ? why : '이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요');
+        this.cleanup();
+        return;
+      }
+
       // ── ADR-252 — POCKET carve ──
       // A coplanar profile on a larger wall (isSheetSource), pushed INWARD
       // (dist < 0), becomes a blind POCKET (not a new box). The profile is
@@ -405,8 +431,9 @@ export class PushPullTool implements ITool {
         this.removePPGhost();
       }
     } else if (this.isCurvedCap) {
-      // ADR-271 — curved cap: no live geometry preview yet (radial carve is not
-      //   a slidable box). Dimension label only; commit dispatches the carve.
+      // ADR-271 / ADR-286 — curved cap: no live geometry preview yet (radial
+      //   carve/boss is not a slidable box). Dimension label only; commit
+      //   dispatches the pocket (inward) or boss (outward).
     } else if (this.liveActive) {
       this.ctx.bridge.updateLiveExtrude(dist);
       this.ctx.syncMesh();
