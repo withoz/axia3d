@@ -676,43 +676,38 @@ impl Mesh {
     /// remainder (annulus), so the walls weld to the freed cap-side half-edges in
     /// cap-loop order (no free re-punch — ADR-271 §3). `depth` must stay inside
     /// the solid (`< radius`).
-    pub fn carve_curved_pocket(
+    /// ADR-287 β-1 — shared core for a curved POCKET (inward) / BOSS (outward)
+    /// on any analytic surface. The cap boundary loop is offset per-vertex by
+    /// `offset_fn` (world pos → offset world pos); the cap is removed, N side
+    /// walls weld to the freed cap-side half-edges in cap-loop order, and the
+    /// offset loop is capped with a floor/roof face carrying `floor_surface`
+    /// (ADR-089 A-χ inheritance). Topology is **surface-agnostic** — the wall
+    /// winding `[a, a2, b2, b]` + forward floor order are forced by the
+    /// remainder hole-loop welding → manifold by construction (ADR-286 β-1
+    /// finding). Callers validate surface-specific depth bounds BEFORE calling.
+    /// Returns `PocketResult { depth: 0.0 }` — callers set `depth`.
+    fn curved_carve_core(
         &mut self,
         cap_face: FaceId,
-        depth: f64,
+        op_name: &str,
+        offset_fn: impl Fn(DVec3) -> DVec3,
+        floor_surface: crate::surfaces::AnalyticSurface,
     ) -> Result<PocketResult> {
-        use crate::surfaces::AnalyticSurface as S;
-        use std::f64::consts::TAU;
         if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
-            bail!("curved pocket: cap face inactive/missing");
+            bail!("{op_name}: cap face inactive/missing");
         }
-        // MVP — Cylinder surface only. Sphere/Cone/Torus mirror is ADR-271 ε.
-        let (axis_o, axis_d, radius, ref_dir, v_range) = match self.faces[cap_face].surface() {
-            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
-                (*axis_origin, axis_dir.normalize_or_zero(), *radius, *ref_dir, *v_range)
-            }
-            _ => bail!("curved pocket MVP: cap must be a Cylinder-surface face"),
-        };
-        if !(depth > 1e-6) {
-            bail!("curved pocket: depth must be positive, got {depth}");
-        }
-        if depth >= radius - 1e-6 {
-            bail!("curved pocket: depth {depth} reaches the axis (radius {radius})");
-        }
-
-        // Opening = cap boundary loop (verts on the cylinder at `radius`).
+        // Opening = cap boundary loop (verts on the host surface).
         let opening = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
         let cnt = opening.len();
         if cnt < 3 {
-            bail!("curved pocket: cap boundary too small ({cnt} verts)");
+            bail!("{op_name}: cap boundary too small ({cnt} verts)");
         }
         let material = self.faces[cap_face].material();
 
-        // Host (remainder/annulus) = the face on the twin side of the cap
-        // boundary, captured BEFORE removing the cap (returned for XIA reconcile).
+        // Host (remainder) on the twin side of the cap boundary — captured
+        // BEFORE removing the cap (returned for XIA reconcile).
         let first_he = self.faces[cap_face].outer().start;
         let host = {
-            // Manifold edge → the radial-next half-edge is the twin (annulus side).
             let tw = self.hes[first_he].next_rad();
             if tw.is_null() || tw == first_he {
                 FaceId::new(u32::MAX)
@@ -721,29 +716,23 @@ impl Mesh {
             }
         };
 
-        // Per-vertex radial-inward (toward the axis).
-        let radial_inward = |p: DVec3| -> DVec3 {
-            let rel = p - axis_o;
-            let radial_out = rel - axis_d * rel.dot(axis_d);
-            -radial_out.normalize_or_zero()
-        };
-        // Floor verts = opening pushed radially inward by `depth` (radius−depth).
+        // Offset loop verts (floor for pocket / roof for boss) — per-vertex
+        // surface-normal offset supplied by the caller.
         let floor: Vec<VertId> = opening
             .iter()
             .map(|&v| {
                 let p = self.vertex_pos(v).unwrap();
-                self.add_vertex(p + radial_inward(p) * depth)
+                self.add_vertex(offset_fn(p))
             })
             .collect();
 
-        // Remove the cap face — its boundary becomes the recess opening (the
-        // remainder's hole loop stays; the walls weld to the freed half-edges).
+        // Remove the cap — its boundary becomes the recess/boss opening; the
+        // walls weld to the freed cap-side half-edges.
         self.remove_face(cap_face);
 
-        // Side walls — bridge opening[i] → floor[i], traversing the opening edge in
-        // cap-loop order to reuse the freed cap-side half-edge (welds to the
-        // remainder). floor[i] ↔ opening[i] 1:1 (same angle, pushed inward) → no
-        // twist. The floor edge (b2→b) is a NEW edge twinned by the floor cap.
+        // Side walls — bridge opening[i] → floor[i] in cap-loop order (reuses the
+        // freed cap-side half-edge, welds to the remainder). floor[i] ↔ opening[i]
+        // 1:1 → no twist. The floor edge (b2→b) is a NEW edge twinned by the cap.
         let mut wall_faces = Vec::with_capacity(cnt);
         for i in 0..cnt {
             let a = opening[i];
@@ -753,29 +742,15 @@ impl Mesh {
             wall_faces.push(self.add_face(&[a, a2, b2, b], material)?);
         }
 
-        // Floor cap (curved patch on the inner cylinder, radius−depth). Forward
-        // `floor` order → its edges (floor[i]→floor[i+1]) twin the walls'
-        // (floor[i+1]→floor[i]).
+        // Floor/roof cap — forward order twins the walls' (floor[i+1]→floor[i]).
         let floor_face = self.add_face(&floor, material)?;
-        // Inherit the Cylinder surface at the recessed radius so the floor renders
-        // curved (ADR-263 surface inheritance).
-        let _ = self.set_face_surface(
-            floor_face,
-            Some(S::Cylinder {
-                axis_origin: axis_o,
-                axis_dir: axis_d,
-                radius: radius - depth,
-                ref_dir,
-                u_range: (0.0, TAU),
-                v_range,
-            }),
-        );
+        let _ = self.set_face_surface(floor_face, Some(floor_surface));
 
         // Manifold guard (ADR-190 P0.2 — the caller's snapshot rolls back).
         let report = self.verify_face_invariants();
         if !report.is_valid() {
             bail!(
-                "curved pocket: result not manifold ({} violations)",
+                "{op_name}: result not manifold ({} violations)",
                 report.violations.len()
             );
         }
@@ -783,22 +758,114 @@ impl Mesh {
             ring_face: host,
             floor_face,
             wall_faces,
-            depth,
+            depth: 0.0,
         })
     }
 
-    /// ADR-286 β — raise a curved BOSS (outward protrusion) from a sketched
-    /// Cylinder cap (ADR-263 split): the mirror of [`Mesh::carve_curved_pocket`].
-    /// The cap boundary is pushed **per-vertex radially OUTWARD** by `height`
-    /// (to radius + height), forming a roof patch on the outer cylinder; N side
-    /// walls bridge the opening loop to the roof loop → a watertight raised boss.
-    ///
-    /// Topology is identical to the pocket carve (remove cap → walls weld to the
-    /// freed cap-side half-edges in cap-loop order → roof caps the walls), so the
-    /// wall winding `[a, a2, b2, b]` + forward roof order are FORCED to match the
-    /// remainder's hole loop (manifold by construction). Only the new ring sits
-    /// at radius + height (outward) instead of radius − depth. Unlike the pocket
-    /// there is no `< radius` bound — a boss may rise arbitrarily far.
+    /// ADR-271/287 — carve a blind curved POCKET (inward recess) from a sketched
+    /// cap (ADR-263 split). The opening is offset **per-vertex along the inward
+    /// surface normal** by `depth`; the floor is the same analytic surface at the
+    /// recessed parameter (ADR-089 A-χ). Cylinder (ADR-271) + Sphere (ADR-287 β-1);
+    /// Cone/Torus are ADR-287 β-2/β-3.
+    pub fn carve_curved_pocket(
+        &mut self,
+        cap_face: FaceId,
+        depth: f64,
+    ) -> Result<PocketResult> {
+        use crate::surfaces::AnalyticSurface as S;
+        use std::f64::consts::TAU;
+        if !(depth > 1e-6) {
+            bail!("curved pocket: depth must be positive, got {depth}");
+        }
+        let surf = self.faces.get(cap_face).and_then(|f| f.surface().cloned());
+        match surf {
+            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
+                if depth >= radius - 1e-6 {
+                    bail!("curved pocket: depth {depth} reaches the axis (radius {radius})");
+                }
+                let axis_d = axis_dir.normalize_or_zero();
+                let offset = move |p: DVec3| {
+                    let rel = p - axis_origin;
+                    let radial_out = rel - axis_d * rel.dot(axis_d);
+                    p - radial_out.normalize_or_zero() * depth
+                };
+                let floor_surf = S::Cylinder {
+                    axis_origin, axis_dir, radius: radius - depth, ref_dir,
+                    u_range: (0.0, TAU), v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved pocket", offset, floor_surf)?;
+                res.depth = depth;
+                Ok(res)
+            }
+            Some(S::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) => {
+                let axis_d = axis_dir.normalize_or_zero();
+                let sin_a = half_angle.sin();
+                let cos_a = half_angle.cos();
+                if !(sin_a > 1e-6) {
+                    bail!("curved pocket: degenerate cone half-angle");
+                }
+                let offset = move |p: DVec3| {
+                    // Cone normal at p = cos α · radial − sin α · axis (outward);
+                    // inward pocket → −normal.
+                    let d = p - apex;
+                    let v = d.dot(axis_d);
+                    let foot = apex + axis_d * v;
+                    let radial = (p - foot).normalize_or_zero();
+                    let n = radial * cos_a - axis_d * sin_a;
+                    p - n * depth
+                };
+                // A constant normal-offset of a cone is a PARALLEL cone: same
+                // half-angle, apex shifted along the axis by depth/sin α (ADR-287 §3).
+                let floor_surf = S::Cone {
+                    apex: apex + axis_d * (depth / sin_a),
+                    axis_dir, half_angle, ref_dir, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved pocket", offset, floor_surf)?;
+                res.depth = depth;
+                Ok(res)
+            }
+            Some(S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range }) => {
+                if depth >= minor_radius - 1e-6 {
+                    bail!("curved pocket: depth {depth} reaches the tube center (minor {minor_radius})");
+                }
+                let offset = move |p: DVec3| {
+                    // Torus normal = from the tube center circle outward; inward →
+                    // toward the tube center (minor_radius − depth).
+                    match crate::surfaces::torus::project_to_torus(
+                        center, axis_dir, ref_dir, major_radius, minor_radius, p,
+                    ) {
+                        Some((_pt, u, v)) => {
+                            let n = crate::surfaces::torus::normal(
+                                center, axis_dir, ref_dir, major_radius, minor_radius, u, v,
+                            );
+                            p - n * depth
+                        }
+                        None => p, // degenerate — core manifold guard catches
+                    }
+                };
+                let floor_surf = S::Torus {
+                    center, axis_dir, ref_dir, major_radius,
+                    minor_radius: minor_radius - depth, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved pocket", offset, floor_surf)?;
+                res.depth = depth;
+                Ok(res)
+            }
+            // Sphere caps are closed-curve self-loops (planar latitude circle)
+            // whose boundary is SHARED with the annulus's inner hole — polygonizing
+            // the cap alone desyncs it (open boundary). A dedicated "densify shared
+            // self-loop boundary" step is a separate sub-step (ADR-287 §7 deferred).
+            _ => bail!("curved pocket: cap must be a Cylinder/Cone/Torus-surface face (Sphere deferred)"),
+        }
+    }
+
+    /// ADR-286/287 — raise a curved BOSS (outward protrusion) from a sketched cap
+    /// (ADR-263 split): the mirror of [`Mesh::carve_curved_pocket`]. The opening
+    /// is offset **per-vertex along the outward surface normal** by `height`; the
+    /// roof is the same analytic surface at the raised parameter (ADR-089 A-χ).
+    /// Topology is identical to the pocket (manifold by construction, ADR-286 β-1);
+    /// unlike the pocket there is no inner bound — a boss may rise arbitrarily far.
+    /// Cylinder (ADR-286) + Sphere (ADR-287 β-1); Cone/Torus are ADR-287 β-2/β-3.
     pub fn add_curved_boss(
         &mut self,
         cap_face: FaceId,
@@ -806,102 +873,76 @@ impl Mesh {
     ) -> Result<PocketResult> {
         use crate::surfaces::AnalyticSurface as S;
         use std::f64::consts::TAU;
-        if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
-            bail!("curved boss: cap face inactive/missing");
-        }
-        // MVP — Cylinder surface only. Sphere/Cone/Torus mirror is ADR-286 ε.
-        let (axis_o, axis_d, radius, ref_dir, v_range) = match self.faces[cap_face].surface() {
-            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
-                (*axis_origin, axis_dir.normalize_or_zero(), *radius, *ref_dir, *v_range)
-            }
-            _ => bail!("curved boss MVP: cap must be a Cylinder-surface face"),
-        };
         if !(height > 1e-6) {
             bail!("curved boss: height must be positive, got {height}");
         }
-
-        // Opening = cap boundary loop (verts on the cylinder at `radius`).
-        let opening = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
-        let cnt = opening.len();
-        if cnt < 3 {
-            bail!("curved boss: cap boundary too small ({cnt} verts)");
-        }
-        let material = self.faces[cap_face].material();
-
-        // Host (remainder/annulus) captured BEFORE removing the cap (XIA reconcile).
-        let first_he = self.faces[cap_face].outer().start;
-        let host = {
-            let tw = self.hes[first_he].next_rad();
-            if tw.is_null() || tw == first_he {
-                FaceId::new(u32::MAX)
-            } else {
-                self.hes[tw].face()
+        let surf = self.faces.get(cap_face).and_then(|f| f.surface().cloned());
+        match surf {
+            Some(S::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. }) => {
+                let axis_d = axis_dir.normalize_or_zero();
+                let offset = move |p: DVec3| {
+                    let rel = p - axis_origin;
+                    let radial_out = rel - axis_d * rel.dot(axis_d);
+                    p + radial_out.normalize_or_zero() * height
+                };
+                let roof_surf = S::Cylinder {
+                    axis_origin, axis_dir, radius: radius + height, ref_dir,
+                    u_range: (0.0, TAU), v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved boss", offset, roof_surf)?;
+                res.depth = height;
+                Ok(res)
             }
-        };
-
-        // Per-vertex radial-OUTWARD (away from the axis) — mirror of the pocket's
-        // radial-inward.
-        let radial_outward = |p: DVec3| -> DVec3 {
-            let rel = p - axis_o;
-            let radial_out = rel - axis_d * rel.dot(axis_d);
-            radial_out.normalize_or_zero()
-        };
-        // Roof verts = opening pushed radially outward by `height` (radius+height).
-        let roof: Vec<VertId> = opening
-            .iter()
-            .map(|&v| {
-                let p = self.vertex_pos(v).unwrap();
-                self.add_vertex(p + radial_outward(p) * height)
-            })
-            .collect();
-
-        // Remove the cap face — its boundary becomes the boss base opening.
-        self.remove_face(cap_face);
-
-        // Side walls — bridge opening[i] → roof[i], traversing the opening edge in
-        // cap-loop order to reuse the freed cap-side half-edge (welds to the
-        // remainder). Same winding as the pocket (topology identical); the roof
-        // simply sits outside.
-        let mut wall_faces = Vec::with_capacity(cnt);
-        for i in 0..cnt {
-            let a = opening[i];
-            let a2 = opening[(i + 1) % cnt];
-            let b = roof[i];
-            let b2 = roof[(i + 1) % cnt];
-            wall_faces.push(self.add_face(&[a, a2, b2, b], material)?);
+            Some(S::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) => {
+                let axis_d = axis_dir.normalize_or_zero();
+                let sin_a = half_angle.sin();
+                let cos_a = half_angle.cos();
+                if !(sin_a > 1e-6) {
+                    bail!("curved boss: degenerate cone half-angle");
+                }
+                let offset = move |p: DVec3| {
+                    // Outward boss → +normal (cos α · radial − sin α · axis).
+                    let d = p - apex;
+                    let v = d.dot(axis_d);
+                    let foot = apex + axis_d * v;
+                    let radial = (p - foot).normalize_or_zero();
+                    let n = radial * cos_a - axis_d * sin_a;
+                    p + n * height
+                };
+                // Outward parallel cone: apex shifted the OTHER way (−height/sin α).
+                let roof_surf = S::Cone {
+                    apex: apex - axis_d * (height / sin_a),
+                    axis_dir, half_angle, ref_dir, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved boss", offset, roof_surf)?;
+                res.depth = height;
+                Ok(res)
+            }
+            Some(S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, u_range, v_range }) => {
+                let offset = move |p: DVec3| {
+                    match crate::surfaces::torus::project_to_torus(
+                        center, axis_dir, ref_dir, major_radius, minor_radius, p,
+                    ) {
+                        Some((_pt, u, v)) => {
+                            let n = crate::surfaces::torus::normal(
+                                center, axis_dir, ref_dir, major_radius, minor_radius, u, v,
+                            );
+                            p + n * height
+                        }
+                        None => p,
+                    }
+                };
+                let roof_surf = S::Torus {
+                    center, axis_dir, ref_dir, major_radius,
+                    minor_radius: minor_radius + height, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved boss", offset, roof_surf)?;
+                res.depth = height;
+                Ok(res)
+            }
+            // Sphere deferred (self-loop shared boundary — ADR-287 §7).
+            _ => bail!("curved boss: cap must be a Cylinder/Cone/Torus-surface face (Sphere deferred)"),
         }
-
-        // Roof cap (curved patch on the outer cylinder, radius+height). Forward
-        // `roof` order → its edges twin the walls' (roof[i+1]→roof[i]).
-        let roof_face = self.add_face(&roof, material)?;
-        // Inherit the Cylinder surface at the raised radius so the roof renders
-        // curved (ADR-263 surface inheritance).
-        let _ = self.set_face_surface(
-            roof_face,
-            Some(S::Cylinder {
-                axis_origin: axis_o,
-                axis_dir: axis_d,
-                radius: radius + height,
-                ref_dir,
-                u_range: (0.0, TAU),
-                v_range,
-            }),
-        );
-
-        // Manifold guard (ADR-190 P0.2 — the caller's snapshot rolls back).
-        let report = self.verify_face_invariants();
-        if !report.is_valid() {
-            bail!(
-                "curved boss: result not manifold ({} violations)",
-                report.violations.len()
-            );
-        }
-        Ok(PocketResult {
-            ring_face: host,
-            floor_face: roof_face,
-            wall_faces,
-            depth: height,
-        })
     }
 
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
@@ -2450,6 +2491,127 @@ mod tests {
 
         // height must be positive.
         assert!(mesh.add_curved_boss(res.floor_face, -1.0).is_err(), "negative height rejected");
+    }
+
+    /// ADR-287 β-1/β-2 — curved POCKET + BOSS on a CONE cap. The offset is along
+    /// the cone surface normal; the floor/roof is a PARALLEL cone (same half-angle,
+    /// apex shifted ∓depth/sin α). The KEY de-risk: every floor vert must lie on the
+    /// single parallel cone (validates the §3 apex-shift derivation).
+    #[test]
+    fn adr287_curved_pocket_boss_cone() {
+        use crate::surfaces::{cone, AnalyticSurface};
+        let mat = MaterialId::new(0);
+        let (apex_p, ad_p, ha_p, rd_p);
+        let make_cap = |mesh: &mut Mesh| -> (FaceId, DVec3, DVec3, f64, DVec3) {
+            let faces = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).expect("cone");
+            let side = faces[1]; // faces[0]=base (Plane), faces[1]=side (Cone)
+            let (apex, ad, ha, rd) = match mesh.face_surface(side).cloned().unwrap() {
+                AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } =>
+                    (apex, axis_dir, half_angle, ref_dir),
+                other => panic!("Cone, got {other:?}"),
+            };
+            let vmid = 10.0;
+            let cp = cone::evaluate(apex, ad, ha, rd, 0.0, vmid);
+            let rp = cone::evaluate(apex, ad, ha, rd, 0.4, vmid);
+            let samples = cone::circle_on_cone(apex, ad, ha, rd, cp, rp, 0.05).expect("geodesic circle");
+            let (cap, _host) = mesh.split_cone_face_by_circle(side, &samples).expect("split");
+            (cap, apex, ad, ha, rd)
+        };
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+
+        // ── POCKET (inward) → parallel cone, apex + ad·(depth/sin α) ──
+        let mut mesh = Mesh::new();
+        let (cap, apex, ad, ha, rd) = make_cap(&mut mesh);
+        (apex_p, ad_p, ha_p, rd_p) = (apex, ad, ha, rd);
+        let depth = 1.0;
+        let res = mesh.carve_curved_pocket(cap, depth).expect("cone pocket");
+        assert!(res.wall_faces.len() >= 3);
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after cone pocket");
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, "cone pocket watertight");
+        // floor verts lie EXACTLY on the parallel cone (apex shifted by depth/sin α).
+        let apex_floor = apex_p + ad_p.normalize() * (depth / ha_p.sin());
+        let floor_vs = mesh.collect_loop_verts(mesh.faces[res.floor_face].outer().start).unwrap();
+        for &v in &floor_vs {
+            let p = mesh.vertex_pos(v).unwrap();
+            let (sp, _, _) = cone::project_to_cone(apex_floor, ad_p, ha_p, rd_p, p)
+                .expect("floor vert projects onto parallel cone");
+            assert!((sp - p).length() < 1e-6, "floor vert off the parallel cone by {}", (sp - p).length());
+        }
+        assert!(matches!(mesh.faces[res.floor_face].surface(), Some(AnalyticSurface::Cone { .. })),
+            "floor inherits Cone (parallel)");
+
+        // ── BOSS (outward) → parallel cone, apex − ad·(height/sin α) ──
+        let mut m2 = Mesh::new();
+        let (cap2, ..) = make_cap(&mut m2);
+        let height = 2.0;
+        let res2 = m2.add_curved_boss(cap2, height).expect("cone boss");
+        assert!(m2.verify_face_invariants().is_valid(), "manifold after cone boss");
+        assert!(m2.face_set_manifold_info(&active(&m2)).is_closed_solid, "cone boss watertight");
+        assert!(matches!(m2.faces[res2.floor_face].surface(), Some(AnalyticSurface::Cone { .. })),
+            "roof inherits Cone (parallel)");
+    }
+
+    /// ADR-287 β-1/β-3 — curved POCKET + BOSS on a TORUS cap. Offset along the tube-
+    /// circle normal; floor/roof = Torus{minor_radius ∓ depth}. Watertight manifold.
+    #[test]
+    fn adr287_curved_pocket_boss_torus() {
+        use crate::surfaces::{torus, AnalyticSurface};
+        let mat = MaterialId::new(0);
+        let make_cap = |mesh: &mut Mesh| -> FaceId {
+            let face = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).expect("torus");
+            let (c, ax, rd, rmaj, rmin) = match mesh.face_surface(face).cloned().unwrap() {
+                AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                    (center, axis_dir, ref_dir, major_radius, minor_radius),
+                other => panic!("Torus, got {other:?}"),
+            };
+            let cp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.0, 0.0);
+            let rp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.25, 0.0);
+            let samples = torus::circle_on_torus(c, ax, rd, rmaj, rmin, cp, rp, 0.05).expect("torus circle");
+            let (cap, _host) = mesh.split_torus_face_by_circle(face, &samples).expect("split");
+            cap
+        };
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // The Path B torus is a single face + self-loop seam (LOCKED #49) — the seam
+        // is a boundary-like edge, so `is_closed_solid` is false even at baseline.
+        // The pocket/boss must PRESERVE the torus's closed-ness (add no new boundary).
+        let base_closed = {
+            let mut mb = Mesh::new();
+            make_cap(&mut mb);
+            mb.face_set_manifold_info(&active(&mb)).is_closed_solid
+        };
+
+        // ── POCKET (inward) → Torus{minor − depth} ──
+        let mut mesh = Mesh::new();
+        let cap = make_cap(&mut mesh);
+        let depth = 1.0;
+        let res = mesh.carve_curved_pocket(cap, depth).expect("torus pocket");
+        assert!(res.wall_faces.len() >= 3);
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after torus pocket");
+        assert_eq!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, base_closed,
+            "torus pocket preserves closed-ness (no new boundary)");
+        assert!(matches!(mesh.faces[res.floor_face].surface(),
+            Some(AnalyticSurface::Torus { minor_radius, .. }) if (minor_radius - (3.0 - depth)).abs() < 1e-6),
+            "floor inherits Torus at minor − depth");
+        // depth reaching the tube center is rejected.
+        let mut mr = Mesh::new();
+        let capr = make_cap(&mut mr);
+        assert!(mr.carve_curved_pocket(capr, 3.0 + 1.0).is_err(), "depth past tube center rejected");
+
+        // ── BOSS (outward) → Torus{minor + height} ──
+        let mut m2 = Mesh::new();
+        let cap2 = make_cap(&mut m2);
+        let height = 2.0;
+        let res2 = m2.add_curved_boss(cap2, height).expect("torus boss");
+        assert!(m2.verify_face_invariants().is_valid(), "manifold after torus boss");
+        assert_eq!(m2.face_set_manifold_info(&active(&m2)).is_closed_solid, base_closed,
+            "torus boss preserves closed-ness (no new boundary)");
+        assert!(matches!(m2.faces[res2.floor_face].surface(),
+            Some(AnalyticSurface::Torus { minor_radius, .. }) if (minor_radius - (3.0 + height)).abs() < 1e-6),
+            "roof inherits Torus at minor + height");
     }
 
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap:

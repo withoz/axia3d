@@ -6776,6 +6776,63 @@ dev-preview(port 3000)에서 eval-driven `syncMesh`가 onFrame LOD
 - ADR-259/260/261/262/263 ("완벽한 extrude" 로드맵 #1~#5 자매, LOCKED #84~#87)
 - ADR-046 P31 #4 (additive only) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14
 
+### 90. ADR-287 — Curved cut/boss ε: Cone + Torus (unified surface-normal offset, 2026-07-10) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-10)**: AskUserQuestion "다음 작업" →
+**곡면 cut/boss ε 확장 (Sphere/Cone/Torus)**. ADR-286(Cylinder boss) +
+ADR-271(Cylinder cut) 을 곡면으로 확장.
+
+**Measure-first 발견 — engine-only 확장**: PushPullTool `isCurvedCap =
+surfKind >= 2` 가 이미 Sphere(3)/Cone(4)/Torus(5) 포함 → carveCurvedPocket/
+Boss 호출. 엔진이 non-Cylinder 를 bail 할 뿐 → tool/WASM/bridge/menu **변경 0**.
+
+**통합 전략**: opening vert 를 **per-vertex surface normal** 로 ∓depth 오프셋 →
+floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
+- Cylinder: `radius ∓ d` / Sphere: `radius ∓ d` / Torus: `minor_radius ∓ d`
+- **Cone: parallel cone** — 동일 half-angle, apex 를 axis 방향 `∓d/sin α` 이동
+  (§3 종이 도출 → `project_to_cone` round-trip 실측 확정, de-risk).
+
+#### Lock-ins (L-287-1 ~ L-287-7)
+
+- **L-287-1** `curved_carve_core(cap, op_name, offset_fn, floor_surface)` 공유
+  helper (Q3-a) — surface-agnostic 위상 수술 (remove cap → N wall weld to
+  remainder hole-loop → floor/roof cap). Cylinder pocket/boss 도 core 로 수렴.
+- **L-287-2** offset = per-vertex surface normal (Q2-a). floor/roof = offset
+  surface (동일 type, ADR-089 A-χ).
+- **L-287-3** Cone = parallel cone (apex ∓d/sinα, half-angle 불변).
+- **L-287-4** per-surface depth 상한 (Torus depth<minor / Cone sin α>0 가드).
+- **L-287-5** watertight (ADR-267/273) + verify_face_invariants + Cone floor
+  는 project_to_cone round-trip / Torus 는 closed-ness preserved vs baseline
+  (torus = 1 face + self-loop seam, is_closed_solid 자체가 baseline false).
+- **L-287-6** engine-only (ADR-046 P31 #4) — tool/WASM/bridge/menu 무변경.
+- **L-287-7** **Sphere 지연 (measure-driven)**: sphere cap = closed-curve
+  self-loop (planar latitude circle), self-loop edge 가 annulus inner hole 과
+  **공유** → cap 만 polygonize 시 desync (verify valid 지만 is_closed_solid
+  false, 실측). 공유 self-loop densify 는 별도 ε-sphere. Cone/Torus 는 N-vert
+  polyline cap (ADR-263 geodesic) 이라 무관 → 본 ADR 완결.
+
+#### 회귀 (절대 #[ignore] 금지)
+
+- axia-geo +2: `adr287_curved_pocket_boss_cone` (floor verts on parallel cone
+  via project_to_cone round-trip = apex-shift de-risk + manifold + closed-solid
+  + Cone 상속) + `adr287_curved_pocket_boss_torus` (minor∓d + manifold +
+  closed-ness preserved + Torus 상속 + depth>minor reject). Cylinder 기존
+  회귀 (`adr271_*` / `adr286_*`) refactor 후 무변경 PASS.
+- E2E `web/e2e/adr-287-curved-cut-boss-cone-torus.spec.ts` 4 (cone/torus ×
+  pocket/boss, real Chromium production, walls>0 + manifold 0 viol + faces↑) 4/4.
+- dev-preview 시연: cone pocket 64 walls manifold valid + camera far↔near
+  swings → panic 0, engine responsive (LOCKED #89 LOD fix 정합).
+- sweep: cargo workspace **3005 passed / 0 failed / 1 ignored**.
+
+#### Cross-link
+
+- ADR-287 본문 §D Acceptance (`docs/adr/287-curved-cut-boss-sphere-cone-torus.md`)
+- ADR-286 (Cylinder boss, LOCKED #89) / ADR-271 (Cylinder cut) — 확장 source
+- ADR-263 (곡면 sketch-split cone/torus geodesic cap, LOCKED #87) / ADR-089 A-χ
+  (surface 상속, LOCKED #35) / ADR-268 (topology≠orientation)
+- ADR-267/273 (watertight/SI gate) / ADR-190 P0.2 (snapshot rollback)
+- ADR-046 P31 #4 (additive only) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
