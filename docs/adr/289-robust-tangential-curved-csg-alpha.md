@@ -164,6 +164,37 @@ shared vertex arrangement 를 곡면 관통으로 확장** (ADR-277 core 수정)
   torus 는 이미 완전 작동 — 남은 건 torus 얕은 관통 edge case 뿐.
 - 완전 robust CSG (A) vs 실용 fail-closed (B) 는 투자 대비 가치의 trade-off.
 
+## 2.9. β-3′ 최종 근본 — vertex 는 공유 O, edge connectivity 불일치 X
+
+사용자 결재 (A) imprint core 확장 후, 정확한 진입점 특정 (`sim_beta3p_shared_
+vertex_at_seam`, tz=100 실제 관통):
+
+- z=110 seam verts: **A-origin 68 / B-origin 64, 공유 VertId = 64** — **vertex 는
+  이미 dedup 공유됨!** (A 의 68 = 64 공유 + box top 사각형 코너 4). worst A→nearest-B
+  33.8mm 는 box 코너(r>55, torus 무관).
+- 그런데 boundary 36 (open) → **근본 = vertex 공유 O, EDGE CONNECTIVITY 불일치**.
+  box top hole 경계 (arrange 원 다각형: 64 verts 를 두 원 r=25/55 로 인접 연결) 와
+  torus tube cut (imprint 가 각 quad 를 z=110 seg 로 절단한 edge) 이 **같은 vertex 를
+  서로 다른 이웃과 연결** → seam edge 가 짝이 안 맞아 boundary.
+
+**최종 근본 (canonical)**: imprint 의 shared arrangement 는 **vertex 는 dedup** 하나
+**edge connectivity 를 두 face 간 일치시키지 않음**. 박스-박스는 seg 가 직선이라 양
+face 의 절단 edge 가 자동 일치하지만, 곡면 관통은 box face 쪽(arrange 원 다각형)과
+곡면 quad 쪽(quad별 seg 절단)의 edge pairing 이 달라짐. **weld(vertex merge)로 불가
+— 이미 공유된 vertex 의 edge 를 맞춰야.**
+
+**imprint core 곡면 확장 roadmap (A, multi-week)**:
+- **β-3a — 공유 edge arrangement**: find_intersections 의 seg 를 box face 와 곡면
+  quad 양쪽에서 **같은 edge 목록**으로 imprint (ADR-277 `build_intersection_
+  arrangement` 의 (idx0,idx1) pair 를 imprint_faces 에 통합 — vertex 뿐 아니라 edge
+  도 공유). box face hole 경계 = 곡면 cut edge 가 정확히 같은 vertex pair.
+- **β-3b — 검증**: torus grazing sweep watertight; 박스-박스 + sphere/cone/cyl +
+  clean torus 회귀 보존.
+- **β-4 — tangent degeneracy (tz=110, crossing 0)**.
+- **규모/위험**: ADR-277 core (`imprint_faces` + `subdivide_face_2d` + `build_
+  intersection_arrangement`) 의 곡면 확장 — LOCKED-boolean 회귀 위험 큼, multi-week
+  atomic. fail-closed 안전망은 전 과정 유지 (β 미완 시 rollback).
+
 ## 5. Lock-ins (β 강제)
 
 - **L-289-1** 근본 = imprint topology robustness (exact arithmetic 아님) — measure 근거.
