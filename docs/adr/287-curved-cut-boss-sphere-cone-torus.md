@@ -1,6 +1,6 @@
 # ADR-287 — Curved cut/boss ε: Sphere / Cone / Torus (unified surface-normal offset)
 
-- **Status**: Accepted (α + β landed 2026-07-10 — Cylinder/Sphere/Cone/Torus carve arms; Sphere carve correct for N-vert caps, production self-loop→N-vert bridge = ε-sphere-2 decision)
+- **Status**: Accepted (α + β landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss carve arms + Cone through-hole; Sphere self-loop bridge = ε-sphere-2 decision; Torus tube-through = ε-torus-through)
 - Date: 2026-07-10
 - Track: ADR-286 §E (ε — Sphere/Cone/Torus boss+cut) + ADR-271 §ε (cut). "완벽한 extrude" 로드맵 #5 곡면 마무리.
 - Cross-link: ADR-286 (Cylinder boss, LOCKED #89), ADR-271 (Cylinder cut),
@@ -153,5 +153,28 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
   adr202 회귀 재작성) / (b) in-place densify. Sphere carve 로직은 이미 correct
   (de-risk 확정) — 표현 결정만 남음.
 - **Live curved pocket/boss preview** (현재 commit-only, ADR-193 답습).
-- **Cone/Torus through-hole** (현재 Cylinder 만, depth≥radius auto-route;
-  cone=축 방향 bore / torus=tube 관통).
+
+## F. Through-hole ε (Cone landed 2026-07-10)
+
+- **`carve_curved_through` 일반화**: Cylinder-only → Cylinder/Cone/Torus. 동일
+  diametric bore (entry ring 을 axis-plane ⊥ rout 로 reflect → exit; reflection
+  이 axial + in-plane radius 보존 → exit 가 같은 analytic surface 에 안착).
+  exit split 만 per-surface (`split_{cylinder,cone,torus}_face_by_circle`).
+- **Cone through = watertight tunnel (de-risk 확정)**: `adr287_curved_through_
+  cone` — cone side cap 을 deep drill → `is_closed_solid=true, nm=0, boundary=0`
+  (24 tube walls). cone baseline (analytic 무 seam 이 아닌) `is_closed_solid=false`
+  였다가 through 후 watertight genus-1 tunnel 로 정합.
+- **Scene through-route 통합**: `curved_cap_axis_radial(cap)` 신규 (cap centroid
+  의 axis-perpendicular 거리 — Cylinder=radius / Cone=v·tanα). `depth ≥
+  cap_axis_radial` → through, else pocket. Cylinder+Cone 통합, Torus→None
+  (pocket-only).
+- **Torus through = diametric-across-hole 는 non-natural (deferred)**:
+  `adr287_curved_through_torus_documents_diametric` — 축 관통 bore 는 중앙
+  donut hole 을 가로질러 반대 outer tube 로 나감 (tube 를 관통하는 자연스러운
+  through 아님). graceful (manifold OR 정상 decline). 자연스러운 torus tube-
+  through (minor-circle bore, outer→inner wall) 는 별도 **ε-torus-through**.
+- **User path**: cone cap 을 깊이 밀기 (depth ≥ cap axis-radial) → Scene auto-
+  route → through tunnel. E2E `adr-287-...spec.ts` "cone wall → deep push =
+  through-drill" (real Chromium, walls>0 + manifold 0 viol) PASS.
+- 회귀: axia-geo +2 (cone through watertight + torus diametric document) +
+  E2E +1. cargo workspace **3008 passed / 0 failed / 1 ignored**.

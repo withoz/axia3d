@@ -973,6 +973,30 @@ impl Mesh {
         }
     }
 
+    /// ADR-287 — the cap centroid's perpendicular distance from the surface axis
+    /// (the "reach-the-axis" threshold that routes a deep inward push to a
+    /// diametric THROUGH-drill instead of a blind pocket). For a Cylinder this is
+    /// the (constant) radius; for a Cone it is the cap's local radius (v·tan α at
+    /// the cap height). `None` for surfaces without an axis-through (Torus's
+    /// natural through is a tube-bore, not diametric — deferred; Sphere/Plane).
+    pub fn curved_cap_axis_radial(&self, cap_face: FaceId) -> Option<f64> {
+        use crate::surfaces::AnalyticSurface as S;
+        let face = self.faces.get(cap_face).filter(|f| f.is_active())?;
+        let (axis_o, axis_d) = match face.surface()? {
+            S::Cylinder { axis_origin, axis_dir, .. } => (*axis_origin, axis_dir.normalize_or_zero()),
+            S::Cone { apex, axis_dir, .. } => (*apex, axis_dir.normalize_or_zero()),
+            _ => return None,
+        };
+        let verts = self.collect_loop_verts(face.outer().start).ok()?;
+        if verts.is_empty() {
+            return None;
+        }
+        let centroid: DVec3 = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).sum::<DVec3>()
+            / verts.len() as f64;
+        let rel = centroid - axis_o;
+        Some((rel - axis_d * rel.dot(axis_d)).length())
+    }
+
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
     /// straight bore along the cap-center radial, entering at the cap and exiting
     /// the opposite side of the cylinder. The cap + a mirrored exit patch are
@@ -988,11 +1012,17 @@ impl Mesh {
         if !self.faces.get(cap_face).map(|f| f.is_active()).unwrap_or(false) {
             bail!("curved through: cap face inactive/missing");
         }
-        let (axis_o, axis_d) = match self.faces[cap_face].surface() {
-            Some(S::Cylinder { axis_origin, axis_dir, .. }) => {
-                (*axis_origin, axis_dir.normalize_or_zero())
-            }
-            _ => bail!("curved through MVP: cap must be a Cylinder-surface face"),
+        // ADR-287 — generalize the diametric bore to Cone + Torus. The bore
+        // reflects each entry vert across the axis-plane ⊥ rout; that preserves the
+        // axial component AND the in-plane radius, so the exit lands on the same
+        // analytic surface (cylinder const radius / cone radius=v·tanα at same v /
+        // torus at mirrored u, same v). Only the exit SPLIT is per-surface.
+        let surf = self.faces.get(cap_face).and_then(|f| f.surface().cloned());
+        let (axis_o, axis_d) = match &surf {
+            Some(S::Cylinder { axis_origin, axis_dir, .. }) => (*axis_origin, axis_dir.normalize_or_zero()),
+            Some(S::Cone { apex, axis_dir, .. }) => (*apex, axis_dir.normalize_or_zero()),
+            Some(S::Torus { center, axis_dir, .. }) => (*center, axis_dir.normalize_or_zero()),
+            _ => bail!("curved through: cap must be a Cylinder/Cone/Torus-surface face"),
         };
         let entry = self.collect_loop_verts(self.faces[cap_face].outer().start)?;
         let cnt = entry.len();
@@ -1029,10 +1059,15 @@ impl Mesh {
             self.hes[tw].face()
         };
 
-        // Split the annulus at the exit ring (ADR-269 — a bore crossing a void →
-        // exit points off-cylinder → split fails → rejected).
-        let (exit_cap, _rem) = self
-            .split_cylinder_face_by_circle(host, &exit_pts)
+        // Split the annulus at the exit ring — per-surface (ADR-269 — a bore
+        // crossing a void → exit points off-surface → split fails → rejected).
+        let split_res = match &surf {
+            Some(S::Cylinder { .. }) => self.split_cylinder_face_by_circle(host, &exit_pts),
+            Some(S::Cone { .. }) => self.split_cone_face_by_circle(host, &exit_pts),
+            Some(S::Torus { .. }) => self.split_torus_face_by_circle(host, &exit_pts),
+            _ => None,
+        };
+        let (exit_cap, _rem) = split_res
             .ok_or_else(|| anyhow::anyhow!(
                 "curved through: exit split failed — 관통 축이 기존 구멍/특징과 교차하거나 반대면에 닿지 않습니다"
             ))?;
@@ -2747,6 +2782,78 @@ mod tests {
         // A through-tunnel keeps the solid watertight (genus-1, no open boundary).
         assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid,
             "drilled-through cylinder stays a watertight closed solid (tunnel)");
+    }
+
+    /// ADR-287 through-hole ε — CONE diametric bore (mirror of the cylinder
+    /// through). The bore reflects the entry ring across the axis-plane → exits the
+    /// opposite cone slant at the same height; N tube walls bridge them → a
+    /// watertight genus-1 tunnel. (Cone is the clean analogue of the cylinder; the
+    /// exit lands on the cone because reflection preserves height ⇒ radius.)
+    #[test]
+    fn adr287_curved_through_cone() {
+        use crate::surfaces::{cone, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let faces = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).expect("cone");
+        let side = faces[1];
+        let (apex, ad, ha, rd) = match mesh.face_surface(side).cloned().unwrap() {
+            AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } =>
+                (apex, axis_dir, half_angle, ref_dir),
+            other => panic!("Cone, got {other:?}"),
+        };
+        let vmid = 10.0;
+        let cp = cone::evaluate(apex, ad, ha, rd, 0.0, vmid);
+        let rp = cone::evaluate(apex, ad, ha, rd, 0.4, vmid);
+        let samples = cone::circle_on_cone(apex, ad, ha, rd, cp, rp, 0.05).expect("circle");
+        let (cap, _host) = mesh.split_cone_face_by_circle(side, &samples).expect("split");
+        let n_entry = mesh.collect_loop_verts(mesh.faces[cap].outer().start).unwrap().len();
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let res = mesh.carve_curved_through(cap).expect("cone through must drill");
+        assert_eq!(res.tube_faces.len(), n_entry, "one tube wall per entry edge");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after cone through");
+        // The through-drill yields a watertight genus-1 tunnel: 0 non-manifold, 0
+        // open boundary (the entry+exit caps are consumed, N tube walls bridge them).
+        let info = mesh.face_set_manifold_info(&active(&mesh));
+        assert!(info.is_closed_solid && info.boundary_edge_count == 0,
+            "drilled-through cone is a watertight tunnel (closed={}, boundary={})",
+            info.is_closed_solid, info.boundary_edge_count);
+    }
+
+    /// ADR-287 through-hole ε (de-risk / observe) — TORUS. A diametric bore across
+    /// the axis exits the OPPOSITE outer tube (through the central donut hole), NOT
+    /// the natural "through the tube" (outer→inner wall via the minor circle). This
+    /// test DOCUMENTS what the cylinder-style bore does on a torus: either it stays
+    /// manifold (a handle across the hole) or the exit split declines gracefully.
+    /// A true torus tube-through (minor-circle bore) is a separate ε-torus-through.
+    #[test]
+    fn adr287_curved_through_torus_documents_diametric() {
+        use crate::surfaces::{torus, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        let face = mesh.create_torus_kernel_native(DVec3::ZERO, 10.0, 3.0, mat).expect("torus");
+        let (c, ax, rd, rmaj, rmin) = match mesh.face_surface(face).cloned().unwrap() {
+            AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                (center, axis_dir, ref_dir, major_radius, minor_radius),
+            other => panic!("Torus, got {other:?}"),
+        };
+        let cp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.0, 0.0);
+        let rp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.25, 0.0);
+        let samples = torus::circle_on_torus(c, ax, rd, rmaj, rmin, cp, rp, 0.05).expect("circle");
+        let (cap, _host) = mesh.split_torus_face_by_circle(face, &samples).expect("split");
+
+        // Either the diametric bore succeeds as a manifold, or the exit split
+        // declines — both are acceptable (documents that the cylinder-style through
+        // is not the natural torus tube-through). No panic, no corruption.
+        match mesh.carve_curved_through(cap) {
+            Ok(res) => {
+                assert!(!res.tube_faces.is_empty());
+                assert!(mesh.verify_face_invariants().is_valid(),
+                    "if the diametric torus bore succeeds it must be manifold");
+            }
+            Err(_) => { /* graceful decline — expected for the across-hole bore */ }
+        }
     }
 
     /// Both caps become ring-with-hole (each gains exactly one inner loop).

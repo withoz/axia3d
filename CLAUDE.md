@@ -6826,7 +6826,17 @@ floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
   pocket/boss, real Chromium production, walls>0 + manifold 0 viol + faces↑) 4/4.
 - dev-preview 시연: cone pocket 64 walls manifold valid + camera far↔near
   swings → panic 0, engine responsive (LOCKED #89 LOD fix 정합).
-- sweep: cargo workspace **3005 passed / 0 failed / 1 ignored**.
+- **Sphere carve arm (§7 후속, commit a834588)**: N-vert (polyline) sphere cap
+  pocket+boss watertight + Sphere{r∓d} 상속 (de-risk 확정). production
+  self-loop cap 은 graceful bail — bridge = ε-sphere-2 결재 (draw_circle_on_
+  sphere→polyline OR in-place densify, ADR-202 표현 결정).
+- **Through-hole ε (§F, Cone landed)**: `carve_curved_through` 일반화
+  (Cylinder/Cone/Torus) + `curved_cap_axis_radial` helper + Scene through-route
+  통합 (`depth ≥ cap axis-radial` → through). Cone deep push → watertight
+  genus-1 tunnel (`adr287_curved_through_cone`, is_closed_solid + boundary=0).
+  Torus diametric-across-hole 는 non-natural → documented/deferred (ε-torus-
+  through = minor-circle tube bore). E2E "cone deep push → through" PASS.
+- sweep: cargo workspace **3008 passed / 0 failed / 1 ignored**.
 
 #### Cross-link
 

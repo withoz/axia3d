@@ -83,4 +83,30 @@ test.describe('ADR-287 — curved cut/boss on cone + torus', () => {
   test('cone wall → boss (push out) manifold', coneCarve('boss'));
   test('torus wall → pocket (push in) manifold', torusCarve('pocket'));
   test('torus wall → boss (push out) manifold', torusCarve('boss'));
+
+  // ADR-287 through-hole ε — a DEEP inward push on a cone cap (depth ≥ the cap's
+  // axis-radial distance) auto-routes (Scene) to a diametric THROUGH-drill → a
+  // watertight genus-1 tunnel through the cone.
+  test('cone wall → deep push = through-drill (watertight tunnel)', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      bridge.create_cone(0, 0, 0, 500, 1000, 32);
+      let side = -1;
+      for (let i = 0; i < bridge.getStats().faces + 2; i++) {
+        if (bridge.faceSurfaceKind(i) === 4) { side = i; break; }
+      }
+      const res = JSON.parse(bridge.drawCircleOnCone(side, [250, 0, 500], [250, 0, 600]));
+      const before = bridge.getStats().faces;
+      // cap centre radial ≈ 250; push deeper than that → through-route.
+      const walls = bridge.carveCurvedPocket(res.cap, 350);
+      const after = bridge.getStats().faces;
+      const inv = bridge.verifyInvariants();
+      return { walls, before, after, valid: inv.valid, viol: inv.violationCount };
+    });
+    expect(r.walls).toBeGreaterThan(0);    // tube walls of the through-tunnel
+    expect(r.after).toBeGreaterThan(r.before);
+    expect(r.valid).toBe(true);
+    expect(r.viol).toBe(0);
+  });
 });

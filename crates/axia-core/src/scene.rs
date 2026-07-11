@@ -7990,14 +7990,13 @@ impl Scene {
         let cap_shape = self.face_to_shape.get(&cap_face).copied();
         let cap_xia = self.face_to_xia.get(&cap_face).copied();
 
-        // ADR-271 δ — route to a diametric THROUGH-hole when the inward push goes
-        // past the axis (depth ≥ cylinder radius); otherwise a blind pocket. The
-        // pocket floor must stay inside (depth < radius), so a deeper push is
-        // unambiguously "drill through". Relative slack absorbs f32 (ADR-269).
-        let cap_radius = match self.mesh.face_surface(cap_face) {
-            Some(axia_geo::surfaces::AnalyticSurface::Cylinder { radius, .. }) => Some(*radius),
-            _ => None,
-        };
+        // ADR-271 δ / ADR-287 — route to a diametric THROUGH-hole when the inward
+        // push reaches the axis (depth ≥ the cap's axis-radial distance); otherwise
+        // a blind pocket. Unified over Cylinder (const radius) + Cone (cap-local
+        // radius v·tan α). Torus → None (its natural through is a tube-bore, not
+        // diametric — deferred), so torus stays pocket-only. Relative slack absorbs
+        // f32 (ADR-269).
+        let cap_radius = self.mesh.curved_cap_axis_radial(cap_face);
         let through = cap_radius.map_or(false, |r| depth >= r - (r * 1e-3).max(1e-3));
 
         let own_transaction = !self.transactions.is_recording();
