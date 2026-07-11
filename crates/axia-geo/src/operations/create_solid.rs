@@ -4598,8 +4598,13 @@ mod tests {
 
     #[test]
     fn adr259_create_solid_taper_solid_face_rejected() {
-        // v1 = flat-profile only. Tapering a SOLID face (a box top — is_move_only)
-        // would be non-manifold; the dispatch guard must reject it (no fallback).
+        // MESH-LEVEL contract: the mesh `create_solid` ExtrudeTapered path rejects
+        // an is_move_only face (preserving the profile would sandwich it → K-ε
+        // non-manifold). This is the direct-mesh-caller defense. The SCENE layer
+        // (exec_create_solid) intercepts is_move_only taper BEFORE this and routes
+        // it to the MoveOnly-taper draft (exec_push_pull_tapered, ADR-259 §12) —
+        // so via the Scene / bridge / tool a solid-face taper DOES draft. This
+        // test guards only the mesh-level reject (no Scene dispatch).
         let mut mesh = Mesh::new();
         let profile = build_unit_square_plane_face(&mut mesh);
         let box_res = mesh
@@ -4616,6 +4621,79 @@ mod tests {
             mesh.verify_face_invariants().is_valid(),
             "box untouched + valid after rejected solid-face taper"
         );
+    }
+
+    #[test]
+    fn adr259_sim_draft_solid_face_moveonly_manifold() {
+        // ADR-259 draft-on-solid-face DE-RISK — the v1 rejection above is
+        // conservative: it fears the K-ε sandwich from preserving the profile.
+        // But drafting via MOVEONLY semantics (move the top ring inward+up, the
+        // existing walls slant into planar trapezoids — NO profile preservation)
+        // avoids the sandwich entirely. This sim reproduces the geometry manually
+        // and proves it stays a manifold closed solid (no topology change).
+        use crate::boundary_kernel::geom2::{offset_polygon_2d, PolyOffset, Vec2};
+        let mut mesh = Mesh::new();
+        let profile = build_unit_square_plane_face(&mut mesh);
+        let box_res = mesh
+            .create_solid(profile, CreateSolidMode::Extrude { distance: 1.0 }, MaterialId::new(0))
+            .expect("box OK");
+        let top = box_res.top_face;
+        assert!(
+            crate::operations::push_pull::is_move_only(&mesh, top),
+            "box top is MoveOnly (all wall edges ∥ normal)"
+        );
+        let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        // MoveOnly-taper geometry (mirror extrude_planar_box_tapered offset math).
+        let start = mesh.faces[top].outer().start;
+        let bverts = mesh.collect_loop_verts(start).unwrap();
+        let n = bverts.len();
+        let normal = match mesh.faces[top].surface().cloned().unwrap() {
+            AnalyticSurface::Plane { normal, .. } => normal.normalize(),
+            _ => panic!("top not plane"),
+        };
+        let dist = 0.5;
+        let taper_deg = 10.0_f64;
+        let positions: Vec<DVec3> =
+            bverts.iter().map(|&v| mesh.vertex_pos(v).unwrap()).collect();
+        let centroid = positions.iter().fold(DVec3::ZERO, |a, &p| a + p) / n as f64;
+        let t_axis = (positions[1] - positions[0]).normalize();
+        let b_axis = normal.cross(t_axis).normalize();
+        let poly2d: Vec<Vec2> = positions
+            .iter()
+            .map(|p| {
+                let r = *p - centroid;
+                Vec2::new(r.dot(t_axis), r.dot(b_axis))
+            })
+            .collect();
+        let d_off = dist * taper_deg.to_radians().tan();
+        let top2d = match offset_polygon_2d(&poly2d, d_off, 16.0) {
+            PolyOffset::Ok(p) => p,
+            other => panic!("offset should succeed: {:?}", other),
+        };
+        let translation = normal * dist;
+        for (i, &v) in bverts.iter().enumerate() {
+            let w = top2d[i];
+            let target = centroid + t_axis * w.x + b_axis * w.y + translation;
+            mesh.move_vertex(v, target).unwrap();
+        }
+
+        // MoveOnly = no new faces (walls slanted in place, top ring moved).
+        let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before, "MoveOnly draft: no face count change");
+        // Manifold-valid + still a closed solid (the whole point).
+        assert!(
+            mesh.verify_face_invariants().is_valid(),
+            "drafted box must be manifold-valid (no K-ε sandwich)"
+        );
+        let report = mesh.verify_outward_normals();
+        assert!(report.is_closed_solid, "drafted box still a closed solid");
+        // Top ring moved inward (shrunk) + up (z=+1.5 = original top 1.0 + dist 0.5).
+        for &v in &bverts {
+            let p = mesh.vertex_pos(v).unwrap();
+            assert!(p.x > 0.05 && p.x < 0.95 && p.y > 0.05 && p.y < 0.95, "top shrunk: {:?}", p);
+            assert!((p.z - 1.5).abs() < 1e-9, "top lifted to z=1.5: {:?}", p);
+        }
     }
 
     #[test]

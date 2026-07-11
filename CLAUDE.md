@@ -6940,6 +6940,77 @@ tube-through). cargo workspace **3012 passed / 0 failed / 1 ignored**.
 - ADR-267/273 (watertight/SI gate) / ADR-190 P0.2 (snapshot rollback)
 - ADR-046 P31 #4 (additive) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14 #16
 
+### 92. ADR-259 — Tapered/Draft Extrude closure + draft-on-solid-face ("완벽한 extrude" #1, 2026-07-11) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-11)**: AskUserQuestion "다음 트랙" →
+**ADR-259 마무리 (taper)**.
+
+**Measure-first (doc-lag 확정)**: catalog 이 ADR-259 를 "Proposed / 코드 0(docs-
+only)" 로 표기했으나 실측 = **flat-profile frustum β 는 이미 shipped** (19 회귀
+green — geom2 offset 10 + create_solid 9, `adr259_sim_taper_side_faces_exact_
+planes` 포함; production dist 반영). ADR-260/261 (both Accepted) 이 "ADR-259
+답습"으로 D5/dispatch 인프라 인용 = β 가 그들보다 먼저 landed 된 증거. catalog/
+ADR body Status 만 stale. **유일한 실제 gap = 기존 solid 면 draft** (v1 이 §dispatch
+에서 K-ε sandwich 우려로 `NotYetSupported` 거부).
+
+**draft-on-solid-face = MoveOnly-taper (v1 거부 lift)**: de-risk sim
+(`adr259_sim_draft_solid_face_moveonly_manifold`)으로 **MoveOnly semantics 가
+sandwich 를 회피**함을 실증 — profile 을 보존(create_solid 의 bottom-cap sandwich
+근원)하지 않고 기존 solid 면의 boundary ring 을 offset(inward/outward) + 노멀
+방향 dist 이동. 기존 벽은 평면 사다리꼴로 slant (ADR-259 §2 exact-Plane 증명이
+MoveOnly 에도 성립). 새 face 0 → manifold 보존.
+
+#### Lock-ins (L-92-1 ~ L-92-9)
+- **L-92-1** mesh `push_pull_move_only_tapered` (+ pub `push_pull_tapered` guard)
+  — offset_polygon_2d fail-closed + ring 이동 + 이동 face/벽 Plane surface 재-synthesize.
+- **L-92-2** Scene `exec_push_pull_tapered` = `exec_push_pull` **1:1 mirror**
+  (ownership/transaction). Shape-owned face 는 owning_xia None → ownership block skip.
+- **L-92-3** Scene `exec_create_solid` 의 ExtrudeTapered + is_move_only dispatch
+  (MoveOnly Extrude dispatch 바로 뒤; ExtrudeTapered 는 fallback_dist None 이라 그
+  branch skip → 본 branch 가 solid-face 경로).
+- **L-92-4** WASM `create_solid_extrude_tapered` 에 **PushPullDone success arm** 추가
+  (draft = 성공; straight fallback 아님). Error arm → false (D5). closure gate on ok.
+- **L-92-5** mesh `create_solid` ExtrudeTapered reject **보존** = 직접-mesh caller
+  (MCP/스크립트) defense. Scene 가 intercept → 두 layer 상보 (회귀 `adr259_create_
+  solid_taper_solid_face_rejected` mesh-level 유지).
+- **L-92-6** fail-closed (D5) 보존 — steep draft → offset collapse → bail → Scene
+  transaction rollback → byte-identical (straight fallback 0).
+- **L-92-7** **TS 변경 0** — 기존 taper VCB `거리,각도` 경로가 `Command::CreateSolid
+  {ExtrudeTapered}` 로 라우팅 → Scene dispatch 확장만으로 tool 자동 draft (ADR-046
+  P31 #4 additive, 메뉴/툴바/단축키 무변경).
+- **L-92-8** 곡면(AllCircular)·holes·live drag draft = future (v1 = flat solid
+  face, 단순 outer loop, commit-only).
+- **L-92-9** 절대 #[ignore] 금지.
+
+#### 회귀 (+5, 절대 #[ignore] 금지)
+- axia-geo `adr259_sim_draft_solid_face_moveonly_manifold` (de-risk: MoveOnly draft
+  → 6-face manifold closed solid, no face count change, top shrunk+lifted)
+- axia-core `adr259_scene_draft_solid_box_top_moveonly` (PushPullDone route + 6-face
+  manifold + closed solid) + `adr259_scene_draft_solid_steep_reject_rolls_back` (D5)
+- axia-wasm step6 `adr259_tapered_wasm_success_arms` (rewrite — SolidCreated +
+  PushPullDone + Error arms; 이전 "no PushPullDone" guard 는 draft 로 무효)
+- E2E `web/e2e/adr-259-draft-on-solid-face.spec.ts` ×2 (real Chromium: box top draft
+  → 6-face manifold / steep reject → byte-identical)
+- **workspace 3016 passed / 0 failed / 1 ignored**, E2E 2/2, tsc 0, catalog ✓.
+
+#### Lessons
+- **L1** measure-first 가 doc-lag 노출 (catalog vs shipped β) — 판정 전 코드/테스트
+  대조 (메타-원칙 #4 SSOT, [[project-engine-state-and-doc-lag]]).
+- **L2** v1 "future op" 거부는 보수적이었다 — de-risk sim 이 MoveOnly-taper manifold
+  안전성 실증 → lift. "면깨짐 우려" 는 profile-preservation 경로에만 해당.
+- **L3** Scene dispatch 로 활성, mesh reject 는 defense 보존 (두 layer 상보).
+- **L4** TS 변경 0 — 기존 VCB 경로 자동 (ADR-046 P31 #4 additive의 깊은 실현).
+
+#### Cross-link
+- ADR-259 본문 §12 + §D Acceptance (`docs/adr/259-tapered-draft-extrude-alpha.md`)
+- ADR-196 (MoveOnly dispatch 밀기/넣기 정석, LOCKED #82 — draft dispatch 답습) /
+  ADR-193 (Live extrude — draft live 는 future) / ADR-079 (create_solid) / ADR-102
+  (cleave) / ADR-087 K-ε (K-ε sandwich = draft 가 MoveOnly 로 회피) / ADR-183
+  (winding) / ADR-007 (manifold) / ADR-260·261 (자매 "완벽한 extrude" #2·#3, D5
+  인프라 answer) / ADR-087 K-ζ (시연 게이트) / ADR-046 P31 #4 (additive)
+- 메타-원칙 #4 (SSOT) #5 (사용자 편의) #6 (Preventive/measure-first) #14 (면은 닫힌
+  경계로부터) / LOCKED #44 (Complete Meaning per Merge) #82 (ADR-196 MoveOnly)
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")

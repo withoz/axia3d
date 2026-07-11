@@ -332,22 +332,30 @@ fn adr259_beta2_tapered_export_additive() {
     );
 }
 
-/// β-2 #2 — D5: tapered export has NO push_pull fallback success arm — only
-/// `SolidCreated → true`. A taper that fails returns false (UI shows lastError),
-/// never a silently-straight solid.
+/// β-2 #2 — the tapered export has TWO success arms:
+///   • `SolidCreated → true`  — a FLAT profile taper (frustum, create_solid).
+///   • `PushPullDone → true`   — draft-on-solid-face (ADR-259 extension): a
+///     taper on a SOLID face routes through the Scene MoveOnly-taper dispatch
+///     (exec_push_pull_tapered) which APPLIES the taper (moves the ring + slants
+///     the walls). This is NOT a silent straight fallback — the draft angle is
+///     honored. D5 ("never a silently-straight solid") is preserved because a
+///     FAILED taper returns false via the Error arm (UI shows lastError), and
+///     exec_push_pull_tapered offsets the ring rather than translating it
+///     straight (behavior guarded by the Scene draft tests).
 #[test]
-fn adr259_beta2_tapered_no_pushpull_fallback() {
+fn adr259_tapered_wasm_success_arms() {
     let body = adr259_tapered_body();
     assert!(
         body.contains("CommandResult::SolidCreated"),
-        "β-2: success arm must be SolidCreated"
+        "β-2: flat-profile frustum success arm must be SolidCreated"
     );
-    // Check for the match-ARM form `PushPullDone {` (a success-handling arm),
-    // not the bare word (which appears in an explanatory comment).
     assert!(
-        !body.contains("PushPullDone {"),
-        "ADR-259 D5: tapered export must NOT have a PushPullDone match arm \
-         (taper never silently falls back to a straight extrude)"
+        body.contains("CommandResult::PushPullDone"),
+        "ADR-259 draft-on-solid-face: solid-face taper success arm must be PushPullDone"
+    );
+    assert!(
+        body.contains("CommandResult::Error"),
+        "D5: a failed taper must return false via the Error arm (no silent straight solid)"
     );
 }
 

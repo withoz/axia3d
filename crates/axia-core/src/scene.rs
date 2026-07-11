@@ -7866,6 +7866,63 @@ impl Scene {
         }
     }
 
+    /// ADR-259 draft-on-solid-face — the TAPERED MoveOnly analog of
+    /// [`exec_push_pull`]. Drafts an existing solid face (`is_move_only`) by
+    /// `taper_deg`: the boundary ring moves inward/outward + along the normal by
+    /// `dist`, the existing walls slant into planar trapezoids (no new faces →
+    /// no ADR-087 K-ε sandwich). Ownership + transaction handling mirror
+    /// `exec_push_pull`. Fail-closed: a self-intersecting draft `Err`s and the
+    /// transaction is cancelled (P0.2 snapshot restore — no broken solid).
+    fn exec_push_pull_tapered(
+        &mut self,
+        face_id: axia_geo::FaceId,
+        dist: f64,
+        taper_deg: f64,
+    ) -> CommandResult {
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+
+        match self.mesh.push_pull_tapered(face_id, dist, taper_deg) {
+            Ok(result) => {
+                self.last_solid_top_face = Some(result.top_face);
+                let owning_xia_id = self.face_to_xia.get(&face_id).copied();
+                if let Some(xia_id) = owning_xia_id {
+                    if let Some(xia) = self.xias.get_mut(&xia_id) {
+                        if result.base_removed {
+                            xia.face_ids.retain(|&f| f != face_id);
+                            self.face_to_xia.remove(&face_id);
+                        }
+                        xia.face_ids.push(result.top_face);
+                        xia.face_ids.extend(result.side_faces.iter());
+                    }
+                    self.face_to_xia.insert(result.top_face, xia_id);
+                    for &side in &result.side_faces {
+                        self.face_to_xia.insert(side, xia_id);
+                    }
+                }
+                if own_transaction {
+                    self.transactions.set_after_snapshot(self.scene_snapshot());
+                    self.transactions.commit();
+                }
+                CommandResult::PushPullDone {
+                    sides_created: result.side_faces.len(),
+                    adj_splits: result.adjacent_splits,
+                    base_removed: result.base_removed,
+                    split_debug: result.split_debug,
+                }
+            }
+            Err(e) => {
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                CommandResult::Error(e.to_string())
+            }
+        }
+    }
+
     /// ADR-252 — carve a blind POCKET from a coplanar profile sheet drawn on a
     /// solid wall ("draw rect/polygon on a face → push in → pocket"), reconciling
     /// Scene ownership. The new ring/floor/side-walls join the wall's owning XIA;
@@ -8321,6 +8378,19 @@ impl Scene {
         if let Some(dist) = fallback_dist {
             if axia_geo::operations::push_pull::is_move_only(&self.mesh, face_id) {
                 return self.exec_push_pull(face_id, dist);
+            }
+        }
+
+        // ─── ADR-259 — draft-on-solid-face dispatch ─────────────────────────
+        // A TAPERED extrude on a face that already bounds a solid (is_move_only)
+        // drafts it via the MoveOnly-taper path (move the ring + slant walls, no
+        // K-ε sandwich). A FLAT profile taper falls through to `create_solid`
+        // (`ExtrudeTapered` — builds a frustum, preserves the profile as bottom
+        // cap). `ExtrudeTapered` carries no `fallback_dist`, so the MoveOnly
+        // dispatch above skips it; this branch is the solid-face route.
+        if let axia_geo::CreateSolidMode::ExtrudeTapered { distance, taper_deg } = &mode {
+            if axia_geo::operations::push_pull::is_move_only(&self.mesh, face_id) {
+                return self.exec_push_pull_tapered(face_id, *distance, *taper_deg);
             }
         }
 
@@ -15223,6 +15293,86 @@ mod tests {
             .map(|p| p.z)
             .sum::<f64>()
             / verts.len() as f64
+    }
+
+    /// ADR-259 draft-on-solid-face — a TAPERED extrude on a box top (is_move_only)
+    /// must route to `exec_push_pull_tapered` (MoveOnly-taper): same 6 faces, the
+    /// top ring moves up + shrinks inward, walls slant into planar trapezoids,
+    /// still a manifold closed solid. (The old v1 rejected this; the MoveOnly
+    /// path avoids the K-ε sandwich the reject feared.)
+    #[test]
+    fn adr259_scene_draft_solid_box_top_moveonly() {
+        let (mut scene, top) = adr196_build_box_top();
+        let z0 = adr196_top_centroid_z(&scene, top); // ~200
+        let result = scene.execute(Command::CreateSolid {
+            face_id: top,
+            mode: axia_geo::CreateSolidMode::ExtrudeTapered {
+                distance: 100.0,
+                taper_deg: 15.0,
+            },
+        });
+        // Solid-face taper routes through the MoveOnly path → PushPullDone
+        // (NOT SolidCreated, which is the flat-profile frustum route).
+        assert!(
+            matches!(result, CommandResult::PushPullDone { .. }),
+            "draft-on-solid-face must route to MoveOnly-taper (PushPullDone), got {:?}",
+            result
+        );
+        assert_eq!(
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+            6,
+            "MoveOnly draft: still a 6-face box (no new faces)"
+        );
+        assert!(
+            scene.mesh.verify_face_invariants().is_valid(),
+            "drafted box manifold-valid (no K-ε sandwich)"
+        );
+        assert!(
+            scene.mesh.verify_outward_normals().is_closed_solid,
+            "drafted box still a closed solid"
+        );
+        let z1 = adr196_top_centroid_z(&scene, top);
+        assert!((z1 - (z0 + 100.0)).abs() < 1e-6, "top lifted by dist: {} → {}", z0, z1);
+        // Top ring shrank inward (draft): every top vert now inside the ±100 box.
+        let tv = scene
+            .mesh
+            .collect_loop_verts(scene.mesh.faces[top].outer().start)
+            .unwrap();
+        for v in tv {
+            let p = scene.mesh.vertex_pos(v).unwrap();
+            assert!(p.x.abs() < 99.0 && p.y.abs() < 99.0, "top shrunk inward: {:?}", p);
+        }
+    }
+
+    /// ADR-259 D5 — a steep draft on a SOLID face must hard-error AND roll the
+    /// scene back byte-identical (fail-closed, no half-applied MoveOnly move).
+    #[test]
+    fn adr259_scene_draft_solid_steep_reject_rolls_back() {
+        let (mut scene, top) = adr196_build_box_top();
+        let faces_before = scene.mesh.face_count();
+        let z0 = adr196_top_centroid_z(&scene, top);
+        // 88° on a 200×200 top → d_off = 100·tan(88°) ≈ 2860 ≫ inradius → collapse.
+        let result = scene.execute(Command::CreateSolid {
+            face_id: top,
+            mode: axia_geo::CreateSolidMode::ExtrudeTapered {
+                distance: 100.0,
+                taper_deg: 88.0,
+            },
+        });
+        assert!(
+            matches!(result, CommandResult::Error(_)),
+            "steep draft must hard-error (D5), got {:?}",
+            result
+        );
+        assert_eq!(scene.mesh.face_count(), faces_before, "byte-identical after reject");
+        assert!(
+            scene.mesh.verify_face_invariants().is_valid(),
+            "still manifold-valid after rejected draft"
+        );
+        assert!(
+            (adr196_top_centroid_z(&scene, top) - z0).abs() < 1e-9,
+            "top unmoved after reject (no half-applied move)"
+        );
     }
 
     /// ADR-196 Fix 1 — 밀기: pushing a SOLID box top OUTWARD must EXTEND the box

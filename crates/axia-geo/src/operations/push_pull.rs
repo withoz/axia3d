@@ -854,6 +854,197 @@ impl Mesh {
         })
     }
 
+    /// ADR-259 draft-on-solid-face — a **tapered** MoveOnly extrude (draft an
+    /// existing solid face by a draft angle). Mirrors [`push_pull_move_only`]
+    /// (move the boundary ring, the existing walls slant, **no new faces** →
+    /// no ADR-087 K-ε sandwich) but offsets the moved ring inward (`+θ`, top
+    /// shrinks = mold draft) / outward (`−θ`, flare) by `d = |dist|·tan(θ)`.
+    ///
+    /// **Geometry (ADR-259 §2)**: per-edge perpendicular offset keeps each wall
+    /// a *parallel-edge trapezoid* = exactly planar (convex AND concave). The
+    /// moved face's Plane surface + every slanted wall's Plane surface are
+    /// re-synthesized (Newell) so render/downstream see the true orientation.
+    ///
+    /// **Fail-closed (D5)**: a self-intersecting / collapsing / spiking offset
+    /// bails; the Scene snapshot wrapper rolls the mesh back (ADR-190 P0.2) — no
+    /// broken solid ("면깨짐 최대 방지"). v1 = simple outer loop (holes → future).
+    ///
+    /// Public entry (mirrors [`Mesh::push_pull`]): the face MUST be a MoveOnly
+    /// solid face — the Scene dispatch checks `is_move_only` and routes a flat
+    /// profile taper through `create_solid` (`ExtrudeTapered`) instead.
+    pub fn push_pull_tapered(
+        &mut self,
+        face_id: FaceId,
+        dist: f64,
+        taper_deg: f64,
+    ) -> Result<PushPullResult> {
+        ensure!(
+            is_move_only(self, face_id),
+            "push_pull_tapered: face is not a MoveOnly solid face (use create_solid ExtrudeTapered for a flat profile)"
+        );
+        self.push_pull_move_only_tapered(face_id, dist, taper_deg)
+    }
+
+    pub(crate) fn push_pull_move_only_tapered(
+        &mut self,
+        face_id: FaceId,
+        dist: f64,
+        taper_deg: f64,
+    ) -> Result<PushPullResult> {
+        use crate::boundary_kernel::geom2::{offset_polygon_2d, PolyOffset, Vec2};
+        use crate::curves::synthesize::synthesize_plane_surface;
+        use crate::surfaces::AnalyticSurface;
+        const MITER_LIMIT: f64 = 16.0;
+        let eps = crate::tolerances::EPSILON_LENGTH;
+
+        let outer_start = self.faces[face_id].outer().start;
+        let boundary = self.collect_loop_verts(outer_start)?;
+        let n = boundary.len();
+        ensure!(n >= 3, "draft: boundary needs ≥ 3 verts (got {})", n);
+        ensure!(
+            self.faces[face_id].inners().is_empty(),
+            "draft (tapered MoveOnly) v1 supports a simple face (no holes)"
+        );
+
+        let normal = self.compute_normal(&boundary)?;
+        let normal = if normal.length() > 1e-10 {
+            normal.normalize()
+        } else {
+            self.faces[face_id].normal()
+        };
+
+        // Clamp an inward push (reuse the straight-MoveOnly thickness clamp so a
+        // draft cannot invert the solid).
+        let dist = if dist < 0.0 {
+            match move_only_max_inward(&*self, face_id) {
+                Some(thickness) => dist.max(-(thickness - MIN_SOLID_THICKNESS).max(0.0)),
+                None => dist,
+            }
+        } else {
+            dist
+        };
+
+        // 2D basis in the face plane (right-handed with the normal).
+        let positions: Vec<DVec3> = boundary
+            .iter()
+            .map(|&v| self.vertex_pos(v))
+            .collect::<Result<Vec<_>>>()?;
+        let centroid = positions.iter().fold(DVec3::ZERO, |a, &p| a + p) / n as f64;
+        let t_axis = {
+            let e = positions[1] - positions[0];
+            ensure!(e.length_squared() > eps * eps, "draft: degenerate first edge");
+            e.normalize()
+        };
+        let b_axis = normal.cross(t_axis);
+        ensure!(b_axis.length_squared() > 0.5, "draft: degenerate 2D basis");
+        let b_axis = b_axis.normalize();
+        let poly2d: Vec<Vec2> = positions
+            .iter()
+            .map(|p| {
+                let r = *p - centroid;
+                Vec2::new(r.dot(t_axis), r.dot(b_axis))
+            })
+            .collect();
+
+        // + taper = inward (top shrinks / draft); − = outward (flare).
+        let d_off = dist.abs() * taper_deg.to_radians().tan();
+        let top2d = match offset_polygon_2d(&poly2d, d_off, MITER_LIMIT) {
+            PolyOffset::Ok(p) => p,
+            PolyOffset::Degenerate => anyhow::bail!(
+                "draft: taper offset collapses/inverts (too steep) — rejected (D5 fail-closed)"
+            ),
+            PolyOffset::SelfIntersect => anyhow::bail!(
+                "draft: taper offset self-intersects (concave over-offset) — rejected (D5)"
+            ),
+            PolyOffset::Spike => anyhow::bail!(
+                "draft: taper offset spike at a sharp vertex — rejected (D5)"
+            ),
+            PolyOffset::BadInput => {
+                anyhow::bail!("draft: degenerate profile for taper offset")
+            }
+        };
+        debug_assert_eq!(top2d.len(), n, "offset preserves vertex count");
+
+        // Move each boundary vert to its offset + lifted target.
+        let translation = normal * dist;
+        for (i, &v) in boundary.iter().enumerate() {
+            let w = top2d[i];
+            let target = centroid + t_axis * w.x + b_axis * w.y + translation;
+            self.verts[v].set_pos(target);
+        }
+
+        // Refresh the moved face's cached normal + Plane surface (shrunk, lifted;
+        // still a plane parallel to the original — synthesize captures the new
+        // offset).
+        let new_boundary = self.collect_loop_verts(outer_start)?;
+        if let Ok(nn) = self.compute_normal(&new_boundary) {
+            self.faces[face_id].set_normal(nn);
+        }
+        let face_has_plane = matches!(
+            self.faces[face_id].surface(),
+            Some(AnalyticSurface::Plane { .. })
+        );
+        if face_has_plane {
+            let pos: Vec<DVec3> = new_boundary
+                .iter()
+                .filter_map(|&v| self.vertex_pos(v).ok())
+                .collect();
+            if pos.len() >= 3 {
+                self.faces[face_id].set_surface(Some(synthesize_plane_surface(&pos)));
+            }
+        }
+
+        // Re-synthesize every slanted wall (the face across each boundary edge's
+        // radial twin). Only faces that ALREADY carry a Plane surface — leave
+        // untyped faces alone (additive, ADR-046 P31 #4).
+        let mut walls: Vec<FaceId> = Vec::with_capacity(n);
+        let mut he = outer_start;
+        for _ in 0..n {
+            let twin = self.hes[he].next_rad();
+            if !twin.is_null() && twin != he {
+                let wf = self.hes[twin].face();
+                if !wf.is_null() && wf != face_id && !walls.contains(&wf) {
+                    walls.push(wf);
+                }
+            }
+            he = self.hes[he].next();
+        }
+        for &wf in &walls {
+            if !matches!(
+                self.faces[wf].surface(),
+                Some(AnalyticSurface::Plane { .. })
+            ) {
+                continue;
+            }
+            let ws = self.faces[wf].outer().start;
+            if ws.is_null() {
+                continue;
+            }
+            if let Ok(wv) = self.collect_loop_verts(ws) {
+                let wp: Vec<DVec3> = wv.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+                if wp.len() >= 3 {
+                    if let Ok(wn) = self.compute_normal(&wv) {
+                        self.faces[wf].set_normal(wn);
+                    }
+                    self.faces[wf].set_surface(Some(synthesize_plane_surface(&wp)));
+                }
+            }
+        }
+
+        Ok(PushPullResult {
+            base_face: face_id,
+            top_face: face_id,
+            side_faces: Vec::new(),
+            new_verts: Vec::new(),
+            base_removed: false,
+            adjacent_splits: 0,
+            split_debug: vec![format!(
+                "Draft MoveOnly: {} verts, taper {:.2}°, {} walls resynth",
+                n, taper_deg, walls.len()
+            )],
+        })
+    }
+
     /// CreateFace 모드: 측면 생성 + coplanar 병합 (AixxiA make_push_pull_faces_from_face_id)
     ///
     /// 1. 정점 수집

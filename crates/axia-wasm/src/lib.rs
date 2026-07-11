@@ -4228,13 +4228,25 @@ impl AxiaEngine {
                 );
                 true
             }
+            axia_core::commands::CommandResult::PushPullDone {
+                sides_created, base_removed, ..
+            } => {
+                // ADR-259 draft-on-solid-face — a taper on a SOLID face (a box
+                // top, prism wall) routes through the MoveOnly-taper path
+                // (exec_push_pull_tapered) → PushPullDone: the ring moves +
+                // shrinks, walls slant, no new faces. A valid taper result.
+                debug_log!(
+                    "[RUST] create_solid_extrude_tapered ok (draft-on-solid-face) sides={} base_removed={}",
+                    sides_created, base_removed
+                );
+                true
+            }
             axia_core::commands::CommandResult::Error(e) => {
                 console_error!("[RUST] create_solid_extrude_tapered ERROR: {}", e);
                 self.set_error(e.to_string());
                 false
             }
             _ => {
-                // Taper never falls back (D5) → PushPullDone / others are unexpected.
                 self.set_error("tapered extrude: unexpected result".to_string());
                 false
             }
