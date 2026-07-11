@@ -1,6 +1,6 @@
 # ADR-287 — Curved cut/boss ε: Sphere / Cone / Torus (unified surface-normal offset)
 
-- **Status**: Accepted (α + β + ε-sphere-2 landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss + Cone through-hole; Sphere sketch→carve via polyline split + planar-clip render; Torus tube-through = ε-torus-through)
+- **Status**: Accepted (α + β + ε-sphere-2 landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss + Cylinder/Cone through-hole; Sphere sketch→carve via polyline split + planar-clip render; Torus tube-through DEFERRED — straight-bore infeasible (33 SI), needs a cylindrical drill, §E)
 - Date: 2026-07-10
 - Track: ADR-286 §E (ε — Sphere/Cone/Torus boss+cut) + ADR-271 §ε (cut). "완벽한 extrude" 로드맵 #5 곡면 마무리.
 - Cross-link: ADR-286 (Cylinder boss, LOCKED #89), ADR-271 (Cylinder cut),
@@ -164,8 +164,20 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
 
 - **ε-sphere-2** ✅ **LANDED** (§7 참조) — production sphere sketch → carve
   (polyline split + planar-clip render). 남은 것 없음.
-- **ε-torus-through**: torus tube-through (minor-circle bore, outer→inner wall).
-  현재 diametric-across-hole 만 (documented, §F).
+- **ε-torus-through** (measure-first 발견 2026-07-10, 시도 후 revert — **straight
+  bore 접근 infeasible**): torus tube-through (외벽→내벽, minor-circle 방향).
+  **tube-center reflection** 접근 (entry vert 를 그 longitude 의 tube-center C(u)
+  기준 반사 → `exit = 2·C(u) − P`, exit 가 (u, v+π) 내벽에 안착) 을 시도. exit 는
+  torus 에 정확히 안착하고 `verify_face_invariants` 는 valid 지만, **straight tube
+  walls 가 curved tube 를 관통하며 self-intersection 발생** — 작은 cap 에서도
+  `detect_self_intersections` **33건** (ADR-273 gate 가 정확히 차단). Cylinder/
+  Cone 의 diametric bore 가 straight-reflection 으로 되는 이유는 그 표면이
+  ruled/developable 이라 straight walls 가 표면 내부에 머무름 — torus tube 는
+  곡률 때문에 안 됨. ⇒ 제대로 하려면 **cylindrical drill bit** (곡면 tube 안을
+  관통하는 mini-cylinder tunnel, 곡면 wall intersection = 복잡한 elliptic curve)
+  필요 — 별도 큰 ADR. 현재 torus 는 pocket/boss 만 (through 미제공,
+  `curved_cap_axis_radial` torus → None). diametric-across-hole 코드는 존재하나
+  user-route 안 함 (non-natural, §F documented).
 - **Live curved pocket/boss preview** (현재 commit-only, ADR-193 답습).
 
 ## F. Through-hole ε (Cone landed 2026-07-10)
