@@ -160,6 +160,20 @@ boolean results is a hard requirement.
     → self-intersects → fail-closed, needs robust tangent CSG); v1 retirement (post-
     telemetry).
 
+- **2026-07-11 β follow-up #3 — UNION / INTERSECT verification (subtract-only was
+  tested before)** — `polygonalize_curved_operand` runs **op-agnostically** at the
+  `boolean_solid` entry (`polygonalize(faces_a)` + `polygonalize(faces_b)`, no op
+  param), so union/intersect INHERIT the subtract fix with zero new code: the Path B
+  operand is rebuilt polygonal, then v2's op-aware classify (Union A∪B / Intersect
+  A∩B) cuts it. Verified via sim for **all 4 primitives × 2 ops** on clean overlaps
+  (engine `adr278_pathb_curved_union_intersect_watertight`: cyl/sphere/cone/torus ×
+  {union, intersect} → Ok + valid + closed + 0 non-manifold + 0 self-intersection).
+  Notes: torus-union with a fully-enclosed torus = box unchanged (absorbed, valid);
+  a cylinder piercing BOTH box faces (grazing at the exit) fails-closed, same as
+  subtract. Browser reach is the same `booleanSolid(A, B, op)` entry the subtract
+  E2E exercises (op is just the string arg). **Path B curved Boolean = subtract +
+  union + intersect, all 4 primitives × any axis, complete (clean overlaps).**
+
 ## Cross-link
 
 - ADR-277 (general mesh CSG — the v2 path this reuses).

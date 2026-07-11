@@ -7096,15 +7096,23 @@ Acceptance), sphere/cone/torus 는 `polygonalize_curved_operand` 에서 fall-thr
   self-intersect → fail-closed, robust tangent CSG 필요); v1 retirement (post-telemetry).
 - **L-94-8** 절대 #[ignore] 금지.
 
-#### 회귀 (+3 engine, +3 E2E)
+- **L-94-9 follow-up #3 (2026-07-11): union/intersect 검증** — `polygonalize_curved_
+  operand` 는 **op-무관** (boolean_solid 진입에서 두 operand 만 polygonal 변환, op
+  param 없음) → union/intersect 가 subtract fix 를 **zero-code 상속**. v2 의 op-aware
+  classify (Union A∪B / Intersect A∩B) 가 cut. 4곡면 × 2op clean overlap 전부 watertight.
+  torus-union (완전 포함 → box 흡수, valid) / cylinder 양면 관통 (grazing → fail-closed).
+
+#### 회귀 (+4 engine, +3 E2E)
 - axia-geo `adr278_pathb_sphere_cone_torus_subtract_cuts` (셋 다 Ok+cut+watertight) +
   `adr278_polygonal_torus_builder_is_watertight` (standalone SI=0) +
-  `adr278_pathb_rotated_cyl_inverted_cone_subtract_cuts` (follow-up #2: 30°-tilt cyl +
-  180°-flip inverted cone → Ok+cut+watertight).
+  `adr278_pathb_rotated_cyl_inverted_cone_subtract_cuts` (follow-up #2) +
+  `adr278_pathb_curved_union_intersect_watertight` (follow-up #3: 4곡면 × {union,
+  intersect} → Ok + valid + closed + 0 nm + 0 SI).
 - E2E `web/e2e/adr-278-pathb-curved-subtract.spec.ts` ×3 (real Chromium: box − Path B
-  {sphere,cone,torus} via `booleanSolid` → cut + isClosedSolid + valid). rotated 는
-  engine-verified (rotate 하네스는 ADR-277 rotated 데모 선례).
-- workspace 3019/0/1, E2E 3/3. WASM/bridge/tool 무변경 (fix in boolean_solid).
+  {sphere,cone,torus} via `booleanSolid` → cut + isClosedSolid + valid). rotated +
+  union/intersect 는 engine-verified (browser 는 동일 `booleanSolid(A,B,op)` 경로,
+  subtract E2E 가 wiring 실증; rotate 하네스는 ADR-277 rotated 데모 선례).
+- workspace 3020/0/1, E2E 3/3. WASM/bridge/tool 무변경 (fix in boolean_solid).
 
 #### Cross-link
 - ADR-278 §Acceptance (`docs/adr/278-curved-primitive-boolean-audit.md`) — β cylinder

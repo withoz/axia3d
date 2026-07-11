@@ -11231,6 +11231,46 @@ mod tests {
     // a polygonal primitive at the `boolean_solid` entry so the v2 imprint CUTS
     // watertight (extends the ADR-278 β cylinder fix). Sphere/cone reuse the Path
     // A builders; torus (no Path A builder) uses a polygonal quad-grid torus.
+    // Path B curved UNION / INTERSECT (verification — subtract-only was tested
+    // before). `polygonalize_curved_operand` runs op-agnostically at the
+    // `boolean_solid` entry, so union/intersect INHERIT the subtract fix: the
+    // Path B cyl/sphere/cone/torus is rebuilt polygonal, then v2's op-aware
+    // classify (Union A∪B / Intersect A∩B) cuts it watertight. Verified for all
+    // 4 primitives × 2 ops on clean overlaps. (Grazing/tangential — e.g. a
+    // cylinder piercing BOTH box faces — fails-closed, same as subtract.)
+    #[test]
+    fn adr278_pathb_curved_union_intersect_watertight() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        for (opn, op) in [("union", BoolOp::Union), ("intersect", BoolOp::Intersect)] {
+            for kind in ["cyl", "sph", "con", "tor"] {
+                let mut m = Mesh::new();
+                m.set_cylinder_path_b_default(true);
+                m.set_sphere_path_b_default(true);
+                m.set_cone_path_b_default(true);
+                m.set_torus_path_b_default(true);
+                m.create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, mat).unwrap();
+                let bf = active(&m);
+                let b = match kind {
+                    // single-face protrusion (base inside the box, top above) → clean stub.
+                    "cyl" => m.create_cylinder(DVec3::new(30.0, 30.0, 80.0), 25.0, 60.0, 24, mat).unwrap_or_default(),
+                    "sph" => m.create_sphere(DVec3::new(40.0, 40.0, 110.0), 40.0, 16, 12, mat).unwrap_or_default(),
+                    "con" => m.create_cone(DVec3::new(30.0, 30.0, 80.0), 30.0, 60.0, 24, mat).unwrap_or_default(),
+                    _ => vec![m.create_torus_kernel_native(DVec3::new(0.0, 0.0, 50.0), 40.0, 15.0, mat).unwrap()],
+                };
+                let ok = m.boolean_solid(&bf, &b, op, mat).is_ok();
+                let info = m.face_set_manifold_info(&active(&m));
+                assert!(ok, "Path B {kind} {opn} box must SUCCEED (boolean_solid Ok)");
+                assert!(m.verify_face_invariants().is_valid(), "{kind} {opn}: manifold-valid");
+                assert!(info.is_closed_solid, "{kind} {opn}: closed solid");
+                assert_eq!(info.non_manifold_edge_count, 0, "{kind} {opn}: 0 non-manifold");
+                assert_eq!(m.detect_self_intersections().count(), 0, "{kind} {opn}: 0 self-intersection");
+            }
+        }
+    }
+
     // Standalone polygonal torus (build_polygonal_torus) is a valid watertight
     // non-self-intersecting solid — the winding/geometry is correct (the
     // grazing-subtract self-intersection below comes from the tangency, not the
