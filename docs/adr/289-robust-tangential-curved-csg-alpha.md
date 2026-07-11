@@ -99,24 +99,43 @@ edges 가 남음 → 결과가 열림. exact arithmetic / assemble / arrange / i
 v2 Stage 4-5 (classify/assemble) 의 **open boundary** (closed_solid=false). SI 는
 imprint 가 이미 해결. §2.5 의 assemble_closed_loops 지목은 오판 (imprint 경로 아님).
 
-- **β-2 — open boundary 원인 정밀 특정** (measure): imprint 후 SI=0 이지만 v2 전체
-  결과가 closed_solid=false. boundary edges 가 **어디서** 남는지 (torus tube 얕은
-  관통 절단면 ↔ box top annulus hole 경계 stitch 실패? classify 가 annulus subface
-  를 잘못 keep/drop? torus tube 의 box 안/밖 경계 face 가 seam 미형성?). Stage 4
-  (classify) + Stage 5 (assemble) 후 boundary edge 위치 dump. 코드 0.
-- **β-3 — open boundary stitch fix**: β-2 가 지목한 지점 수선 (얕은 관통 절단면과
-  box annulus 경계의 seam weld / classify tie-break). torus tube 얕은 관통이 box
-  를 완전 관통 안 해도 절단면이 닫히도록.
-- **β-4 — 비대칭 grazing (tz≠110) + SoS tangent tie-break**: 상/하단 tube 가 서로
-  다른 원 + 정확히 접하는(관통 깊이 0) 경우.
+- **β-2 (완료, §2.7)** — (a)/(b) 판별: **(a) stitch 버그** 확정 (비대칭 실제 관통
+  crossing 64 에서도 open). 근본 = v2 classify/assemble 이 곡면 tube 의 through+blind
+  혼합 관통 절단면 seam 을 못 닫음. tz=110 은 추가 tangent degenerate.
+- **β-3 — 곡면 관통 seam weld fix** (근본): v2 Stage 5 assemble 이 곡면 operand tube
+  하단 quad (keep_b flip) 와 box top annulus 경계의 seam vertex 를 공유하도록.
+  ADR-277 박스-박스 seam weld 자산 (`weld_result_seam` 등) 을 곡면 관통 case 로 확장.
+  boundary edge 위치 (β-2 후속 dump) 로 정확한 weld 지점 특정 → 수선.
+- **β-4 — tangent degeneracy (tz=110) + SoS tie-break**: torus 중심이 정확히 면 위
+  (crossing 0, 두 원 접) 인 최악 case. 접점을 공유 정점 or clean separation.
 - **β-5 — 검증**: torus grazing sweep (tz 95~120) 전부 watertight cut; sphere/
   cone/cylinder + clean-overlap 회귀 보존. fail-closed 안전망 유지.
 - **β-6 — E2E + 시연 + closure**.
 
-**미해결 질문 (β-2 measure 대상)**: grazing subtract 의 open boundary 가 (a) stitch
-버그 (고칠 수 있음) 인지 (b) 기하 본질 (torus 가 box 를 스치기만 하면 절단이 진짜
-불완전 → open 이 올바른 결과, cut 불가) 인지. (b) 라면 β 는 "open 을 고치는" 게
-아니라 "fail-closed + 명확한 UX" 가 정답 — β-2 measure 가 이를 판별.
+**핵심 (판별 완료)**: (a) stitch 버그 — 고칠 수 있음 (fail-closed+UX 가 아닌 실제
+수선). 단 v2 classify/assemble seam weld 를 곡면 through+blind 혼합 관통으로 확장하는
+**규모 있는 CSG 수정** (박스-박스는 ADR-277 로 됨, 곡면 tube 미검증 경로). β-3 가
+핵심 작업 — boundary edge 정밀 dump → seam weld 지점 특정 → 수선.
+
+## 2.7. β-2 (a)/(b) 판별 완료 — (a) stitch 버그 (tangent 추가 degenerate)
+
+tz sweep (`sim_beta2_tz_sweep_crossing_and_result`, 진단 후 제거):
+
+| tz | box top 관통 torus quad | v2 subtract |
+|---|---|---|
+| 110 (대칭) | 0 (torus 가 평면을 두 원으로 **접**) | Err(open) |
+| 100 / 105 / 108 (비대칭) | **64 (torus 가 평면을 실제 관통)** | **Err(open)** |
+
+**판별 = (a) stitch 버그**. 비대칭(tz≠110, torus 가 box top 을 실제 CROSS, crossing
+quad 64)에서도 결과가 **open** — 두 닫힌 solid 의 subtract 는 이론상 closed 여야
+하므로 (b) 기하 본질이 아니라 **v2 classify/assemble 이 곡면 관통 절단면의 seam 을
+못 닫는 (a) 버그**. tz=110(대칭)은 crossing 0 (tangent) 인 **추가 degenerate**.
+
+**근본 (최종)**: torus tube 가 box 를 **한 면만 관통** (box top 뚫고 나가되 하단은
+box 안에서 blind — through + blind 혼합 topology) 할 때, v2 Stage 4-5 (classify +
+assemble, "shared vertex set" seam) 가 곡면 tube 하단 quad (keep_b flip) 와 box top
+annulus 경계 사이 seam vertex 를 공유하지 못해 boundary edge 잔존. (박스-박스 CSG
+는 ADR-277 로 seam weld 됨 — 곡면 tube 의 blind+through 혼합이 미검증 경로.)
 
 ## 5. Lock-ins (β 강제)
 
