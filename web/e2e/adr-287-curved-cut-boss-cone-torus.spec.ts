@@ -109,4 +109,35 @@ test.describe('ADR-287 — curved cut/boss on cone + torus', () => {
     expect(r.valid).toBe(true);
     expect(r.viol).toBe(0);
   });
+
+  // ε-sphere-2 (ADR-287) — production drawCircleOnSphere now yields an N-vert cap
+  // (polyline split + planar-clip render), so a sphere is carveable via the same
+  // path: sketch circle → push in (pocket) / out (boss) → watertight manifold.
+  const sphereCarve = (dir: 'pocket' | 'boss') => async ({ page }: { page: import('@playwright/test').Page }) => {
+    const r = await page.evaluate((d) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      bridge.setSpherePathBDefault?.(true);
+      bridge.create_sphere(0, 0, 0, 5);
+      let host = -1;
+      for (let i = 0; i < bridge.getStats().faces + 2; i++) {
+        if (bridge.faceSurfaceKind(i) === 3) { host = i; break; }
+      }
+      const res = JSON.parse(bridge.drawCircleOnSphere(host, [0, 0, 5], [3, 0, 4]));
+      const before = bridge.getStats().faces;
+      const walls = d === 'pocket'
+        ? bridge.carveCurvedPocket(res.cap, 1.5)
+        : bridge.carveCurvedBoss(res.cap, 2.0);
+      const after = bridge.getStats().faces;
+      const inv = bridge.verifyInvariants();
+      return { walls, before, after, valid: inv.valid, viol: inv.violationCount };
+    }, dir);
+    expect(r.walls).toBeGreaterThan(0);
+    expect(r.after).toBeGreaterThan(r.before);
+    expect(r.valid).toBe(true);
+    expect(r.viol).toBe(0);
+  };
+
+  test('sphere → pocket (push in) manifold [ε-sphere-2]', sphereCarve('pocket'));
+  test('sphere → boss (push out) manifold [ε-sphere-2]', sphereCarve('boss'));
 });

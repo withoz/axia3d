@@ -6826,10 +6826,19 @@ floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
   pocket/boss, real Chromium production, walls>0 + manifold 0 viol + faces↑) 4/4.
 - dev-preview 시연: cone pocket 64 walls manifold valid + camera far↔near
   swings → panic 0, engine responsive (LOCKED #89 LOD fix 정합).
-- **Sphere carve arm (§7 후속, commit a834588)**: N-vert (polyline) sphere cap
-  pocket+boss watertight + Sphere{r∓d} 상속 (de-risk 확정). production
-  self-loop cap 은 graceful bail — bridge = ε-sphere-2 결재 (draw_circle_on_
-  sphere→polyline OR in-place densify, ADR-202 표현 결정).
+- **Sphere ε-sphere-2 ✅ LANDED (사용자 결재 option (a)-full, 2026-07-10)**:
+  `Scene::draw_circle_on_sphere` 를 `split_sphere_face_by_polyline` (N-vert cap)
+  로 전환 → production sphere sketch 가 carveable (pocket/boss). Render 회귀
+  방지 위해 `tessellate_sphere_clipped` 에 `loop_planar_circle` 검출 추가
+  (coplanar N-vert polyline loop → circle-plane clip, marching clip + twin_role
+  재사용). measure-first 발견: split 전환만으로는 z-fighting (annulus full
+  hemisphere 렌더, buffer 실측 split z>4=592 vs plain 444) — render path 필수.
+  검증: `adr287_sphere_polyline_cap_renders_clipped` (cap dome/annulus ring 분리
+  = no z-fight) + `adr287_sphere_sketch_then_carve_pocket_boss` (production
+  sketch→carve manifold) + adr202 회귀 무변경 (E2E onCircle 포함) + self-loop
+  clip 회귀 무변경. Sphere carve arm (a834588) = radial offset, Sphere{r∓d}.
+  ADR-202 sketch 표현 amend (self-loop→polyline; engine split_sphere_face_by_
+  circle 는 보존).
 - **Through-hole ε (§F, Cone landed)**: `carve_curved_through` 일반화
   (Cylinder/Cone/Torus) + `curved_cap_axis_radial` helper + Scene through-route
   통합 (`depth ≥ cap axis-radial` → through). Cone deep push → watertight

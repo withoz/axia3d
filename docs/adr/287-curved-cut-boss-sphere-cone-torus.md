@@ -1,6 +1,6 @@
 # ADR-287 — Curved cut/boss ε: Sphere / Cone / Torus (unified surface-normal offset)
 
-- **Status**: Accepted (α + β landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss carve arms + Cone through-hole; Sphere self-loop bridge = ε-sphere-2 decision; Torus tube-through = ε-torus-through)
+- **Status**: Accepted (α + β + ε-sphere-2 landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss + Cone through-hole; Sphere sketch→carve via polyline split + planar-clip render; Torus tube-through = ε-torus-through)
 - Date: 2026-07-10
 - Track: ADR-286 §E (ε — Sphere/Cone/Torus boss+cut) + ADR-271 §ε (cut). "완벽한 extrude" 로드맵 #5 곡면 마무리.
 - Cross-link: ADR-286 (Cylinder boss, LOCKED #89), ADR-271 (Cylinder cut),
@@ -102,32 +102,33 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
   → watertight manifold + floor/roof at radius∓depth + Sphere 상속 (A-χ) 확정.
   ⇒ **Sphere carve 로직 자체는 correct** (radial offset toward/away center).
   self-loop cap 은 core 가 graceful bail ("too small (1 vert)").
-- **남은 blocker = production 표현 (ε-sphere-2 decision)**: 프로덕션
-  `Scene::draw_circle_on_sphere` 는 `split_sphere_face_by_circle` → **self-loop
-  cap** (ADR-089 closed-curve, planar latitude circle). 그 self-loop edge 는
-  annulus inner hole 과 **공유** → cap 만 polygonize 시 desync (`verify_face_
-  invariants` valid 지만 `is_closed_solid` false, 실측). Cone/Torus 는 N-vert
-  polyline cap (ADR-263 geodesic) 이라 무관 → 본 ADR 에서 완결.
-- **ε-sphere-2 bridge 옵션** (별도 결재 — ADR-202 표현 정책):
-  * (a) `draw_circle_on_sphere` → `split_sphere_face_by_polyline` 전환
-    (sphere cap 을 N-vert 로). **⚠ measure-first 발견 (2026-07-10, 시도 후
-    revert)**: split 전환만으로는 **RENDER 회귀** — sphere 의 render dispatch
-    (`mesh_export.rs:326`) 는 오직 `tessellate_sphere_clipped` (self-loop
-    Circle 경계 요구, mesh.rs:1936). polyline cap 은 이를 trigger 못 함 →
-    full-surface `render_surface.tessellate` fallback → **cap+annulus 둘 다
-    full hemisphere 렌더 → z-fighting** (buffer 실측: split z>4 verts 592 vs
-    plain 444; annulus 가 inner hole clip 안 됨). ⇒ 옵션 (a) 는 split 전환
-    **+ `tessellate_sphere_polyline_clipped` render path 신설** 필요
-    (Cylinder/Cone/Torus 는 `tessellate_{...}_circle_clipped` polyline clip
-    이미 보유 — sphere 만 없음). render 변경은 buffer 분석으로 검증 가능
-    (annulus z>4 → ~0, cap 만 dome). (본 환경 screenshot infra 불안정 —
-    visual 검증은 buffer proxy.)
-  * (b) carve 진입 시 self-loop cap 을 in-place densify (cap+annulus 공유
-    self-loop → N-edge; DCEL 수술) — sketch render 는 self-loop clip 그대로
-    (smooth), carve 시에만 densify. render 회귀 없음, 단 shared-boundary
-    surgery 복잡.
-  두 옵션 모두 ADR-202 표현/render 결정 → 사용자 결재 필요. 옵션 (a) 는
-  render path 포함해야 완결.
+- **ε-sphere-2 LANDED (option (a)-full, 사용자 결재 2026-07-10)** — production
+  sphere sketch → carve, render smooth 유지:
+  * `Scene::draw_circle_on_sphere`: `split_sphere_face_by_circle` (self-loop) →
+    latitude circle 을 `circle::tessellate_full` 로 N points 로 tessellate →
+    `split_sphere_face_by_polyline` (N-vert cap). production sphere cap 이 이제
+    carveable (curved pocket/boss).
+  * **Render path 신설** — split 전환만으로는 RENDER 회귀 (measure-first 발견
+    2026-07-10: sphere render dispatch `mesh_export.rs:326` 는 오직
+    `tessellate_sphere_clipped`, self-loop Circle 경계 요구 → polyline cap 은
+    trigger 못 함 → full-surface fallback → cap+annulus full hemisphere
+    z-fighting, buffer 실측 split z>4=592 vs plain 444). **Fix**:
+    `tessellate_sphere_clipped` 에 `loop_planar_circle` 검출 추가 — COPLANAR
+    N-vert polyline loop 을 circle-plane clip 으로 인식 (best-fit plane →
+    (normal, offset, center, radius); 동일 marching clip 재사용, `twin_role`
+    은 그대로 — `split_sphere_face_by_polyline` 이 annulus inner LoopRef.start =
+    cap outer twin 으로 설정하여 `== start` 검사 정합). 비평면 loop (rect/
+    freehand geodesic) 는 coplanarity gate 로 skip → full surface (ADR-284
+    behavior 불변).
+  * **검증**: `adr287_sphere_polyline_cap_renders_clipped` (cap dome z≥z0 +
+    annulus ring z≤z0 + boundary on circle → z-fight 없음), `adr287_sphere_
+    sketch_then_carve_pocket_boss` (production sketch → pocket+boss manifold),
+    adr202 회귀 무변경 (E2E onCircle 포함 — polyline clip 이 boundary snap →
+    smooth 유지), self-loop `tessellate_sphere_clipped` 회귀 무변경. Cone/Torus
+    는 N-vert polyline cap (ADR-263 geodesic) 이라 이 문제 무관.
+  * **ADR-202 amendment**: sketch entry 의 sphere cap 표현이 self-loop Circle →
+    N-vert polyline 로 변경 (engine `split_sphere_face_by_circle` 는 다른 caller
+    위해 보존; adr202 회귀는 face-count/kind/manifold 만 검사하여 무변경 PASS).
 
 ## D. Acceptance Log (2026-07-10, β landed — Cone + Torus)
 
@@ -161,10 +162,10 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
 
 ## E. 남은 트랙 (별도 ADR / 결재)
 
-- **ε-sphere-2** (결재 필요): production sphere circle sketch 의 self-loop cap →
-  N-vert bridge. §7 옵션 (a) draw_circle_on_sphere→polyline (ADR-202 표현 변경,
-  adr202 회귀 재작성) / (b) in-place densify. Sphere carve 로직은 이미 correct
-  (de-risk 확정) — 표현 결정만 남음.
+- **ε-sphere-2** ✅ **LANDED** (§7 참조) — production sphere sketch → carve
+  (polyline split + planar-clip render). 남은 것 없음.
+- **ε-torus-through**: torus tube-through (minor-circle bore, outer→inner wall).
+  현재 diametric-across-hole 만 (documented, §F).
 - **Live curved pocket/boss preview** (현재 commit-only, ADR-193 답습).
 
 ## F. Through-hole ε (Cone landed 2026-07-10)

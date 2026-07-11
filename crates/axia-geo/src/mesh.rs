@@ -1948,6 +1948,61 @@ impl Mesh {
                 _ => None,
             }
         };
+        // ADR-287 ε-sphere-2 — a COPLANAR N-vert polyline loop on the sphere
+        // (e.g. the latitude-circle cap from the polyline split, so the cap is
+        // carveable) is also a circle-plane clip boundary. Best-fit the loop's
+        // plane; the (planar) latitude circle gives (normal, offset, center,
+        // radius) exactly like `loop_circle`, so the same marching clip applies.
+        // Non-planar loops (rect/freehand geodesics) fail the coplanarity gate and
+        // fall through to the full surface (unchanged). Self-loops (<3 verts / a
+        // single HE) are left to `loop_circle`.
+        let loop_planar_circle = |start: HeId| -> Option<(DVec3, f64, DVec3, f64)> {
+            if start.is_null() || !self.hes.contains(start) || self.hes[start].next() == start {
+                return None; // self-loop or invalid → handled by loop_circle
+            }
+            let verts = self.collect_loop_verts(start).ok()?;
+            if verts.len() < 3 {
+                return None;
+            }
+            let pts: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+            if pts.len() < 3 {
+                return None;
+            }
+            let cc = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
+            // Newell's normal of the loop.
+            let mut nn = DVec3::ZERO;
+            let m = pts.len();
+            for i in 0..m {
+                let a = pts[i];
+                let b = pts[(i + 1) % m];
+                nn.x += (a.y - b.y) * (a.z + b.z);
+                nn.y += (a.z - b.z) * (a.x + b.x);
+                nn.z += (a.x - b.x) * (a.y + b.y);
+            }
+            let mut n_c = nn.normalize_or_zero();
+            if n_c.length_squared() < 0.5 {
+                return None;
+            }
+            // Mean in-plane radius + max out-of-plane deviation (coplanarity gate).
+            let mut cr = 0.0;
+            let mut max_dev: f64 = 0.0;
+            for &p in &pts {
+                let rel = p - cc;
+                let axial = rel.dot(n_c);
+                cr += (rel - n_c * axial).length();
+                max_dev = max_dev.max(axial.abs());
+            }
+            cr /= pts.len() as f64;
+            if !(cr > 1e-9) || max_dev > cr * 0.05 + 1e-6 {
+                return None; // degenerate or non-planar → leave to full tessellation
+            }
+            // Orient the normal away from the sphere center (toward the cap dome) so
+            // the clip's `keep_greater` semantics match `loop_circle`.
+            if (cc - sc).dot(n_c) < 0.0 {
+                n_c = -n_c;
+            }
+            Some((n_c, (cc - sc).dot(n_c), cc, cr))
+        };
         // A self-loop Circle boundary is an ADR-202 sphere SPLIT boundary (a cap +
         // annulus of the SAME sphere) iff its twin HE lies on a CO-SPHERICAL Sphere
         // face (same center+radius) AND the two faces are complementary: the cap
@@ -1996,15 +2051,16 @@ impl Mesh {
         // Outer small circle → cap (keep toward the circle normal), only for an
         // ADR-202 split (twin = the co-spherical annulus's inner hole).
         let outer_he = face.outer().start;
-        if let Some((n_c, d, cc, cr)) = loop_circle(outer_he) {
+        if let Some((n_c, d, cc, cr)) = loop_circle(outer_he).or_else(|| loop_planar_circle(outer_he)) {
             if twin_role(outer_he) == Some(true) {
                 clips.push((n_c, d, true, cc, cr));
             }
         }
         // Inner circle holes → annulus (keep away from the cap), only for an
-        // ADR-202 split (twin = the co-spherical cap's outer).
+        // ADR-202 split (twin = the co-spherical cap's outer). Self-loop Circle
+        // (analytic) OR coplanar polyline (ε-sphere-2) inner hole.
         for inner in face.inners() {
-            if let Some((n_c, d, cc, cr)) = loop_circle(inner.start) {
+            if let Some((n_c, d, cc, cr)) = loop_circle(inner.start).or_else(|| loop_planar_circle(inner.start)) {
                 if twin_role(inner.start) == Some(false) {
                     clips.push((n_c, d, false, cc, cr));
                 }
@@ -16174,6 +16230,47 @@ mod tests {
         for v in &ann_t.vertices {
             assert!(v.z <= 4.0 + 1e-4, "annulus is below the circle (z={})", v.z);
         }
+    }
+
+    /// **ADR-287 ε-sphere-2 (2026-07-10)** — a POLYLINE (N-vert) sphere cap ALSO
+    /// renders clipped, via `loop_planar_circle` (a coplanar polyline loop is a
+    /// circle-plane clip). This guards the z-fight failure mode the naive polyline
+    /// switch had: with no polyline clip, `tessellate_sphere_clipped` returned None
+    /// → the annulus rendered the FULL hemisphere → cap+annulus overlap. Here both
+    /// clip: cap = dome (z ≥ z0), annulus = ring (z ≤ z0), boundary on the circle.
+    #[test]
+    fn adr287_sphere_polyline_cap_renders_clipped() {
+        use crate::surfaces::AnalyticSurface;
+        let mut mesh = Mesh::new();
+        let c = DVec3::ZERO;
+        let r = 5.0;
+        let faces = mesh.create_sphere_kernel_native(c, r, MaterialId::new(0)).unwrap();
+        let north = faces.iter().copied().find(|&f| matches!(mesh.faces[f].surface(),
+            Some(AnalyticSurface::Sphere { v_range, .. }) if v_range.1 > 0.0)).unwrap();
+        // Latitude ring at z=4 (radius 3) as an N-vert POLYLINE (not an analytic
+        // circle → exercises loop_planar_circle, not loop_circle).
+        let n = 24;
+        let ring: Vec<DVec3> = (0..n).map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            DVec3::new(3.0 * a.cos(), 3.0 * a.sin(), 4.0)
+        }).collect();
+        let (cap, annulus) = mesh.split_sphere_face_by_polyline(north, &ring).expect("polyline split");
+        let chord = 0.1;
+        let cap_t = mesh.tessellate_sphere_clipped(cap, chord).expect("polyline cap clipped (loop_planar_circle)");
+        let ann_t = mesh.tessellate_sphere_clipped(annulus, chord).expect("polyline annulus clipped");
+        assert!(!cap_t.triangles.is_empty() && !ann_t.triangles.is_empty(), "both non-empty");
+        // NO z-fight: cap = toward-pole dome (z ≥ 4), annulus = below the circle (z ≤ 4).
+        for v in &cap_t.vertices {
+            assert!(v.z >= 4.0 - 1e-4, "polyline cap is the dome (z={})", v.z);
+        }
+        for v in &ann_t.vertices {
+            assert!(v.z <= 4.0 + 1e-4, "polyline annulus is below the circle (z={})", v.z);
+        }
+        // Boundary follows the circle (marching crossings snapped onto z=4, r=3).
+        let on_circle = |v: &&DVec3| (v.z - 4.0).abs() < 1e-3
+            && ((v.x * v.x + v.y * v.y).sqrt() - 3.0).abs() < 1e-2;
+        assert!(cap_t.vertices.iter().filter(on_circle).count() >= 3, "cap boundary on circle");
+        assert!(ann_t.vertices.iter().filter(on_circle).count() >= 3, "annulus boundary on circle");
     }
 
     /// **ADR-202 (2026-06-17)** — drawing 2+ circles on ONE hemisphere makes the

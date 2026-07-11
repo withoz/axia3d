@@ -2723,12 +2723,33 @@ impl Scene {
         {
             return None;
         }
+        use axia_geo::curves::AnalyticCurve;
         use axia_geo::surfaces::{sphere, AnalyticSurface};
         let (center, radius) = match self.mesh.faces.get(host_face).and_then(|f| f.surface()) {
             Some(AnalyticSurface::Sphere { center, radius, .. }) => (*center, *radius),
             _ => return None,
         };
         let circle = sphere::circle_on_sphere(center, radius, center_pt, radius_pt)?;
+        // ε-sphere-2 (ADR-287) — split via the N-edge POLYLINE path, not the
+        // analytic self-loop, so the cap is an N-vert loop: directly carveable by
+        // the curved pocket/boss ops. The planar latitude circle is tessellated
+        // into on-sphere points. Render stays smooth because `tessellate_sphere_
+        // clipped` also recognises a COPLANAR polyline loop as a circle-plane clip
+        // (loop_planar_circle) — cap + annulus both inherit the Sphere surface
+        // (ADR-089 A-χ) and are marching-clipped against the circle plane (no
+        // z-fight). Consistent with cylinder/cone/torus (all polyline caps).
+        let samples: Vec<DVec3> = match &circle {
+            AnalyticCurve::Circle { center: cc, radius: rr, normal: nn, basis_u: bu } => {
+                let chord_tol = (rr * 0.01).max(1e-6);
+                let mut pts = axia_geo::curves::circle::tessellate_full(*cc, *rr, *nn, *bu, chord_tol);
+                pts.pop(); // tessellate_full returns N+1 (last == first) → drop the dup
+                pts
+            }
+            _ => return None,
+        };
+        if samples.len() < 3 {
+            return None;
+        }
         let host_xia = self.face_to_xia.get(&host_face).copied();
 
         let own = !self.transactions.is_recording();
@@ -2736,7 +2757,7 @@ impl Scene {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
         }
-        match self.mesh.split_sphere_face_by_circle(host_face, circle) {
+        match self.mesh.split_sphere_face_by_polyline(host_face, &samples) {
             Some((cap, annulus)) => {
                 if let Some(xid) = host_xia {
                     self.register_faces_to_xia(xid, &[cap]);
@@ -22876,6 +22897,45 @@ mod tests {
         let pf = scene.mesh.add_face(&[v0, v1, v2, v3], MaterialId::new(0)).unwrap();
         assert!(scene.draw_circle_on_sphere(pf, DVec3::new(105.0, 5.0, 0.0), DVec3::new(108.0, 5.0, 0.0)).is_none(),
             "non-sphere face → None");
+    }
+
+    /// ε-sphere-2 (ADR-287) — the production sphere circle sketch now yields an
+    /// N-vert cap (polyline split), so a sphere is directly CARVEABLE via the same
+    /// user path as cylinder/cone/torus: `draw_circle_on_sphere` → the cap feeds
+    /// `carve_curved_pocket_from_cap` (pocket) / `add_curved_boss_from_cap` (boss)
+    /// → watertight manifold. (Before ε-sphere-2 the cap was a self-loop and the
+    /// carve bailed "too small".)
+    #[test]
+    fn adr287_sphere_sketch_then_carve_pocket_boss() {
+        use axia_geo::surfaces::AnalyticSurface;
+        let sketch = || -> (Scene, FaceId) {
+            let mut scene = Scene::new();
+            let c = DVec3::ZERO;
+            let faces = scene.mesh.create_sphere_kernel_native(c, 5.0, MaterialId::new(0)).unwrap();
+            scene.create_xia_with_faces("Sphere".to_string(), c, faces.clone());
+            let north = faces.iter().copied().find(|&f| matches!(scene.mesh.faces[f].surface(),
+                Some(AnalyticSurface::Sphere { v_range, .. }) if v_range.1 > 0.0)).expect("north");
+            let (cap, _ann) = scene.draw_circle_on_sphere(
+                north, DVec3::new(0.0, 0.0, 5.0), DVec3::new(3.0, 0.0, 4.0),
+            ).expect("sphere sketch → N-vert cap");
+            // The cap must now be an N-vert polyline loop (≥3), not a 1-vert self-loop.
+            let n = scene.mesh.collect_loop_verts(scene.mesh.faces[cap].outer().start).unwrap().len();
+            assert!(n >= 3, "polyline cap has ≥3 boundary verts, got {n}");
+            (scene, cap)
+        };
+
+        // POCKET (push in) — sphere has no diametric through (curved_cap_axis_radial
+        // → None), so a blind pocket.
+        let (mut s1, cap1) = sketch();
+        let r1 = s1.carve_curved_pocket_from_cap(cap1, 1.5);
+        assert!(matches!(r1, CommandResult::PushPullDone { .. }), "sphere pocket succeeds: {r1:?}");
+        assert!(s1.mesh.verify_face_invariants().is_valid(), "manifold after sphere pocket");
+
+        // BOSS (push out).
+        let (mut s2, cap2) = sketch();
+        let r2 = s2.add_curved_boss_from_cap(cap2, 2.0);
+        assert!(matches!(r2, CommandResult::PushPullDone { .. }), "sphere boss succeeds: {r2:?}");
+        assert!(s2.mesh.verify_face_invariants().is_valid(), "manifold after sphere boss");
     }
 
     /// **ADR-257 β-5 (P3-B, 2026-06-17)** — `Scene::draw_circle_on_cylinder`
