@@ -141,6 +141,34 @@ test.describe('ADR-287 — curved cut/boss on cone + torus', () => {
   test('sphere → pocket (push in) manifold [ε-sphere-2]', sphereCarve('pocket'));
   test('sphere → boss (push out) manifold [ε-sphere-2]', sphereCarve('boss'));
 
+  // ADR-288 ε-torus-through — a DEEP inward push on a SMALL torus cap (depth ≥
+  // minor_radius) auto-routes (Scene) to a fixed-axis cylinder TUBE bore (outer →
+  // inner wall through the minor circle) → a watertight SI-free tunnel through the
+  // tube. Small cap (the straight cylinder stays inside the curving tube).
+  test('torus wall → deep push = tube-through drill (small cap, watertight) [ADR-288]', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      bridge.create_torus(0, 0, 0, 500, 100); // major 500, minor 100
+      let side = -1;
+      for (let i = 0; i < bridge.getStats().faces + 2; i++) {
+        if (bridge.faceSurfaceKind(i) === 5) { side = i; break; }
+      }
+      // SMALL cap on the outer equator (center [600,0,0]; radius pt only ~40 away).
+      const res = JSON.parse(bridge.drawCircleOnTorus(side, [600, 0, 0], [600, 40, 0]));
+      const before = bridge.getStats().faces;
+      // minor_radius = 100; push deeper → tube-through route (fixed-axis cylinder).
+      const walls = bridge.carveCurvedPocket(res.cap, 150);
+      const after = bridge.getStats().faces;
+      const inv = bridge.verifyInvariants();
+      return { walls, before, after, valid: inv.valid, viol: inv.violationCount };
+    });
+    expect(r.walls).toBeGreaterThan(0);    // tube walls of the tube-through tunnel
+    expect(r.after).toBeGreaterThan(r.before);
+    expect(r.valid).toBe(true);
+    expect(r.viol).toBe(0);
+  });
+
   // ADR-287 live curved preview — previewCurvedCarve returns a ghost triangle
   // soup (flat xyz, multiple of 9 = tris) for pocket (dist<0) and boss (dist>0),
   // WITHOUT mutating the mesh (read-only, safe every mouse-move).

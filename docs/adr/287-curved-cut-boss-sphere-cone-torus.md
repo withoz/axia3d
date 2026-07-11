@@ -164,8 +164,11 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
 
 - **ε-sphere-2** ✅ **LANDED** (§7 참조) — production sphere sketch → carve
   (polyline split + planar-clip render). 남은 것 없음.
-- **ε-torus-through** (measure-first 발견 2026-07-10, 시도 후 revert — **straight
-  bore 접근 infeasible**): torus tube-through (외벽→내벽, minor-circle 방향).
+- **ε-torus-through** ✅ **LANDED via ADR-288** (fixed-axis cylinder tube-through,
+  SI-free small-cap MVP). 아래는 여기서의 최초 straight-reflection 시도 기록
+  (ADR-288 의 fixed-axis 통찰 근거) — (measure-first 발견 2026-07-10, 시도 후
+  revert — **per-vertex reflection 접근 infeasible**): torus tube-through
+  (외벽→내벽, minor-circle 방향).
   **tube-center reflection** 접근 (entry vert 를 그 longitude 의 tube-center C(u)
   기준 반사 → `exit = 2·C(u) − P`, exit 가 (u, v+π) 내벽에 안착) 을 시도. exit 는
   torus 에 정확히 안착하고 `verify_face_invariants` 는 valid 지만, **straight tube

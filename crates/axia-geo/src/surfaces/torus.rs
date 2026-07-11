@@ -303,10 +303,119 @@ pub fn polyline_on_torus(
     Some(out)
 }
 
+/// ADR-288 β-1 — ray ∩ torus intersection parameters `t` (sorted ascending) for
+/// the world ray `origin + t·dir` (dir need not be unit — it is normalized). The
+/// torus implicit in its local frame (r→x, perp→y, axis→z) is
+/// `F = (|p|² + R² − r²)² − 4R²(px² + py²) = 0`; substituting the ray gives a
+/// quartic in `t`. Rather than a fragile closed-form (Ferrari), F is sampled
+/// along the ray's segment inside the torus bounding sphere (radius R+r), sign
+/// changes are bisected, and each root is Newton-free bisection-polished. Returns
+/// up to 4 roots (empty if the ray misses the bounding sphere / degenerate).
+pub fn ray_torus_intersections(
+    center: DVec3,
+    axis_dir: DVec3,
+    ref_dir: DVec3,
+    major_radius: f64,
+    minor_radius: f64,
+    origin: DVec3,
+    dir: DVec3,
+) -> Vec<f64> {
+    let (rr, rm) = (major_radius, minor_radius);
+    if !(rr > 0.0 && rm > 0.0) {
+        return Vec::new();
+    }
+    let (axis, rbasis, pbasis) = basis(axis_dir, ref_dir);
+    if axis.length_squared() < 0.5 {
+        return Vec::new();
+    }
+    let d = dir.normalize_or_zero();
+    if d.length_squared() < 0.5 {
+        return Vec::new();
+    }
+    // Ray in the torus-local frame.
+    let rel = origin - center;
+    let ol = DVec3::new(rel.dot(rbasis), rel.dot(pbasis), rel.dot(axis));
+    let dl = DVec3::new(d.dot(rbasis), d.dot(pbasis), d.dot(axis));
+    let f = |t: f64| -> f64 {
+        let q = ol + dl * t;
+        let g = q.length_squared() + rr * rr - rm * rm;
+        g * g - 4.0 * rr * rr * (q.x * q.x + q.y * q.y)
+    };
+    // Ray ∩ bounding sphere (radius R+r): dl is unit → t² + 2(ol·dl)t + (|ol|²−br²)=0.
+    let br = rr + rm;
+    let b = 2.0 * ol.dot(dl);
+    let c = ol.length_squared() - br * br;
+    let disc = b * b - 4.0 * c;
+    if disc < 0.0 {
+        return Vec::new(); // misses the bounding sphere
+    }
+    let sq = disc.sqrt();
+    let (t0, t1) = (0.5 * (-b - sq), 0.5 * (-b + sq));
+    // Sample F over [t0, t1]; bisect each sign change.
+    const STEPS: usize = 512;
+    let mut roots: Vec<f64> = Vec::new();
+    let mut prev_t = t0;
+    let mut prev_f = f(t0);
+    for i in 1..=STEPS {
+        let t = t0 + (t1 - t0) * (i as f64 / STEPS as f64);
+        let ft = f(t);
+        if prev_f == 0.0 {
+            roots.push(prev_t);
+        } else if (prev_f < 0.0) != (ft < 0.0) {
+            let (mut lo, mut flo, mut hi) = (prev_t, prev_f, t);
+            for _ in 0..64 {
+                let m = 0.5 * (lo + hi);
+                let fm = f(m);
+                if (flo < 0.0) != (fm < 0.0) {
+                    hi = m;
+                } else {
+                    lo = m;
+                    flo = fm;
+                }
+            }
+            roots.push(0.5 * (lo + hi));
+        }
+        prev_t = t;
+        prev_f = ft;
+    }
+    roots.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+    /// ADR-288 β-1 — ray ∩ torus. A ray along −X through z=0 of a (R=10, r=3)
+    /// Z-axis torus hits 4 walls at x = 13, 7, −7, −13 (outer/inner/inner/outer);
+    /// a ray far above the torus misses (0 roots).
+    #[test]
+    fn adr288_ray_torus_diametral_four_roots_and_miss() {
+        let c = DVec3::ZERO;
+        let (r, rm) = (10.0, 3.0);
+        // Ray from (20,0,0) along −X (through the whole donut at z=0).
+        let ts = ray_torus_intersections(c, DVec3::Z, DVec3::X, r, rm,
+            DVec3::new(20.0, 0.0, 0.0), DVec3::new(-1.0, 0.0, 0.0));
+        assert_eq!(ts.len(), 4, "diametral ray hits 4 walls, got {ts:?}");
+        // x = 20 − t → walls at x = 13, 7, −7, −13 → t = 7, 13, 27, 33.
+        let want = [7.0, 13.0, 27.0, 33.0];
+        for (got, w) in ts.iter().zip(want.iter()) {
+            assert!((got - w).abs() < 1e-3, "root {got} ≈ {w} (all {ts:?})");
+        }
+
+        // A ray well above the torus (z = 100) misses entirely.
+        let miss = ray_torus_intersections(c, DVec3::Z, DVec3::X, r, rm,
+            DVec3::new(20.0, 0.0, 100.0), DVec3::new(-1.0, 0.0, 0.0));
+        assert!(miss.is_empty(), "ray above the torus misses, got {miss:?}");
+
+        // A tube bore from the outer wall (13,0,0) along −X exits the inner wall:
+        // first far root (after t≈0) is the inner wall at x=7 (t≈6).
+        let bore = ray_torus_intersections(c, DVec3::Z, DVec3::X, r, rm,
+            DVec3::new(13.0, 0.0, 0.0), DVec3::new(-1.0, 0.0, 0.0));
+        assert!(bore.iter().any(|&t| (t - 6.0).abs() < 1e-2),
+            "bore from outer wall reaches the inner wall at t≈6 (x=7), got {bore:?}");
+    }
 
     #[test]
     fn polyline_on_torus_rect_samples_on_surface() {

@@ -982,6 +982,13 @@ impl Mesh {
     pub fn curved_cap_axis_radial(&self, cap_face: FaceId) -> Option<f64> {
         use crate::surfaces::AnalyticSurface as S;
         let face = self.faces.get(cap_face).filter(|f| f.is_active())?;
+        // Torus (ADR-288 tube-through): the natural through bores through the TUBE
+        // (minor circle), so the "reach the center" threshold is the minor radius
+        // — an inward push reaching the tube center routes to the fixed-axis
+        // cylinder tube-drill (`carve_curved_through` torus arm).
+        if let Some(S::Torus { minor_radius, .. }) = face.surface() {
+            return Some(*minor_radius);
+        }
         let (axis_o, axis_d) = match face.surface()? {
             S::Cylinder { axis_origin, axis_dir, .. } => (*axis_origin, axis_dir.normalize_or_zero()),
             S::Cone { apex, axis_dir, .. } => (*apex, axis_dir.normalize_or_zero()),
@@ -1141,14 +1148,51 @@ impl Mesh {
             bail!("curved through: cap center on the axis (degenerate radial)");
         }
 
-        // Exit points on the opposite surface (straight bore along −rout).
-        let exit_pts: Vec<DVec3> = entry
-            .iter()
-            .map(|&v| {
+        // Exit points on the opposite surface.
+        // • Cylinder / Cone — DIAMETRIC bore across the axis: reflect each entry
+        //   vert across the axis-plane ⊥ rout (preserves axial + in-plane radius,
+        //   so it lands on the same surface — ruled/developable, straight walls
+        //   stay inside).
+        // • Torus (ADR-288) — TUBE bore through the minor circle via a FIXED-AXIS
+        //   CYLINDER drill: bore axis = the inward torus normal at the cap CENTER
+        //   (toward the tube center → inner wall). Every entry vert shoots along the
+        //   SAME axis → parallel cylinder walls (no twist — the §E per-vertex
+        //   reflection twisted them → 33 SI). Each exit = the first positive
+        //   ray-torus root (the inner-wall crossing). A too-large cap whose bore
+        //   exits the tube (no positive root) is rejected.
+        let exit_pts: Vec<DVec3> = if let Some(S::Torus {
+            center: tc, axis_dir: tad, ref_dir: trd, major_radius, minor_radius, ..
+        }) = &surf
+        {
+            let (c2, a2, r2, rmaj, rmin) = (*tc, *tad, *trd, *major_radius, *minor_radius);
+            let (_pt, cu, cv) = crate::surfaces::torus::project_to_torus(c2, a2, r2, rmaj, rmin, center)
+                .ok_or_else(|| anyhow::anyhow!("torus tube-through: cap center off-surface"))?;
+            let n_c = crate::surfaces::torus::normal(c2, a2, r2, rmaj, rmin, cu, cv).normalize_or_zero();
+            if n_c.length_squared() < 0.5 {
+                bail!("torus tube-through: degenerate cap normal");
+            }
+            let bore = -n_c;
+            let mut out = Vec::with_capacity(cnt);
+            for &v in &entry {
                 let p = self.vertex_pos(v).unwrap();
-                p - rout * (2.0 * radial_vec(p).dot(rout))
-            })
-            .collect();
+                let roots = crate::surfaces::torus::ray_torus_intersections(c2, a2, r2, rmaj, rmin, p, bore);
+                match roots.into_iter().find(|&t| t > 1e-4) {
+                    Some(t) => out.push(p + bore * t),
+                    None => bail!(
+                        "torus tube-through: 구멍이 너무 큽니다 — bore 가 tube 를 벗어납니다 (더 작은 원)"
+                    ),
+                }
+            }
+            out
+        } else {
+            entry
+                .iter()
+                .map(|&v| {
+                    let p = self.vertex_pos(v).unwrap();
+                    p - rout * (2.0 * radial_vec(p).dot(rout))
+                })
+                .collect()
+        };
 
         // Host (remainder/annulus) = the twin-side face of the cap boundary.
         let host = {
@@ -1215,7 +1259,12 @@ impl Mesh {
                 report.violations.len()
             );
         }
-        let depth = 2.0 * radial_vec(center).dot(rout); // diametric bore length
+        // Bore length: torus tube-through ≈ tube diameter (2·minor); cylinder/cone
+        // diametric = 2·(cap-center radial distance).
+        let depth = match &surf {
+            Some(S::Torus { minor_radius, .. }) => 2.0 * *minor_radius,
+            _ => 2.0 * radial_vec(center).dot(rout),
+        };
         Ok(DrillThroughResult {
             entry_face: host,
             exit_face: host,
@@ -2978,14 +3027,13 @@ mod tests {
             info.is_closed_solid, info.boundary_edge_count);
     }
 
-    /// ADR-287 through-hole ε (de-risk / observe) — TORUS. A diametric bore across
-    /// the axis exits the OPPOSITE outer tube (through the central donut hole), NOT
-    /// the natural "through the tube" (outer→inner wall via the minor circle). This
-    /// test DOCUMENTS what the cylinder-style bore does on a torus: either it stays
-    /// manifold (a handle across the hole) or the exit split declines gracefully.
-    /// A true torus tube-through (minor-circle bore) is a separate ε-torus-through.
+    /// ADR-288 β-2 — TORUS tube-through via a FIXED-AXIS cylinder drill (outer →
+    /// inner wall through the minor circle). A SMALL cap bores cleanly: watertight,
+    /// exit on the INNER wall (in_plane ≈ R−r), and — the crux — **self-
+    /// intersection-free** (ADR-287 §E's per-vertex reflection twisted the walls →
+    /// 33 SI; the fixed axis makes them parallel). Guards the §E regression.
     #[test]
-    fn adr287_curved_through_torus_documents_diametric() {
+    fn adr288_torus_tube_through_fixed_axis() {
         use crate::surfaces::{torus, AnalyticSurface};
         let mut mesh = Mesh::new();
         let mat = MaterialId::new(0);
@@ -2995,22 +3043,40 @@ mod tests {
                 (center, axis_dir, ref_dir, major_radius, minor_radius),
             other => panic!("Torus, got {other:?}"),
         };
+        // SMALL cap on the outer equator (u≈0, tight angular span) so the straight
+        // cylinder stays inside the curving tube (ADR-288 §8 small-cap MVP).
         let cp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.0, 0.0);
-        let rp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.25, 0.0);
-        let samples = torus::circle_on_torus(c, ax, rd, rmaj, rmin, cp, rp, 0.05).expect("circle");
+        let rp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.08, 0.0);
+        let samples = torus::circle_on_torus(c, ax, rd, rmaj, rmin, cp, rp, 0.03).expect("circle");
         let (cap, _host) = mesh.split_torus_face_by_circle(face, &samples).expect("split");
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let closed_before = mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid;
 
-        // Either the diametric bore succeeds as a manifold, or the exit split
-        // declines — both are acceptable (documents that the cylinder-style through
-        // is not the natural torus tube-through). No panic, no corruption.
-        match mesh.carve_curved_through(cap) {
-            Ok(res) => {
-                assert!(!res.tube_faces.is_empty());
-                assert!(mesh.verify_face_invariants().is_valid(),
-                    "if the diametric torus bore succeeds it must be manifold");
+        let res = mesh.carve_curved_through(cap).expect("torus tube-through must drill");
+        assert!(!res.tube_faces.is_empty(), "tube walls");
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after torus tube-through");
+        // THE CRUX — fixed-axis parallel walls are self-intersection-free (§E was 33).
+        let si = mesh.detect_self_intersections().count();
+        assert_eq!(si, 0, "fixed-axis cylinder tube-through is SI-free (got {si})");
+        // Exit on the INNER wall (in_plane ≈ R−r), proving the bore went THROUGH
+        // the tube (a diametric across-hole bore would exit the opposite OUTER wall).
+        let ax_n = ax.normalize();
+        let in_plane_len = |v: VertId| -> f64 {
+            let rel = mesh.vertex_pos(v).unwrap() - c;
+            (rel - ax_n * rel.dot(ax_n)).length()
+        };
+        let mut min_ip = f64::MAX;
+        for &tf in &res.tube_faces {
+            for v in mesh.collect_loop_verts(mesh.faces[tf].outer().start).unwrap() {
+                min_ip = min_ip.min(in_plane_len(v));
             }
-            Err(_) => { /* graceful decline — expected for the across-hole bore */ }
         }
+        assert!((min_ip - (rmaj - rmin)).abs() < 1.0,
+            "tube reaches the INNER wall (in_plane min {min_ip}, want ≈ {})", rmaj - rmin);
+        assert_eq!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, closed_before,
+            "tube-through preserves closed-ness (adds a tunnel, no new boundary)");
     }
 
     /// Both caps become ring-with-hole (each gains exactly one inner loop).

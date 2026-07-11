@@ -1,6 +1,6 @@
 # ADR-288 — Torus tube-through via a cylindrical drill (ε-torus-through)
 
-- **Status**: Proposed (α spec — 코드 0, β 결재 게이트)
+- **Status**: Accepted (α + β landed 2026-07-10 — fixed-axis cylinder tube-through, SI-free small-cap MVP; large-cap curved bore = future phase)
 - Date: 2026-07-10
 - Track: ADR-287 §E 남은 트랙 (ε-torus-through). "완벽한 extrude" 로드맵 #5 곡면
   through 의 마지막 조각.
@@ -113,3 +113,34 @@ cylinder 축은 직선(−major-radial(u0), donut 중심 향함)인데 tube cent
 **β-2 de-risk 회귀**: 작은 cap tube-through 가 `detect_self_intersections` 0
 + watertight (§E 33 SI 회귀 방지). 임계 cap size 초과 시 graceful reject
 (SI gate 가 이미 차단 — 사용자 facing 은 "hole 이 너무 큼" guidance).
+
+## D. Acceptance Log (2026-07-10, β landed — small-cap MVP)
+
+- **β-1** — `torus::ray_torus_intersections(center, axis, ref, R, r, origin, dir)
+  -> Vec<f64>` (sorted t). Torus quartic `F=(|p|²+R²−r²)²−4R²(px²+py²)=0` (local
+  frame) sampled along the ray's bounding-sphere segment + bisection (no fragile
+  Ferrari). 회귀 `adr288_ray_torus_diametral_four_roots_and_miss` — diametral ray
+  hits 4 walls (t=7,13,27,33 for R=10/r=3), above-torus ray misses (0), bore from
+  outer wall reaches inner wall at t≈6.
+- **β-2** — `carve_curved_through` Torus arm = **fixed-axis cylinder drill**: bore
+  axis = the inward torus normal at the cap CENTER (via project_to_torus + normal),
+  each entry vert's exit = first positive `ray_torus_intersections` root (inner
+  wall). Parallel walls (no twist). too-large cap (no positive root) → graceful
+  bail. de-risk `adr288_torus_tube_through_fixed_axis` (small cap) — **SI-free
+  (0, §E was 33)** + watertight + exit on inner wall (in_plane ≈ R−r) + closed-
+  ness preserved.
+- **β-3** — Scene route: `curved_cap_axis_radial` torus → minor_radius (deep
+  inward push ≥ minor → tube-through via the existing `carveCurvedPocket` WASM
+  route → `carve_curved_through` torus arm). No new WASM/bridge/tool.
+- **β-4** — E2E `torus wall → deep push = tube-through drill (small cap,
+  watertight)` (real Chromium: drawCircleOnTorus small cap → carveCurvedPocket
+  150 ≥ minor 100 → tube tunnel manifold 0 viol +faces). 9/9 adr-287 E2E.
+- sweep: cargo workspace **3012 passed / 0 failed / 1 ignored**.
+
+## E-scope note — small-cap MVP
+
+fixed-axis cylinder 는 **작은 cap 한정** (§8): 직선 축 vs tube 곡률. 큰 cap 은
+straight walls 가 tube 를 벗어남 → SI gate (ADR-273) 가 차단 + 사용자 facing
+graceful reject ("hole 이 너무 큼"). **large-cap curved/toroidal bore** (drill 이
+tube 를 따라 휨, 또는 torus∩cylinder SSI) = 별도 future phase. 실무 대부분의
+tube 관통 hole 은 tube diameter 대비 작아 MVP 로 충분.

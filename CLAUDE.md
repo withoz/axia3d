@@ -6869,6 +6869,70 @@ floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
 - ADR-267/273 (watertight/SI gate) / ADR-190 P0.2 (snapshot rollback)
 - ADR-046 P31 #4 (additive only) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14
 
+### 91. ADR-288 — Torus tube-through via fixed-axis cylinder drill (ε-torus-through, small-cap MVP, 2026-07-10) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-10)**: ADR-287 §E ε-torus-through 를
+별도 ADR 로. 곡면 arc 마무리.
+
+**배경**: torus 자연 through = tube 관통 (외벽→내벽, minor circle). ADR-287 §E
+straight-reflection (`exit=2·C(u)−P`, per-vertex) 은 walls twist → curved tube
+관통 → **33 SI** (ADR-273 차단). **핵심 통찰**: **fixed-axis cylinder drill**
+(단일 bore축) → walls 평행 → no twist → SI-free (작은 cap).
+
+#### β-1~β-4 (Path Z atomic)
+
+- **β-1** `torus::ray_torus_intersections` — torus quartic `F=(|p|²+R²−r²)²−
+  4R²(px²+py²)=0` 에 ray 대입, bounding-sphere segment sampling + bisection
+  (Ferrari 회피). 회귀 `adr288_ray_torus_diametral_four_roots_and_miss`
+  (diametral 4 roots / miss 0 / bore outer→inner t≈6).
+- **β-2** `carve_curved_through` Torus arm = fixed-axis cylinder: bore axis =
+  cap 중심 inward torus normal (project_to_torus+normal), 각 entry vert exit =
+  first positive ray-torus root (inner wall). 큰 cap (no positive root) →
+  graceful bail. de-risk `adr288_torus_tube_through_fixed_axis` (small cap) —
+  **SI-free (0, §E 33)** + watertight + inner-wall exit (in_plane≈R−r) + closed-
+  ness preserved.
+- **β-3** Scene route: `curved_cap_axis_radial` torus → minor_radius (deep push
+  ≥ minor → through, 기존 carveCurvedPocket WASM route 재사용, 신규 export 0).
+- **β-4** E2E `torus deep push = tube-through (small cap, watertight)` (real
+  Chromium, 9/9 adr-287 E2E).
+
+#### Lock-ins (L-288-1~8, canonical)
+
+- **L-288-1** fixed-axis cylinder (parallel walls, no twist) — SI-free 핵심.
+- **L-288-2** ray_torus_intersections (quartic, sampling+bisection).
+- **L-288-3** drill 반경 = cap 반경. **L-288-4** entry/exit hole + cylinder walls.
+- **L-288-5** watertight (ADR-267) + **SI-free** (ADR-273, §E 33 SI 회귀 방지 =
+  핵심 acceptance) + snapshot rollback (ADR-190 P0.2).
+- **L-288-6** Scene route (curved_cap_axis_radial torus → minor_radius).
+- **L-288-7 small-cap MVP** — fixed-axis 는 작은 cap 한정 (직선 축 vs tube
+  곡률). 큰 cap = straight walls 가 tube 벗어남 → SI gate 차단 + graceful reject.
+  large-cap curved/toroidal bore (또는 torus∩cylinder SSI) = future phase.
+- **L-288-8** additive (ADR-046 P31 #4, torus 만) + 절대 #[ignore] 금지.
+
+#### 회귀 (절대 #[ignore] 금지)
+
+axia-geo +2 (`adr288_ray_torus_diametral_four_roots_and_miss` +
+`adr288_torus_tube_through_fixed_axis` — SI-free de-risk; 기존 torus
+documents-diametric 테스트를 tube-through 로 재작성). E2E +1 (torus deep push
+tube-through). cargo workspace **3012 passed / 0 failed / 1 ignored**.
+
+#### 🎉 곡면 cut/boss/through 완결
+
+- cut+boss: Cylinder/Sphere/Cone/Torus 4곡면 (ADR-271/286/287)
+- through-hole: Cylinder + Cone (diametric) + **Torus (tube, ADR-288)**
+- live preview: 4곡면 (ADR-287 §H)
+- 남은 것: torus large-cap curved bore (future phase, L-288-7)
+
+#### Cross-link
+
+- ADR-288 본문 §D Acceptance (`docs/adr/288-torus-tube-through-cylindrical-drill.md`)
+- ADR-287 §E (straight-reflection 시도 → fixed-axis 통찰 근거, LOCKED #90) / §F
+  (cone diametric through)
+- ADR-263 (torus circle sketch cap, LOCKED #87) / ADR-089 A-χ (surface 상속)
+- ADR-194 (drill_circular_through_hole planar drill 패턴) / ADR-034 (SSI — large-cap 후속)
+- ADR-267/273 (watertight/SI gate) / ADR-190 P0.2 (snapshot rollback)
+- ADR-046 P31 #4 (additive) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 #14 #16
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
