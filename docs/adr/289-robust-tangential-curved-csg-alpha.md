@@ -35,6 +35,31 @@ cut 안 됨). 사용자 결재 (2026-07-11): "robust CSG (exact/SoS)" 로 근본
 아니다 (SI 는 정밀도가 아닌 imprint topology). 진짜 필요 = **shallow/tangential
 penetration 에서의 imprint robustness** (+ SoS-style degeneracy 처리는 보조).
 
+## 2.5. β-1 시뮬 — 실패 단계 정밀 특정 (imprint 파이프라인 단계별 관찰)
+
+`boolean_solid_v2` imprint 파이프라인 = **① `find_intersections_polygonal` (교차
+세그먼트) → ② `assemble_closed_loops`/`assemble_chains` (loop/chain 조립) → ③
+`subdivide_face_2d` (face split, hole 포함)**. torus tz=110 (중심=box top plane,
+대칭 최악) subtract 를 단계별 시뮬(`sim_grazing_imprint_investigation`, 진단용
+후 제거):
+
+- **① find_intersections_polygonal = 정확** — box top face 에 **128 세그먼트,
+  z=110.00 정확, r∈[25.00, 55.00]** (= torus 의 두 동심원 major−minor=25 /
+  major+minor=55). 교차 검출은 완벽.
+- **② assemble = 완전 실패 (0 chain, 0 loop)** — **근본 여기**. box top 세그먼트의
+  **node 64개 전부 degree 4** (zero-length 0). 원인: torus 중심이 평면에 대칭이라
+  tube **상단·하단이 같은 두 동심원을 각각 새겨 세그먼트가 겹침** (각 교차점에
+  상단 2 + 하단 2 = degree 4). `assemble_closed_loops` (boolean.rs:9157) 는
+  **"모든 node degree == 2 아니면 전부 포기"** (all-or-nothing `return
+  Vec::new()`) → 0 loop.
+- **③ subdivide** — ② 가 0 loop 주니 constraint 없음 → box top split 안 됨 →
+  원본 유지 → torus quad 와 관통 = 128 SI.
+
+**정밀 근본 (canonical)**: (a) `assemble_closed_loops` 의 all-or-nothing degree-2
+포기 + (b) 대칭 관통의 **중복 세그먼트 (degree 4)** + (c) 관통 교차가 **두 동심원
+(annulus)** 인데 assemble→subdivide 가 다중 loop / hole 을 처리 안 함. exact
+arithmetic 무관 (좌표 정확, z=110.00 / r=25·55 exact).
+
 ## 3. 접근 옵션
 
 | # | 접근 | 평가 |
@@ -49,22 +74,32 @@ penetration 에서의 imprint robustness** (+ SoS-style degeneracy 처리는 보
 
 ## 4. β roadmap (multi-week atomic, 각 sub-step 별도 결재 가능)
 
-- **β-1 — imprint 실패 정밀 조사** (measure): `find_intersections_polygonal` 이
-  box top × torus quad 교차를 *찾는가*? 찾는데 `split_faces_by_chains` /
-  `assemble_closed_loops` 가 얕은 관통(lens/band)에서 왜 split 못하나? 정확한
-  실패 지점 특정 (교차 곡선이 매우 짧음 / 다중 조각 / tube inner+outer wall 이
-  면을 각각 관통 → 2 loop). 코드 0, 진단 test 만.
-- **β-2 — shallow 교차 곡선 assembly 강건화**: 얕은 관통의 교차 곡선(들)을
-  box face 위 closed loop / open chain 으로 정확히 조립 (기존 `assemble_chains`
-  /`assemble_closed_loops` 확장).
-- **β-3 — face split 강건화**: box face 를 그 교차 loop 로 split (얕은 lens/band
-  hole punch — `apply_closed_loop_split` 확장). SI 제거.
-- **β-4 — degeneracy tie-break (SoS 보조)**: 정확히 접하는(tangent, 관통 깊이 0)
-  경우의 tie-break — 접점을 공유 정점으로 or clean separation 판정.
+**β-1 (완료, §2.5)** — 실패 단계 정밀 특정: find_intersections 정확(128 seg, 두
+동심원), assemble_closed_loops all-or-nothing degree-2 포기 + 대칭 중복 degree-4 +
+annulus(다중 loop) 미처리.
+
+- **β-2 — `assemble_closed_loops` 강건화** (근본 fix, 예상 최대 효과):
+  - (a) **중복 세그먼트 dedup** — undirected edge 중복 제거 (대칭 관통의 겹친
+    세그먼트 degree 4 → 2). endpoint 는 spatial-hash (LOCKED #5, 0.15μm) 로 병합.
+  - (b) **all-or-nothing 제거** — degree≠2 node 있어도 degree-2 subgraph 만 loop
+    추출 (전부 포기 대신). 남는 loose end 는 fail-closed 로.
+  - (c) **다중 loop 반환** — 두 동심원(r=25, r=55) 각각 별도 loop.
+  - 순수 유틸(free fn) — `boolean()` (v1) 무영향, 기존 corner/notch/slot 회귀 보존.
+- **β-3 — annulus split (다중 동심 loop → outer + hole)**: box face 를 outer
+  loop(r=55) + inner hole(r=25) 로 split. `subdivide_face_2d` 가 다중 loop 를
+  outer/hole 로 분류 (nesting test) → `imprint_faces` 의 기존 `sf.holes` /
+  `add_face_with_holes` 경로 (boolean.rs:1704) 활용. torus 관통 band 를 정확히
+  잘라냄 → SI 제거.
+- **β-4 — 비대칭 grazing + SoS tangent tie-break**: tz≠110 (상/하단 tube 가 서로
+  다른 원) + 정확히 접하는(관통 깊이 0, degree 4 중복이 clean-touch) 경우. 접점을
+  공유 정점 or clean separation 판정 (SoS-style symbolic tie-break).
 - **β-5 — 검증**: torus grazing sweep (tz 95~120) 전부 watertight cut; sphere/
-  cone/cylinder 회귀 보존; ADR-276 gate 는 진짜 corrupt 만 reject (robust 결과는
-  통과). fail-closed 안전망 유지.
+  cone/cylinder + clean-overlap 회귀 보존; ADR-276 gate 는 진짜 corrupt 만 reject.
+  fail-closed 안전망 유지 (β 미처리 잔여는 여전히 rollback).
 - **β-6 — E2E + 시연 + closure**.
+
+**핵심**: β-2(assemble dedup + all-or-nothing 제거 + 다중 loop) + β-3(annulus
+split) 가 근본 fix. β-4 는 잔여 degeneracy. 예상: β-2+β-3 로 grazing 대부분 해소.
 
 ## 5. Lock-ins (β 강제)
 
