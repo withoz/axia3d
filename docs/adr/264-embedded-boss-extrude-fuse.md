@@ -1,6 +1,6 @@
 # ADR-264 — Embedded Boss Extrude: Fuse instead of Cleave/Preserve
 
-**Status**: Proposed (α — spec only)
+**Status**: Accepted (β~ζ 구현 완료 — §D Acceptance Log, 2026-07-11 measure-first closure)
 **Date**: 2026-06-27
 **Amends**: ADR-102 (γ Detach-on-Arrangement cleave), ADR-196 (MoveOnly dispatch), ADR-087 K-ε (kernel-native command suite)
 **Author**: WYKO (engine), diagnosed + simulated this session
@@ -113,3 +113,41 @@ ADR-102 (cleave — amended scope), ADR-196 (MoveOnly — orthogonal), ADR-087 K
 (kernel-native commands), ADR-021 P7 / LOCKED #1 (form-layer ≥3 overlay
 preserved), ADR-183 (outward base cap — free path only), ADR-101 §B-3b (flat
 arrangement = cleave retained), 메타-원칙 #14/#15.
+
+## D. Acceptance Log (2026-07-11, measure-first closure)
+
+**사용자 "진행" (2026-07-11)** → 로드맵 #2 후속으로 ADR-264 진입. measure-first
+로 doc-lag 확정: Status 는 "Proposed (α — spec only)" 였으나 실측 = **β~δ 이미
+shipped** (fuse gate + fuse impl `create_solid.rs:240~797` + 8 회귀 green, gap
+0). ADR-259 와 동일 doc-lag 패턴.
+
+- **β~δ (prior, doc-lag)** — `create_solid` Extrude arm 의 fuse gate (`fuse_embedded`:
+  siblings 존재 + Plane + AllLinear + profile 의 connected component 가 closed
+  solid) → cleave/preserve 대신 remove profile + shared-rim 측벽 (twin re-link).
+  `face_connected_components` + `face_set_manifold_info` discriminator. AllCircular
+  boss 는 closed-curve extrude 경로가 clean 처리 (`adr264_circle_boss_still_clean`).
+  회귀 8 green: axia-core `adr264_embedded_rect_boss_extrude_is_closed_manifold` /
+  `adr264_embedded_rect_pocket_is_closed_manifold` / `adr264_free_sheet_extrude_
+  still_preserves_profile` (siblings=0 guard) / `adr264_flat_arrangement_component_
+  is_open` (ADR-101 §B-3b cleave 유지 guard) / `adr264_circle_boss_still_clean` /
+  `adr264_geometric_detector_catches_cleave_crack` / `adr264_extrude_on_stale_face_
+  id_errors_not_panics`; axia-geo `adr264_geometric_detector_clean_on_box`.
+- **ζ (2026-07-11) — real Chromium 시연 게이트** — `web/e2e/adr-264-embedded-boss.
+  spec.ts` ×2: box top 에 embedded rect (drawRectAsShape) → createSolidExtrude
+  (up dist>0 boss / down dist<0 pocket) → `verifyOutwardNormals().isClosedSolid`
+  true + verifyInvariants valid 0 viol. 사용자 tool-path (createSolidExtrude →
+  SolidCreated) 로 fuse 도달 확인. **코드 변경 0** (E2E + docs only — β 는 이미
+  production dist).
+- **full stack 확인**: embedded boss 는 is_move_only 아님(flat sub-face) → Scene
+  MoveOnly dispatch skip → mesh `create_solid` Extrude arm fuse gate. `SolidCreated`
+  → 기존 WASM `create_solid_extrude` → true (arm 수정 불필요, ADR-259 draft 와 달리).
+- workspace 3016 passed / 0 failed / 1 ignored (변경 0), E2E +2 (2/2). catalog ✓.
+
+### E. Lessons
+- **L1** measure-first 가 doc-lag 재노출 (ADR-259 에 이어 2연속) — ADR-264~274
+  systemic doc-lag ([[project-engine-state-and-doc-lag]]). 판정 전 코드/테스트 대조.
+- **L2** gap 없는 doc-lag = 코드 신설 금지 — 이미 shipped+tested β 를 Status/docs
+  만 정합. 시연 게이트(E2E)는 additive 로 tool-path 도달 확인 (engine 테스트가
+  이미 authority `is_closed_solid` — E2E 는 user-path 확인용).
+- **L3** SolidCreated arm 은 기존 WASM 이 이미 true (ADR-259 draft 의 PushPullDone
+  arm 수정과 대비 — fuse 는 create_solid 경로라 arm 무변경).

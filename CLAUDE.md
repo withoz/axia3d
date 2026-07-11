@@ -7011,6 +7011,45 @@ MoveOnly 에도 성립). 새 face 0 → manifold 보존.
 - 메타-원칙 #4 (SSOT) #5 (사용자 편의) #6 (Preventive/measure-first) #14 (면은 닫힌
   경계로부터) / LOCKED #44 (Complete Meaning per Merge) #82 (ADR-196 MoveOnly)
 
+### 93. ADR-264 — Embedded Boss Extrude (fuse) doc-lag closure (2026-07-11) ✅
+
+**Canonical anchor (사용자 "진행", 2026-07-11)**: 로드맵 후속으로 ADR-264 진입.
+
+**Measure-first (doc-lag, ADR-259 에 이어 2연속)**: Status 가 "Proposed (α — spec
+only)" 였으나 실측 = **β~δ 이미 shipped** — fuse gate + fuse impl (`create_solid.rs:
+240~797`) + 8 회귀 green, **gap 0** (ADR-259 draft-on-solid-face 같은 신규 gap
+없음). 순수 doc-lag → 코드 신설 금지, Status/docs 정합 + 시연 게이트만.
+
+**embedded boss = fuse**: 면 내부에 완전 포함된 sub-face (box top 위 rect = boss)
+push-pull → cleave/preserve 대신 **fuse** (remove profile + shared-rim 측벽 twin
+re-link → closed manifold). Gate = siblings 존재 + Plane + AllLinear + profile 의
+connected component 가 closed solid. flat arrangement (open component, ADR-101
+§B-3b) 은 ADR-102 cleave 유지. AllCircular boss 는 closed-curve extrude 경로 clean.
+
+#### Lock-ins (L-93-1 ~ L-93-4)
+- **L-93-1** doc-lag gap 0 → 코드 변경 0 (이미 shipped+tested β 를 Status/docs 만 정합).
+- **L-93-2** embedded boss 는 is_move_only 아님 (flat sub-face) → Scene MoveOnly
+  dispatch skip → mesh `create_solid` Extrude arm fuse gate. `SolidCreated` → 기존
+  WASM `create_solid_extrude` → true (ADR-259 draft 의 PushPullDone arm 수정과 대비 —
+  fuse 는 create_solid 경로라 WASM arm 무변경).
+- **L-93-3** 시연 게이트 (E2E) additive — engine 테스트가 이미 `is_closed_solid` +
+  `geom3==0` authority; E2E 는 user tool-path (createSolidExtrude) 도달 확인용.
+- **L-93-4** 절대 #[ignore] 금지.
+
+#### 회귀 (+2 E2E, 코드 0)
+- E2E `web/e2e/adr-264-embedded-boss.spec.ts` ×2 (real Chromium: box top embedded
+  rect → boss extrude up / pocket down → `verifyOutwardNormals().isClosedSolid` true
+  + verifyInvariants valid 0 viol). 기존 8 engine 회귀 (7 scene + 1 mesh) green 유지.
+- workspace 3016/0/1 (변경 0), E2E 2/2, catalog ✓.
+
+#### Cross-link
+- ADR-264 §D Acceptance (`docs/adr/264-embedded-boss-extrude-fuse.md`)
+- ADR-259 (직전 doc-lag closure, LOCKED #92 — 동일 패턴, 단 259 는 real gap 有) /
+  ADR-102 (cleave, amended scope) / ADR-196 (MoveOnly, orthogonal, LOCKED #82) /
+  ADR-087 K-ε (kernel-native) / ADR-101 §B-3b (flat arrangement cleave 유지) /
+  ADR-183 (outward cap, free path only) / ADR-021 P7 LOCKED #1 (form overlay 보존)
+- 메타-원칙 #4 (SSOT) #6 (measure-first) #14 #15 / LOCKED #44 / [[project-engine-state-and-doc-lag]]
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
