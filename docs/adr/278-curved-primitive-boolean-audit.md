@@ -101,6 +101,43 @@ boolean results is a hard requirement.
       `verifyInvariants` valid, 0 violations. Before the β fix this rescue itself
       no-op'd.
 
+- **2026-07-11 β follow-up — SPHERE / CONE / TORUS (memory follow-up closed)** —
+  `polygonalize_curved_operand` extended from cylinder-only to sphere/cone/torus.
+  Path B sphere/cone/torus − box subtract was a **silent no-op** (the box returned
+  unchanged; a real user-facing gap since production defaults Path B ON). Now each
+  is polygonalized at the `boolean_solid` entry → the v2 imprint CUTS watertight.
+  - **Sphere** — extract `center + radius` from the Sphere surface → `create_sphere`
+    (Path A, 24×16). Axis-agnostic (a full sphere is fully defined by center+radius).
+  - **Cone** — extract `apex + half_angle` from the Cone surface; the Path B cone's
+    APEX is a DEGENERATE (non-DCEL) point, so the operand's verts are all on the
+    base ring → take `base_z` from the verts, `apex_z` from the surface, `height =
+    apex_z − base_z`, `base_radius = height·tan(half_angle)` → `create_cone` (Path A,
+    32). Axis-aligned ±Z, apex-above MVP.
+  - **Torus** — no Path A builder (torus is kernel-native from day 1, ADR-115), so a
+    new `build_polygonal_torus` (u×v quad grid, watertight, axis-agnostic) rebuilds
+    it. Verified standalone SI-free + closed (`adr278_polygonal_torus_builder_is_watertight`).
+  - **Grazing/tangential limitation (fail-closed, correct):** a curved operand
+    *tangent* to a box face (e.g. a torus straddling the top face, z=110) produces a
+    genuinely self-intersecting subtract (measured 128 self-intersections) that the
+    ADR-276 validity gate correctly REJECTS → rolls back (WASM `boolean_solid_op`) →
+    safe no-op. Clean *through* overlaps (torus at z=50, sphere/cone piercing a face)
+    cut watertight. This is a real geometric hardness of grazing curved CSG, not a
+    builder bug.
+  - **Lesson (regression correctness):** the initial regression used `let _ =
+    boolean_solid(...)` + `after > before` and was FOOLED — the direct engine call
+    does NOT roll back on a gate `Err` (leaves the polygonalized-but-uncommitted
+    faces, so `after > before` even on failure), while the WASM `boolean_solid_op`
+    DOES roll back. Fixed to assert `boolean_solid(...).is_ok()` explicitly + use
+    clean-overlap configs. Browser (real Chromium) is the ground truth here.
+  - **Verification (3 layers):** engine `adr278_pathb_sphere_cone_torus_subtract_cuts`
+    (all three Ok + cut + watertight) + `adr278_polygonal_torus_builder_is_watertight`;
+    workspace 3018 pass / 0 fail / 1 ignored; browser E2E `adr-278-pathb-curved-subtract.spec.ts`
+    ×3 (sphere/cone/torus − box via `booleanSolid` → cut + isClosedSolid + valid).
+  - **Still deferred:** rotated (non-±Z) cylinder/cone, inverted (apex-below) cone,
+    grazing/tangential curved subtract (needs robust tangent CSG). No new WASM/bridge/
+    tool wiring — the fix lives in `boolean_solid`, so all callers (BooleanHandler →
+    `booleanSolid`) benefit automatically.
+
 ## Cross-link
 
 - ADR-277 (general mesh CSG — the v2 path this reuses).

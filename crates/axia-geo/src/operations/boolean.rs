@@ -1723,13 +1723,74 @@ impl Mesh {
     /// cuts watertight. Returns the new face list (or the input unchanged if not
     /// a handled curved primitive → falls through to the current behaviour).
     ///
-    /// MVP: axis-aligned (±Z) cylinder — the common "vertical hole" case.
-    /// Rotated cylinders + sphere/cone/torus are follow-up increments (they
-    /// return the input unchanged → fail-closed no-op, no regression).
+    /// Handles Path B **cylinder** (axis-aligned ±Z), **sphere** (full,
+    /// axis-agnostic), and **cone** (axis-aligned ±Z, apex-above) by extracting
+    /// the primitive's params from its analytic surface + Z extent and rebuilding
+    /// via the proven Path A builder. **Torus** (no Path A builder) + rotated
+    /// cylinder/cone + inverted cone return the input unchanged → fail-closed
+    /// no-op (no regression), pending follow-up increments.
+    /// Build a POLYGONAL torus (u_segs × v_segs quad grid, watertight closed
+    /// solid) from analytic params — the Path A builder torus lacks (torus is
+    /// kernel-native from day 1, ADR-115). Used to polygonalize a Path B torus
+    /// operand for the general v2 boolean (β-2 follow-up to the sphere/cone fix).
+    fn build_polygonal_torus(
+        &mut self,
+        center: DVec3,
+        axis_dir: DVec3,
+        ref_dir: DVec3,
+        major: f64,
+        minor: f64,
+        u_segs: usize,
+        v_segs: usize,
+        material: MaterialId,
+    ) -> Vec<FaceId> {
+        let axis = axis_dir.normalize_or_zero();
+        let mut refd = ref_dir - axis * ref_dir.dot(axis); // orthogonalize
+        if refd.length_squared() < 1e-12 {
+            return Vec::new();
+        }
+        refd = refd.normalize();
+        let tangent = axis.cross(refd); // radial sweeps ref→tangent as u grows
+        if u_segs < 3 || v_segs < 3 || major <= 1e-9 || minor <= 1e-9 {
+            return Vec::new();
+        }
+        use std::f64::consts::TAU;
+        // grid[i][j] vertex on the tube.
+        let mut grid = Vec::with_capacity(u_segs);
+        for i in 0..u_segs {
+            let u = TAU * (i as f64) / (u_segs as f64);
+            let radial = refd * u.cos() + tangent * u.sin();
+            let mut ring = Vec::with_capacity(v_segs);
+            for j in 0..v_segs {
+                let v = TAU * (j as f64) / (v_segs as f64);
+                let p = center + radial * (major + minor * v.cos()) + axis * (minor * v.sin());
+                ring.push(self.add_vertex(p));
+            }
+            grid.push(ring);
+        }
+        let mut faces = Vec::with_capacity(u_segs * v_segs);
+        for i in 0..u_segs {
+            let ni = (i + 1) % u_segs;
+            for j in 0..v_segs {
+                let nj = (j + 1) % v_segs;
+                // outward winding: (du) × (dv) points radially out of the tube.
+                let quad = [grid[i][j], grid[i][nj], grid[ni][nj], grid[ni][j]];
+                if let Ok(f) = self.add_face(&quad, material) {
+                    faces.push(f);
+                }
+            }
+        }
+        faces
+    }
+
     fn polygonalize_curved_operand(&mut self, faces: &[FaceId], material: MaterialId) -> Vec<FaceId> {
         use crate::surfaces::AnalyticSurface as S;
-        // Find a Cylinder-surface self-loop face.
+        // Detect a Path B curved primitive: self-loop face(s) + an analytic
+        // surface. The operand is a single primitive → at most one kind present.
         let mut cyl: Option<(DVec3, DVec3, f64)> = None; // (axis_origin, axis_dir, radius)
+        let mut sph: Option<(DVec3, f64)> = None; // (center, radius)
+        let mut cone: Option<(DVec3, DVec3, f64)> = None; // (apex, axis_dir, half_angle)
+        let mut tor: Option<(DVec3, DVec3, DVec3, f64, f64)> = None; // (center, axis, ref, major, minor)
         let mut has_self_loop = false;
         for &fid in faces {
             let Some(face) = self.faces.get(fid) else { continue };
@@ -1740,45 +1801,126 @@ impl Mesh {
                     has_self_loop = true;
                 }
             }
-            if let Some(S::Cylinder { axis_origin, axis_dir, radius, .. }) = face.surface() {
-                cyl = Some((*axis_origin, *axis_dir, *radius));
+            match face.surface() {
+                Some(S::Cylinder { axis_origin, axis_dir, radius, .. }) => {
+                    cyl = Some((*axis_origin, *axis_dir, *radius));
+                }
+                Some(S::Sphere { center, radius, .. }) => {
+                    sph = Some((*center, *radius));
+                }
+                Some(S::Cone { apex, axis_dir, half_angle, .. }) => {
+                    cone = Some((*apex, *axis_dir, *half_angle));
+                }
+                Some(S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. }) => {
+                    tor = Some((*center, *axis_dir, *ref_dir, *major_radius, *minor_radius));
+                }
+                _ => {}
             }
         }
-        // Only handle the Path B cylinder case (self-loop + Cylinder surface).
-        let Some((axis_origin, axis_dir, radius)) = cyl else { return faces.to_vec(); };
+        // Only Path B (self-loop) operands are polygonalized here.
         if !has_self_loop { return faces.to_vec(); }
-        // MVP: axis-aligned ±Z only.
-        if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
-            return faces.to_vec();
-        }
-        // Axial extent from the operand's verts projected onto Z.
-        let mut zmin = f64::MAX;
-        let mut zmax = f64::MIN;
-        let mut got = false;
-        for &fid in faces {
-            let Some(face) = self.faces.get(fid) else { continue };
-            if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
-                for v in vs {
-                    if let Some(p) = self.verts.get(v).map(|v| v.pos()) {
-                        zmin = zmin.min(p.z); zmax = zmax.max(p.z); got = true;
+
+        // Axial Z extent from the operand's verts (shared by cylinder/cone).
+        let z_extent = |me: &Self| -> Option<(f64, f64)> {
+            let (mut zmin, mut zmax, mut got) = (f64::MAX, f64::MIN, false);
+            for &fid in faces {
+                let Some(face) = me.faces.get(fid) else { continue };
+                if let Ok(vs) = me.collect_loop_verts(face.outer().start) {
+                    for v in vs {
+                        if let Some(p) = me.verts.get(v).map(|v| v.pos()) {
+                            zmin = zmin.min(p.z);
+                            zmax = zmax.max(p.z);
+                            got = true;
+                        }
                     }
                 }
             }
-        }
-        if !got || (zmax - zmin) < 1e-6 { return faces.to_vec(); }
-        // `create_cylinder` treats `center` as the BASE (spans z ∈ [center.z,
-        // center.z + height]), so the base = zmin, NOT the mid-plane.
-        let base = DVec3::new(axis_origin.x, axis_origin.y, zmin);
-        let height = zmax - zmin;
+            if got && (zmax - zmin) >= 1e-6 { Some((zmin, zmax)) } else { None }
+        };
 
-        // Remove the Path B faces, regenerate polygonal (Path B OFF), restore flag.
-        for &fid in faces { let _ = self.remove_face(fid); }
-        let prev = self.cylinder_path_b_default;
-        self.cylinder_path_b_default = false;
-        let new_faces = self.create_cylinder(base, radius, height, 32, material).unwrap_or_default();
-        self.cylinder_path_b_default = prev;
-        if new_faces.is_empty() { return faces.to_vec(); } // builder failed → (originals already gone; caller gate will roll back)
-        new_faces
+        // ── Path B CYLINDER (ADR-278 β) — axis-aligned ±Z MVP ──
+        if let Some((axis_origin, axis_dir, radius)) = cyl {
+            if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
+                return faces.to_vec(); // rotated cylinder → follow-up
+            }
+            let Some((zmin, zmax)) = z_extent(self) else { return faces.to_vec() };
+            // `create_cylinder` treats `center` as the BASE (z ∈ [z, z+height]).
+            let base = DVec3::new(axis_origin.x, axis_origin.y, zmin);
+            let height = zmax - zmin;
+            for &fid in faces { let _ = self.remove_face(fid); }
+            let prev = self.cylinder_path_b_default;
+            self.cylinder_path_b_default = false;
+            let new_faces = self.create_cylinder(base, radius, height, 32, material).unwrap_or_default();
+            self.cylinder_path_b_default = prev;
+            if new_faces.is_empty() { return faces.to_vec(); }
+            return new_faces;
+        }
+
+        // ── Path B SPHERE (memory follow-up) — center + radius fully define a
+        // full-sphere operand (axis-agnostic; no extent needed). ──
+        if let Some((center, radius)) = sph {
+            for &fid in faces { let _ = self.remove_face(fid); }
+            let prev = self.sphere_path_b_default;
+            self.sphere_path_b_default = false;
+            let new_faces = self.create_sphere(center, radius, 24, 16, material).unwrap_or_default();
+            self.sphere_path_b_default = prev;
+            if new_faces.is_empty() { return faces.to_vec(); }
+            return new_faces;
+        }
+
+        // ── Path B CONE (memory follow-up) — axis-aligned ±Z, apex-above MVP.
+        // `create_cone(base, radius, height)` builds apex = base + Z·height
+        // (apex above base, axis +Z). The Path B cone's APEX is a degenerate
+        // (non-DCEL) point, so the operand's verts are all on the base ring
+        // (single Z) — `z_extent` gives no range. Take base_z from the verts and
+        // apex_z from the Cone surface's `apex`. ──
+        if let Some((apex, axis_dir, half_angle)) = cone {
+            if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
+                return faces.to_vec(); // tilted cone → follow-up
+            }
+            // base ring Z = the operand verts' Z (all coplanar at the base).
+            let mut base_z = f64::NAN;
+            'outer: for &fid in faces {
+                let Some(face) = self.faces.get(fid) else { continue };
+                if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
+                    for v in vs {
+                        if let Some(p) = self.verts.get(v).map(|v| v.pos()) {
+                            base_z = p.z;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+            if base_z.is_nan() { return faces.to_vec(); }
+            let height = apex.z - base_z;
+            // Apex above the base (create_cone form). Inverted (apex below) or
+            // degenerate → follow-up.
+            if height <= 1e-6 { return faces.to_vec(); }
+            let base_radius = height * half_angle.tan();
+            if base_radius <= 1e-9 { return faces.to_vec(); }
+            let base = DVec3::new(apex.x, apex.y, base_z);
+            for &fid in faces { let _ = self.remove_face(fid); }
+            let prev = self.cone_path_b_default;
+            self.cone_path_b_default = false;
+            let new_faces = self.create_cone(base, base_radius, height, 32, material).unwrap_or_default();
+            self.cone_path_b_default = prev;
+            if new_faces.is_empty() { return faces.to_vec(); }
+            return new_faces;
+        }
+
+        // ── Path B TORUS (β-2) — no Path A builder, so build a polygonal
+        // quad-grid torus from the analytic params (center/axis/ref/major/minor)
+        // + replace the operand. Axis-agnostic. ──
+        if let Some((center, axis_dir, ref_dir, major, minor)) = tor {
+            for &fid in faces { let _ = self.remove_face(fid); }
+            let new_faces = self.build_polygonal_torus(
+                center, axis_dir, ref_dir, major, minor, 32, 16, material,
+            );
+            if new_faces.is_empty() { return faces.to_vec(); }
+            return new_faces;
+        }
+
+        faces.to_vec()
     }
 
     fn boolean_impl(
@@ -11012,6 +11154,75 @@ mod tests {
         assert!(valid, "Path B curved boolean must never corrupt");
         assert!(res_faces > 6, "Path B cyl−box must now CUT (bore added), got {res_faces} faces");
         assert!(closed && manifold, "Path B cyl−box result must be watertight (closed={closed}, manifold={manifold})");
+    }
+
+    // Path B sphere/cone/torus − box subtract (memory follow-up, was a silent
+    // no-op): `polygonalize_curved_operand` now regenerates the Path B operand as
+    // a polygonal primitive at the `boolean_solid` entry so the v2 imprint CUTS
+    // watertight (extends the ADR-278 β cylinder fix). Sphere/cone reuse the Path
+    // A builders; torus (no Path A builder) uses a polygonal quad-grid torus.
+    // Standalone polygonal torus (build_polygonal_torus) is a valid watertight
+    // non-self-intersecting solid — the winding/geometry is correct (the
+    // grazing-subtract self-intersection below comes from the tangency, not the
+    // builder).
+    #[test]
+    fn adr278_polygonal_torus_builder_is_watertight() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        let tf = m.build_polygonal_torus(DVec3::new(0.0, 0.0, 0.0), DVec3::Z, DVec3::X, 40.0, 15.0, 32, 16, mat);
+        assert!(!tf.is_empty(), "torus builder produced faces");
+        assert_eq!(m.detect_self_intersections().count(), 0, "polygonal torus is non-self-intersecting");
+        let info = m.face_set_manifold_info(&tf);
+        assert!(info.is_closed_solid && info.non_manifold_edge_count == 0, "polygonal torus is a closed manifold");
+        assert!(m.verify_face_invariants().is_valid());
+    }
+
+    // Path B sphere/cone/torus − box subtract (memory follow-up, was a silent
+    // no-op): `polygonalize_curved_operand` now regenerates the Path B operand as
+    // a polygonal primitive at the `boolean_solid` entry so the v2 imprint CUTS
+    // watertight (extends the ADR-278 β cylinder fix). Sphere/cone reuse the Path
+    // A builders; torus (no Path A builder) uses a polygonal quad-grid torus.
+    // The subtract must SUCCEED (boolean_solid Ok) — a `let _ =` that ignores the
+    // Result is fooled because the direct engine call does NOT roll back a gate
+    // failure (the WASM `boolean_solid_op` DOES), so we assert `ok` explicitly.
+    #[test]
+    fn adr278_pathb_sphere_cone_torus_subtract_cuts() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // Clean-overlap configs (the operand passes THROUGH a box face, not
+        // tangent to it — a grazing/tangential curved subtract genuinely self-
+        // intersects and is correctly rejected by the ADR-276 gate, fail-closed).
+        let run = |kind: &str| -> (bool, usize, usize, bool, bool, bool) {
+            let mut m = Mesh::new();
+            m.set_sphere_path_b_default(true);
+            m.set_cone_path_b_default(true);
+            m.set_torus_path_b_default(true);
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 120.0, 120.0, 120.0, mat).unwrap();
+            let box_faces = active(&m);
+            let before = box_faces.len();
+            let b = match kind {
+                // sphere straddling the top face corner → dimple.
+                "sph" => m.create_sphere(DVec3::new(40.0, 40.0, 110.0), 40.0, 16, 12, mat).unwrap_or_default(),
+                // cone base inside, apex above the top → conical bore through the top.
+                "con" => m.create_cone(DVec3::new(30.0, 30.0, 60.0), 40.0, 160.0, 24, mat).unwrap_or_default(),
+                // torus THROUGH the box middle (z=50) → clean toroidal cut (z=110
+                // grazing the top face is tangential → self-intersects → rejected).
+                _ => vec![m.create_torus_kernel_native(DVec3::new(0.0, 0.0, 50.0), 40.0, 15.0, mat).unwrap()],
+            };
+            let ok = m.boolean_solid(&box_faces, &b, BoolOp::Subtract, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            (ok, before, active(&m).len(),
+             m.verify_face_invariants().is_valid(), info.is_closed_solid, info.non_manifold_edge_count == 0)
+        };
+        for (label, kind) in [("sphere", "sph"), ("cone", "con"), ("torus", "tor")] {
+            let (ok, before, after, valid, closed, manifold) = run(kind);
+            assert!(ok, "Path B {label}−box subtract must SUCCEED (boolean_solid Ok)");
+            assert!(after > before, "Path B {label}−box must CUT (got {before}→{after})");
+            assert!(valid && closed && manifold,
+                "{label}−box watertight (valid={valid} closed={closed} manifold={manifold})");
+        }
     }
 
     // ADR-277 γ — build a triangular prism (non-box polyhedron) and confirm it's

@@ -7050,6 +7050,60 @@ connected component 가 closed solid. flat arrangement (open component, ADR-101
   ADR-183 (outward cap, free path only) / ADR-021 P7 LOCKED #1 (form overlay 보존)
 - 메타-원칙 #4 (SSOT) #6 (measure-first) #14 #15 / LOCKED #44 / [[project-engine-state-and-doc-lag]]
 
+### 94. ADR-278 follow-up — Path B sphere/cone/torus Boolean subtract (2026-07-11) ✅
+
+**Canonical anchor (사용자 "진행", 2026-07-11)**: Path B Boolean subtract 확장
+(memory follow-up: rotated cyl + sphere/cone/torus).
+
+**Measure-first (genuine gap, 3연속 doc-lag 끝에 첫 real gap)**: ADR-278 β 가
+Path B **cylinder** subtract 를 polygonalize 로 cut 시켰으나 (LOCKED 없음, ADR-278
+Acceptance), sphere/cone/torus 는 `polygonalize_curved_operand` 에서 fall-through
+→ v2 가 self-loop 처리 불가 → **silent no-op** (box 그대로, production Path B ON
+이라 user-facing gap). engine 측정 (`create_box − Path B {sph,con,tor}` subtract)
+으로 확정: 셋 다 `cut=false`.
+
+**Fix — `polygonalize_curved_operand` 확장** (boolean.rs, ADR-278 β cylinder
+패턴 답습): 각 Path B operand 를 `boolean_solid` entry 에서 polygonal 로 재생성:
+- **Sphere**: Sphere surface 의 `center+radius` → `create_sphere` (Path A). axis-agnostic.
+- **Cone**: Cone surface 의 `apex+half_angle` + operand verts 의 base_z (apex 는
+  degenerate non-DCEL point → verts 는 base ring 에만) → `height=apex.z−base_z`,
+  `base_radius=height·tan(half_angle)` → `create_cone` (Path A). axis-aligned ±Z apex-above MVP.
+- **Torus**: Path A builder 없음 (kernel-native, ADR-115) → 신규 `build_polygonal_torus`
+  (u×v quad grid, watertight, axis-agnostic).
+
+#### Lock-ins (L-94-1 ~ L-94-7)
+- **L-94-1** fix 는 `boolean_solid` 내부 (`polygonalize_curved_operand`) — 모든 caller
+  (BooleanHandler → `booleanSolid`) 자동 혜택, WASM/bridge/tool 신규 wiring 0.
+- **L-94-2** 각 primitive 를 proven Path A builder (sphere/cone) 또는 신규 quad-grid
+  (torus) 로 재생성 → v2 imprint 가 watertight cut.
+- **L-94-3** **grazing/tangential 은 fail-closed (correct)** — 곡면 operand 가 box
+  면에 *접* 하면 (torus z=110 top-face 접) subtract 가 genuinely self-intersect
+  (측정 128 SI) → ADR-276 validity gate 가 reject → rollback (safe no-op). clean
+  *through* overlap (torus z=50, sphere/cone 관통) 은 cut. 기하 hardness, builder 버그 아님.
+- **L-94-4** `build_polygonal_torus` standalone watertight (SI=0, closed, nm=0) —
+  회귀 `adr278_polygonal_torus_builder_is_watertight`.
+- **L-94-5** **regression correctness lesson**: 초기 회귀가 `let _ = boolean_solid`
+  + `after>before` 로 FOOLED — direct engine call 은 gate Err 시 rollback 안 함
+  (polygonalized-but-uncommitted faces 남아 after>before), WASM `boolean_solid_op`
+  은 rollback 함. `.is_ok()` 명시 assert + clean config 로 수정. **browser 가 ground truth.**
+- **L-94-6** deferred: rotated (non-±Z) cyl/cone, inverted (apex-below) cone,
+  grazing/tangential curved subtract (robust tangent CSG 필요).
+- **L-94-7** 절대 #[ignore] 금지.
+
+#### 회귀 (+2 engine, +3 E2E)
+- axia-geo `adr278_pathb_sphere_cone_torus_subtract_cuts` (셋 다 Ok+cut+watertight,
+  clean config) + `adr278_polygonal_torus_builder_is_watertight` (standalone SI=0).
+- E2E `web/e2e/adr-278-pathb-curved-subtract.spec.ts` ×3 (real Chromium: box − Path B
+  {sphere,cone,torus} via `booleanSolid` → cut + isClosedSolid + valid).
+- workspace 3018/0/1, E2E 3/3. WASM/bridge/tool 무변경.
+
+#### Cross-link
+- ADR-278 §Acceptance (`docs/adr/278-curved-primitive-boolean-audit.md`) — β cylinder
+  + 본 follow-up / ADR-277 (v2 general CSG) / ADR-276 (validity gate) / ADR-104 family
+  (Path B primitives) / ADR-115 (torus kernel-native, no Path A) / ADR-197 (analytic dispatch)
+- 메타-원칙 #4 (SSOT) #5 (사용자 편의) #6 (measure-first) / LOCKED #44 / #47~49 (Path B
+  primitives) / [[project-boolean-runtime-finding]]
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
