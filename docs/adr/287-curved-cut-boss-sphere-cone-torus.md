@@ -110,11 +110,24 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
   polyline cap (ADR-263 geodesic) 이라 무관 → 본 ADR 에서 완결.
 - **ε-sphere-2 bridge 옵션** (별도 결재 — ADR-202 표현 정책):
   * (a) `draw_circle_on_sphere` → `split_sphere_face_by_polyline` 전환
-    (sphere cap 을 N-vert 로; render 는 Sphere A-χ 로 smooth 유지, 실측; 단
-    ADR-202 self-loop 표현 변경 → adr202 회귀 재작성 필요).
+    (sphere cap 을 N-vert 로). **⚠ measure-first 발견 (2026-07-10, 시도 후
+    revert)**: split 전환만으로는 **RENDER 회귀** — sphere 의 render dispatch
+    (`mesh_export.rs:326`) 는 오직 `tessellate_sphere_clipped` (self-loop
+    Circle 경계 요구, mesh.rs:1936). polyline cap 은 이를 trigger 못 함 →
+    full-surface `render_surface.tessellate` fallback → **cap+annulus 둘 다
+    full hemisphere 렌더 → z-fighting** (buffer 실측: split z>4 verts 592 vs
+    plain 444; annulus 가 inner hole clip 안 됨). ⇒ 옵션 (a) 는 split 전환
+    **+ `tessellate_sphere_polyline_clipped` render path 신설** 필요
+    (Cylinder/Cone/Torus 는 `tessellate_{...}_circle_clipped` polyline clip
+    이미 보유 — sphere 만 없음). render 변경은 buffer 분석으로 검증 가능
+    (annulus z>4 → ~0, cap 만 dome). (본 환경 screenshot infra 불안정 —
+    visual 검증은 buffer proxy.)
   * (b) carve 진입 시 self-loop cap 을 in-place densify (cap+annulus 공유
-    self-loop → N-edge; DCEL 수술).
-  둘 다 ADR-202 정책 결정 → 사용자 결재 필요.
+    self-loop → N-edge; DCEL 수술) — sketch render 는 self-loop clip 그대로
+    (smooth), carve 시에만 densify. render 회귀 없음, 단 shared-boundary
+    surgery 복잡.
+  두 옵션 모두 ADR-202 표현/render 결정 → 사용자 결재 필요. 옵션 (a) 는
+  render path 포함해야 완결.
 
 ## D. Acceptance Log (2026-07-10, β landed — Cone + Torus)
 
