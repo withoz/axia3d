@@ -1,6 +1,8 @@
 # ADR-289 — α spec: Robust curved CSG for tangential / shallow-penetration operands
 
-- **Status**: Proposed (α spec — measure-first 근본 분석 완료; β 구현 결재 대기)
+- **Status**: Deferred (α spec + measure-first 근본 5회 교정 완료; β 구현 보류 —
+  2026-07-11 사용자 "다른 트랙 전환" 결재. grazing torus 얕은 관통은 fail-closed
+  유지 (안전, 드문 edge case). §12 closure 참조.)
 - **Date**: 2026-07-11
 - **Track**: Kernel Robustness / CSG (ADR-276/277/278 계보)
 - **Author**: WYKO + Claude (measure-first characterization)
@@ -249,3 +251,28 @@ cylinder + clean-overlap torus 는 완전 작동. **투자 대비 (B) fail-close
   ADR-276 (validity gate — fail-closed) / ADR-104 family (Path B primitives) /
   ADR-115 (torus kernel-native) / LOCKED #5 (정밀도 정책) / LOCKED #94 (Path B
   curved Boolean) / 메타-원칙 #4 #6 #9 #14 / `project-boolean-runtime-finding`.
+
+## 12. Closure (Deferred, 2026-07-11) — 다른 트랙 전환
+
+사용자 결재 "다른 트랙으로 전환". grazing torus 얕은 관통은 **fail-closed 유지**
+(안전, 손상 0, 드문 edge case). β 구현 보류. 본 ADR 의 자산 = **measure-first
+근본 5회 교정 특성화** (다음에 β 재개 시 즉시 활용):
+
+1. **grazing = torus 특유** (sphere convex / cone·cylinder ruled 는 모든 위치 clean).
+2. SI 아님 — imprint 후 `self_intersection_clean=true`, 근본은 open boundary.
+3. imprint core 는 **이미 seam edge 64 완전 공유** (사용자 초기 선택 A "imprint 확장"
+   은 불필요 — measure 로 확인).
+4. classify 후 seam 32 만 공유, B-only 32 → classify 가 box top inner disk (torus
+   구멍 안) 를 drop.
+5. point_in_solid 는 **정확** (오판 아님) — classify 오판 원인은 더 깊은 층 (미해결).
+
+**진짜 근본 (미해결)**: classify/assemble 의 곡면 non-convex(genus-1 torus) 처리,
+여러 미묘한 층 얽힘. 완전 해결은 진짜 multi-week CSG 재작업.
+
+**현재 사용자 facing 상태**: sphere/cone/cylinder + clean-overlap torus 의 subtract/
+union/intersect 는 완전 작동 (ADR-278). torus 를 면에 **얕게 스치게** subtract 하는
+경우만 fail-closed (rollback, 손상 0). β 재개 시 §2.5~2.10 의 근본 특정 + 회귀
+(`adr278_grazing_*`) 즉시 활용.
+
+**β 재개 trigger**: torus 얕은 관통 subtract 의 실사용 요구가 잦아질 때 (현재 드묾).
+그때 classify 곡면 non-convex 층부터 (imprint 는 이미 OK).
