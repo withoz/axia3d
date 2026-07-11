@@ -1,6 +1,6 @@
 # ADR-287 — Curved cut/boss ε: Sphere / Cone / Torus (unified surface-normal offset)
 
-- **Status**: Accepted (α + β landed 2026-07-10 — Cone + Torus cut/boss; Sphere deferred, self-loop shared boundary)
+- **Status**: Accepted (α + β landed 2026-07-10 — Cylinder/Sphere/Cone/Torus carve arms; Sphere carve correct for N-vert caps, production self-loop→N-vert bridge = ε-sphere-2 decision)
 - Date: 2026-07-10
 - Track: ADR-286 §E (ε — Sphere/Cone/Torus boss+cut) + ADR-271 §ε (cut). "완벽한 extrude" 로드맵 #5 곡면 마무리.
 - Cross-link: ADR-286 (Cylinder boss, LOCKED #89), ADR-271 (Cylinder cut),
@@ -96,14 +96,25 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
 - **Cone de-risk 확정**: `adr287_curved_pocket_boss_cone` 이 floor verts 를
   parallel cone (`apex + ad·(depth/sin α)`) 에 대해 `project_to_cone` round-
   trip (< 1e-6) 로 검증 → §3 apex-shift 도출 **성립 확정**.
-- **Sphere 지연 (measure-driven)**: sphere cap 은 ADR-089 **closed-curve
-  self-loop** (planar latitude circle = 1 anchor + self-loop Circle edge).
-  그 self-loop edge 는 annulus 의 inner hole 과 **공유**됨. cap 만 polygonize
-  하면 공유 edge 가 제거되어 annulus 와 desync → `verify_face_invariants`
-  는 valid 지만 `is_closed_solid` **false** (open boundary). 실측으로 확인.
-  올바른 해법 = "공유 self-loop boundary 를 N-edge 로 densify" (cap+annulus
-  동시) — 별도 sub-step (ADR-287 ε-sphere). Cone/Torus 는 N-vert polyline cap
-  (ADR-263 geodesic) 이라 이 문제 없음 → 본 ADR 에서 완결.
+- **Sphere carve arm — landed + correct for N-vert caps (de-risk)**:
+  `adr287_sphere_carve_correct_for_polyline_cap` 이 `split_sphere_face_by_
+  polyline` (ADR-284, N-vert cap) 로 만든 sphere cap 을 pocket + boss 로 carve
+  → watertight manifold + floor/roof at radius∓depth + Sphere 상속 (A-χ) 확정.
+  ⇒ **Sphere carve 로직 자체는 correct** (radial offset toward/away center).
+  self-loop cap 은 core 가 graceful bail ("too small (1 vert)").
+- **남은 blocker = production 표현 (ε-sphere-2 decision)**: 프로덕션
+  `Scene::draw_circle_on_sphere` 는 `split_sphere_face_by_circle` → **self-loop
+  cap** (ADR-089 closed-curve, planar latitude circle). 그 self-loop edge 는
+  annulus inner hole 과 **공유** → cap 만 polygonize 시 desync (`verify_face_
+  invariants` valid 지만 `is_closed_solid` false, 실측). Cone/Torus 는 N-vert
+  polyline cap (ADR-263 geodesic) 이라 무관 → 본 ADR 에서 완결.
+- **ε-sphere-2 bridge 옵션** (별도 결재 — ADR-202 표현 정책):
+  * (a) `draw_circle_on_sphere` → `split_sphere_face_by_polyline` 전환
+    (sphere cap 을 N-vert 로; render 는 Sphere A-χ 로 smooth 유지, 실측; 단
+    ADR-202 self-loop 표현 변경 → adr202 회귀 재작성 필요).
+  * (b) carve 진입 시 self-loop cap 을 in-place densify (cap+annulus 공유
+    self-loop → N-edge; DCEL 수술).
+  둘 다 ADR-202 정책 결정 → 사용자 결재 필요.
 
 ## D. Acceptance Log (2026-07-10, β landed — Cone + Torus)
 
@@ -113,15 +124,18 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
     floor/roof cap). Cylinder pocket/boss 를 core 로 refactor (기존 회귀
     `adr271_*` / `adr286_*` 모두 PASS = 무회귀).
   - `carve_curved_pocket` / `add_curved_boss` 를 surface-match dispatch 로
-    재작성 — Cylinder / **Cone (parallel apex-shift)** / **Torus (minor∓d)**
-    arm. offset = per-vertex surface normal (Q2-a). floor/roof = 동일 surface
-    type offset param (ADR-089 A-χ).
-  - Sphere arm 은 deferred bail (self-loop, §7).
+    재작성 — Cylinder / **Sphere (radial from center)** / **Cone (parallel
+    apex-shift)** / **Torus (minor∓d)** arm. offset = per-vertex surface normal
+    (Q2-a). floor/roof = 동일 surface type offset param (ADR-089 A-χ).
+  - Sphere arm 은 N-vert cap 에 correct (de-risk 확정); production self-loop
+    cap 은 graceful bail (§7 ε-sphere-2).
 - **회귀 (절대 #[ignore] 금지)**: axia-geo +2 — `adr287_curved_pocket_boss_cone`
   (floor verts on parallel cone via project_to_cone round-trip = apex-shift
   de-risk + manifold + closed-solid + Cone inherit) + `adr287_curved_pocket_
   boss_torus` (minor∓d + manifold + closed-ness preserved vs baseline +
-  Torus inherit + depth>minor reject). Cylinder 기존 회귀 무변경 PASS.
+  Torus inherit + depth>minor reject) + `adr287_sphere_carve_correct_for_
+  polyline_cap` (N-vert sphere cap pocket+boss watertight + Sphere{r∓d} 상속
+  — Sphere carve correctness de-risk, §7). Cylinder 기존 회귀 무변경 PASS.
 - **E2E (real Chromium production)**: `web/e2e/adr-287-curved-cut-boss-cone-
   torus.spec.ts` 4 tests (cone pocket/boss + torus pocket/boss, walls>0 +
   manifold valid 0 viol + faces↑). 4/4 PASS.
@@ -132,9 +146,12 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
   swings → panic 0, engine responsive (LOCKED #89 LOD fix 와 정합).
 - **sweep**: cargo workspace **3005 passed / 0 failed / 1 ignored**.
 
-## E. 남은 트랙 (별도 ADR)
+## E. 남은 트랙 (별도 ADR / 결재)
 
-- **ε-sphere**: sphere cut/boss — 공유 self-loop boundary densify (cap+annulus
-  동시 N-edge). §7 근거.
-- Live curved pocket/boss preview (현재 commit-only, ADR-193 답습).
-- Cone/Torus through-hole (현재 Cylinder 만, depth≥radius auto-route).
+- **ε-sphere-2** (결재 필요): production sphere circle sketch 의 self-loop cap →
+  N-vert bridge. §7 옵션 (a) draw_circle_on_sphere→polyline (ADR-202 표현 변경,
+  adr202 회귀 재작성) / (b) in-place densify. Sphere carve 로직은 이미 correct
+  (de-risk 확정) — 표현 결정만 남음.
+- **Live curved pocket/boss preview** (현재 commit-only, ADR-193 답습).
+- **Cone/Torus through-hole** (현재 Cylinder 만, depth≥radius auto-route;
+  cone=축 방향 bore / torus=tube 관통).

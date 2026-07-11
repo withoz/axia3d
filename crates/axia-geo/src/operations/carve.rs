@@ -851,11 +851,26 @@ impl Mesh {
                 res.depth = depth;
                 Ok(res)
             }
-            // Sphere caps are closed-curve self-loops (planar latitude circle)
-            // whose boundary is SHARED with the annulus's inner hole — polygonizing
-            // the cap alone desyncs it (open boundary). A dedicated "densify shared
-            // self-loop boundary" step is a separate sub-step (ADR-287 §7 deferred).
-            _ => bail!("curved pocket: cap must be a Cylinder/Cone/Torus-surface face (Sphere deferred)"),
+            Some(S::Sphere { center, radius, axis_dir, ref_dir, u_range, v_range }) => {
+                // Sphere normal = radial from center; inward → toward center. Works
+                // for an N-vert (polyline-split) cap; a self-loop cap (analytic
+                // circle-split, production drawCircleOnSphere) has a 1-vert boundary
+                // and the core bails gracefully ("too small") — see ADR-287 §7.
+                if depth >= radius - 1e-6 {
+                    bail!("curved pocket: depth {depth} reaches the center (radius {radius})");
+                }
+                let offset = move |p: DVec3| {
+                    let n = (p - center).normalize_or_zero();
+                    p - n * depth
+                };
+                let floor_surf = S::Sphere {
+                    center, radius: radius - depth, axis_dir, ref_dir, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved pocket", offset, floor_surf)?;
+                res.depth = depth;
+                Ok(res)
+            }
+            _ => bail!("curved pocket: cap must be a Cylinder/Sphere/Cone/Torus-surface face"),
         }
     }
 
@@ -940,8 +955,21 @@ impl Mesh {
                 res.depth = height;
                 Ok(res)
             }
-            // Sphere deferred (self-loop shared boundary — ADR-287 §7).
-            _ => bail!("curved boss: cap must be a Cylinder/Cone/Torus-surface face (Sphere deferred)"),
+            Some(S::Sphere { center, radius, axis_dir, ref_dir, u_range, v_range }) => {
+                // Outward boss → +radial normal. N-vert (polyline) cap only;
+                // self-loop cap bails gracefully in the core (ADR-287 §7).
+                let offset = move |p: DVec3| {
+                    let n = (p - center).normalize_or_zero();
+                    p + n * height
+                };
+                let roof_surf = S::Sphere {
+                    center, radius: radius + height, axis_dir, ref_dir, u_range, v_range,
+                };
+                let mut res = self.curved_carve_core(cap_face, "curved boss", offset, roof_surf)?;
+                res.depth = height;
+                Ok(res)
+            }
+            _ => bail!("curved boss: cap must be a Cylinder/Sphere/Cone/Torus-surface face"),
         }
     }
 
@@ -2612,6 +2640,72 @@ mod tests {
         assert!(matches!(m2.faces[res2.floor_face].surface(),
             Some(AnalyticSurface::Torus { minor_radius, .. }) if (minor_radius - (3.0 + height)).abs() < 1e-6),
             "roof inherits Torus at minor + height");
+    }
+
+    /// ADR-287 §7 de-risk — the Sphere carve arm is CORRECT for an N-vert cap
+    /// (polyline split, ADR-284). Isolates the blocker: production
+    /// `drawCircleOnSphere` uses the analytic-circle split → a self-loop (1-vert)
+    /// cap, which the core bails on gracefully. When a sphere cap is N-vert, the
+    /// pocket/boss carve is watertight + inherits Sphere{radius ∓ depth}. (Bridging
+    /// the production self-loop cap → N-vert is the remaining ε-sphere step.)
+    #[test]
+    fn adr287_sphere_carve_correct_for_polyline_cap() {
+        use crate::surfaces::{sphere, AnalyticSurface};
+        use std::f64::consts::TAU;
+        let mat = MaterialId::new(0);
+        let c = DVec3::ZERO;
+        let r = 5.0;
+        let make_polyline_cap = |mesh: &mut Mesh| -> FaceId {
+            let faces = mesh.create_sphere_kernel_native(c, r, mat).unwrap();
+            let north = faces.iter().copied().find(|&f| {
+                matches!(mesh.faces[f].surface(),
+                    Some(AnalyticSurface::Sphere { v_range, .. }) if v_range.1 > 0.0)
+            }).expect("north");
+            let (axis, refd) = match mesh.faces[north].surface() {
+                Some(AnalyticSurface::Sphere { axis_dir, ref_dir, .. }) => (*axis_dir, *ref_dir),
+                _ => unreachable!(),
+            };
+            // Latitude ring at v ≈ 1.0 rad (northern hemisphere), N on-sphere points
+            // (already exactly on the sphere via `evaluate`, so pass them directly to
+            // the N-edge samples split — no resampling needed).
+            let n = 16;
+            let ring: Vec<DVec3> = (0..n)
+                .map(|i| sphere::evaluate(c, r, axis, refd, TAU * i as f64 / n as f64, 1.0))
+                .collect();
+            let (cap, _ann) = mesh.split_sphere_face_by_polyline(north, &ring).expect("polyline split");
+            cap
+        };
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+
+        // ── POCKET ──
+        let mut mesh = Mesh::new();
+        let cap = make_polyline_cap(&mut mesh);
+        let depth = 1.5;
+        let res = mesh.carve_curved_pocket(cap, depth).expect("sphere polyline pocket");
+        assert!(res.wall_faces.len() >= 3);
+        assert!(mesh.verify_face_invariants().is_valid(), "manifold after sphere pocket");
+        assert!(mesh.face_set_manifold_info(&active(&mesh)).is_closed_solid, "sphere pocket watertight");
+        let floor_vs = mesh.collect_loop_verts(mesh.faces[res.floor_face].outer().start).unwrap();
+        for &v in &floor_vs {
+            let d = (mesh.vertex_pos(v).unwrap() - c).length();
+            assert!((d - (r - depth)).abs() < 1e-6, "floor vert at {d}, want {}", r - depth);
+        }
+        assert!(matches!(mesh.faces[res.floor_face].surface(),
+            Some(AnalyticSurface::Sphere { radius, .. }) if (radius - (r - depth)).abs() < 1e-6),
+            "floor inherits Sphere at radius − depth");
+
+        // ── BOSS ──
+        let mut m2 = Mesh::new();
+        let cap2 = make_polyline_cap(&mut m2);
+        let height = 2.0;
+        let res2 = m2.add_curved_boss(cap2, height).expect("sphere polyline boss");
+        assert!(m2.verify_face_invariants().is_valid(), "manifold after sphere boss");
+        assert!(m2.face_set_manifold_info(&active(&m2)).is_closed_solid, "sphere boss watertight");
+        assert!(matches!(m2.faces[res2.floor_face].surface(),
+            Some(AnalyticSurface::Sphere { radius, .. }) if (radius - (r + height)).abs() < 1e-6),
+            "roof inherits Sphere at radius + height");
     }
 
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap:

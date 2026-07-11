@@ -6805,11 +6805,15 @@ floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
   는 project_to_cone round-trip / Torus 는 closed-ness preserved vs baseline
   (torus = 1 face + self-loop seam, is_closed_solid 자체가 baseline false).
 - **L-287-6** engine-only (ADR-046 P31 #4) — tool/WASM/bridge/menu 무변경.
-- **L-287-7** **Sphere 지연 (measure-driven)**: sphere cap = closed-curve
-  self-loop (planar latitude circle), self-loop edge 가 annulus inner hole 과
-  **공유** → cap 만 polygonize 시 desync (verify valid 지만 is_closed_solid
-  false, 실측). 공유 self-loop densify 는 별도 ε-sphere. Cone/Torus 는 N-vert
-  polyline cap (ADR-263 geodesic) 이라 무관 → 본 ADR 완결.
+- **L-287-7** **Sphere carve arm — landed + correct for N-vert cap (de-risk)**:
+  `adr287_sphere_carve_correct_for_polyline_cap` 이 N-vert (polyline-split,
+  ADR-284) sphere cap 을 pocket+boss carve → watertight + Sphere{r∓d} 상속 확정.
+  Sphere carve 로직 correct. **남은 blocker (ε-sphere-2 결재)**: production
+  `draw_circle_on_sphere` = `split_sphere_face_by_circle` → self-loop cap
+  (planar latitude circle, annulus inner hole 과 공유) → core graceful bail
+  ("too small"). Bridge 옵션 (a) draw_circle_on_sphere→polyline (ADR-202 표현
+  변경, adr202 회귀 재작성) / (b) in-place densify — 둘 다 ADR-202 정책 결정.
+  Cone/Torus 는 N-vert polyline cap (ADR-263 geodesic) 이라 무관 → 완결.
 
 #### 회귀 (절대 #[ignore] 금지)
 
