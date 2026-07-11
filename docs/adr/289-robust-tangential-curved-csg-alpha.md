@@ -195,6 +195,32 @@ face 의 절단 edge 가 자동 일치하지만, 곡면 관통은 box face 쪽(a
   intersection_arrangement`) 의 곡면 확장 — LOCKED-boolean 회귀 위험 큼, multi-week
   atomic. fail-closed 안전망은 전 과정 유지 (β 미완 시 rollback).
 
+## 2.10. β-3a de-risk — imprint core 는 이미 OK, 근본이 classify 로 재이동
+
+β-3a 착수 de-risk (`derisk_beta3a_edge_mismatch`, tz=100) 가 §2.9 의 "edge
+connectivity 불일치" 가설을 **뒤집음**:
+
+- **imprint 직후** z=110 seam edge (VertId pair): A=68, B=64, **shared=64**,
+  A-only=4 (box 외곽 코너 r=84.9, box side 와 공유 = 정상), **B-only=0**. → **imprint
+  는 이미 vertex 뿐 아니라 EDGE 도 완전 공유** (seam 64 닫힘). **사용자 선택 A
+  (imprint core 확장) 는 실제 근본이 아님 — imprint 는 이미 OK.**
+- **classify 직후**: keep_a z110 edge=36, keep_b=64, **shared(seam)=32**, B-only=**32**.
+  classify 가 box top 의 한 subface (inner disk, torus 구멍 안) 를 drop → torus 안쪽
+  원 (32 edge) 이 짝 잃어 boundary.
+- **point_in_solid 는 정확** — `point_in_solid(torus, hole_centre (0,0,110)) = false`
+  (torus 구멍 = 밖, 정확), `(tube 40,0,100) = true` (정확). classify 오판의 원인은
+  point_in_solid 가 아니라 **더 깊은 층** (box top inner disk 가 keep_a 에 없는 이유
+  — arrange subface 생성 or classify 의 곡면 non-convex 처리, 미해결).
+
+**메타-근본 (canonical)**: 이 트랙은 de-risk 마다 근본이 이동 (SI → open →
+imprint edge → classify → point_in_solid → …). 각 measure 가 이전 가설을 뒤집음.
+**imprint core (사용자 선택 A) 는 이미 OK** (seam 64 완전 공유). 진짜 근본은
+classify/assemble 의 곡면 non-convex(genus-1 torus) 처리이며 **여러 미묘한 층이
+얽혀** 완전 해결은 진짜 multi-week CSG 재작업 (imprint 확장이 아님). fail-closed
+안전망은 전 과정 유지 — grazing torus 얕은 관통(드문 edge case)만 영향, sphere/cone/
+cylinder + clean-overlap torus 는 완전 작동. **투자 대비 (B) fail-closed+UX 실용
+재고 강력 권장** (완전 robust 는 여러 CSG 층의 multi-week).
+
 ## 5. Lock-ins (β 강제)
 
 - **L-289-1** 근본 = imprint topology robustness (exact arithmetic 아님) — measure 근거.
