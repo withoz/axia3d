@@ -11271,6 +11271,48 @@ mod tests {
         }
     }
 
+    // Grazing/tangential characterization (2026-07-11). Convex (sphere) / ruled
+    // (cone, cylinder) curved subtract is clean at ANY position incl. tangent;
+    // only the NON-CONVEX torus tube, when it shallowly penetrates a box face,
+    // produces a self-intersecting result. The ADR-276 gate rejects it (Err) →
+    // production `boolean_solid_op` rolls back = safe no-op (fail-closed).
+    #[test]
+    fn adr278_grazing_sphere_clean_at_any_z() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> { m.faces.iter().filter(|(_,f)| f.is_active()).map(|(id,_)| id).collect() };
+        // box top z=110; sphere r40 — deep, tangent-ish (bottom just below top),
+        // and above (barely touching). Convex → never a grazing SI.
+        for cz in [70.0, 145.0, 148.0] {
+            let mut m = Mesh::new();
+            m.set_sphere_path_b_default(true);
+            m.create_box(DVec3::new(0.0,0.0,50.0),120.0,120.0,120.0,mat).unwrap();
+            let bf = active(&m);
+            let b = m.create_sphere(DVec3::new(0.0,0.0,cz),40.0,16,12,mat).unwrap_or_default();
+            let ok = m.boolean_solid(&bf, &b, BoolOp::Subtract, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(ok, "sphere subtract at cz={cz} must succeed (convex → no grazing)");
+            assert!(m.verify_face_invariants().is_valid() && info.is_closed_solid && info.non_manifold_edge_count == 0,
+                "sphere subtract at cz={cz} watertight");
+            assert_eq!(m.detect_self_intersections().count(), 0, "sphere subtract at cz={cz} SI-free");
+        }
+    }
+
+    #[test]
+    fn adr278_grazing_torus_shallow_penetration_fails_closed() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> { m.faces.iter().filter(|(_,f)| f.is_active()).map(|(id,_)| id).collect() };
+        // torus tube (minor 15) centered at z=110 (the box top plane) → the tube
+        // shallowly straddles the top face → self-intersecting result. The gate
+        // MUST reject (Err) — production rolls back byte-identical (safe no-op).
+        let mut m = Mesh::new();
+        m.set_torus_path_b_default(true);
+        m.create_box(DVec3::new(0.0,0.0,50.0),120.0,120.0,120.0,mat).unwrap();
+        let bf = active(&m);
+        let b = vec![m.create_torus_kernel_native(DVec3::new(0.0,0.0,110.0),40.0,15.0,mat).unwrap()];
+        let r = m.boolean_solid(&bf, &b, BoolOp::Subtract, mat);
+        assert!(r.is_err(), "grazing torus subtract must fail-closed (ADR-276 gate rejects the SI result)");
+    }
+
     // Standalone polygonal torus (build_polygonal_torus) is a valid watertight
     // non-self-intersecting solid — the winding/geometry is correct (the
     // grazing-subtract self-intersection below comes from the tangency, not the
