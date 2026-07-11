@@ -1723,12 +1723,13 @@ impl Mesh {
     /// cuts watertight. Returns the new face list (or the input unchanged if not
     /// a handled curved primitive → falls through to the current behaviour).
     ///
-    /// Handles Path B **cylinder** (axis-aligned ±Z), **sphere** (full,
-    /// axis-agnostic), and **cone** (axis-aligned ±Z, apex-above) by extracting
-    /// the primitive's params from its analytic surface + Z extent and rebuilding
-    /// via the proven Path A builder. **Torus** (no Path A builder) + rotated
-    /// cylinder/cone + inverted cone return the input unchanged → fail-closed
-    /// no-op (no regression), pending follow-up increments.
+    /// Handles Path B **cylinder / cone / sphere / torus** at ANY axis by
+    /// extracting the primitive's params from its analytic surface and rebuilding
+    /// a watertight polygonal equivalent: sphere via `create_sphere`, cylinder /
+    /// cone / torus via axis-agnostic `build_polygonal_*` (rotated + inverted-cone
+    /// included). A non-curved operand (no self-loop / other surface) returns the
+    /// input unchanged → no-op. A grazing/tangential result still fails the
+    /// downstream ADR-276 validity gate (fail-closed, correct).
     /// Build a POLYGONAL torus (u_segs × v_segs quad grid, watertight closed
     /// solid) from analytic params — the Path A builder torus lacks (torus is
     /// kernel-native from day 1, ADR-115). Used to polygonalize a Path B torus
@@ -1783,6 +1784,97 @@ impl Mesh {
         faces
     }
 
+    /// Axis-agnostic polygonal cylinder (2 caps + `segs` side quads), watertight.
+    /// Handles ANY axis (incl. rotated) — the ±Z `create_cylinder` cannot. `t_lo`
+    /// / `t_hi` are the axial extent (distance along `axis_dir` from `axis_origin`).
+    fn build_polygonal_cylinder(
+        &mut self,
+        axis_origin: DVec3,
+        axis_dir: DVec3,
+        radius: f64,
+        t_lo: f64,
+        t_hi: f64,
+        segs: usize,
+        material: MaterialId,
+    ) -> Vec<FaceId> {
+        use std::f64::consts::TAU;
+        let axis = axis_dir.normalize_or_zero();
+        if axis.length_squared() < 0.5 || radius <= 1e-9 || (t_hi - t_lo) < 1e-9 || segs < 3 {
+            return Vec::new();
+        }
+        let mut refd = if axis.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        refd = (refd - axis * refd.dot(axis)).normalize();
+        let tangent = axis.cross(refd);
+        let ring = |me: &mut Self, t: f64| -> Vec<VertId> {
+            let c = axis_origin + axis * t;
+            (0..segs)
+                .map(|i| {
+                    let a = TAU * (i as f64) / (segs as f64);
+                    me.add_vertex(c + refd * (radius * a.cos()) + tangent * (radius * a.sin()))
+                })
+                .collect()
+        };
+        let bot = ring(self, t_lo);
+        let top = ring(self, t_hi);
+        let mut faces = Vec::with_capacity(segs + 2);
+        // bottom cap (outward = −axis): reverse the CCW-around-+axis ring.
+        let bot_rev: Vec<VertId> = bot.iter().rev().copied().collect();
+        if let Ok(f) = self.add_face(&bot_rev, material) { faces.push(f); }
+        // top cap (outward = +axis).
+        if let Ok(f) = self.add_face(&top, material) { faces.push(f); }
+        // side quads (outward = radial).
+        for i in 0..segs {
+            let ni = (i + 1) % segs;
+            if let Ok(f) = self.add_face(&[bot[i], top[i], top[ni], bot[ni]], material) {
+                faces.push(f);
+            }
+        }
+        faces
+    }
+
+    /// Axis-agnostic polygonal cone (base cap + `segs` side triangles to the
+    /// apex), watertight. `axis_dir` = apex→base direction (so an apex-below /
+    /// inverted cone is just `axis_dir` pointing up — handled uniformly).
+    fn build_polygonal_cone(
+        &mut self,
+        apex: DVec3,
+        axis_dir: DVec3,
+        half_angle: f64,
+        base_dist: f64,
+        segs: usize,
+        material: MaterialId,
+    ) -> Vec<FaceId> {
+        use std::f64::consts::TAU;
+        let axis = axis_dir.normalize_or_zero();
+        if axis.length_squared() < 0.5 || base_dist <= 1e-9 || half_angle <= 1e-9 || segs < 3 {
+            return Vec::new();
+        }
+        let base_radius = base_dist * half_angle.tan();
+        if base_radius <= 1e-9 { return Vec::new(); }
+        let mut refd = if axis.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        refd = (refd - axis * refd.dot(axis)).normalize();
+        let tangent = axis.cross(refd);
+        let base_center = apex + axis * base_dist;
+        let apex_v = self.add_vertex(apex);
+        let ring: Vec<VertId> = (0..segs)
+            .map(|i| {
+                let a = TAU * (i as f64) / (segs as f64);
+                self.add_vertex(base_center + refd * (base_radius * a.cos()) + tangent * (base_radius * a.sin()))
+            })
+            .collect();
+        let mut faces = Vec::with_capacity(segs + 1);
+        // base cap (outward = +axis, away from apex).
+        if let Ok(f) = self.add_face(&ring, material) { faces.push(f); }
+        // side triangles apex→ring (outward = radial + toward apex).
+        for i in 0..segs {
+            let ni = (i + 1) % segs;
+            if let Ok(f) = self.add_face(&[apex_v, ring[i], ring[ni]], material) {
+                faces.push(f);
+            }
+        }
+        faces
+    }
+
     fn polygonalize_curved_operand(&mut self, faces: &[FaceId], material: MaterialId) -> Vec<FaceId> {
         use crate::surfaces::AnalyticSurface as S;
         // Detect a Path B curved primitive: self-loop face(s) + an analytic
@@ -1820,38 +1912,29 @@ impl Mesh {
         // Only Path B (self-loop) operands are polygonalized here.
         if !has_self_loop { return faces.to_vec(); }
 
-        // Axial Z extent from the operand's verts (shared by cylinder/cone).
-        let z_extent = |me: &Self| -> Option<(f64, f64)> {
-            let (mut zmin, mut zmax, mut got) = (f64::MAX, f64::MIN, false);
+        // ── Path B CYLINDER (ADR-278 β + rotated follow-up) — ANY axis via the
+        // axis-agnostic builder. Axial extent = operand verts projected onto the
+        // axis (relative to axis_origin). ──
+        if let Some((axis_origin, axis_dir, radius)) = cyl {
+            let axis = axis_dir.normalize_or_zero();
+            if axis.length_squared() < 0.5 { return faces.to_vec(); }
+            let (mut t_lo, mut t_hi, mut got) = (f64::MAX, f64::MIN, false);
             for &fid in faces {
-                let Some(face) = me.faces.get(fid) else { continue };
-                if let Ok(vs) = me.collect_loop_verts(face.outer().start) {
+                let Some(face) = self.faces.get(fid) else { continue };
+                if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
                     for v in vs {
-                        if let Some(p) = me.verts.get(v).map(|v| v.pos()) {
-                            zmin = zmin.min(p.z);
-                            zmax = zmax.max(p.z);
+                        if let Some(p) = self.verts.get(v).map(|v| v.pos()) {
+                            let t = (p - axis_origin).dot(axis);
+                            t_lo = t_lo.min(t);
+                            t_hi = t_hi.max(t);
                             got = true;
                         }
                     }
                 }
             }
-            if got && (zmax - zmin) >= 1e-6 { Some((zmin, zmax)) } else { None }
-        };
-
-        // ── Path B CYLINDER (ADR-278 β) — axis-aligned ±Z MVP ──
-        if let Some((axis_origin, axis_dir, radius)) = cyl {
-            if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
-                return faces.to_vec(); // rotated cylinder → follow-up
-            }
-            let Some((zmin, zmax)) = z_extent(self) else { return faces.to_vec() };
-            // `create_cylinder` treats `center` as the BASE (z ∈ [z, z+height]).
-            let base = DVec3::new(axis_origin.x, axis_origin.y, zmin);
-            let height = zmax - zmin;
+            if !got || (t_hi - t_lo) < 1e-6 { return faces.to_vec(); }
             for &fid in faces { let _ = self.remove_face(fid); }
-            let prev = self.cylinder_path_b_default;
-            self.cylinder_path_b_default = false;
-            let new_faces = self.create_cylinder(base, radius, height, 32, material).unwrap_or_default();
-            self.cylinder_path_b_default = prev;
+            let new_faces = self.build_polygonal_cylinder(axis_origin, axis, radius, t_lo, t_hi, 32, material);
             if new_faces.is_empty() { return faces.to_vec(); }
             return new_faces;
         }
@@ -1868,42 +1951,29 @@ impl Mesh {
             return new_faces;
         }
 
-        // ── Path B CONE (memory follow-up) — axis-aligned ±Z, apex-above MVP.
-        // `create_cone(base, radius, height)` builds apex = base + Z·height
-        // (apex above base, axis +Z). The Path B cone's APEX is a degenerate
-        // (non-DCEL) point, so the operand's verts are all on the base ring
-        // (single Z) — `z_extent` gives no range. Take base_z from the verts and
-        // apex_z from the Cone surface's `apex`. ──
+        // ── Path B CONE (memory follow-up + rotated/inverted) — ANY axis via the
+        // axis-agnostic builder. The Path B cone's APEX is a degenerate (non-DCEL)
+        // point, so the operand's verts are all on the base ring. `base_dist` =
+        // the base ring's distance from the apex along `axis_dir` (apex→base). An
+        // inverted (apex-below) cone is just `axis_dir` pointing up — handled. ──
         if let Some((apex, axis_dir, half_angle)) = cone {
-            if axis_dir.normalize_or_zero().dot(DVec3::Z).abs() < 0.999 {
-                return faces.to_vec(); // tilted cone → follow-up
-            }
-            // base ring Z = the operand verts' Z (all coplanar at the base).
-            let mut base_z = f64::NAN;
+            let axis = axis_dir.normalize_or_zero();
+            if axis.length_squared() < 0.5 { return faces.to_vec(); }
+            let mut base_dist = f64::NAN;
             'outer: for &fid in faces {
                 let Some(face) = self.faces.get(fid) else { continue };
                 if let Ok(vs) = self.collect_loop_verts(face.outer().start) {
                     for v in vs {
                         if let Some(p) = self.verts.get(v).map(|v| v.pos()) {
-                            base_z = p.z;
+                            base_dist = (p - apex).dot(axis);
                             break 'outer;
                         }
                     }
                 }
             }
-            if base_z.is_nan() { return faces.to_vec(); }
-            let height = apex.z - base_z;
-            // Apex above the base (create_cone form). Inverted (apex below) or
-            // degenerate → follow-up.
-            if height <= 1e-6 { return faces.to_vec(); }
-            let base_radius = height * half_angle.tan();
-            if base_radius <= 1e-9 { return faces.to_vec(); }
-            let base = DVec3::new(apex.x, apex.y, base_z);
+            if base_dist.is_nan() || base_dist <= 1e-6 { return faces.to_vec(); }
             for &fid in faces { let _ = self.remove_face(fid); }
-            let prev = self.cone_path_b_default;
-            self.cone_path_b_default = false;
-            let new_faces = self.create_cone(base, base_radius, height, 32, material).unwrap_or_default();
-            self.cone_path_b_default = prev;
+            let new_faces = self.build_polygonal_cone(apex, axis, half_angle, base_dist, 32, material);
             if new_faces.is_empty() { return faces.to_vec(); }
             return new_faces;
         }
@@ -11222,6 +11292,57 @@ mod tests {
             assert!(after > before, "Path B {label}−box must CUT (got {before}→{after})");
             assert!(valid && closed && manifold,
                 "{label}−box watertight (valid={valid} closed={closed} manifold={manifold})");
+        }
+    }
+
+    // Follow-up — ROTATED (non-±Z) cylinder + INVERTED (apex-below) cone subtract
+    // now cut via the axis-agnostic `build_polygonal_*` builders (the ±Z /
+    // apex-above restrictions are gone). Both were no-ops before.
+    #[test]
+    fn adr278_pathb_rotated_cyl_inverted_cone_subtract_cuts() {
+        let mat = MaterialId::new(0);
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        // ROTATED CYLINDER — a +Z cylinder tilted 30° about X (axis becomes
+        // non-±Z), still passing cleanly THROUGH the box.
+        {
+            let mut m = Mesh::new();
+            m.set_cylinder_path_b_default(true);
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 200.0, 200.0, 120.0, mat).unwrap();
+            let bf = active(&m);
+            let before = bf.len();
+            let cyl = m.create_cylinder(DVec3::new(0.0, 0.0, -60.0), 25.0, 220.0, 24, mat).unwrap_or_default();
+            let mut cv = std::collections::HashSet::new();
+            for &f in &cyl { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { cv.insert(v); } } }
+            let cvv: Vec<VertId> = cv.into_iter().collect();
+            m.rotate_verts(&cvv, DVec3::new(0.0, 0.0, 50.0), DVec3::X, 30.0_f64.to_radians()).unwrap();
+            let ok = m.boolean_solid(&bf, &cyl, BoolOp::Subtract, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(ok, "rotated cyl−box subtract must SUCCEED");
+            assert!(active(&m).len() > before, "rotated cyl−box must CUT (got {before}→{})", active(&m).len());
+            assert!(m.verify_face_invariants().is_valid() && info.is_closed_solid && info.non_manifold_edge_count == 0,
+                "rotated cyl−box watertight (closed={} nm={})", info.is_closed_solid, info.non_manifold_edge_count);
+        }
+        // INVERTED CONE — a +Z cone flipped 180° about X (apex now BELOW the base,
+        // axis_dir points up), base straddling the box top → conical bore.
+        {
+            let mut m = Mesh::new();
+            m.set_cone_path_b_default(true);
+            m.create_box(DVec3::new(0.0, 0.0, 50.0), 200.0, 200.0, 120.0, mat).unwrap();
+            let bf = active(&m);
+            let before = bf.len();
+            let cone = m.create_cone(DVec3::new(0.0, 0.0, 20.0), 40.0, 120.0, 24, mat).unwrap_or_default();
+            let mut cv = std::collections::HashSet::new();
+            for &f in &cone { if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) { for v in vs { cv.insert(v); } } }
+            let cvv: Vec<VertId> = cv.into_iter().collect();
+            m.rotate_verts(&cvv, DVec3::new(0.0, 0.0, 80.0), DVec3::X, 180.0_f64.to_radians()).unwrap();
+            let ok = m.boolean_solid(&bf, &cone, BoolOp::Subtract, mat).is_ok();
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(ok, "inverted cone−box subtract must SUCCEED");
+            assert!(active(&m).len() > before, "inverted cone−box must CUT (got {before}→{})", active(&m).len());
+            assert!(m.verify_face_invariants().is_valid() && info.is_closed_solid && info.non_manifold_edge_count == 0,
+                "inverted cone−box watertight (closed={} nm={})", info.is_closed_solid, info.non_manifold_edge_count);
         }
     }
 

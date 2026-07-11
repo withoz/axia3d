@@ -7086,16 +7086,25 @@ Acceptance), sphere/cone/torus 는 `polygonalize_curved_operand` 에서 fall-thr
   + `after>before` 로 FOOLED — direct engine call 은 gate Err 시 rollback 안 함
   (polygonalized-but-uncommitted faces 남아 after>before), WASM `boolean_solid_op`
   은 rollback 함. `.is_ok()` 명시 assert + clean config 로 수정. **browser 가 ground truth.**
-- **L-94-6** deferred: rotated (non-±Z) cyl/cone, inverted (apex-below) cone,
-  grazing/tangential curved subtract (robust tangent CSG 필요).
-- **L-94-7** 절대 #[ignore] 금지.
+- **L-94-6** **follow-up #2 (2026-07-11): rotated cyl/cone + inverted cone 완료** —
+  cylinder/cone branch 를 axis-aligned `create_cylinder`/`create_cone` (±Z·apex-above)
+  에서 **axis-agnostic `build_polygonal_cylinder`/`build_polygonal_cone`** 로 교체
+  (torus builder 답습). primitive 를 analytic surface 의 실제 축/방향으로 재생성 —
+  cylinder = axis_origin+axis_dir + verts 축-투영 extent, cone = apex+axis_dir(apex→base)
+  + base_dist (inverted 는 axis_dir 위로 → 균일 처리). ±Z·apex-above guard 제거.
+- **L-94-7** deferred: grazing/tangential curved subtract (operand 이 면에 접 →
+  self-intersect → fail-closed, robust tangent CSG 필요); v1 retirement (post-telemetry).
+- **L-94-8** 절대 #[ignore] 금지.
 
-#### 회귀 (+2 engine, +3 E2E)
-- axia-geo `adr278_pathb_sphere_cone_torus_subtract_cuts` (셋 다 Ok+cut+watertight,
-  clean config) + `adr278_polygonal_torus_builder_is_watertight` (standalone SI=0).
+#### 회귀 (+3 engine, +3 E2E)
+- axia-geo `adr278_pathb_sphere_cone_torus_subtract_cuts` (셋 다 Ok+cut+watertight) +
+  `adr278_polygonal_torus_builder_is_watertight` (standalone SI=0) +
+  `adr278_pathb_rotated_cyl_inverted_cone_subtract_cuts` (follow-up #2: 30°-tilt cyl +
+  180°-flip inverted cone → Ok+cut+watertight).
 - E2E `web/e2e/adr-278-pathb-curved-subtract.spec.ts` ×3 (real Chromium: box − Path B
-  {sphere,cone,torus} via `booleanSolid` → cut + isClosedSolid + valid).
-- workspace 3018/0/1, E2E 3/3. WASM/bridge/tool 무변경.
+  {sphere,cone,torus} via `booleanSolid` → cut + isClosedSolid + valid). rotated 는
+  engine-verified (rotate 하네스는 ADR-277 rotated 데모 선례).
+- workspace 3019/0/1, E2E 3/3. WASM/bridge/tool 무변경 (fix in boolean_solid).
 
 #### Cross-link
 - ADR-278 §Acceptance (`docs/adr/278-curved-primitive-boolean-audit.md`) — β cylinder

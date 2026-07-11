@@ -133,10 +133,32 @@ boolean results is a hard requirement.
     (all three Ok + cut + watertight) + `adr278_polygonal_torus_builder_is_watertight`;
     workspace 3018 pass / 0 fail / 1 ignored; browser E2E `adr-278-pathb-curved-subtract.spec.ts`
     ×3 (sphere/cone/torus − box via `booleanSolid` → cut + isClosedSolid + valid).
-  - **Still deferred:** rotated (non-±Z) cylinder/cone, inverted (apex-below) cone,
-    grazing/tangential curved subtract (needs robust tangent CSG). No new WASM/bridge/
-    tool wiring — the fix lives in `boolean_solid`, so all callers (BooleanHandler →
-    `booleanSolid`) benefit automatically.
+  - **No new WASM/bridge/tool wiring** — the fix lives in `boolean_solid`, so all
+    callers (BooleanHandler → `booleanSolid`) benefit automatically.
+
+- **2026-07-11 β follow-up #2 — ROTATED cylinder/cone + INVERTED cone (axis-agnostic)** —
+  the sphere/cone/torus fix above kept an axis-aligned (±Z, apex-above) restriction
+  on cylinder/cone (rebuilt via the ±Z `create_cylinder`/`create_cone` Path A
+  builders); rotated cylinders and inverted (apex-below) cones fell through → no-op
+  (measured: rotated cyl unclear/no-op, inverted cone 8→8). Replaced those two
+  branches with **axis-agnostic `build_polygonal_cylinder` / `build_polygonal_cone`**
+  (mirroring the axis-agnostic `build_polygonal_torus`): the primitive is rebuilt at
+  the analytic surface's ACTUAL axis/orientation — cylinder from `axis_origin +
+  axis_dir` + axial extent (verts projected onto the axis), cone from `apex +
+  axis_dir` (apex→base) + `base_dist` (base ring's distance from apex along the axis;
+  an inverted cone is simply `axis_dir` pointing up — handled uniformly). The ±Z /
+  apex-above guards are gone. Sphere stays `create_sphere` (already axis-agnostic);
+  torus already used its axis-agnostic builder.
+  - **Verification:** engine `adr278_pathb_rotated_cyl_inverted_cone_subtract_cuts`
+    (30°-tilted cyl through a box + 180°-flipped inverted cone → both Ok + cut +
+    watertight); the axis-aligned `adr278_pathb_sphere_cone_torus_subtract_cuts` still
+    passes (the new cone builder handles ±Z too — winding verified). workspace
+    3019 pass / 0 fail / 1 ignored. Rotated CSG browser reach was proven earlier via
+    `eng.rotate_faces` + `booleanSolid` (ADR-277 rotated demo, same `boolean_solid`
+    path); no new WASM/bridge/tool wiring.
+  - **Still deferred:** grazing/tangential curved subtract (operand tangent to a face
+    → self-intersects → fail-closed, needs robust tangent CSG); v1 retirement (post-
+    telemetry).
 
 ## Cross-link
 
