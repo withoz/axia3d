@@ -6845,7 +6845,20 @@ floor/roof 는 동일 surface type 의 offset 파라미터 (ADR-089 A-χ):
   genus-1 tunnel (`adr287_curved_through_cone`, is_closed_solid + boundary=0).
   Torus diametric-across-hole 는 non-natural → documented/deferred (ε-torus-
   through = minor-circle tube bore). E2E "cone deep push → through" PASS.
-- sweep: cargo workspace **3008 passed / 0 failed / 1 ignored**.
+  **ε-torus-through 시도→revert (measure-first)**: tube-center reflection
+  (`exit=2·C(u)−P`) 은 exit 가 내벽에 안착하고 verify valid 지만 straight walls
+  가 curved tube 관통 → **33 self-intersections** (ADR-273 gate 차단). Cyl/Cone
+  이 되는 건 ruled/developable 이라. 제대로는 cylindrical drill bit 필요 → 별도
+  큰 ADR deferred. torus 는 pocket/boss 만 (through 미제공).
+- **Live curved preview ✅ LANDED (§H)**: 곡면 pocket/boss 가 드래그 중
+  translucent ghost 실시간 표시. engine `preview_curved_carve(cap, signed_depth)`
+  = read-only ghost tris (offset floor/roof + walls, `curved_outward_normal` 공유
+  helper 로 carve 와 동일 offset). `&self` 라 mutation 불가 → 매 mouse-move 안전
+  (LOD panic risk 없음). WASM `previewCurvedCarve`→Float32Array + bridge +
+  PushPullTool `updateCurvedGhost` (Three.js translucent, planar ghost 답습).
+  4곡면 모두. 검증 `adr287_preview_curved_carve_readonly_matches` (offset 정합
+  + read-only) + E2E (ghost non-empty pocket/boss + read-only).
+- sweep: cargo workspace **3011 passed / 0 failed / 1 ignored**.
 
 #### Cross-link
 

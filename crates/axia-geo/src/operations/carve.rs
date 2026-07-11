@@ -997,6 +997,104 @@ impl Mesh {
         Some((rel - axis_d * rel.dot(axis_d)).length())
     }
 
+    /// ADR-287 live preview — the OUTWARD surface normal at a world point on an
+    /// analytic cap surface (Cylinder / Sphere / Cone / Torus). This is the exact
+    /// per-vertex offset direction the carve arms use, so the live ghost previews
+    /// the real pocket/boss. `None` for non-analytic / degenerate surfaces.
+    fn curved_outward_normal(surf: &crate::surfaces::AnalyticSurface, p: DVec3) -> Option<DVec3> {
+        use crate::surfaces::AnalyticSurface as S;
+        let n = match surf {
+            S::Cylinder { axis_origin, axis_dir, .. } => {
+                let ad = axis_dir.normalize_or_zero();
+                let rel = p - *axis_origin;
+                (rel - ad * rel.dot(ad)).normalize_or_zero()
+            }
+            S::Sphere { center, .. } => (p - *center).normalize_or_zero(),
+            S::Cone { apex, axis_dir, half_angle, .. } => {
+                let ad = axis_dir.normalize_or_zero();
+                let v = (p - *apex).dot(ad);
+                let foot = *apex + ad * v;
+                let radial = (p - foot).normalize_or_zero();
+                (radial * half_angle.cos() - ad * half_angle.sin()).normalize_or_zero()
+            }
+            S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } => {
+                let (_pt, u, vv) = crate::surfaces::torus::project_to_torus(
+                    *center, *axis_dir, *ref_dir, *major_radius, *minor_radius, p,
+                )?;
+                crate::surfaces::torus::normal(
+                    *center, *axis_dir, *ref_dir, *major_radius, *minor_radius, u, vv,
+                )
+                .normalize_or_zero()
+            }
+            _ => return None,
+        };
+        if n.length_squared() < 0.5 {
+            None
+        } else {
+            Some(n)
+        }
+    }
+
+    /// ADR-287 live preview — READ-ONLY ghost geometry for a curved pocket/boss on
+    /// a sketched cap, WITHOUT mutating the mesh (drives the live drag ghost).
+    /// `signed_depth` = the drag distance (negative = inward pocket, positive =
+    /// outward boss). Returns a triangle soup (flat xyz, 3 f32/vertex) of the
+    /// offset floor/roof cap + N side-wall quads — the same per-vertex surface-
+    /// normal offset the carve uses, so the ghost matches the committed result.
+    /// `None` for a non-carveable cap (non-analytic surface / <3 boundary verts /
+    /// ~zero depth). No engine state changes (safe to call every mouse-move).
+    pub fn preview_curved_carve(&self, cap_face: FaceId, signed_depth: f64) -> Option<Vec<f32>> {
+        use crate::surfaces::AnalyticSurface as S;
+        if signed_depth.abs() < 1e-6 {
+            return None;
+        }
+        let face = self.faces.get(cap_face).filter(|f| f.is_active())?;
+        let surf = face.surface()?;
+        if !matches!(surf, S::Cylinder { .. } | S::Sphere { .. } | S::Cone { .. } | S::Torus { .. }) {
+            return None;
+        }
+        let opening = self.collect_loop_verts(face.outer().start).ok()?;
+        let cnt = opening.len();
+        if cnt < 3 {
+            return None;
+        }
+        let base: Vec<DVec3> = opening.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        if base.len() != cnt {
+            return None;
+        }
+        let offset: Vec<DVec3> = base
+            .iter()
+            .map(|&p| {
+                Self::curved_outward_normal(surf, p)
+                    .map(|n| p + n * signed_depth)
+                    .unwrap_or(p)
+            })
+            .collect();
+        let mut out: Vec<f32> = Vec::with_capacity((cnt * 6 + (cnt - 2)) * 3);
+        let mut push = |p: DVec3| {
+            out.push(p.x as f32);
+            out.push(p.y as f32);
+            out.push(p.z as f32);
+        };
+        // Side walls: [base[i], base[i+1], offset[i+1], offset[i]] → 2 triangles.
+        for i in 0..cnt {
+            let j = (i + 1) % cnt;
+            push(base[i]);
+            push(base[j]);
+            push(offset[j]);
+            push(base[i]);
+            push(offset[j]);
+            push(offset[i]);
+        }
+        // Floor/roof cap — fan from offset[0].
+        for k in 1..cnt - 1 {
+            push(offset[0]);
+            push(offset[k]);
+            push(offset[k + 1]);
+        }
+        Some(out)
+    }
+
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
     /// straight bore along the cap-center radial, entering at the cap and exiting
     /// the opposite side of the cylinder. The cap + a mirrored exit patch are
@@ -2675,6 +2773,65 @@ mod tests {
         assert!(matches!(m2.faces[res2.floor_face].surface(),
             Some(AnalyticSurface::Torus { minor_radius, .. }) if (minor_radius - (3.0 + height)).abs() < 1e-6),
             "roof inherits Torus at minor + height");
+    }
+
+    /// ADR-287 live preview — `preview_curved_carve` returns a READ-ONLY ghost
+    /// (no mesh mutation) whose offset matches the carve: pocket ghost spans the
+    /// cap radius (base) → radius−depth (floor); boss ghost reaches radius+depth.
+    #[test]
+    fn adr287_preview_curved_carve_readonly_matches() {
+        use crate::surfaces::{cylinder, AnalyticSurface};
+        let mut mesh = Mesh::new();
+        let mat = MaterialId::new(0);
+        mesh.set_cylinder_path_b_default(true);
+        let faces = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 24, mat).expect("cyl");
+        let annulus = faces[2];
+        let (ax_o, ax_d, rad, refd, vlo, vhi) = match mesh.face_surface(annulus).cloned().unwrap() {
+            AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, v_range, .. } =>
+                (axis_origin, axis_dir, radius, ref_dir, v_range.0, v_range.1),
+            _ => unreachable!(),
+        };
+        let vmid = 0.5 * (vlo + vhi);
+        let cp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.0, vmid);
+        let rp = cylinder::evaluate(ax_o, ax_d, rad, refd, 0.4, vmid);
+        let samples = cylinder::circle_on_cylinder(ax_o, ax_d, rad, refd, cp, rp, 0.05).unwrap();
+        let (cap, _) = mesh.split_cylinder_face_by_circle(annulus, &samples).unwrap();
+
+        let nf = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let radial = |p: DVec3| -> f64 {
+            let rel = p - ax_o;
+            (rel - ax_d * rel.dot(ax_d)).length()
+        };
+        let radii = |g: &[f32]| -> (f64, f64) {
+            let mut lo = f64::MAX;
+            let mut hi = 0.0_f64;
+            for c in g.chunks(3) {
+                let r = radial(DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64));
+                lo = lo.min(r);
+                hi = hi.max(r);
+            }
+            (lo, hi)
+        };
+
+        // POCKET preview (inward, signed < 0): ghost spans radius → radius−depth.
+        let depth = 3.0;
+        let g_pocket = mesh.preview_curved_carve(cap, -depth).expect("pocket preview");
+        assert!(!g_pocket.is_empty() && g_pocket.len() % 9 == 0, "triangle soup (9 f32/tri)");
+        let (lo, hi) = radii(&g_pocket);
+        assert!((hi - rad).abs() < 0.2, "pocket ghost base at radius (hi {hi})");
+        assert!((lo - (rad - depth)).abs() < 0.2, "pocket ghost floor at radius−depth (lo {lo})");
+
+        // READ-ONLY: no faces added (also compile-time — &self can't mutate).
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), nf,
+            "preview must not mutate the mesh");
+
+        // BOSS preview (outward, signed > 0): ghost reaches radius+depth.
+        let g_boss = mesh.preview_curved_carve(cap, depth).expect("boss preview");
+        let (_lo2, hi2) = radii(&g_boss);
+        assert!((hi2 - (rad + depth)).abs() < 0.2, "boss ghost roof at radius+depth (hi2 {hi2})");
+
+        // ~zero depth → None.
+        assert!(mesh.preview_curved_carve(cap, 0.0).is_none(), "zero depth → no ghost");
     }
 
     /// ADR-287 §7 de-risk — the Sphere carve arm is CORRECT for an N-vert cap

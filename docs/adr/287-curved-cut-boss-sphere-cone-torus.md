@@ -1,6 +1,6 @@
 # ADR-287 — Curved cut/boss ε: Sphere / Cone / Torus (unified surface-normal offset)
 
-- **Status**: Accepted (α + β + ε-sphere-2 landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss + Cylinder/Cone through-hole; Sphere sketch→carve via polyline split + planar-clip render; Torus tube-through DEFERRED — straight-bore infeasible (33 SI), needs a cylindrical drill, §E)
+- **Status**: Accepted (α + β + ε-sphere-2 + live-preview landed 2026-07-10 — Cylinder/Sphere/Cone/Torus cut+boss + Cylinder/Cone through-hole + live curved pocket/boss ghost; Sphere sketch→carve via polyline split + planar-clip render; Torus tube-through DEFERRED — straight-bore infeasible (33 SI), needs a cylindrical drill, §E)
 - Date: 2026-07-10
 - Track: ADR-286 §E (ε — Sphere/Cone/Torus boss+cut) + ADR-271 §ε (cut). "완벽한 extrude" 로드맵 #5 곡면 마무리.
 - Cross-link: ADR-286 (Cylinder boss, LOCKED #89), ADR-271 (Cylinder cut),
@@ -178,7 +178,34 @@ manifold by construction (welding 이 winding 강제, ADR-286 β-1 finding).
   필요 — 별도 큰 ADR. 현재 torus 는 pocket/boss 만 (through 미제공,
   `curved_cap_axis_radial` torus → None). diametric-across-hole 코드는 존재하나
   user-route 안 함 (non-natural, §F documented).
-- **Live curved pocket/boss preview** (현재 commit-only, ADR-193 답습).
+- **Live curved pocket/boss preview** ✅ **LANDED** (§H 참조).
+
+## H. Live curved preview (landed 2026-07-10)
+
+곡면 pocket/boss 가 commit-only (치수 label 만) 였던 것을 드래그 중 **translucent
+ghost** 로 실시간 표시.
+
+- **Engine (read-only)** — `Mesh::preview_curved_carve(cap, signed_depth) ->
+  Option<Vec<f32>>`: mesh 를 **변경하지 않고** ghost triangle soup (offset
+  floor/roof cap fan + N side-wall quads, flat xyz) 반환. `signed_depth` = 드래그
+  거리 (음수 = inward pocket, 양수 = outward boss). offset = **carve 와 동일**
+  per-vertex surface normal (`curved_outward_normal` 공유 helper — Cylinder radial
+  / Sphere radial / Cone cos α·radial−sin α·axis / Torus tube-circle normal) →
+  ghost 가 실제 결과와 정합. `&self` 라 컴파일-타임 mutation 불가 → 매 mouse-move
+  안전 (LOD panic risk 없음, ADR-287 §F/LOCKED #89 정합).
+- **WASM/bridge** — `previewCurvedCarve(cap, signed) -> Float32Array` (empty =
+  no ghost); bridge wrapper `previewCurvedCarve` (markDirty 안 함, read-only).
+- **PushPullTool** — `isCurvedCap` preview 분기 (기존 dimension-label only) →
+  `updateCurvedGhost(dist)`: `previewCurvedCarve` 결과로 translucent Three.js
+  ghost (MeshBasicMaterial #5b9bd5, DoubleSide, depthWrite=false, 기존 planar
+  ghost 답습). `|dist| < MIN_COMMIT_DIST` 또는 commit/cleanup 시 `removeCurvedGhost`.
+- **검증**: `adr287_preview_curved_carve_readonly_matches` (pocket ghost
+  radius→radius−depth, boss→radius+depth, read-only face-count 불변, zero→None) +
+  E2E `curved cap → live preview ghost is non-empty + read-only` (real Chromium:
+  pocket/boss ghost tris multiple-of-9, zero→empty, mesh unchanged). cargo 3011.
+- **범위**: Cylinder/Sphere/Cone/Torus 4곡면 (previewCurvedCarve 가 4 surface
+  normal 모두 처리). commit-only v1 의 후속 — ADR-193 planar live extrude 와 달리
+  read-only ghost (곡면 carve 는 topology-heavy 라 engine live 대신 ghost 채택).
 
 ## F. Through-hole ε (Cone landed 2026-07-10)
 

@@ -522,6 +522,8 @@ type AxiaEngineExtended = AxiaEngine & {
   carveCurvedPocket?(capFaceRaw: number, depth: number): number;
   /** ADR-286 — raise a curved boss (outward protrusion) from a sketched (Cylinder) cap. */
   carveCurvedBoss?(capFaceRaw: number, height: number): number;
+  /** ADR-287 — read-only ghost tris (flat xyz) for a live curved pocket/boss preview. */
+  previewCurvedCarve?(capFaceRaw: number, signedDepth: number): Float32Array;
   /** ADR-252 — true if the face is a coplanar profile contained in a LARGER face (pocket candidate). */
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
@@ -4411,6 +4413,22 @@ export class WasmBridge {
     } catch (e) {
       this.recordBridgeError('carveCurvedBoss', e);
       return -1;
+    }
+  }
+
+  /** ADR-287 live preview — READ-ONLY ghost triangles (flat xyz) for a curved
+   *  pocket/boss on a sketched cap (no mesh mutation). `signedDepth` = drag
+   *  distance (negative = inward pocket, positive = outward boss). Returns null
+   *  when there is no ghost (non-carveable cap / ~zero depth). Does NOT markDirty
+   *  (read-only) — safe to call every mouse-move. */
+  previewCurvedCarve(capFace: number, signedDepth: number): Float32Array | null {
+    if (!this.engine?.previewCurvedCarve) return null;
+    try {
+      const g = this.engine.previewCurvedCarve(capFace, signedDepth);
+      return g && g.length > 0 ? g : null;
+    } catch (e) {
+      this.recordBridgeError('previewCurvedCarve', e);
+      return null;
     }
   }
 

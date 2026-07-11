@@ -140,4 +140,38 @@ test.describe('ADR-287 — curved cut/boss on cone + torus', () => {
 
   test('sphere → pocket (push in) manifold [ε-sphere-2]', sphereCarve('pocket'));
   test('sphere → boss (push out) manifold [ε-sphere-2]', sphereCarve('boss'));
+
+  // ADR-287 live curved preview — previewCurvedCarve returns a ghost triangle
+  // soup (flat xyz, multiple of 9 = tris) for pocket (dist<0) and boss (dist>0),
+  // WITHOUT mutating the mesh (read-only, safe every mouse-move).
+  test('curved cap → live preview ghost is non-empty + read-only [live-preview]', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      bridge.create_cone(0, 0, 0, 500, 1000, 32);
+      let side = -1;
+      for (let i = 0; i < bridge.getStats().faces + 2; i++) {
+        if (bridge.faceSurfaceKind(i) === 4) { side = i; break; }
+      }
+      const res = JSON.parse(bridge.drawCircleOnCone(side, [250, 0, 500], [250, 0, 600]));
+      const facesBefore = bridge.getStats().faces;
+      const gPocket = bridge.previewCurvedCarve(res.cap, -60); // inward pocket ghost
+      const gBoss = bridge.previewCurvedCarve(res.cap, 60);    // outward boss ghost
+      const gZero = bridge.previewCurvedCarve(res.cap, 0);     // ~zero → no ghost
+      const facesAfter = bridge.getStats().faces;
+      const inv = bridge.verifyInvariants();
+      return {
+        pocketLen: gPocket ? gPocket.length : 0,
+        bossLen: gBoss ? gBoss.length : 0,
+        zeroLen: gZero ? gZero.length : 0,
+        facesBefore, facesAfter, valid: inv.valid,
+      };
+    });
+    expect(r.pocketLen).toBeGreaterThan(0);   // ghost triangle soup
+    expect(r.pocketLen % 9).toBe(0);          // 3 verts × 3 xyz per tri
+    expect(r.bossLen).toBeGreaterThan(0);
+    expect(r.zeroLen).toBe(0);                // ~zero depth → no ghost
+    expect(r.facesAfter).toBe(r.facesBefore); // READ-ONLY: no mesh mutation
+    expect(r.valid).toBe(true);
+  });
 });

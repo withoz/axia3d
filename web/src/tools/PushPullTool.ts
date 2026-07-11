@@ -18,6 +18,9 @@ export class PushPullTool implements ITool {
   private ppActive: boolean = false;
   private ppNormal: THREE.Vector3 = new THREE.Vector3(0, 1, 0);
   private ppGhost: THREE.Group | null = null;
+  /** ADR-287 live curved preview — translucent ghost of the curved pocket/boss
+   *  (read-only engine preview, no mesh mutation) shown during a curved-cap drag. */
+  private curvedGhost: THREE.Group | null = null;
   private ppHitPoint: THREE.Vector3 = new THREE.Vector3();
   private ppFaceVerts: THREE.Vector3[] = [];
   /** smooth group 전체의 face별 boundary (고스트 프리뷰에서 모든 면 표시용) */
@@ -431,9 +434,14 @@ export class PushPullTool implements ITool {
         this.removePPGhost();
       }
     } else if (this.isCurvedCap) {
-      // ADR-271 / ADR-286 — curved cap: no live geometry preview yet (radial
-      //   carve/boss is not a slidable box). Dimension label only; commit
-      //   dispatches the pocket (inward) or boss (outward).
+      // ADR-287 — curved cap live preview: a translucent ghost of the pocket
+      //   (inward) / boss (outward) via the read-only engine preview (no mesh
+      //   mutation). Commit dispatches the real carve.
+      if (Math.abs(dist) >= PushPullTool.MIN_COMMIT_DIST) {
+        this.updateCurvedGhost(dist);
+      } else {
+        this.removeCurvedGhost();
+      }
     } else if (this.liveActive) {
       this.ctx.bridge.updateLiveExtrude(dist);
       this.ctx.syncMesh();
@@ -780,6 +788,7 @@ export class PushPullTool implements ITool {
     this.isSmoothGroup = false;
     this.currentDragDist = 0;
     this.removePPGhost();
+    this.removeCurvedGhost();
     this.ctx.selection.clearSelection();
     this.ctx.dimLabel.clear();
     this.ctx.snapVisual.clear();
@@ -913,6 +922,48 @@ export class PushPullTool implements ITool {
       this.ppGhost = null;
     }
     this.ppFaceVerts = [];
+  }
+
+  /** ADR-287 — build/refresh the translucent curved pocket/boss ghost from the
+   *  read-only engine preview (`previewCurvedCarve`, no mesh mutation). `dist` =
+   *  signed drag (negative = pocket, positive = boss). Blue like the planar ghost;
+   *  no-op (removes the ghost) when the preview is empty (non-carveable cap). */
+  private updateCurvedGhost(dist: number): void {
+    const tris = this.ctx.bridge.previewCurvedCarve?.(this.ppFaceId, dist) ?? null;
+    this.removeCurvedGhost();
+    if (!tris || tris.length < 9) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(tris), 3));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color: 0x5b9bd5,
+        transparent: true,
+        opacity: dist < 0 ? 0.28 : 0.32,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    mesh.renderOrder = 999;
+    this.curvedGhost = new THREE.Group();
+    this.curvedGhost.add(mesh);
+    this.curvedGhost.renderOrder = 999;
+    this.ctx.viewport.scene.add(this.curvedGhost);
+  }
+
+  private removeCurvedGhost(): void {
+    if (!this.curvedGhost) return;
+    while (this.curvedGhost.children.length > 0) {
+      const child = this.curvedGhost.children[0];
+      this.curvedGhost.remove(child);
+      if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) child.material.dispose();
+      }
+    }
+    this.ctx.viewport.scene.remove(this.curvedGhost);
+    this.curvedGhost = null;
   }
 
   private ppRayDist(e: MouseEvent): number {

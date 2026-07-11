@@ -8855,6 +8855,18 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-287 live preview — READ-ONLY ghost triangles (flat xyz) for a curved
+    /// pocket/boss on a sketched cap, without mutating the mesh. `signed_depth` =
+    /// drag distance (negative = inward pocket, positive = outward boss). Empty
+    /// array = no ghost (non-carveable cap / ~zero depth). Safe every mouse-move.
+    #[wasm_bindgen(js_name = "previewCurvedCarve")]
+    pub fn preview_curved_carve(&self, cap_face_raw: u32, signed_depth: f64) -> Vec<f32> {
+        self.scene
+            .mesh
+            .preview_curved_carve(FaceId::new(cap_face_raw), signed_depth)
+            .unwrap_or_default()
+    }
+
     /// ADR-252 — `true` if the face is a coplanar profile contained in a LARGER
     /// face on the same plane (the "rect drawn on a wall" signal). The Push/Pull
     /// tool uses this to route an inward push to a pocket carve. Read-only.
