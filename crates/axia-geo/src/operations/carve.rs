@@ -3027,6 +3027,57 @@ mod tests {
             info.is_closed_solid, info.boundary_edge_count);
     }
 
+    /// ADR-289 measure-first (2026-07-10) — the fixed-axis torus tube-through
+    /// **never self-intersects**: across a range of torus shapes (thin/fat/horn)
+    /// and cap spans, every SUCCESSFUL carve is SI-free + manifold; a cap that is
+    /// too large fails GRACEFULLY (circle sketch `None`, or exit-split declines) —
+    /// it never produces a corrupt Ok result. This is the finding that made the
+    /// "large-cap curved bore" unnecessary: there is no SI regime to fix; the
+    /// real large-cap limit is exit-split feasibility (a split/sketch concern),
+    /// not the bore. Guards `Ok ⇒ SI=0 ∧ manifold`.
+    #[test]
+    fn adr289_tube_through_ok_implies_si_free() {
+        use crate::surfaces::{torus, AnalyticSurface};
+        let mut successes = 0;
+        for &(rmaj0, rmin0, span) in &[
+            (10.0_f64, 3.0_f64, 0.30_f64),
+            (10.0, 3.0, 0.45),
+            (10.0, 1.0, 0.30), // thin tube
+            (10.0, 6.0, 0.30), // fat tube
+            (10.0, 6.0, 0.45),
+            (5.0, 4.0, 0.40), // near-horn
+        ] {
+            let mut mesh = Mesh::new();
+            let mat = MaterialId::new(0);
+            let face = mesh.create_torus_kernel_native(DVec3::ZERO, rmaj0, rmin0, mat).unwrap();
+            let (c, ax, rd, rmaj, rmin) = match mesh.face_surface(face).cloned().unwrap() {
+                AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                    (center, axis_dir, ref_dir, major_radius, minor_radius),
+                _ => unreachable!(),
+            };
+            let cp = torus::evaluate(c, ax, rd, rmaj, rmin, 0.0, 0.0);
+            let rp = torus::evaluate(c, ax, rd, rmaj, rmin, span, 0.0);
+            let samples = match torus::circle_on_torus(c, ax, rd, rmaj, rmin, cp, rp, 0.03) {
+                Some(s) => s,
+                None => continue, // sketch too large → graceful (not SI)
+            };
+            let (cap, _host) = match mesh.split_torus_face_by_circle(face, &samples) {
+                Some(x) => x,
+                None => continue,
+            };
+            // The KEY invariant: a SUCCESSFUL carve is always SI-free + manifold.
+            // A too-large cap declines (Err) — never a corrupt Ok.
+            if mesh.carve_curved_through(cap).is_ok() {
+                successes += 1;
+                let si = mesh.detect_self_intersections().count();
+                assert_eq!(si, 0, "successful tube-through must be SI-free (R={rmaj0} r={rmin0} span={span}, SI={si})");
+                assert!(mesh.verify_face_invariants().is_valid(),
+                    "successful tube-through must be manifold (R={rmaj0} r={rmin0} span={span})");
+            }
+        }
+        assert!(successes >= 3, "at least a few configs bore successfully, got {successes}");
+    }
+
     /// ADR-288 β-2 — TORUS tube-through via a FIXED-AXIS cylinder drill (outer →
     /// inner wall through the minor circle). A SMALL cap bores cleanly: watertight,
     /// exit on the INNER wall (in_plane ≈ R−r), and — the crux — **self-

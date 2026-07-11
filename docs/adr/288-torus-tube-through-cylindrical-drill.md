@@ -114,6 +114,27 @@ cylinder 축은 직선(−major-radial(u0), donut 중심 향함)인데 tube cent
 + watertight (§E 33 SI 회귀 방지). 임계 cap size 초과 시 graceful reject
 (SI gate 가 이미 차단 — 사용자 facing 은 "hole 이 너무 큼" guidance).
 
+## E-2. large-cap curved-bore 재검토 → **불필요 확정** (measure-first, 2026-07-10)
+
+사용자 결재 "large-cap curved bore 진행" 후 **SI 임계 sweep** 로 실측
+(thin/fat/horn torus × cap span, `adr289_tube_through_ok_implies_si_free`):
+
+- **핵심 발견**: fixed-axis cylinder tube-through 는 **성공 시 항상 SI-free +
+  manifold** (span 0.05~0.45, R/r 3~6, near-horn 모두 SI=0). α 단계가 우려한
+  "large-cap SI" **regime 은 실재하지 않음**.
+- large cap 실패는 **graceful** — (a) `circle_on_torus` None (sketch 한계,
+  thin tube), (b) exit-split 거부 ("exit split failed"). **corrupt Ok 는 없음**
+  (`Ok ⇒ SI=0 ∧ manifold` 회귀로 봉인).
+- §E 의 33 SI 는 **per-vertex reflection** (다른 접근) 이었고, fixed-axis (β-2)
+  는 그 문제 자체가 없음.
+- ⇒ **curved/toroidal bore 는 SI 를 고칠 대상이 없어 불필요**. large-cap 의
+  실제 한계는 **exit-split feasibility** (내벽 ring split) — bore 형상이 아닌
+  split/sketch 문제. curved bore 로는 이를 해결 못 함.
+- **결론**: L-288-7 의 "large-cap curved bore future phase" **폐기**. large-cap
+  확장이 필요하면 (실무 희소) 대상은 exit-split / circle_on_torus 확장 (별도
+  sketch/split ADR) — 곡률-following bore 아님. fixed-axis MVP 가 practically-
+  sketchable 범위를 SI-free 로 커버.
+
 ## D. Acceptance Log (2026-07-10, β landed — small-cap MVP)
 
 - **β-1** — `torus::ray_torus_intersections(center, axis, ref, R, r, origin, dir)

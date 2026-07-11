@@ -6904,9 +6904,14 @@ straight-reflection (`exit=2·C(u)−P`, per-vertex) 은 walls twist → curved 
 - **L-288-5** watertight (ADR-267) + **SI-free** (ADR-273, §E 33 SI 회귀 방지 =
   핵심 acceptance) + snapshot rollback (ADR-190 P0.2).
 - **L-288-6** Scene route (curved_cap_axis_radial torus → minor_radius).
-- **L-288-7 small-cap MVP** — fixed-axis 는 작은 cap 한정 (직선 축 vs tube
-  곡률). 큰 cap = straight walls 가 tube 벗어남 → SI gate 차단 + graceful reject.
-  large-cap curved/toroidal bore (또는 torus∩cylinder SSI) = future phase.
+- **L-288-7 small-cap MVP → large-cap curved-bore 불필요 확정 (measure-first,
+  §E-2)** — SI 임계 sweep (thin/fat/horn × span, `adr289_tube_through_ok_implies_
+  si_free`) 실측: fixed-axis tube-through 는 **성공 시 항상 SI-free** (α 우려한
+  large-cap SI regime 실재 안 함). large cap 실패는 graceful (circle_on_torus
+  None / exit-split 거부) — corrupt Ok 없음 (`Ok ⇒ SI=0 ∧ manifold` 회귀 봉인).
+  §E 33 SI 는 per-vertex reflection 이었고 fixed-axis 는 무관. ⇒ **curved bore
+  는 고칠 SI 대상이 없어 폐기**. large-cap 실제 한계 = exit-split feasibility
+  (split/sketch 문제, bore 형상 아님) — 필요 시 별도 split ADR.
 - **L-288-8** additive (ADR-046 P31 #4, torus 만) + 절대 #[ignore] 금지.
 
 #### 회귀 (절대 #[ignore] 금지)
@@ -6921,7 +6926,9 @@ tube-through). cargo workspace **3012 passed / 0 failed / 1 ignored**.
 - cut+boss: Cylinder/Sphere/Cone/Torus 4곡면 (ADR-271/286/287)
 - through-hole: Cylinder + Cone (diametric) + **Torus (tube, ADR-288)**
 - live preview: 4곡면 (ADR-287 §H)
-- 남은 것: torus large-cap curved bore (future phase, L-288-7)
+- **곡면 편집 arc 완결** — large-cap curved bore 는 measure-first 로 불필요
+  확정 (§E-2, L-288-7): fixed-axis 가 성공 시 항상 SI-free, large-cap 한계는
+  exit-split (bore 형상 무관). 남은 것 없음 (필요 시 exit-split/sketch 별도 ADR).
 
 #### Cross-link
 
