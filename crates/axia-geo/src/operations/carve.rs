@@ -1102,6 +1102,46 @@ impl Mesh {
         Some(out)
     }
 
+    /// ADR-290 곡면 편집 마무리 — READ-ONLY preview polyline for a circle being
+    /// sketched ON a curved face (sphere/cylinder/cone/torus). `center_pt` /
+    /// `radius_pt` are the cursor hits (projected to the surface by the circle_on_*
+    /// helpers). Returns the ON-SURFACE circle as a flat xyz polyline (f32) so the
+    /// DrawCircle preview follows the curvature instead of a flat tangent-plane
+    /// circle (which misled — the committed `draw_circle_on_*` result IS curved).
+    /// `&self` = no mutation → safe every mouse-move (mirrors `preview_curved_carve`).
+    pub fn preview_circle_on_surface(
+        &self,
+        host_face: FaceId,
+        center_pt: DVec3,
+        radius_pt: DVec3,
+    ) -> Option<Vec<f32>> {
+        use crate::surfaces::AnalyticSurface as S;
+        use std::f64::consts::TAU;
+        const TOL: f64 = 0.05; // preview chord tolerance
+        let face = self.faces.get(host_face).filter(|f| f.is_active())?;
+        let surf = face.surface()?;
+        let pts: Vec<DVec3> = match surf {
+            S::Sphere { center, radius, .. } => {
+                // circle_on_sphere → AnalyticCurve::Circle → sample as a polyline.
+                let c = crate::surfaces::sphere::circle_on_sphere(*center, *radius, center_pt, radius_pt)?;
+                if let crate::curves::AnalyticCurve::Circle { center: cc, radius: rr, normal, basis_u } = c {
+                    let bv = normal.cross(basis_u).normalize_or_zero();
+                    if bv.length_squared() < 0.5 { return None; }
+                    (0..=48).map(|i| { let a = TAU * (i as f64) / 48.0; cc + basis_u * (rr * a.cos()) + bv * (rr * a.sin()) }).collect()
+                } else { return None; }
+            }
+            S::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } =>
+                crate::surfaces::cylinder::circle_on_cylinder(*axis_origin, *axis_dir, *radius, *ref_dir, center_pt, radius_pt, TOL)?,
+            S::Cone { apex, axis_dir, half_angle, ref_dir, .. } =>
+                crate::surfaces::cone::circle_on_cone(*apex, *axis_dir, *half_angle, *ref_dir, center_pt, radius_pt, TOL)?,
+            S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                crate::surfaces::torus::circle_on_torus(*center, *axis_dir, *ref_dir, *major_radius, *minor_radius, center_pt, radius_pt, TOL)?,
+            _ => return None,
+        };
+        if pts.len() < 3 { return None; }
+        Some(pts.iter().flat_map(|p| [p.x as f32, p.y as f32, p.z as f32]).collect())
+    }
+
     /// ADR-271 δ — drill a diametric THROUGH-hole from a sketched Cylinder cap: a
     /// straight bore along the cap-center radial, entering at the cap and exiting
     /// the opposite side of the cylinder. The cap + a mirrored exit patch are
@@ -2881,6 +2921,32 @@ mod tests {
 
         // ~zero depth → None.
         assert!(mesh.preview_curved_carve(cap, 0.0).is_none(), "zero depth → no ghost");
+    }
+
+    // ADR-290 곡면 편집 마무리 — preview_circle_on_surface returns an ON-SURFACE
+    // polyline (all points on the sphere), NOT a flat tangent-plane circle.
+    #[test]
+    fn adr290_preview_circle_on_sphere_follows_surface() {
+        let mat = MaterialId::new(0);
+        let mut mesh = Mesh::new();
+        mesh.set_sphere_path_b_default(true);
+        mesh.create_sphere(DVec3::ZERO, 10.0, 16, 12, mat).unwrap();
+        let sph = mesh.faces.iter()
+            .find(|(_, f)| f.is_active() && matches!(f.surface(), Some(crate::surfaces::AnalyticSurface::Sphere { .. })))
+            .map(|(id, _)| id).expect("sphere face");
+        let poly = mesh.preview_circle_on_surface(sph, DVec3::new(0.0, 0.0, 10.0), DVec3::new(3.0, 0.0, 9.5))
+            .expect("preview polyline");
+        assert!(poly.len() % 3 == 0 && poly.len() >= 9, "flat xyz polyline");
+        // every point lies ON the sphere surface (|p| ≈ radius), not on a flat plane.
+        for c in poly.chunks(3) {
+            let r = ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) as f64).sqrt();
+            assert!((r - 10.0).abs() < 0.5, "point on sphere (r={r})");
+        }
+        // a non-curved (Plane) face → None (falls back to the flat preview).
+        let mut m2 = Mesh::new();
+        let box_faces = m2.create_box(DVec3::ZERO, 10.0, 10.0, 10.0, mat).unwrap();
+        assert!(m2.preview_circle_on_surface(box_faces[0], DVec3::ZERO, DVec3::new(0.3, 0.0, 0.0)).is_none(),
+            "Plane face → no on-surface preview (flat preview handles it)");
     }
 
     /// ADR-287 §7 de-risk — the Sphere carve arm is CORRECT for an N-vert cap

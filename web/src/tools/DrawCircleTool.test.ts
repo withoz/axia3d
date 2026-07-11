@@ -229,6 +229,38 @@ describe('DrawCircleTool', () => {
       // planar path (drawCircleAsShape) taken; no crash.
       expect(c.bridge.drawCircleAsShape).toHaveBeenCalled();
     });
+
+    // ADR-289 곡면 편집 마무리 — the live preview follows the curved surface.
+    it('mouse-move on a Sphere host draws the on-surface preview (previewCircleOnSurface)', () => {
+      const c = sphereCtx();
+      const poly = new Float32Array([0, 0, 10, 3, 0, 9.5, -3, 0, 9.5]);
+      c.bridge.previewCircleOnSurface = vi.fn().mockReturnValue(poly);
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
+      // move: radius reference on the sphere surface
+      c.viewport.pick = vi.fn().mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(3, 0, 4) });
+      const addSpy = c.viewport.scene.add as ReturnType<typeof vi.fn>;
+      addSpy.mockClear();
+      t.onMouseMove({ clientX: 150, clientY: 100 } as MouseEvent, null);
+      expect(c.bridge.previewCircleOnSurface).toHaveBeenCalled();
+      const args = c.bridge.previewCircleOnSurface.mock.calls[0];
+      expect(args[0]).toBe(5); // host sphere face id
+      expect(addSpy).toHaveBeenCalled(); // an on-surface preview Line was added
+    });
+
+    it('mouse-move falls back to the flat preview when previewCircleOnSurface is empty', () => {
+      const c = sphereCtx();
+      c.bridge.previewCircleOnSurface = vi.fn().mockReturnValue(new Float32Array(0));
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
+      c.viewport.pick = vi.fn().mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(3, 0, 4) });
+      const addSpy = c.viewport.scene.add as ReturnType<typeof vi.fn>;
+      addSpy.mockClear();
+      // does not throw; still draws a (flat) preview
+      expect(() => t.onMouseMove({ clientX: 150, clientY: 100 } as MouseEvent, null)).not.toThrow();
+      expect(c.bridge.previewCircleOnSurface).toHaveBeenCalled();
+      expect(addSpy).toHaveBeenCalled();
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────

@@ -8879,6 +8879,29 @@ impl AxiaEngine {
             .unwrap_or_default()
     }
 
+    /// ADR-290 곡면 편집 마무리 — READ-ONLY on-surface circle preview (flat xyz
+    /// polyline) for the DrawCircle tool on a curved host face (Sphere/Cylinder/
+    /// Cone/Torus). `center_pt`/`radius_pt` are the world points the user clicked;
+    /// the returned polyline FOLLOWS the surface (curves along it) instead of the
+    /// flat tangent-plane approximation. Empty array = non-curved face (the tool
+    /// then draws its own flat preview). Safe every mouse-move (`&self`).
+    #[wasm_bindgen(js_name = "previewCircleOnSurface")]
+    pub fn preview_circle_on_surface(
+        &self,
+        host_face_raw: u32,
+        cx: f64, cy: f64, cz: f64,
+        rx: f64, ry: f64, rz: f64,
+    ) -> Vec<f32> {
+        self.scene
+            .mesh
+            .preview_circle_on_surface(
+                FaceId::new(host_face_raw),
+                DVec3::new(cx, cy, cz),
+                DVec3::new(rx, ry, rz),
+            )
+            .unwrap_or_default()
+    }
+
     /// ADR-252 — `true` if the face is a coplanar profile contained in a LARGER
     /// face on the same plane (the "rect drawn on a wall" signal). The Push/Pull
     /// tool uses this to route an inward push to a pocket carve. Read-only.

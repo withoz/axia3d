@@ -524,6 +524,12 @@ type AxiaEngineExtended = AxiaEngine & {
   carveCurvedBoss?(capFaceRaw: number, height: number): number;
   /** ADR-287 — read-only ghost tris (flat xyz) for a live curved pocket/boss preview. */
   previewCurvedCarve?(capFaceRaw: number, signedDepth: number): Float32Array;
+  /** ADR-290 — read-only on-surface circle preview polyline (flat xyz) for DrawCircle on a curved face. */
+  previewCircleOnSurface?(
+    hostFaceRaw: number,
+    cx: number, cy: number, cz: number,
+    rx: number, ry: number, rz: number,
+  ): Float32Array;
   /** ADR-252 — true if the face is a coplanar profile contained in a LARGER face (pocket candidate). */
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
@@ -4428,6 +4434,31 @@ export class WasmBridge {
       return g && g.length > 0 ? g : null;
     } catch (e) {
       this.recordBridgeError('previewCurvedCarve', e);
+      return null;
+    }
+  }
+
+  /** ADR-290 곡면 편집 마무리 — READ-ONLY on-surface circle preview polyline
+   *  (flat xyz) for the DrawCircle tool on a curved host face (Sphere/Cylinder/
+   *  Cone/Torus). `centerPt`/`radiusPt` are world points the user clicked; the
+   *  returned polyline FOLLOWS the surface. Returns null on a non-curved face
+   *  (the tool then draws its own flat preview). Does NOT markDirty (read-only)
+   *  — safe every mouse-move. */
+  previewCircleOnSurface(
+    hostFace: number,
+    centerPt: [number, number, number],
+    radiusPt: [number, number, number],
+  ): Float32Array | null {
+    if (!this.engine?.previewCircleOnSurface) return null;
+    try {
+      const g = this.engine.previewCircleOnSurface(
+        hostFace,
+        centerPt[0], centerPt[1], centerPt[2],
+        radiusPt[0], radiusPt[1], radiusPt[2],
+      );
+      return g && g.length > 0 ? g : null;
+    } catch (e) {
+      this.recordBridgeError('previewCircleOnSurface', e);
       return null;
     }
   }

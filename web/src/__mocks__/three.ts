@@ -153,6 +153,10 @@ export class PlaneGeometry extends BufferGeometry {
   constructor(_w?: number, _h?: number) { super(); }
 }
 
+export class CircleGeometry extends BufferGeometry {
+  constructor(_radius?: number, _segments?: number) { super(); }
+}
+
 export class Quaternion {
   x = 0; y = 0; z = 0; w = 1;
   setFromUnitVectors(_a: any, _b: any) { return this; }

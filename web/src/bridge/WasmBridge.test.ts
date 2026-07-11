@@ -1301,6 +1301,46 @@ describe('WasmBridge', () => {
     });
 
     // ──────────────────────────────────────────────────────────────────
+    // ADR-290 — previewCircleOnSurface (곡면 위 원 미리보기, read-only)
+    // ──────────────────────────────────────────────────────────────────
+
+    it('previewCircleOnSurface() returns null when engine missing', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = null;
+      expect(bridge.previewCircleOnSurface(0, [0, 0, 10], [3, 0, 9.5])).toBeNull();
+    });
+
+    it('previewCircleOnSurface() returns null when WASM export missing (legacy build / mock)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = { /* method intentionally absent */ };
+      expect(bridge.previewCircleOnSurface(0, [0, 0, 10], [3, 0, 9.5])).toBeNull();
+    });
+
+    it('previewCircleOnSurface() returns null on an empty polyline (non-curved face)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = { previewCircleOnSurface: () => new Float32Array(0) };
+      expect(bridge.previewCircleOnSurface(0, [0, 0, 10], [3, 0, 9.5])).toBeNull();
+    });
+
+    it('previewCircleOnSurface() forwards face + flattened points and returns the polyline', () => {
+      let captured: number[] | null = null;
+      const poly = new Float32Array([0, 0, 10, 3, 0, 9.5, -3, 0, 9.5]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {
+        previewCircleOnSurface: (
+          fid: number, cx: number, cy: number, cz: number,
+          rx: number, ry: number, rz: number,
+        ) => {
+          captured = [fid, cx, cy, cz, rx, ry, rz];
+          return poly;
+        },
+      };
+      const result = bridge.previewCircleOnSurface(5, [0, 0, 10], [3, 0, 9.5]);
+      expect(result).toBe(poly);
+      expect(captured).toEqual([5, 0, 0, 10, 3, 0, 9.5]);
+    });
+
+    // ──────────────────────────────────────────────────────────────────
     // ADR-257 β-6 — drawCircleOnCylinder (곡면 벽에 닫힌 geodesic 원 → 분할)
     // ──────────────────────────────────────────────────────────────────
 

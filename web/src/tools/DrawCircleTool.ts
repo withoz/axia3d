@@ -295,7 +295,19 @@ export class DrawCircleTool implements ITool {
 
     const radius = this.circleCenter.distanceTo(planePoint);
     if (radius > 0.1) {
-      this.updatePreview(this.circleCenter, radius);
+      // ADR-290 곡면 편집 마무리 — on a curved host (Sphere/Cylinder/Cone/Torus),
+      // draw the on-surface preview (follows the surface) instead of the flat
+      // tangent-plane circle. Fall back to the flat preview if unavailable.
+      const hostFace = this.activeCurvedHostFace();
+      let drewCurved = false;
+      if (hostFace >= 0) {
+        // Prefer the surface hit for the radius reference (engine projects
+        // onto the surface either way, matching the commit path).
+        const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+        const radiusPt = (hit && hit.point) ? hit.point : planePoint;
+        drewCurved = this.updateCurvedPreview(this.circleCenter, radiusPt, hostFace);
+      }
+      if (!drewCurved) this.updatePreview(this.circleCenter, radius);
 
       // Dimension label: from center to current point on plane
       this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
@@ -419,6 +431,46 @@ export class DrawCircleTool implements ITool {
   // ═══════════════════════════════════════════════════
   //  Preview Rendering
   // ═══════════════════════════════════════════════════
+
+  /** ADR-290 — the active curved host face id (Sphere/Cylinder/Cone/Torus), or -1. */
+  private activeCurvedHostFace(): number {
+    if (this.sphereMode && this.sphereHostFace >= 0) return this.sphereHostFace;
+    if (this.cylinderMode && this.cylinderHostFace >= 0) return this.cylinderHostFace;
+    if (this.coneMode && this.coneHostFace >= 0) return this.coneHostFace;
+    if (this.torusMode && this.torusHostFace >= 0) return this.torusHostFace;
+    return -1;
+  }
+
+  /** ADR-290 — draw the on-surface circle preview (follows the curved host) via
+   *  the read-only engine query. Returns false (preview left cleared) when the
+   *  engine has no on-surface polyline, so the caller can fall back to flat. */
+  private updateCurvedPreview(
+    center: THREE.Vector3,
+    radiusPt: THREE.Vector3,
+    hostFace: number,
+  ): boolean {
+    this.removePreview();
+    if (typeof this.ctx.bridge.previewCircleOnSurface !== 'function') return false;
+    const poly = this.ctx.bridge.previewCircleOnSurface(
+      hostFace,
+      [center.x, center.y, center.z],
+      [radiusPt.x, radiusPt.y, radiusPt.z],
+    );
+    if (!poly || poly.length < 9) return false;
+    const points: THREE.Vector3[] = [];
+    for (let i = 0; i + 2 < poly.length; i += 3) {
+      points.push(new THREE.Vector3(poly[i], poly[i + 1], poly[i + 2]));
+    }
+    if (points.length < 3) return false;
+    // ensure a visually closed loop
+    points.push(points[0].clone());
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xda77f2, linewidth: 1 });
+    this.circlePreview = new THREE.Line(lineGeo, lineMat);
+    this.circlePreview.renderOrder = 999;
+    this.ctx.viewport.scene.add(this.circlePreview);
+    return true;
+  }
 
   private updatePreview(center: THREE.Vector3, radius: number): void {
     this.removePreview();

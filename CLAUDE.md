@@ -7121,6 +7121,64 @@ Acceptance), sphere/cone/torus 는 `polygonalize_curved_operand` 에서 fall-thr
 - 메타-원칙 #4 (SSOT) #5 (사용자 편의) #6 (measure-first) / LOCKED #44 / #47~49 (Path B
   primitives) / [[project-boolean-runtime-finding]]
 
+### 95. ADR-290 — On-Surface DrawCircle Preview (곡면 편집 마무리, 2026-07-11) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-11)**: AskUserQuestion "곡면 편집 마무리
+(사용자 facing)" — ADR-202/257/263 곡면 원 그리기 family 의 preview UX 마무리.
+
+**측정 우선 finding**: 곡면(Sphere/Cylinder/Cone/Torus) 위 원 그리기 **commit** 은
+완성 (drawCircleOn{Sphere,Cylinder,Cone,Torus}) 이나, **live preview**
+(`DrawCircleTool.updatePreview`)는 곡면 모드에서도 FLAT tangent-plane 원을 그려
+commit 결과와 불일치 — 드래그 중엔 평면 disk, 클릭 후엔 곡면-hugging 원. audit 결과
+`updatePreview` 에 곡면 분기 부재 + commit-path helper `circle_on_{sphere,cylinder,
+cone,torus}` 는 이미 존재 (read-only material).
+
+**핵심 변경**: read-only 엔진 query `Mesh::preview_circle_on_surface(host_face,
+center_pt, radius_pt) -> Option<Vec<f32>>` — commit helper 재사용 → preview=commit
+SSOT (메타-원칙 #4), `&self` 라 매 mouse-move 안전 (ADR-287 §H ghost 패턴). 5-layer
+chain: engine → WASM `previewCircleOnSurface` → bridge (graceful null) →
+`DrawCircleTool` onMouseMove 곡면 분기 → 비-곡면/degenerate 는 기존 flat fallback.
+
+#### Lock-ins (L-95-1 ~ L-95-9)
+- **L-95-1** `preview_circle_on_surface` READ-ONLY (`&self`) — 매 mouse-move 안전
+  (ADR-287 §H 패턴)
+- **L-95-2** commit-path helper (`circle_on_{sphere,cylinder,cone,torus}`) 재사용 →
+  preview=commit 정확 일치 (메타-원칙 #4 SSOT)
+- **L-95-3** Sphere/Cylinder/Cone/Torus only; Plane face → `None` → 기존 flat preview
+- **L-95-4** chord tol 0.05 (cyl/cone/torus preview granularity, commit 무관)
+- **L-95-5** engine→WASM→bridge→tool full chain, 각 layer graceful fallback
+- **L-95-6** ADR-046 P31 #4 additive only — 새 action/menu/toolbar/단축키 0
+  (DrawCircle 'tool-circle' shortcut C 불변, preview 는 onMouseMove 내부)
+- **L-95-7** radius 참조는 surface hit(`viewport.pick`) 우선, drawing-plane fallback
+  (commit path 정합 — 엔진이 어느 쪽이든 surface 로 projection)
+- **L-95-8** planar DrawCircle 경로 회귀 0 (flat fallback 보존)
+- **L-95-9** 절대 #[ignore] 금지
+
+#### 배선/메뉴 정합성 (재검토 완료)
+- 5-layer wiring 전부 연결 확인: engine 1 / WASM export 2(js+d.ts) / bridge 5(iface+
+  impl+tests) / tool 2. DrawCircle 도구 등록('tool-circle', 단축키 C) **불변** — preview
+  는 순수 tool 내부 enhancement, ActionCatalog/CommandCatalog 변경 0 (additive).
+
+#### 회귀 (절대 #[ignore] 금지)
+axia-geo +1 (2241, `adr290_preview_circle_on_sphere_follows_surface` — sphere 점 전부
+구 위/Plane→None) / vitest +6 (WasmBridge 4 graceful + DrawCircleTool 2 curved/flat-
+fallback) / Playwright +2 (`adr-290-preview-circle-on-surface.spec` — sphere 점 전부
+구 위·flat 아님 + cylinder wall dist≈r, real Chromium 2/2). tsc 0. three mock
+`CircleGeometry` 추가 (flat preview path unit-test 가능). 전체 axia-geo/axia-wasm
+suites green (1 pre-existing slow-channel ignored).
+
+#### 라이브 검증 (real Chromium E2E, ADR-087 K-ζ)
+sphere: preview polyline 점 전부 |p|≈5 (구 위) + z 전부 5 아님 (flat tangent 아님).
+cylinder: preview polyline 점 전부 dist-to-axis≈5 (벽 위). → preview 가 곡면을
+따라감을 full WASM stack 으로 증명.
+
+#### Cross-link
+- ADR-290 본문 §D Acceptance (`docs/adr/290-on-surface-circle-preview.md`)
+- ADR-202/257/263 (곡면 원 commit path — preview 가 이제 일치) / ADR-287 §H
+  (read-only preview ghost 패턴) / ADR-089 A-χ (split surface 상속) / ADR-031 Phase D
+- ADR-046 P31 #4 (additive) / ADR-087 K-ζ (시연 게이트) / 메타-원칙 #4 #5 #6 /
+  LOCKED #44 (Complete Meaning per Merge) / #66 (STATUS-POLICY)
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
