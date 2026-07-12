@@ -230,7 +230,7 @@ describe('DrawCircleTool', () => {
       expect(c.bridge.drawCircleAsShape).toHaveBeenCalled();
     });
 
-    // ADR-289 곡면 편집 마무리 — the live preview follows the curved surface.
+    // ADR-290 곡면 편집 마무리 — the live preview follows the curved surface.
     it('mouse-move on a Sphere host draws the on-surface preview (previewCircleOnSurface)', () => {
       const c = sphereCtx();
       const poly = new Float32Array([0, 0, 10, 3, 0, 9.5, -3, 0, 9.5]);

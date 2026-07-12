@@ -93,7 +93,7 @@ the ADR-287 §H read-only ghost pattern.
 - **β-4 (E2E + closure)** — `web/e2e/adr-290-preview-circle-on-surface.spec.ts`
   (real Chromium + production WASM): sphere preview polyline all on the sphere and
   NOT on the flat tangent plane; cylinder preview polyline on the wall
-  (dist-to-axis ≈ radius). **2/2 pass.** ADR closure + LOCKED #92 + README + memory.
+  (dist-to-axis ≈ radius). **2/2 pass.** ADR closure + LOCKED #95 + README + memory.
 
 **Regression totals**: axia-geo +1 (2241), vitest +6 (WasmBridge 4 +
 DrawCircleTool 2), Playwright +2. tsc 0 errors. Full workspace cargo unchanged
