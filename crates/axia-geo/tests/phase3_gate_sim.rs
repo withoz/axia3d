@@ -287,3 +287,181 @@ fn phase3_gate_simulation() {
 
     println!("\n=== end of simulation table ===\n");
 }
+
+/// ADR-291 de-risk — the Phase 3 sim only ran trim / curved-cut with a CLEAN
+/// centered cut (→ SAFE). The gate exists for DEGENERATE / GRAZING planes
+/// (tangent to a face, through a vertex/edge, near-miss). Measure whether the
+/// UNGATED cut/trim ops can commit corruption on those inputs. EXPLORATORY —
+/// always passes, prints a table; the assertions only sanity-check it ran.
+#[test]
+fn adr291_derisk_degenerate_cut_trim() {
+    println!("\n=== ADR-291 de-risk: degenerate/grazing cut & trim on closed solids ===\n");
+
+    // Box top at z=+50, bottom at z=-50.
+    let box_cases: Vec<(&str, SlicePlane, bool)> = vec![
+        ("trim z=+50 (tangent top) keepAbove", SlicePlane::new(DVec3::new(0.0,0.0,50.0), DVec3::Z).unwrap(), true),
+        ("trim z=+50 (tangent top) keepBelow", SlicePlane::new(DVec3::new(0.0,0.0,50.0), DVec3::Z).unwrap(), false),
+        ("trim z=+49.999 (grazing) keepAbove", SlicePlane::new(DVec3::new(0.0,0.0,49.999), DVec3::Z).unwrap(), true),
+        ("trim z=-50 (tangent bottom) keepBelow", SlicePlane::new(DVec3::new(0.0,0.0,-50.0), DVec3::Z).unwrap(), false),
+        ("trim tilted through +corner", SlicePlane::new(DVec3::new(50.0,50.0,50.0), DVec3::new(1.0,1.0,1.0).normalize()).unwrap(), true),
+        ("trim x=+50 (tangent right) keepAbove", SlicePlane::new(DVec3::new(50.0,0.0,0.0), DVec3::X).unwrap(), true),
+    ];
+    for (name, plane, keep_above) in box_cases {
+        let (mut m, f) = fresh_box();
+        let before = measure(&m);
+        let r = m.trim_volume_by_plane(&f, plane, keep_above, MaterialId::new(0));
+        let after = measure(&m);
+        print_row(name, r.is_ok(), r.is_err(), &before, &after);
+    }
+
+    // Path B cylinder (radius 30, height 100 centered at origin → caps z=±50).
+    let cyl_cut_cases: Vec<(&str, f64, CurvedCutMode)> = vec![
+        ("cut_curved z=+50 (tangent top cap) Slice", 50.0, CurvedCutMode::Slice),
+        ("cut_curved z=+49.999 (grazing) KeepAbove", 49.999, CurvedCutMode::KeepAbove),
+        ("cut_curved z=-50 (tangent bottom) KeepBelow", -50.0, CurvedCutMode::KeepBelow),
+    ];
+    for (name, z, mode) in cyl_cut_cases {
+        let mut m = Mesh::new();
+        m.set_cylinder_path_b_default(true);
+        let f = m.create_cylinder(DVec3::ZERO, 30.0, 100.0, 32, MaterialId::new(0)).expect("cyl");
+        let before = measure(&m);
+        match m.cut_curved_by_z_plane(&f, z, mode, MaterialId::new(0)) {
+            None => println!("[{name:<40}] dispatch: not routed (no mutation)"),
+            Some(r) => { let after = measure(&m); print_row(name, r.is_ok(), r.is_err(), &before, &after); }
+        }
+    }
+
+    let cyl_trim_cases: Vec<(&str, DVec3, DVec3)> = vec![
+        ("trim_curved z=+50 (tangent top cap)", DVec3::new(0.0,0.0,50.0), DVec3::Z),
+        ("trim_curved z=+49.999 (grazing)", DVec3::new(0.0,0.0,49.999), DVec3::Z),
+        ("trim_curved tilted grazing rim", DVec3::new(30.0,0.0,50.0), DVec3::new(1.0,0.0,1.0).normalize()),
+    ];
+    for (name, origin, normal) in cyl_trim_cases {
+        let mut m = Mesh::new();
+        m.set_cylinder_path_b_default(true);
+        let f = m.create_cylinder(DVec3::ZERO, 30.0, 100.0, 32, MaterialId::new(0)).expect("cyl");
+        let before = measure(&m);
+        match m.trim_curved_by_plane(&f, origin, normal, MaterialId::new(0)) {
+            None => println!("[{name:<40}] dispatch: not routed (no mutation)"),
+            Some(r) => { let after = measure(&m); print_row(name, r.is_ok(), r.is_err(), &before, &after); }
+        }
+    }
+
+    // ── Harder adversarial: slice-core parity, thin slivers, compound cuts ──
+    println!("\n--- harder adversarial (slice parity / thin sliver / compound) ---");
+    // slice_volume_by_plane on the same degenerate planes (does slice's OWN
+    // core ever produce damage its gate would catch? parity with trim).
+    let slice_cases: Vec<(&str, SlicePlane)> = vec![
+        ("slice z=+50 (tangent top)", SlicePlane::new(DVec3::new(0.0,0.0,50.0), DVec3::Z).unwrap()),
+        ("slice z=+49.9 (thin sliver)", SlicePlane::new(DVec3::new(0.0,0.0,49.9), DVec3::Z).unwrap()),
+        ("slice z=+49.99999 (near-tangent)", SlicePlane::new(DVec3::new(0.0,0.0,49.99999), DVec3::Z).unwrap()),
+        ("slice tilted near +corner", SlicePlane::new(DVec3::new(49.0,49.0,49.0), DVec3::new(1.0,1.0,1.0).normalize()).unwrap()),
+    ];
+    for (name, plane) in slice_cases {
+        let (mut m, f) = fresh_box();
+        let before = measure(&m);
+        let r = m.slice_volume_by_plane(&f, plane, MaterialId::new(0));
+        let after = measure(&m);
+        print_row(name, r.is_ok(), r.is_err(), &before, &after);
+    }
+    // thin-sliver trims (a valid but degenerate-thin kept half).
+    for z in [49.5f64, 49.9, 49.99, 49.999999] {
+        let (mut m, f) = fresh_box();
+        let before = measure(&m);
+        let plane = SlicePlane::new(DVec3::new(0.0,0.0,z), DVec3::Z).unwrap();
+        let r = m.trim_volume_by_plane(&f, plane, true, MaterialId::new(0));
+        let after = measure(&m);
+        print_row(&format!("trim thin-sliver z={z} keepAbove"), r.is_ok(), r.is_err(), &before, &after);
+    }
+    // compound: trim, then trim the result again with a grazing plane.
+    {
+        let (mut m, f) = fresh_box();
+        let p1 = SlicePlane::new(DVec3::new(0.0,0.0,0.0), DVec3::Z).unwrap();
+        let kept = m.trim_volume_by_plane(&f, p1, true, MaterialId::new(0)).unwrap_or_default();
+        let before = measure(&m);
+        let p2 = SlicePlane::new(DVec3::new(0.0,0.0,0.0), DVec3::new(0.0,1.0,0.01).normalize()).unwrap();
+        let r = m.trim_volume_by_plane(&kept, p2, true, MaterialId::new(0));
+        let after = measure(&m);
+        print_row("compound trim (z=0 then tilted y=0)", r.is_ok(), r.is_err(), &before, &after);
+    }
+
+    println!("\n=== end of ADR-291 de-risk table ===\n");
+}
+
+/// ADR-291 de-risk part 2 — CLASSIFY the self-intersections a thin/tilted slice
+/// produces: are the pairs genuinely CROSSING (real corruption) or COPLANAR
+/// coincident caps (a keep-both artifact that gating would false-reject)?
+#[test]
+fn adr291_derisk_classify_slice_self_intersections() {
+    println!("\n=== ADR-291 de-risk: classify slice self-intersections ===\n");
+    for (name, plane) in [
+        ("slice z=+49.9 thin sliver", SlicePlane::new(DVec3::new(0.0,0.0,49.9), DVec3::Z).unwrap()),
+        ("slice tilted near +corner", SlicePlane::new(DVec3::new(49.0,49.0,49.0), DVec3::new(1.0,1.0,1.0).normalize()).unwrap()),
+    ] {
+        let (mut m, f) = fresh_box();
+        let _ = m.slice_volume_by_plane(&f, plane, MaterialId::new(0));
+        let si = m.detect_self_intersections();
+        println!("[{name}] {} SI pairs", si.count());
+        let mut coplanar = 0usize;
+        let mut crossing = 0usize;
+        let centroid = |mesh: &Mesh, fid: FaceId| -> DVec3 {
+            let start = mesh.faces[fid].outer().start;
+            let vs = mesh.collect_loop_verts(start).unwrap_or_default();
+            if vs.is_empty() { return DVec3::ZERO; }
+            let sum: DVec3 = vs.iter().map(|&v| mesh.verts[v].pos()).sum();
+            sum / (vs.len() as f64)
+        };
+        for &(fa, fb) in si.intersecting_pairs.iter().take(30) {
+            let na = axia_geo::operations::coplanar::face_world_normal(&m, fa).unwrap_or(DVec3::ZERO);
+            let nb = axia_geo::operations::coplanar::face_world_normal(&m, fb).unwrap_or(DVec3::ZERO);
+            let ca = centroid(&m, fa);
+            let cb = centroid(&m, fb);
+            let parallel = na.dot(nb).abs() > 0.999;
+            // coplanar = parallel AND the offset between the two face planes ~0
+            let offset_gap = (cb - ca).dot(na).abs();
+            let coplanar_pair = parallel && offset_gap < 1e-3;
+            if coplanar_pair { coplanar += 1; } else { crossing += 1; }
+            if coplanar + crossing <= 6 {
+                println!("   pair ({},{}) nA·nB={:.3} gap={:.4}mm → {}",
+                    fa.raw(), fb.raw(), na.dot(nb), offset_gap,
+                    if coplanar_pair { "COPLANAR(coincident)" } else { "CROSSING" });
+            }
+        }
+        println!("   → coplanar-coincident: {coplanar}, crossing: {crossing}\n");
+    }
+
+    // DECISIVE: does TRIM (keep ONE half) at the same planes also self-intersect?
+    // If slice(both)→SI but trim(one)→clean, the SI is BETWEEN the two halves
+    // (touching at the cut plane, inherent to slice-keep-both) — NOT corruption
+    // of a resulting solid; gating slice on SI would false-reject. If trim(one)
+    // ALSO self-intersects, a single resulting solid genuinely folds → real bug.
+    println!("--- decisive: trim (keep ONE half) at the SI-producing planes ---");
+    for (name, plane) in [
+        ("trim z=+49.9 keepAbove (thin slab kept)", SlicePlane::new(DVec3::new(0.0,0.0,49.9), DVec3::Z).unwrap()),
+        ("trim z=+49.9 keepBelow (big block kept)", SlicePlane::new(DVec3::new(0.0,0.0,49.9), DVec3::Z).unwrap()),
+        ("trim tilted-corner keepAbove (corner tetra)", SlicePlane::new(DVec3::new(49.0,49.0,49.0), DVec3::new(1.0,1.0,1.0).normalize()).unwrap()),
+        ("trim tilted-corner keepBelow (big remainder)", SlicePlane::new(DVec3::new(49.0,49.0,49.0), DVec3::new(1.0,1.0,1.0).normalize()).unwrap()),
+    ] {
+        let keep_above = name.contains("keepAbove");
+        let (mut m, f) = fresh_box();
+        let before = measure(&m);
+        let r = m.trim_volume_by_plane(&f, plane, keep_above, MaterialId::new(0));
+        let after = measure(&m);
+        print_row(name, r.is_ok(), r.is_err(), &before, &after);
+        // ADR-291 load-bearing invariant: whenever trim SUCCEEDS (keeps ONE
+        // half), the result is SI-clean — even at the planes where slice
+        // keep-both self-intersects. This is WHY the cut ops gate on cracks
+        // (integrity_gate) and NOT on self-intersection: the SI slice reports
+        // is inter-half touching at the cut plane, not corruption of a solid.
+        // If this ever fails, a single trimmed solid genuinely folds → the
+        // "no SI gate" decision (LOCKED ADR-291 (b)) must be revisited.
+        if r.is_ok() {
+            assert_eq!(
+                after.self_intersections, 0,
+                "ADR-291: trim keep-one must be SI-clean ({name})"
+            );
+            assert!(after.invariants_valid, "ADR-291: trim keep-one invariants valid ({name})");
+        }
+    }
+    println!();
+}

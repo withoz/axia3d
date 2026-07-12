@@ -1511,11 +1511,23 @@ fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
         "ADR-267 γ: shared gate helper must exist"
     );
     // γ (4) + γ-2 (punch_rect/polygon, drill_rect/polygon, door, split = 6) = 10
-    // call sites + 1 definition. Guards against a cut op silently losing its gate.
+    // + ADR-291 (trim, cut curved, trim curved = 3) = 13 call sites + 1 def.
+    // Guards against a cut op silently losing its gate.
     assert!(
-        l.matches("integrity_gate_passed(").count() >= 10,
-        "ADR-267 γ/γ-2: gate helper must be called by ≥10 cut ops (all punch/drill/carve/slice/door/split)"
+        l.matches("integrity_gate_passed(").count() >= 13,
+        "ADR-267 γ/γ-2 + ADR-291: gate helper must be called by ≥13 cut ops \
+         (all punch/drill/carve/slice/door/split/trim/curved)"
     );
+    // ADR-291 — the plane-cut siblings of `slice` must carry the SAME integrity
+    // gate (trim shares slice's core; the curved knives are the Path B siblings).
+    // A source-level guard so a future edit can't drop them the way `trim` was
+    // originally shipped ungated.
+    for label in [r#""trim", false"#, r#""cut curved", false"#, r#""trim curved", false"#] {
+        assert!(
+            l.contains(label),
+            "ADR-291: plane-cut op must call integrity_gate_passed(.., {label})"
+        );
+    }
 }
 
 // ── ADR-080 V-β-α-bridge — `offset_edge_on_host` JSON contract ──────

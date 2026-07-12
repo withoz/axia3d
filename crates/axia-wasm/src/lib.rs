@@ -9536,8 +9536,28 @@ impl AxiaEngine {
             Ok(p) => p,
             Err(e) => return format!(r#"{{"ok":false,"error":"{}"}}"#, e.to_string().replace('"', "'")),
         };
+        // ADR-291 — mirror slice's integrity gate (trim shares slice's core).
+        // OpenMesh scope: catches new geometric cracks / invariant violations
+        // (baseline-relative). NOT self-intersection — SI between the two halves
+        // at the cut plane is inherent to keeping both halves, not corruption of
+        // a resulting solid (measured: trim keep-one is SI-clean at the very
+        // planes where slice keep-both self-intersects). Scene commits internally
+        // → manual_txn=false.
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         match self.scene.trim_volume_by_plane(&fids, plane, keep_above) {
             Ok(()) => {
+                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "trim", false)
+                {
+                    return format!(
+                        r#"{{"ok":false,"error":"{}"}}"#,
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let total = self.scene.mesh.face_count();
@@ -9565,6 +9585,16 @@ impl AxiaEngine {
             _ => return format!(r#"{{"ok":false,"error":"unknown cut mode: {}"}}"#, mode),
         };
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
+        // ADR-291 — mirror slice's integrity gate on the routed (mutating) arm.
+        // Baseline-relative OpenMesh damage (crack/invariant), so pre-existing
+        // Path B rim artifacts don't false-reject. Scene commits internally →
+        // manual_txn=false. Captured before the call; unused on the fallback arm.
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         // ADR-197 #Track3 — XIA management lives in the Scene wrapper: SLICE splits
         // the 2 disjoint shells into 2 volumes (upper kept, lower = new `_below`
         // XIA); trim keeps 1 volume. Transaction-wrapped there (single undo).
@@ -9574,6 +9604,14 @@ impl AxiaEngine {
                 r#"{"ok":true,"routed":false}"#.to_string()
             }
             Ok(res) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "cut curved", false,
+                ) {
+                    return format!(
+                        r#"{{"ok":false,"routed":true,"error":"{}"}}"#,
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let ids: Vec<u32> = res.faces.iter().map(|f| f.raw()).collect();
@@ -9607,9 +9645,26 @@ impl AxiaEngine {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         let origin = glam::DVec3::new(ox, oy, oz);
         let normal = glam::DVec3::new(nx, ny, nz);
+        // ADR-291 — mirror slice's integrity gate on the routed (mutating) arm
+        // (baseline-relative OpenMesh damage; Scene commits internally →
+        // manual_txn=false).
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let integrity_snapshot = self.scene.scene_snapshot();
         match self.scene.trim_curved_volume_by_plane(&fids, origin, normal) {
             Ok(res) if !res.routed => r#"{"ok":true,"routed":false}"#.to_string(),
             Ok(res) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "trim curved", false,
+                ) {
+                    return format!(
+                        r#"{{"ok":false,"routed":true,"error":"{}"}}"#,
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let ids: Vec<u32> = res.faces.iter().map(|f| f.raw()).collect();
