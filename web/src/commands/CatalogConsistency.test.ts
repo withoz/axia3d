@@ -34,9 +34,11 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { getCommandCatalog, __resetCommandCatalog, type CommandDef } from './CommandCatalog';
 import { registerAxiaCommands } from './AxiaCommands';
-import { getActionById, type ActionDef } from '@axia/action-catalog';
+import { getActionById, lookup, type ActionDef } from '@axia/action-catalog';
 
 describe('ADR-133 — Dual catalog unification invariant', () => {
   beforeEach(() => {
@@ -93,6 +95,29 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // tool-recess (3D pocket) → 177. The matching ActionCatalog entries are
     // kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
     expect(count).toBe(177);
+  });
+
+  // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id
+  // wired in index.html (menubar / context menu / F-keys) must resolve in the
+  // ActionCatalog identity SSOT (canonical id OR legacy alias). This catches
+  // future DOM-only ids that would be undiscoverable in the Capability
+  // Explorer (the CC ⊆ AC test above only covers CommandCatalog, never the DOM).
+  it('every index.html data-action resolves in ActionCatalog (DOM ⊆ AC)', () => {
+    // vitest runs with cwd = web/ (config lives there); index.html is at web/index.html.
+    const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    const ids = new Set<string>();
+    for (const m of html.matchAll(/data-action="([^"]+)"/g)) ids.add(m[1]);
+    expect(ids.size).toBeGreaterThan(150); // sanity: index.html was actually read
+
+    const unresolved = [...ids].filter((id) => lookup(id).kind === 'not-found');
+    expect(
+      unresolved,
+      `${unresolved.length} index.html data-action id(s) missing from ActionCatalog:\n` +
+        unresolved.map((id) => `  - ${id}`).join('\n') +
+        `\n\nFix: add an ActionDef (or a legacy alias on the canonical entry) in\n` +
+        `packages/axia-action-catalog/src/catalog.ts, then rebuild the package\n` +
+        `(cd packages/axia-action-catalog && npm run build).\n`,
+    ).toEqual([]);
   });
 
   it('ActionCatalog count is at least 161 (82 shared + 13 AC-only + 66 ADR-133 added)', () => {
