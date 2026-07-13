@@ -571,6 +571,10 @@ async function main() {
   // bool-union/subtract/intersect는 BooleanHandler로 라우팅 필요 (메뉴와 동일).
   // 이 분기를 한 곳에 모아 버튼/드롭다운 양쪽에서 공통 사용.
   const dispatchToolbarAction = (action: string) => {
+    // tool-explode is a SketchUp-parity alias for ungroup (MenuBar aliases it
+    // the same way at its switch). Without this the toolbar group-dropdown's
+    // "분해 (Explode)" item is a silent no-op (executeAction has no such case).
+    if (action === 'tool-explode') action = 'ungroup';
     if (action === 'bool-union' || action === 'bool-subtract' || action === 'bool-intersect') {
       const op = action.replace('bool-', '') as 'union' | 'subtract' | 'intersect';
       void import('./ui/BooleanHandler').then(({ startBooleanOp }) => {

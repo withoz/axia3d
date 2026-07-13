@@ -381,6 +381,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-polygon': setActiveTool('polygon'); break;
       case 'tool-circle': setActiveTool('circle'); break;
       case 'tool-arc': setActiveTool('arc'); break;
+      case 'tool-ellipse': setActiveTool('ellipse'); break;
       case 'tool-pie': setActiveTool('pie'); break;
       case 'tool-hole': setActiveTool('hole'); break;
       case 'tool-polygon-hole': setActiveTool('polygon-hole'); break;
@@ -409,6 +410,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
 
       case 'tool-slice': setActiveTool('slice'); break;
       case 'tool-move': setActiveTool('move'); break;
+      case 'tool-copy': setActiveTool('copy'); break;
       case 'tool-rotate': setActiveTool('rotate'); break;
       case 'tool-scale': setActiveTool('scale'); break;
       case 'tool-offset': setActiveTool('offset'); break;
@@ -423,8 +425,12 @@ export function initMenuBar(deps: MenuBarDeps): void {
         toolManager.executeAction(act);
         break;
       case 'subdivide': toolManager.executeAction('subdivide'); break;
-      // Array — 선형/원형 직접 진입. tool-array는 레거시 linear alias.
+      // Array — 선형/원형. tool-array-linear/radial = 인터랙티브 도구(2-click,
+      // 개수 VCB) → setActiveTool. array-linear/radial = 일회성 prompt op →
+      // executeAction. tool-array는 레거시 linear alias.
       case 'tool-array': toolManager.executeAction('array-linear'); break;
+      case 'tool-array-linear': setActiveTool('array-linear'); break;
+      case 'tool-array-radial': setActiveTool('array-radial'); break;
       case 'array-linear':
       case 'array-radial':
         toolManager.executeAction(act);

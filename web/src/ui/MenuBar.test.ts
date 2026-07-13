@@ -51,6 +51,16 @@ function createMenuBarDOM(): void {
           <div class="menu-action" data-action="tool-line">Line</div>
           <div class="menu-action" data-action="tool-rect">Rectangle</div>
           <div class="menu-action" data-action="tool-circle">Circle</div>
+          <div class="menu-action" data-action="tool-ellipse">Ellipse</div>
+        </div>
+      </div>
+      <div class="menu-item">
+        <span>Modify</span>
+        <div class="menu-dropdown">
+          <div class="menu-action" data-action="tool-move">Move</div>
+          <div class="menu-action" data-action="tool-copy">Copy</div>
+          <div class="menu-action" data-action="tool-array-linear">Linear Array Tool</div>
+          <div class="menu-action" data-action="tool-array-radial">Radial Array Tool</div>
         </div>
       </div>
       <div class="menu-item">
@@ -133,6 +143,26 @@ describe('MenuBar', () => {
       document.dispatchEvent(new Event('click'));
       expect(menuItem.classList.contains('open')).toBe(false);
     });
+  });
+
+  // Bottom-bar UX audit — these Draw/Modify menu items were silent no-ops
+  // (MenuBar switch had no case) even though the underlying tools are
+  // registered. Regression guard: each must activate its tool via setTool.
+  describe('audit: previously-dead menu items activate their tools', () => {
+    const cases: Array<[string, string]> = [
+      ['tool-ellipse', 'ellipse'],
+      ['tool-copy', 'copy'],
+      ['tool-array-linear', 'array-linear'],
+      ['tool-array-radial', 'array-radial'],
+    ];
+    for (const [action, tool] of cases) {
+      it(`${action} activates the ${tool} tool (was a no-op)`, () => {
+        const el = document.querySelector(`[data-action="${action}"]`) as HTMLElement;
+        expect(el).not.toBeNull();
+        el.click();
+        expect(deps.toolManager.setTool).toHaveBeenCalledWith(tool);
+      });
+    }
   });
 
   describe('edit actions', () => {
