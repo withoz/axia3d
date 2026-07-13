@@ -465,6 +465,7 @@ export class DrawRectTool implements ITool {
       return null;
     }
     const ray = this.ctx.getRay(e);
+    const three = new THREE.Plane(plane.normal, -plane.zeroValue);
 
     // ADR-179 precision — if the cursor is over a face *coplanar* with the
     // locked plane, use the exact raycast hit point. On grazing planes (a face
@@ -479,7 +480,8 @@ export class DrawRectTool implements ITool {
                 + plane.normal.y * fhit.point.y
                 + plane.normal.z * fhit.point.z - plane.zeroValue;
         if (Math.abs(d) < COPLANAR_PICK_TOL) {
-          const pt = fhit.point.clone();
+          // ADR-292 — snap on the coplanar face path too (re-projected + force terminal).
+          const pt = this.ctx.snapToPlane?.(fhit.point.clone(), three, e) ?? fhit.point.clone();
           this.forceCardinalAxis(pt, plane);
           if (this.rectStart && pt.distanceTo(this.rectStart) > MAX_DRAW_DISTANCE) return null;
           return pt;
@@ -487,16 +489,21 @@ export class DrawRectTool implements ITool {
       }
     }
 
-    const three = new THREE.Plane(plane.normal, -plane.zeroValue);
     const target = new THREE.Vector3();
     const hit = ray.ray.intersectPlane(three, target);
     if (!hit) return null;
 
-    // **THE INVARIANT**: force cardinal-axis coord = exact zeroValue
-    this.forceCardinalAxis(target, plane);
+    // ADR-292 — object snap, re-projected onto THIS cardinal plane, BEFORE the
+    // cardinal force so the force stays terminal (a snapped vertex can never
+    // carry an off-plane coordinate — the invariant that prevents the
+    // 2026-05-18 star-shaped RECT). Falls back to `target` when nothing snaps.
+    const snapped = this.ctx.snapToPlane?.(target, three, e) ?? target;
 
-    if (this.rectStart && target.distanceTo(this.rectStart) > MAX_DRAW_DISTANCE) return null;
-    return target;
+    // **THE INVARIANT**: force cardinal-axis coord = exact zeroValue
+    this.forceCardinalAxis(snapped, plane);
+
+    if (this.rectStart && snapped.distanceTo(this.rectStart) > MAX_DRAW_DISTANCE) return null;
+    return snapped;
   }
 
   /**

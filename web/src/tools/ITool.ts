@@ -65,6 +65,16 @@ export interface ToolContext {
   getRay: (e: MouseEvent) => THREE.Raycaster;
 
   /**
+   * ADR-292 — plane-consistent object snap for tools that re-derive their own
+   * committed point (e.g. DrawRect's cardinal projection) instead of using the
+   * `get3DPoint` output. `raw` must already lie on `plane`; the returned point
+   * is a snap candidate PROJECTED back onto `plane` (never off-plane), or `raw`
+   * unchanged when nothing snaps. The caller re-applies any cardinal/face force
+   * afterwards so snap is never the terminal transform.
+   */
+  snapToPlane?: (raw: THREE.Vector3, plane: THREE.Plane, e: MouseEvent) => THREE.Vector3;
+
+  /**
    * ADR-080 V-δ-γ — Active sketch session plane info, if any.
    * Returns `null` when no sketch is active.
    * Used by OffsetTool to provide a reference plane for free wire offset

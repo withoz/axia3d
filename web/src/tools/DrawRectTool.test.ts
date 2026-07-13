@@ -255,6 +255,51 @@ describe('DrawRectTool', () => {
   });
 
   // ════════════════════════════════════════════════════════════════════════
+  // ADR-292 — plane-consistent object snap: snap moves the IN-PLANE position
+  //   but forceCardinalAxis stays TERMINAL, so a snap can never carry an
+  //   off-plane coordinate (the invariant that prevents the 2026-05-18
+  //   star-shaped self-intersecting RECT, LOCKED #63).
+  // ════════════════════════════════════════════════════════════════════════
+  describe('ADR-292 object snap plane-consistency', () => {
+    const zPlane = {
+      normal: new THREE.Vector3(0, 0, 1), right: new THREE.Vector3(1, 0, 0),
+      up: new THREE.Vector3(0, 1, 0), zeroAxis: 'z', zeroValue: 200,
+      isSketch: false, forceCardinal: true, isFace: true,
+    };
+    function noPickRayTo(t: THREE.Vector3) {
+      ctx.viewport = { ...ctx.viewport, pick: undefined };  // skip coplanar fast-path
+      ctx.getRay = vi.fn().mockReturnValue({ ray: { intersectPlane: (_p: unknown, out: THREE.Vector3) => { out.copy(t); return out; } } });
+    }
+
+    it('snap moves the in-plane (x,y) position, cardinal z stays exact', () => {
+      noPickRayTo(new THREE.Vector3(300, 0, 200));
+      // snap returns a vertex shadow ON the plane at (40,40,200)
+      ctx.snapToPlane = vi.fn().mockImplementation((_raw, _plane, _e) => new THREE.Vector3(40, 40, 200));
+      const pt = (tool as any).projectClickToCardinalPlane({ clientX: 1, clientY: 1 }, null, zPlane);
+      expect(pt.x).toBeCloseTo(40);   // snapped in-plane
+      expect(pt.y).toBeCloseTo(40);
+      expect(pt.z).toBeCloseTo(200);  // cardinal axis exact
+      expect(ctx.snapToPlane).toHaveBeenCalled();
+    });
+
+    it('snap CANNOT override the cardinal axis even if it returns off-plane (LOCKED #63 safety)', () => {
+      noPickRayTo(new THREE.Vector3(300, 0, 200));
+      // a hypothetical misbehaving snap that returns an off-plane z=777
+      ctx.snapToPlane = vi.fn().mockImplementation(() => new THREE.Vector3(40, 40, 777));
+      const pt = (tool as any).projectClickToCardinalPlane({ clientX: 1, clientY: 1 }, null, zPlane);
+      expect(pt.z).toBeCloseTo(200);  // forceCardinalAxis is TERMINAL — z=777 discarded
+    });
+
+    it('snapToPlane absent → ray∩plane fallback (backward compat)', () => {
+      noPickRayTo(new THREE.Vector3(300, 0, 200));
+      ctx.snapToPlane = undefined;
+      const pt = (tool as any).projectClickToCardinalPlane({ clientX: 1, clientY: 1 }, null, zPlane);
+      expect(pt.x).toBeCloseTo(300);  // unchanged ray∩plane
+      expect(pt.z).toBeCloseTo(200);
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
   // ADR-184 — Negative cardinal normal faces (-X/-Y/-Z) draw on the correct face
   // 사용자 결재 2026-06-01: "-y 면에 안그려짐" — 음의 normal 면에서 rect 가
   //   반대편(+) 면으로 점프하던 forceCardinalAxis 부호 버그 차단.

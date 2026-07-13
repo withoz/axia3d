@@ -9,7 +9,7 @@ import { WasmBridge } from '../bridge/WasmBridge';
 import { frameScheduler } from '../core/FrameScheduler';
 import { DimensionLabel, DimLine } from '../ui/DimensionLabel';
 import { UnitSystem } from '../units/UnitSystem';
-import { SnapManager } from '../snap/SnapManager';
+import { SnapManager, type SnapPoint } from '../snap/SnapManager';
 import { SnapVisual } from '../snap/SnapVisual';
 import { DrawPlaneIndicator } from '../viewport/DrawPlaneIndicator';
 import { SelectionManager } from './SelectionManager';
@@ -272,6 +272,13 @@ export class ToolManager {
     // Initialize snap system
     this.snap = new SnapManager();
     this.snapVisual = new SnapVisual(viewport.container);
+    // ADR-292 — OSNAP re-introduction (guidance-only, plane-consistent). Start
+    // with the conservative face-creation preset (endpoint/midpoint/intersection/
+    // nearest/onFace/perp/parallel/axis — excludes extension/apparent/grid/center/
+    // quadrant/tangent which snap into empty space and make dangling vertices).
+    // Snapping is applied plane-consistently inside get3DPoint (never a terminal
+    // transform), so it cannot reproduce the 2026-05-18 off-plane RECT defect.
+    this.snap.applyFaceCreationPreset();
 
     // Initialize selection system
     this.selection = new SelectionManager(viewport.scene);
@@ -330,6 +337,7 @@ export class ToolManager {
       get edgeMap() { return mgr.edgeMap; },
       syncMesh: () => this.syncMesh(),
       getSnappedPoint: (e, rawGround, consume) => this.getSnappedPoint(e, rawGround, consume),
+      snapToPlane: (raw, plane, e) => this.applyObjectSnap(raw, plane, e),
       getGroundPoint: (e) => this.getGroundPoint(e),
       getSelectedFaces: () => this.selection.getSelectedFaces(),
       get inferredAxis() { return mgr.inferredAxis; },
@@ -3060,6 +3068,48 @@ export class ToolManager {
     return ray.ray.intersectPlane(plane, target);
   }
 
+  /**
+   * ADR-292 — plane-consistent object snap. `raw` is a point ALREADY resolved
+   * onto the active draw `plane` (cardinal ground / face / sketch / lock).
+   * Find a snap candidate (TS-only over cached DCEL geometry — NO WASM in the
+   * hot path, so it cannot re-trigger the 2026-05-18 "recursive use of an
+   * object" borrow crash) and, if one is within the screen threshold, return it
+   * **projected back onto `plane`**. That projection is THE safety invariant:
+   * a snap can only move the IN-PLANE position, never the plane-normal
+   * coordinate — so a snapped off-plane vertex is committed as its coplanar
+   * shadow, never its raw z (the exact off-plane commit that produced the
+   * star-shaped self-intersecting RECT, LOCKED #63). Updates the SnapVisual
+   * marker; returns `raw` unchanged (marker cleared) when nothing snaps.
+   * Must NOT be the terminal transform — the caller re-applies the cardinal /
+   * face force afterwards.
+   */
+  private applyObjectSnap(raw: THREE.Vector3, plane: THREE.Plane, e: MouseEvent): THREE.Vector3 {
+    if (!this.snap.enabled) { this.snapVisual.clear(); return raw; }
+    // ADR-047 P32 — exclude the active tool's pending chain vertices so snap
+    // never pulls a corner onto its own not-yet-committed vertex.
+    const active = this.tools.get(this._currentTool);
+    this.snap.setExcludePositions(active?.getExcludedSnapPoints?.() ?? []);
+    const cam = this.viewport.activeCamera;
+    const canvas = this.viewport.renderer.domElement;
+    let snap: SnapPoint | null = null;
+    try {
+      snap = this.snap.findSnap(e.clientX, e.clientY, cam, canvas, raw, null);
+    } catch {
+      this.snapVisual.clear();
+      return raw;
+    }
+    if (!snap) { this.snapVisual.clear(); return raw; }
+    // PROJECT the snap target onto the active draw plane — never leave it.
+    const projected = new THREE.Vector3();
+    plane.projectPoint(snap.position, projected);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    this.snapVisual.update(snap, cam);
+    return projected;
+  }
+
   private get3DPoint(e: MouseEvent): THREE.Vector3 | null {
     // ════════════════════════════════════════════════════════════════════
     // CARDINAL GROUND PLANE STRICT (사용자 결재 2026-05-18)
@@ -3094,8 +3144,12 @@ export class ToolManager {
     // Sketch mode: bypass cardinal force — user explicit plane.
     if (this._sketch) {
       const ray = this.getRay(e);
+      const sketchPlane = this.getWorkPlane();
       const target = new THREE.Vector3();
-      return ray.ray.intersectPlane(this.getWorkPlane(), target);
+      const pt = ray.ray.intersectPlane(sketchPlane, target);
+      if (!pt) return null;
+      // ADR-292 — snap, re-projected onto the sketch plane (never off-plane).
+      return this.applyObjectSnap(pt, sketchPlane, e);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -3135,7 +3189,9 @@ export class ToolManager {
             const faceTarget = new THREE.Vector3();
             const facePt = faceRay.ray.intersectPlane(facePlane, faceTarget);
             if (facePt && Number.isFinite(facePt.x) && Number.isFinite(facePt.y) && Number.isFinite(facePt.z)) {
-              return facePt;
+              // ADR-292 — snap, re-projected onto the SAME face plane so the
+              // committed point never leaves the face the user is drawing on.
+              return this.applyObjectSnap(facePt, facePlane, e);
             }
             // Degenerate ray (parallel to plane / NaN) — fall back to the
             // raycast hit point, which is already on the face surface.
@@ -3152,22 +3208,28 @@ export class ToolManager {
     const hit = ray.ray.intersectPlane(groundPlane, target);
     if (!hit) return null;
 
+    // ADR-292 — snap FIRST (re-projected onto the ground plane), THEN force the
+    // cardinal axis as the LAST transform. Order matters: the cardinal force
+    // is terminal so a snapped point can never carry an off-plane coordinate
+    // (this ordering is precisely what makes OSNAP consistent with LOCKED #63).
+    const result = this.applyObjectSnap(target, groundPlane, e);
+
     // **THE INVARIANT**: force cardinal axis = exactly 0
     const vm = this.viewport.viewMode;
     switch (vm) {
       case 'front':
       case 'back':
-        target.y = 0;
+        result.y = 0;
         break;
       case 'right':
       case 'left':
-        target.x = 0;
+        result.x = 0;
         break;
       default:  // '3d', 'top', 'bottom'
-        target.z = 0;
+        result.z = 0;
         break;
     }
-    return target;
+    return result;
   }
 
   private getRay(e: MouseEvent): THREE.Raycaster {

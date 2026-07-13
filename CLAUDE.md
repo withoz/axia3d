@@ -4418,6 +4418,16 @@ pub fn lod_chord_tol(camera_distance: f64) -> f64 {
 > 도구 (Line/Rect/Circle/Polygon/Arc/Bezier/Freehand) 가 일관 face-aware.
 > Demo-verified (박스 윗면 RECT → facesCentroid z=200). 자세히는 LOCKED #77 +
 > `docs/adr/178-rect-face-aware-drawing-plane.md`.
+>
+> ⚠ **Snap disable amended by ADR-292 (2026-07-13, 사용자 결재 "OSNAP 구현 시
+> 클릭할때 다른기능과의 정합성 우선")**. 본 #63 의 **snap 전면 비활성** 은
+> **plane-consistent OSNAP 재도입** 으로 해제. 옛 defect (snap 후보의 raw off-plane
+> z 를 commit) 은 `applyObjectSnap` 이 snap 후보를 **활성 draw plane 에 재투영**
+> (normal 성분 버림) 후 cardinal/face force 를 **terminal transform** 으로 재적용
+> 하여 구조적 차단 — snap 은 in-plane 위치만 이동, cardinal 축 절대 override 불가.
+> z=0 / face-plane / plane-lock / ADR-047 exclusion 모두 보존. E2E demo-verified
+> (코너 7px 근처 클릭 → 정확 코너 snap, z=0 유지 / far click → raw z=0). 자세히는
+> LOCKED #97 + `docs/adr/292-osnap-plane-consistent-reintroduction.md`.
 
 **Canonical anchor (사용자 결재, 2026-05-18, 누적 4건)**:
 > "rect 명령 제거하고 새로 만듭니다. 무조건 z=0에서 그려져야 합니다."
@@ -7242,6 +7252,83 @@ stack 으로 증명.
   ADR-197/205 (curved knives)
 - LOCKED #88 Phase 3 ("측정, corrupt 하는 op만 gate") / 메타-원칙 #4 #6 /
   LOCKED #44 (Complete Meaning per Merge) / #66 (STATUS-POLICY)
+
+### 97. ADR-292 — OSNAP Re-introduction (plane-consistent object snap, 2026-07-13) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-13)**: 엔진 최대 UX 공백(OSNAP 비활성)
+먼저 진행 + "OSNAP 구현 시 클릭할때 다른기능과의 정합성을 우선고려".
+
+**배경**: OSNAP 은 2026-05-18(LOCKED #63)에 전면 비활성 — 옛 auto-magnet 이 snap
+후보의 **raw 3D 좌표(off-plane z 포함)를 commit 점으로 반환** → cardinal z=0 덮어씀
+→ 별 모양 self-intersecting RECT + mousemove hot-path 동기 WASM 호출 → "recursive
+use of an object" crash.
+
+**measure-first (4-agent 감사)**: snap 엔진(findSnap 15종/spatial-hash/exclusion/
+SnapVisual/OsnapPanel/Alt+X)은 intact + **live-fed**(sibling `findAlignedDistance`
+가 Push/Pull 용으로 `updateFromMesh` warm 유지) — consumption 만 short-circuit.
+3 감사 수렴 결론: snap 은 plane 해소 **후**, cardinal/face force **전**(절대 terminal
+transform 아님). 옛 defect 의 핵심은 snap 이 *terminal* 이라 raw off-plane vertex 를
+그대로 commit 한 것 — **순서** 문제였지 snap 엔진 문제가 아님.
+
+**결정 (사용자 결재: 클릭 시 자동 스냅 + 안전 재투영 + 보수적 preset)**:
+`ToolManager.applyObjectSnap(raw, plane, e)` — snap 후보(TS-only, hot-path WASM 0)를
+활성 draw plane 에 **재투영**(`plane.projectPoint`, normal 성분 버림) 후 cardinal/
+face force 를 **terminal transform** 으로 재적용. snap 은 in-plane (x,y) 위치만
+이동, plane-normal 좌표 절대 못 줌 → off-plane commit(옛 defect) **구조적 차단**.
+get3DPoint 3분기(sketch/face/ground) + DrawRect projectClickToCardinalPlane
+(`ctx.snapToPlane`)에 배선. `applyFaceCreationPreset`(endpoint/midpoint/intersection/
+nearest/onFace/perp/parallel/axis — extension/apparent/grid/center/quadrant/tangent
+제외).
+
+#### Lock-ins (L-97-1 ~ L-97-10)
+- **L-97-1** snap 은 get3DPoint(SSOT) + DrawRect cardinal projection 내부 — 절대
+  terminal transform 아님. cardinal/face force 는 항상 snap **후** 실행.
+- **L-97-2** snap 결과는 항상 활성 draw plane 에 재투영 후에만 commit 가능 — snap 은
+  in-plane 위치만 이동, plane-normal 좌표 절대 못 줌 (LOCKED #63 defect 구조적 차단).
+- **L-97-3** snap 후보 생성 TS-only(cached DCEL) — mousemove/mousedown hot-path
+  WASM 0 (recursive-use crash 차단). try/catch → raw fallback.
+- **L-97-4** ADR-047 P32 chain self-touch exclusion 재배선(findSnap 前
+  setExcludePositions; chainStart 은 loop-close 위해 snappable 유지).
+- **L-97-5** 보수적 face-creation preset (dangling-vertex 유발 모드 제외).
+- **L-97-6** plane-lock(ADR-166/188) 존중 — getDrawPlane 이 반환한 plane 에 투영,
+  `_planeLock` 절대 mutate/unlock 안 함.
+- **L-97-7** `snap.enabled` gate(OsnapPanel 마스터 토글 + Alt+X 필터, 기존 배선) —
+  disabled → raw passthrough(LOCKED #63 동작 동일).
+- **L-97-8** SnapVisual.update(hit)/clear(miss) — guidance layer.
+- **L-97-9** backward compat: getSnappedPoint pass-through 유지(callers 는 이미
+  snap 된 get3DPoint 출력 전달 → double-snap 없음); ctx.snapToPlane optional(`?.`)
+  → mock/미지원 tool 은 raw fallback. ADR-046 P31 #4 additive(새 action/menu 0,
+  OsnapPanel 기존).
+- **L-97-10** 절대 #[ignore] 금지.
+
+#### 회귀 / 검증
+vitest +3 (DrawRect ADR-292 — snap in-plane 이동 / cardinal 축 override 불가(off-plane
+반환해도) / snapToPlane 부재 fallback) / Playwright +1 (real Chromium + WASM + real
+canvas: 코너 7px 근처 클릭 → 정확 코너 snap + z=0 유지 / far click → raw z=0, 1/1).
+908 tool tests green(무회귀), tsc 0, engine 무변경(TS-only).
+
+#### 라이브 검증 (real Chromium E2E, ADR-087 K-ζ)
+dev-preview canvas 는 Browser pane 에서 0×0(스크린샷 timeout 과 동일 근본) — 좌표
+기반 snap 검증 불가 → Playwright(real 레이아웃)가 시연 surface. 코너에서 7px 떨어진
+클릭이 **정확한 코너로 snap**(offset 소거) + z 정확히 0 유지, 멀리 클릭은 raw(미snap)
+z=0. property/method 명은 terser 보존 → 프로덕션에서도 get3DPoint 호출 가능.
+
+#### 배선/메뉴 정합성
+새 action/menu/toolbar/단축키 0 — OsnapPanel(마스터 토글 + per-mode 체크박스) +
+Alt+X 필터 키는 **기존에 존재**하며 이제 다시 functional. CatalogConsistency 영향 0.
+
+#### Deferred (follow-up)
+K(inference lock)/Tab(tentative cycle) 키 핸들러(API 존재, 키 진입점 미배선) /
+OffsetTool getGroundPoint 경로 snap / localStorage 영속 / guide dashed line polish.
+
+#### Cross-link
+- ADR-292 본문 §D (`docs/adr/292-osnap-plane-consistent-reintroduction.md`)
+- ADR-137(guidance-only snap — refine) / LOCKED #63(disable — amend) / ADR-047 P32
+  (exclusion) / ADR-166/188(plane lock) / ADR-167/168(EPS_PLANE) / ADR-170
+  (normalizeDrawInput SSOT) / ADR-175/178(face-aware plane) / ADR-026 P12(cardinal
+  SSOT) / ADR-146(findSnap telemetry) / LOCKED #5(dedup floor)
+- 메타-원칙 #4(SSOT) #5(UX) #6(measure-first) / ADR-046 P31 #4(additive) /
+  ADR-087 K-ζ(시연 게이트) / LOCKED #44 / #66(STATUS-POLICY)
 
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
