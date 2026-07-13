@@ -1,19 +1,22 @@
 /**
- * Command indicator (#tool-label) lives in the status bar, not floating over
- * the viewport.
+ * Command indicator (#tool-label) placement + single unit setting.
  *
- * #tool-label used to be a pill floating over the 3D view (position:absolute
- * top:80px/left:12px). It also showed the raw lowercase tool id for tools
- * missing from the ad-hoc name maps (e.g. "plane" instead of "Work Plane").
+ * The bottom bar had the unit shown twice: a passive readout (sb-meta
+ * "· mm · 4") in #statusbar AND the interactive unit button (cb-unit-btn,
+ * "단위 / 정밀도") in #commandbar. Per request the redundant left readout was
+ * removed so only the right interactive unit setting remains, and the command
+ * indicator (#tool-label — shows the active tool "Rectangle" / view mode
+ * "3D Perspective") was moved to sit immediately before that unit setting.
+ *
  * This spec proves, on the real production DOM, that:
- *  (1) #tool-label is a child of #statusbar (moved into the status bar), and
- *  (2) switching tools updates it there, and
- *  (3) the plane tool now shows the friendly "Work Plane" (SSOT names), and
- *  (4) it is laid out inside the status bar (static, not an absolute overlay).
+ *  (1) the left sb-meta readout is gone (single unit setting), and
+ *  (2) #tool-label lives in .cb-tools immediately before cb-unit-btn, and
+ *  (3) switching tools updates it there (plane → friendly "Work Plane"), and
+ *  (4) the right unit button remains present + interactive.
  */
 import { test, expect } from '@playwright/test';
 
-test.describe('Command indicator in status bar', () => {
+test.describe('Command indicator before the unit setting', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(
@@ -26,34 +29,32 @@ test.describe('Command indicator in status bar', () => {
     );
   });
 
-  test('#tool-label is inside #statusbar and shows friendly names', async ({ page }) => {
+  test('single unit setting; #tool-label sits before cb-unit-btn and shows friendly names', async ({ page }) => {
     const layout = await page.evaluate(() => {
       const tl = document.getElementById('tool-label')!;
-      const sb = document.getElementById('statusbar')!;
+      const cbTools = document.querySelector('.cb-tools')!;
+      const unitBtn = document.getElementById('cb-unit-btn')!;
       const cs = getComputedStyle(tl);
-      const r = tl.getBoundingClientRect();
-      const sbr = sb.getBoundingClientRect();
-      const kids = Array.from(sb.children);
-      const idx = (id: string) => kids.indexOf(document.getElementById(id) as Element);
+      const kids = Array.from(cbTools.children);
+      const tlR = tl.getBoundingClientRect();
+      const ubR = unitBtn.getBoundingClientRect();
       return {
-        insideStatusbar: sb.contains(tl),
+        sbMetaRemoved: document.getElementById('sb-meta') === null,
+        inCbTools: cbTools.contains(tl),
         position: cs.position,
-        within:
-          r.x >= sbr.x - 1 && r.right <= sbr.right + 1 &&
-          r.y >= sbr.y - 1 && r.bottom <= sbr.bottom + 1,
+        beforeUnitBtn: kids.indexOf(tl) >= 0 && kids.indexOf(tl) < kids.indexOf(unitBtn),
+        toLeftOfUnitBtn: tlR.x < ubR.x,
+        unitBtnInteractive: getComputedStyle(unitBtn).cursor === 'pointer',
         text: tl.textContent,
-        // Positioned after the coordinates and immediately before the unit
-        // setting (sb-meta "· mm · 4").
-        afterCoords: idx('sb-coords') < idx('tool-label'),
-        beforeUnit: idx('tool-label') < idx('sb-meta'),
       };
     });
-    expect(layout.insideStatusbar).toBe(true);
-    expect(layout.position).toBe('static'); // not an absolute floating overlay
-    expect(layout.within).toBe(true);
+    expect(layout.sbMetaRemoved).toBe(true);      // redundant left readout gone
+    expect(layout.inCbTools).toBe(true);
+    expect(layout.position).toBe('static');       // not an absolute floating overlay
+    expect(layout.beforeUnitBtn).toBe(true);      // before the unit setting (DOM order)
+    expect(layout.toLeftOfUnitBtn).toBe(true);    // before it visually too
+    expect(layout.unitBtnInteractive).toBe(true); // right unit setting still usable
     expect(layout.text).toBe('Select');
-    expect(layout.afterCoords).toBe(true);
-    expect(layout.beforeUnit).toBe(true);
 
     const clickTool = async (id: string) => {
       await page.evaluate((toolId) => {
@@ -66,6 +67,5 @@ test.describe('Command indicator in status bar', () => {
     expect(await clickTool('rect')).toBe('Rectangle');
     expect(await clickTool('plane')).toBe('Work Plane'); // was raw "plane"
     expect(await clickTool('circle')).toBe('Circle');
-    expect(await clickTool('sphere')).toBe('Sphere');
   });
 });

@@ -218,13 +218,15 @@ export class StatusBar {
 
   /** 유닛/정밀도 변경 시 호출 */
   updateMeta(): void {
-    if (!this.metaEl) return;
     // UnitSystem 인스턴스에서 현재 단위 라벨 + 정밀도 읽기
     // (직접 속성 접근 — API 추가 없이 공개 게터 활용)
     const anyUnits = this.deps.units as { config?: { label: string }; precision?: number };
     const unit = anyUnits.config?.label ?? 'mm';
     const prec = anyUnits.precision ?? 4;
-    this.metaEl.textContent = `· ${unit} · ${prec}`;
+    // sb-meta (좌측 단위 readout) 는 제거됨 — commandbar 의 cb-unit 버튼이
+    // 단독 단위 설정. metaEl 이 남아 있으면(레거시) 갱신하되, 없어도
+    // updateUnitButton() 은 항상 실행되어야 우측 단위 버튼이 동기화된다.
+    if (this.metaEl) this.metaEl.textContent = `· ${unit} · ${prec}`;
     this.updateUnitButton();
   }
 
