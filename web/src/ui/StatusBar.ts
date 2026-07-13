@@ -33,7 +33,6 @@ export interface StatusBarDeps {
 export class StatusBar {
   private deps: StatusBarDeps;
   private coordsEl: HTMLElement | null;
-  private metaEl: HTMLElement | null;
   private snapEl: HTMLElement | null;
 
   private lastWorldPos: THREE.Vector3 | null = null;
@@ -46,7 +45,6 @@ export class StatusBar {
   constructor(deps: StatusBarDeps) {
     this.deps = deps;
     this.coordsEl = document.getElementById('sb-coords');
-    this.metaEl = document.getElementById('sb-meta');
     this.snapEl = document.getElementById('sb-snap');
     this.setupCoordsTracking();
     this.setupFkeyButtons();
@@ -163,12 +161,6 @@ export class StatusBar {
         const on = this.deps.snap.toggle();
         this.setToggle('sb-fkey-osnap', on);
         Toast.info(`OSNAP ${on ? 'ON' : 'OFF'}`);
-        // 레거시 상태바 표시 동기화
-        const legacy = document.getElementById('stat-osnap');
-        if (legacy) {
-          legacy.textContent = on ? 'ON' : 'OFF';
-          legacy.style.color = on ? '#44ff88' : '#ff4444';
-        }
         break;
       }
       case 'grid': {
@@ -218,15 +210,8 @@ export class StatusBar {
 
   /** 유닛/정밀도 변경 시 호출 */
   updateMeta(): void {
-    // UnitSystem 인스턴스에서 현재 단위 라벨 + 정밀도 읽기
-    // (직접 속성 접근 — API 추가 없이 공개 게터 활용)
-    const anyUnits = this.deps.units as { config?: { label: string }; precision?: number };
-    const unit = anyUnits.config?.label ?? 'mm';
-    const prec = anyUnits.precision ?? 4;
-    // sb-meta (좌측 단위 readout) 는 제거됨 — commandbar 의 cb-unit 버튼이
-    // 단독 단위 설정. metaEl 이 남아 있으면(레거시) 갱신하되, 없어도
-    // updateUnitButton() 은 항상 실행되어야 우측 단위 버튼이 동기화된다.
-    if (this.metaEl) this.metaEl.textContent = `· ${unit} · ${prec}`;
+    // 단위/정밀도 표시는 commandbar 의 cb-unit 버튼이 단독 담당.
+    // (좌측 sb-meta readout 은 제거됨 — 중복 제거.)
     this.updateUnitButton();
   }
 

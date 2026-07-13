@@ -20,7 +20,6 @@ function createDOM(): void {
       <button class="view-btn" data-view="front">Front</button>
     </div>
     <div id="home-btn">Home</div>
-    <div id="stat-osnap">ON</div>
   `;
 }
 

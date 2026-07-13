@@ -469,13 +469,6 @@
     #statusbar .sb-coords.snapped {
       color: #44ff88;
     }
-    #statusbar .sb-meta {
-      font-size: 11px;
-      color: rgba(255, 255, 255, 0.4);
-      white-space: nowrap;
-      min-width: 60px;
-    }
-
     /* F-키 바 — 좌표 바로 옆에 붙여서 배치 */
     #statusbar .sb-fkeys {
       display: flex;
@@ -2826,9 +2819,6 @@
       <!-- 단위/정밀도 readout(sb-meta) 제거 — commandbar 의 단위 설정
            버튼(cb-unit)이 단독 단위 설정. 명령 표시(#tool-label)는 그 앞에 위치. -->
 
-      <!-- 숨겨진 레거시 표시 (XIA Inspector / toolbar가 대신 표시) -->
-      <span class="stat" id="stat-sel-wrap" style="display:none">Selected: <b id="stat-selected" style="color:#2196f3">0</b></span>
-
       <!-- F-키 토글·액션 바 (우측 정렬) -->
       <div class="sb-fkeys">
         <button class="sb-fkey" data-fkey="F1" data-action="help"
@@ -2863,13 +2853,6 @@
               title="마지막 그린 평면 기억 활성 — 다음 도형이 같은 평면에 그려집니다 (ADR-164 sticky)"
               data-adr="164">📐 평면</span>
       </div>
-
-      <!-- 백워드 호환용 숨김 요소들 -->
-      <span style="display:none">
-        <b id="stat-verts">0</b><b id="stat-faces">0</b>
-        <b id="stat-tool">Select</b><b id="stat-unit">mm</b><b id="stat-prec">4</b>
-        <b id="stat-osnap">ON</b>
-      </span>
     </div>
 
     <!-- KAYAC-style bottom command bar (statusbar 바로 옆에 붙음) -->

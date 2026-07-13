@@ -467,10 +467,7 @@ async function main() {
   // ═══ Selection status bar update ═══
   // Phase H 이후 status bar는 coords + F-keys에 집중.
   // "Selected: N" 정보는 XIA Inspector에서 이미 확인 가능하므로 status bar에
-  // 반영하지 않음 (이전 코드는 overflow 유발).
-  toolManager.selection.onChange((_faces) => {
-    // 기존 stat-sel-wrap은 숨김 유지 (legacy 호환 목적으로 DOM은 유지)
-  });
+  // 반영하지 않음 (legacy stat-sel-wrap 은 제거됨 — 빈 onChange stub 도 삭제).
 
   // ═══ ADR-232/237 — NURBS control-net overlay + inline edit panel ═══
   // A single selected NURBS-class face (BezierPatch=6 / BSplineSurface=7 /
@@ -504,17 +501,12 @@ async function main() {
     toolManager.notifyViewModeChange();
   });
 
-  // 5a. OSNAP toggle — 레거시(stat-osnap) 유지 + 새 StatusBar 연동
+  // 5a. OSNAP toggle — legacy 체크박스 + 새 StatusBar F3 버튼 동기화.
+  // (숨김 legacy #stat-osnap indicator 는 제거됨 — F3 버튼이 단독 표시.)
   const osnapToggle = document.getElementById('osnap-toggle');
-  const statOsnap = document.getElementById('stat-osnap');
 
   const updateOsnapUI = () => {
     const on = toolManager.snap.enabled;
-    if (statOsnap) {
-      statOsnap.textContent = on ? 'ON' : 'OFF';
-      statOsnap.style.color = on ? '#44ff88' : '#ff4444';
-    }
-    // 새 상태바 F3 버튼도 동기화
     statusBar.setToggle('sb-fkey-osnap', on);
   };
 
@@ -779,29 +771,17 @@ async function main() {
     }
   });
 
-  // 8. Status bar updates
-  const statUnit = document.getElementById('stat-unit')!;
-  const statPrec = document.getElementById('stat-prec')!;
-  units.onChange(() => {
-    statUnit.textContent = units.config.label;
-    statPrec.textContent = String(units.precision);
-  });
-  // 초기값 설정
-  statUnit.textContent = units.config.label;
-  statPrec.textContent = String(units.precision);
+  // 8. Status bar updates — unit/precision are shown on the visible commandbar
+  // cb-unit button (StatusBar.updateUnitButton, subscribed to units.onChange).
+  // The former hidden #stat-unit/#stat-prec writes were removed (dead churn).
 
   const undoBtn = toolbar.querySelector('[data-tool="undo"]');
   const redoBtn = toolbar.querySelector('[data-tool="redo"]');
 
   const statsIntervalId = setInterval(() => {
     const stats = bridge.getStats();
-    const sv = document.getElementById('stat-verts');
-    const sf = document.getElementById('stat-faces');
-    const st = document.getElementById('stat-tool');
-    if (sv) sv.textContent = String(stats.verts);
-    if (sf) sf.textContent = String(stats.faces);
-    if (st) st.textContent = toolManager.currentTool;
-
+    // (Former hidden #stat-verts/#stat-faces/#stat-tool writes removed — dead
+    // churn; verts/faces show in the XIA Inspector, tool in #tool-label.)
     // Undo/Redo 버튼 활성/비활성 (canUndo/canRedo가 없으면 항상 활성)
     if (undoBtn) undoBtn.classList.toggle('disabled', stats.canUndo === false);
     if (redoBtn) redoBtn.classList.toggle('disabled', stats.canRedo === false);

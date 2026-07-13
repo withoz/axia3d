@@ -178,14 +178,8 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     // F3: OSNAP 토글
     if (e.key === 'F3') {
       e.preventDefault();
-      toolManager.snap.toggle();
-      // Update OSNAP UI
-      const statOsnap = document.getElementById('stat-osnap');
-      if (statOsnap) {
-        const on = toolManager.snap.enabled;
-        statOsnap.textContent = on ? 'ON' : 'OFF';
-        statOsnap.style.color = on ? '#44ff88' : '#ff4444';
-      }
+      const on = toolManager.snap.toggle();
+      Toast.info(`OSNAP ${on ? 'ON' : 'OFF'}`);
       return;
     }
 
@@ -223,13 +217,9 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       } else if (toolManager.snap.lastSnap) {
         toolManager.snap.setLockedInference(toolManager.snap.lastSnap);
       }
-      const statOsnap = document.getElementById('stat-osnap');
-      if (statOsnap) {
-        const locked = toolManager.snap.hasLockedInference();
-        const prev = statOsnap.textContent;
-        statOsnap.textContent = locked ? '🔒 LOCKED' : 'UNLOCK';
-        setTimeout(() => { statOsnap.textContent = prev; }, 800);
-      }
+      // Visible feedback (previously written to the hidden legacy #stat-osnap
+      // node → invisible; the K inference-lock had no visible feedback).
+      Toast.info(toolManager.snap.hasLockedInference() ? '🔒 추론 잠금' : '추론 잠금 해제');
       return;
     }
 
@@ -285,14 +275,8 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         const cb = document.querySelector<HTMLInputElement>(
           `input[data-mode="${mode}"]`);
         if (cb) cb.checked = active;
-        // Briefly flash status bar
-        const statOsnap = document.getElementById('stat-osnap');
-        if (statOsnap) {
-          const txt = `${mode} ${active ? 'ON' : 'OFF'}`;
-          const prev = statOsnap.textContent;
-          statOsnap.textContent = txt;
-          setTimeout(() => { statOsnap.textContent = prev; }, 800);
-        }
+        // Visible feedback (was written to the hidden legacy #stat-osnap node).
+        Toast.info(`${mode} ${active ? 'ON' : 'OFF'}`);
         return;
       }
     }
