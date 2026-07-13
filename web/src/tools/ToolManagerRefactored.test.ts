@@ -1525,6 +1525,51 @@ describe('ToolManager', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────
+  // ADR-292 follow-up — snap inference-lock + tentative reset lifecycle.
+  //   The K-lock is a transient per-hover constraint; it must clear at every
+  //   intent boundary (Esc / view change / tool switch), mirroring the ADR-166
+  //   plane-lock reset — otherwise a lock silently constrains the next draw.
+  // ────────────────────────────────────────────────────────────────────
+  describe('ADR-292 — snap inference-lock reset lifecycle', () => {
+    async function snapPt() {
+      const THREE = await import('three');
+      return { type: 'endpoint' as const, position: new THREE.Vector3(10, 20, 0) };
+    }
+
+    it('cancelCurrentTool (Esc) clears the inference lock', async () => {
+      tm.snap.setLockedInference(await snapPt());
+      expect(tm.snap.hasLockedInference()).toBe(true);
+      tm.cancelCurrentTool();
+      expect(tm.snap.hasLockedInference()).toBe(false);
+    });
+
+    it('notifyViewModeChange clears the inference lock', async () => {
+      tm.snap.setLockedInference(await snapPt());
+      expect(tm.snap.hasLockedInference()).toBe(true);
+      tm.notifyViewModeChange();
+      expect(tm.snap.hasLockedInference()).toBe(false);
+    });
+
+    it('setTool (tool switch) clears the inference lock', async () => {
+      tm.snap.setLockedInference(await snapPt());
+      expect(tm.snap.hasLockedInference()).toBe(true);
+      tm.setTool('line');
+      expect(tm.snap.hasLockedInference()).toBe(false);
+    });
+
+    it('getActiveTentative is null with no cycling (default top-ranked snap)', () => {
+      tm.snap.resetTentative();
+      expect(tm.snap.getActiveTentative()).toBeNull();
+    });
+
+    it('cycleTentative with no candidates is a no-op (null)', () => {
+      tm.snap.resetTentative();
+      expect(tm.snap.cycleTentative()).toBeNull();
+      expect(tm.snap.getActiveTentative()).toBeNull();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
   // ADR-166 β-3 — getDrawPlane priority #1 lock + UI badge
   //   L-166-Q3=a — strong lock semantic (face hit 무시)
   //   L-166-Q5=a — 🔒 badge upgrade (sticky → lock visual transition)

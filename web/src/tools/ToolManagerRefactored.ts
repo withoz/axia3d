@@ -502,6 +502,13 @@ export class ToolManager {
 
     this._currentTool = name;
 
+    // ADR-292 follow-up — a tool switch is an intent boundary; clear the snap
+    // inference-lock + tentative. Deliberate divergence from ADR-166 plane-lock
+    // (which persists across setTool per L-166-2): the inference lock is a
+    // transient per-hover constraint, not a cross-tool spatial lock.
+    this.snap.clearLockedInference();
+    this.snap.resetTentative();
+
     // If the new tool doesn't want snap, clear any lingering SnapVisual markers.
     const newToolObj = this.tools.get(name);
     if (newToolObj?.wantsSnap === false) {
@@ -2996,6 +3003,10 @@ export class ToolManager {
     // ADR-166 β-1 — Reset plane lock on view mode change (view 변경
     // = 사용자 의도 변경 명시 신호, L-166-2).
     this.unlockPlane();
+    // ADR-292 follow-up — a view change is an intent boundary; clear the snap
+    // inference-lock + tentative so they don't constrain the next view's draws.
+    this.snap.clearLockedInference();
+    this.snap.resetTentative();
   }
 
   /** Update the status-bar badge to reflect sketch state.
@@ -3092,11 +3103,21 @@ export class ToolManager {
     const cam = this.viewport.activeCamera;
     const canvas = this.viewport.renderer.domElement;
     let snap: SnapPoint | null = null;
-    try {
-      snap = this.snap.findSnap(e.clientX, e.clientY, cam, canvas, raw, null);
-    } catch {
-      this.snapVisual.clear();
-      return raw;
+    // ADR-292 follow-up (Tab) — honor a Tab-cycled tentative candidate at the
+    // COMMIT so it isn't discarded by findSnap re-ranking. Lock still wins
+    // (findSnap short-circuits on the inference lock), so only consult the
+    // tentative when NOT locked. The mousemove listener resets the tentative,
+    // so this only fires between a Tab press and the next mouse motion.
+    if (!this.snap.hasLockedInference()) {
+      snap = this.snap.getActiveTentative();
+    }
+    if (!snap) {
+      try {
+        snap = this.snap.findSnap(e.clientX, e.clientY, cam, canvas, raw, null);
+      } catch {
+        this.snapVisual.clear();
+        return raw;
+      }
     }
     if (!snap) { this.snapVisual.clear(); return raw; }
     // PROJECT the snap target onto the active draw plane — never leave it.
@@ -3783,6 +3804,11 @@ export class ToolManager {
     // ADR-166 β-1 — Esc / global cancel resets plane lock
     // (L-166-2 — 사용자 의도 변경 명시 신호).
     this.unlockPlane();
+    // ADR-292 follow-up — clear the snap inference-lock + tentative on Esc /
+    // cancel, mirroring the plane-lock reset (the inference lock is a transient
+    // per-hover constraint; it must not leak past an intent change).
+    this.snap.clearLockedInference();
+    this.snap.resetTentative();
   }
 
   // ═══════════════════════════════════════════════════
@@ -4380,6 +4406,11 @@ export class ToolManager {
 
     // ===== MOUSE MOVE =====
     canvas.addEventListener('mousemove', (e) => {
+      // ADR-292 follow-up (Tab) — mouse motion cancels a Tab-cycled tentative
+      // pick so the snap never freezes: reset BEFORE get3DPoint so its
+      // applyObjectSnap re-runs findSnap (index 0) instead of honoring a stale
+      // tentative. Matches the "Tab after mousemove, before click" model.
+      this.snap.resetTentative();
       const rawPt = this.get3DPoint(e);
       const tool = this.tools.get(this._currentTool);
       if (tool?.onMouseMove) {

@@ -227,6 +227,11 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     // (L은 Line tool, Shift는 다른 조합에 쓰이므로 K 단독 키로 예약)
     if ((e.key === 'k' || e.key === 'K') && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
+      // ADR-292 follow-up — both keydown listeners are on `window`; a plain
+      // `k` also matches the view-mode listener (→ Back view). stopPropagation
+      // is insufficient for same-target listeners, so use
+      // stopImmediatePropagation to make K a clean inference-lock toggle.
+      e.stopImmediatePropagation();
       if (toolManager.snap.hasLockedInference()) {
         toolManager.snap.clearLockedInference();
       } else if (toolManager.snap.lastSnap) {

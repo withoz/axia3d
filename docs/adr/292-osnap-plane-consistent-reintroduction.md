@@ -106,9 +106,18 @@ disable was protecting).
 
 ## 4. Deferred (follow-up)
 
-- K (inference lock) / Tab (tentative cycle) key handlers — the SnapManager API
-  exists but the keyboard entry points were removed with the disable; not re-wired
-  in this cut.
+- ~~K (inference lock) / Tab (tentative cycle) key handlers~~ — **LANDED as a
+  follow-up (2026-07-13, §D below).** The audit refuted the premise: the handlers
+  already existed in `KeyboardShortcuts.ts` (:217-243) and went live again when
+  this ADR re-enabled `findSnap`. Three fixes made them correct: (1) K
+  `stopImmediatePropagation` (K also jumped to Back view), (2) `getActiveTentative`
+  so a Tab-cycled pick is honored at commit (mousedown re-runs `findSnap` which
+  resets the index), (3) `resetTentative` on mousemove + `clearLockedInference` +
+  `resetTentative` on Esc / view-change / tool-switch (the lock/tentative leaked
+  past intent boundaries, unlike ADR-166 plane-lock).
+- Mid-draw Tab (2nd+ point of a multi-click draw) is owned by the capture-phase
+  handler for VCB dimension-field cycling — Tab-tentative is idle-only; routing
+  cycling-while-drawing through `tool.onKeyDown` is a separate larger change.
 - Screen-space snap for OffsetTool's `getGroundPoint` path (lacks the cardinal
   force) — route through get3DPoint or add the force if OSNAP is wanted there.
 - Persisted enable/preset via localStorage (currently OsnapPanel session state).
@@ -137,6 +146,20 @@ disable was protecting).
 
 **Regression totals**: vitest +3 (DrawRect ADR-292), Playwright +1. tsc 0. 908
 tool tests green (no regression). Engine unchanged (TS-only). 절대 #[ignore] 금지.
+
+- **follow-up (K/Tab wiring, 2026-07-13)** — 2-scout measure-first audit refuted
+  the "handlers missing" premise (they exist + went live with this ADR). Three
+  fixes: (1) `KeyboardShortcuts.ts` K handler `+ e.stopImmediatePropagation()`
+  (K no longer also switches to Back view — same-window listener collision);
+  (2) `SnapManager.getActiveTentative()` + `applyObjectSnap` prefers it before
+  `findSnap` (guarded `!hasLockedInference`) so a Tab-cycled candidate is honored
+  at commit; (3) `resetTentative()` at the top of the mousemove listener +
+  `clearLockedInference()` / `resetTentative()` at `cancelCurrentTool` /
+  `notifyViewModeChange` / `setTool` (the lock/tentative leaked past intent
+  boundaries — a deliberate divergence from ADR-166 plane-lock, which persists
+  across setTool). vitest +5 (lock cleared on Esc/view/tool + tentative no-ops),
+  Playwright +1 (K-lock constrains the commit through applyObjectSnap; tool switch
+  clears it). 1023 tool/snap/keyboard tests green, tsc 0.
 
 ## §Lessons
 

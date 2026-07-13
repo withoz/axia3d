@@ -541,6 +541,21 @@ export class SnapManager {
     this._tentativeIndex = 0;
   }
 
+  /**
+   * ADR-292 follow-up — the Tab-selected candidate the COMMIT path should honor,
+   * or null when no cycling is active (index 0 = the default top-ranked snap,
+   * which `findSnap` recomputes fresh). `cycleTentative` only moves the visual
+   * marker; the click-time pipeline re-runs `findSnap` (which resets the index),
+   * so the committed point would otherwise discard the Tab pick. `applyObjectSnap`
+   * reads this BEFORE calling `findSnap` (guarded by `!hasLockedInference`) so a
+   * Tab-cycled candidate is what commits. Returns a frozen candidate only while
+   * the index is non-zero (i.e. after Tab, before the next mousemove resets it).
+   */
+  getActiveTentative(): SnapPoint | null {
+    if (this._tentativeIndex === 0) return null;
+    return this._lastRankedCandidates[this._tentativeIndex] ?? null;
+  }
+
   /** Add a temporary tracking point */
   addTrackPoint(pt: THREE.Vector3) {
     this.trackPoints.push(pt.clone());

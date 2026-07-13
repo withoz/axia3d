@@ -85,4 +85,60 @@ test.describe('ADR-292 — plane-consistent object snap', () => {
     expect(Math.hypot(r.far![0] - 100, r.far![1] - 100)).toBeGreaterThan(5);
     expect(Math.abs(r.far![2])).toBeLessThan(1e-6);
   });
+
+  test('K inference-lock constrains the commit through applyObjectSnap; tool switch clears it', async ({ page }) => {
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any; const ax = w.__axia;
+      const bridge = ax.get('bridge'); const tm = ax.get('toolManager'); const vp = ax.get('viewport');
+      bridge.drawRectAsShape(50, 50, 0, 0, 0, 1, 1, 0, 0, 100, 100);
+      tm.syncMesh();
+      vp.setCameraState({ radius: 280, phi: 0.9, theta: 0.75, targetX: 50, targetY: 50, targetZ: 0, orthoZoom: 4, viewMode: '3d' });
+      tm.setTool('line');
+    });
+    await page.waitForTimeout(400);
+
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any; const ax = w.__axia;
+      const tm = ax.get('toolManager'); const vp = ax.get('viewport');
+      const cam = vp.activeCamera; const canvas = vp.renderer.domElement;
+      const rect = canvas.getBoundingClientRect();
+      const V3 = cam.position.constructor;
+      const project = (p: number[]) => {
+        const v = new V3(p[0], p[1], p[2]).project(cam);
+        return { x: rect.left + (v.x * 0.5 + 0.5) * rect.width, y: rect.top + (-v.y * 0.5 + 0.5) * rect.height };
+      };
+      const cs = project([100, 100, 0]);
+      // 1. hover near the corner → snaps to it (populates lastSnap)
+      tm.get3DPoint({ clientX: cs.x + 6, clientY: cs.y - 5 });
+      // 2. K = lock the current snap (the corner)
+      tm.snap.setLockedInference(tm.snap.lastSnap);
+      const locked = tm.snap.hasLockedInference();
+      // 3. commit at a FAR cursor → still constrained to the locked corner, z=0
+      const fs = project([0, 0, 0]);
+      const whileLocked = tm.get3DPoint({ clientX: fs.x, clientY: fs.y });
+      // 4. tool switch clears the lock (intent boundary)
+      tm.setTool('circle');
+      const clearedAfterSwitch = !tm.snap.hasLockedInference();
+      // 5. same far cursor now returns the raw far point (not the corner)
+      tm.setTool('line');
+      const afterUnlock = tm.get3DPoint({ clientX: fs.x, clientY: fs.y });
+      return {
+        locked, clearedAfterSwitch,
+        whileLocked: whileLocked ? [whileLocked.x, whileLocked.y, whileLocked.z] : null,
+        afterUnlock: afterUnlock ? [afterUnlock.x, afterUnlock.y, afterUnlock.z] : null,
+      };
+    });
+
+    expect(r.locked).toBe(true);
+    expect(r.clearedAfterSwitch).toBe(true);      // reset on tool switch
+    // while locked, the commit stays at the locked corner (100,100,0) despite a far cursor
+    expect(r.whileLocked).not.toBeNull();
+    expect(Math.hypot(r.whileLocked![0] - 100, r.whileLocked![1] - 100)).toBeLessThan(0.5);
+    expect(Math.abs(r.whileLocked![2])).toBeLessThan(1e-6);
+    // after unlock, the same far cursor is no longer pulled to the corner
+    expect(r.afterUnlock).not.toBeNull();
+    expect(Math.hypot(r.afterUnlock![0] - 100, r.afterUnlock![1] - 100)).toBeGreaterThan(5);
+  });
 });
