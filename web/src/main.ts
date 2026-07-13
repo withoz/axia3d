@@ -16,6 +16,7 @@ import { SettingsPanel } from './units/SettingsPanel';
 import { ComponentPanel } from './ui/ComponentPanel';
 import { ConstraintPanel } from './ui/ConstraintPanel';
 import { NurbsPatchPanel } from './ui/NurbsPatchPanel';
+import { toolDisplayName } from './ui/toolDisplayNames';
 import { HistoryPanel } from './ui/HistoryPanel';
 import { CapabilityExplorerPanel } from './ui/CapabilityExplorerPanel';
 import { InvariantVerifierPanel } from './ui/InvariantVerifierPanel';
@@ -678,16 +679,10 @@ async function main() {
     btn.classList.add('active');
     toolManager.setTool(tool);
 
-    // Update tool label
+    // Update tool label (status-bar command indicator) — shared SSOT names.
     const toolLabel = document.getElementById('tool-label');
     if (toolLabel) {
-      const names: Record<string, string> = {
-        select: 'Select', line: 'Line', rect: 'Rectangle',
-        circle: 'Circle', pushpull: 'Extrude/Cut', move: 'Move',
-        rotate: 'Rotate', scale: 'Scale', offset: 'Offset',
-        sphere: 'Sphere', cylinder: 'Cylinder', cone: 'Cone',
-      };
-      toolLabel.textContent = names[tool] || tool;
+      toolLabel.textContent = toolDisplayName(tool);
     }
   });
 

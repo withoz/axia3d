@@ -11,6 +11,7 @@ import { vcbTools } from './VCB';
 import { Toast } from './Toast';
 import { toggleShortcutHelp, closeShortcutHelpIfOpen } from './ShortcutHelpModal';
 import { makeFloatingDraggable } from './makeFloatingDraggable';
+import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
 
 export interface KeyboardShortcutsDeps {
   toolManager: ToolManager;
@@ -21,22 +22,7 @@ export interface KeyboardShortcutsDeps {
   openProject: () => void;
 }
 
-/** Tool name → display name mapping */
-const toolNames: Record<string, string> = {
-  select: 'Select', line: 'Line', rect: 'Rectangle',
-  circle: 'Circle', pushpull: 'Extrude/Cut', move: 'Move',
-  rotate: 'Rotate', scale: 'Scale', offset: 'Offset', recess: 'Recess',
-  erase: 'Erase', sphere: 'Sphere', cylinder: 'Cylinder', cone: 'Cone',
-  torus: 'Torus',
-};
-
-/** View mode → display name mapping */
-const viewNames: Record<string, string> = {
-  '3d': '3D Perspective',
-  top: 'Top (XY)', bottom: 'Bottom (XY)',
-  front: 'Front (XZ)', back: 'Back (XZ)',
-  right: 'Right (YZ)', left: 'Left (YZ)',
-};
+// Tool/view display names live in the shared SSOT (./toolDisplayNames).
 
 export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
   const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject } = deps;
@@ -49,13 +35,13 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       b.classList.toggle('active', v === mode);
     });
     const toolLabel = document.getElementById('tool-label');
-    if (toolLabel) toolLabel.textContent = viewNames[mode] || mode;
+    if (toolLabel) toolLabel.textContent = viewDisplayName(mode);
   };
 
   // ── Tool label update helper ──
   const updateToolLabel = (tool: string) => {
     const toolLabel = document.getElementById('tool-label');
-    if (toolLabel) toolLabel.textContent = toolNames[tool] || tool;
+    if (toolLabel) toolLabel.textContent = toolDisplayName(tool);
   };
 
   // ── Toolbar / tool-label 동기화 헬퍼 ──
@@ -442,7 +428,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
           b.classList.toggle('active', (b as HTMLElement).dataset.view === '3d')
         );
         const toolLabel = document.getElementById('tool-label');
-        if (toolLabel) toolLabel.textContent = '3D Perspective';
+        if (toolLabel) toolLabel.textContent = viewDisplayName('3d');
       } else {
         toolManager.setTool('select');
         syncToolbarHighlight('select');
@@ -533,7 +519,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       viewModeBar.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       viewport.setViewMode(mode);
-      updateToolLabel(viewNames[mode] || mode);
+      updateToolLabel(viewDisplayName(mode));
     });
 
     // ── 키보드 단축키: AutoCAD 스타일 + Blender 넘패드 ──

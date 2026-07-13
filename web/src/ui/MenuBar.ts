@@ -16,6 +16,7 @@ import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import type { ImportFormat } from '../import/FileImporter';
 import { timestampedName } from '../export/ExportUtils';
+import { toolDisplayName } from './toolDisplayNames';
 
 export interface MenuBarDeps {
   viewport: Viewport;
@@ -32,13 +33,7 @@ export interface MenuBarDeps {
   openOsnapPanel?: () => void;
 }
 
-/** Tool name → display name mapping */
-const toolNames: Record<string, string> = {
-  select: 'Select', line: 'Line', rect: 'Rectangle',
-  circle: 'Circle', hole: 'Hole', pushpull: 'Extrude/Cut', move: 'Move',
-  sphere: 'Sphere', cylinder: 'Cylinder', cone: 'Cone',
-  torus: 'Torus', recess: 'Recess',
-};
+// Tool display names live in the shared SSOT (./toolDisplayNames).
 
 export function initMenuBar(deps: MenuBarDeps): void {
   const { viewport, bridge, toolManager, scene, fileManager,
@@ -170,7 +165,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
     // is a placeholder rather than a broken click.
     if (!toolManager.hasTool(tool)) {
       Toast.warning(
-        `"${toolNames[tool] || tool}" 도구는 아직 준비 중입니다. ` +
+        `"${toolDisplayName(tool)}" 도구는 아직 준비 중입니다. ` +
           `(menu surfaces tool-id but tool unregistered)`,
         4000,
       );
@@ -183,7 +178,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
     });
     const toolLabel = document.getElementById('tool-label');
     if (toolLabel) {
-      toolLabel.textContent = toolNames[tool] || tool;
+      toolLabel.textContent = toolDisplayName(tool);
     }
   };
 

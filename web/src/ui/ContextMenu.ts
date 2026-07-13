@@ -12,6 +12,7 @@ import { ToolManager } from '../tools/ToolManagerRefactored';
 import { Toast } from './Toast';
 import { debugLog } from '../utils/debug';
 import type { SnapType } from '../snap/SnapManager';
+import { viewDisplayName } from './toolDisplayNames';
 
 export interface ContextMenuDeps {
   viewport: Viewport;
@@ -496,12 +497,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       );
       const toolLabel = document.getElementById('tool-label');
       if (toolLabel) {
-        const names: Record<string, string> = {
-          '3d': '3D Perspective',
-          top: 'Top (XY)', front: 'Front (XZ)',
-          right: 'Right (YZ)',
-        };
-        toolLabel.textContent = names[mode] || mode;
+        toolLabel.textContent = viewDisplayName(mode);
       }
     }
   });

@@ -810,17 +810,21 @@
       box-shadow: 0 0 12px rgba(74, 193, 255, 0.7);
     }
 
-    /* ═══ Tool label (current tool name, top-left) ═══ */
+    /* ═══ Tool/command indicator — hosted inside the status bar (#statusbar).
+       Shows the active tool ("Rectangle") or view mode ("3D Perspective").
+       Formerly a pill floating over the viewport (absolute top:80px/left:12px);
+       moved into the status bar so command guidance no longer overlaps the 3D
+       view. Same #tool-label id — all updaters (main.ts / KeyboardShortcuts /
+       ContextMenu / MenuBar) write to it unchanged. ═══ */
     #tool-label {
-      position: absolute;
-      top: 80px;
-      left: 12px;
-      z-index: 100;
+      flex: 0 0 auto;
       font-size: 12px;
-      color: rgba(255, 255, 255, 0.5);
-      background: rgba(0, 0, 0, 0.40);
-      padding: 3px 10px;
-      border-radius: 4px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.78);
+      background: rgba(66, 133, 244, 0.16);
+      padding: 2px 9px;
+      border-radius: 10px;
+      white-space: nowrap;
       pointer-events: none;
     }
 
@@ -2694,9 +2698,6 @@
       <svg viewBox="0 0 576 512"><path d="M575.8 255.5c0 18-15 32.1-32 32.1h-32l.7 160.2c0 2.7-.2 5.4-.5 8.1V472c0 22.1-17.9 40-40 40H456c-1.1 0-2.2 0-3.3-.1c-1.4 .1-2.8 .1-4.2 .1H416 392c-22.1 0-40-17.9-40-40V400 336c0-26.5-21.5-48-48-48H272c-26.5 0-48 21.5-48 48v64 72c0 22.1-17.9 40-40 40H160 128.1c-1.5 0-3-.1-4.5-.2c-1.2 .1-2.4 .2-3.6 .2H104c-22.1 0-40-17.9-40-40v-72c0-.7 0-1.3 0-2V256 237.8L32.4 287.6c-12.4 8.4-29.1 5.5-37.8-6.5s-5.7-28.1 6.6-36.8L288 48 572.6 244.3c12.3 8.7 15.1 25.2 6.4 37.3c-1 1.4-2.2 2.8-3.2 3.9z"/></svg>
     </button>
 
-    <!-- Tool label (top left) -->
-    <div id="tool-label">Select</div>
-
     <!-- Context Menu (right-click) -->
     <div id="context-menu">
       <div class="ctx-item" data-action="undo">Undo <span class="ctx-key">Ctrl+Z</span></div>
@@ -2819,6 +2820,9 @@
     <!-- KAYAC-style bottom status bar (left half) -->
     <div id="bottombar">
     <div id="statusbar">
+      <!-- 현재 명령/도구 표시 (명령 안내) — 상태바에 호스팅 (이전: 뷰포트 위 부유 pill).
+           도구(Rectangle 등) 또는 뷰 모드(3D Perspective 등) 를 표시. -->
+      <div id="tool-label">Select</div>
       <!-- 좌표 (AutoCAD 스타일) — snap prefix는 별도 고정폭 span으로 분리 -->
       <span class="sb-snap" id="sb-snap"></span>
       <span class="sb-coords" id="sb-coords">—, —, —</span>
