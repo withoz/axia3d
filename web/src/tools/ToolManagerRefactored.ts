@@ -4382,11 +4382,12 @@ export class ToolManager {
     });
 
     // ===== MOUSE DOWN =====
-    // SNAP DISABLED (사용자 결재 2026-05-18) — see getSnappedPoint above.
-    // Pass raw 3D point directly to tool. getSnappedPoint() call removed
-    // entirely to eliminate every snap-related WASM call path during
-    // mousedown/mousemove (prevents recursive-use Rust borrow violations
-    // observed in user demo).
+    // ADR-292 (2026-07-13) — OSNAP re-introduced plane-consistently. The point
+    // is resolved by get3DPoint, whose applyObjectSnap does TS-only (no-WASM)
+    // snap candidate generation then PROJECTS onto the active draw plane, so the
+    // 2026-05-18 "recursive use of an object" hot-path crash and the off-plane
+    // commit stay eliminated (the old getSnappedPoint() terminal-override call
+    // is NOT re-added). Snap is never the terminal transform.
     canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || e.altKey) return;
       // ADR-188 (Supersedes ADR-182 new-draw-start unlock, 사용자 결재
