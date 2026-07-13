@@ -33,6 +33,8 @@ test.describe('Command indicator in status bar', () => {
       const cs = getComputedStyle(tl);
       const r = tl.getBoundingClientRect();
       const sbr = sb.getBoundingClientRect();
+      const kids = Array.from(sb.children);
+      const idx = (id: string) => kids.indexOf(document.getElementById(id) as Element);
       return {
         insideStatusbar: sb.contains(tl),
         position: cs.position,
@@ -40,12 +42,18 @@ test.describe('Command indicator in status bar', () => {
           r.x >= sbr.x - 1 && r.right <= sbr.right + 1 &&
           r.y >= sbr.y - 1 && r.bottom <= sbr.bottom + 1,
         text: tl.textContent,
+        // Positioned after the coordinates and immediately before the unit
+        // setting (sb-meta "· mm · 4").
+        afterCoords: idx('sb-coords') < idx('tool-label'),
+        beforeUnit: idx('tool-label') < idx('sb-meta'),
       };
     });
     expect(layout.insideStatusbar).toBe(true);
     expect(layout.position).toBe('static'); // not an absolute floating overlay
     expect(layout.within).toBe(true);
     expect(layout.text).toBe('Select');
+    expect(layout.afterCoords).toBe(true);
+    expect(layout.beforeUnit).toBe(true);
 
     const clickTool = async (id: string) => {
       await page.evaluate((toolId) => {

@@ -2820,12 +2820,12 @@
     <!-- KAYAC-style bottom status bar (left half) -->
     <div id="bottombar">
     <div id="statusbar">
-      <!-- 현재 명령/도구 표시 (명령 안내) — 상태바에 호스팅 (이전: 뷰포트 위 부유 pill).
-           도구(Rectangle 등) 또는 뷰 모드(3D Perspective 등) 를 표시. -->
-      <div id="tool-label">Select</div>
       <!-- 좌표 (AutoCAD 스타일) — snap prefix는 별도 고정폭 span으로 분리 -->
       <span class="sb-snap" id="sb-snap"></span>
       <span class="sb-coords" id="sb-coords">—, —, —</span>
+      <!-- 현재 명령/도구 표시 (명령 안내) — 단위(sb-meta) 앞에 위치.
+           뷰포트 위 부유 pill 아님. 도구(Rectangle 등) 또는 뷰 모드(3D Perspective 등) 표시. -->
+      <div id="tool-label">Select</div>
       <span class="sb-meta" id="sb-meta">· mm · 4</span>
 
       <!-- 숨겨진 레거시 표시 (XIA Inspector / toolbar가 대신 표시) -->
