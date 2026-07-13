@@ -322,6 +322,12 @@ export class DraggablePanelManager {
    * Setup drag and resize handlers for a panel
    */
   private setupPanelDragResize(el: HTMLElement, panelId: string): void {
+    // Resize handles (SE corner + E/S edges) — wired independently of the drag
+    // header so a panel is resizable even without a draggable header. CSS in
+    // DraggablePanels.css styles [data-panel-resize]; this completes the
+    // scaffolded (SizeConstraints / resizedPanel / ResizeEnd) resize behavior.
+    this.setupPanelResize(el, panelId);
+
     // Find header by class names used in actual HTML
     let header = el.querySelector('[data-panel-header]') as HTMLElement;
     if (!header) {
@@ -411,6 +417,71 @@ export class DraggablePanelManager {
 
       this.saveLayout();
     };
+  }
+
+  /**
+   * Inject SE/E/S resize handles into a floating panel and wire drag-to-resize.
+   * The panel grows from its top-left anchor toward bottom-right, clamped to the
+   * panel's SizeConstraints AND the safe viewport (never past the menubar /
+   * status bar, never off the right edge). New size is persisted via saveLayout.
+   * Idempotent — handles are created once per panel.
+   */
+  private setupPanelResize(el: HTMLElement, panelId: string): void {
+    if (el.querySelector('[data-panel-resize]')) return; // already wired
+
+    const makeHandle = (mode: 'se' | 'e' | 's'): HTMLElement => {
+      const h = document.createElement('div');
+      h.setAttribute('data-panel-resize', mode);
+      el.appendChild(h);
+      h.addEventListener('mousedown', (e) => this.beginResize(e, el, panelId, mode));
+      return h;
+    };
+    makeHandle('e');
+    makeHandle('s');
+    makeHandle('se');
+  }
+
+  private beginResize(e: MouseEvent, el: HTMLElement, panelId: string, mode: 'se' | 'e' | 's'): void {
+    if (e.button !== 0) return;
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+    // Do NOT let the resize start a header drag or a text selection.
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = panel.floatingRect.width;
+    const startH = panel.floatingRect.height;
+    el.style.zIndex = String(++this.nextZIndex);
+
+    const onMove = (ev: MouseEvent) => {
+      const c = panel.sizeConstraints;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const usableBottom = vh - BOTTOM_RESERVED;
+      // Cap so the panel's right/bottom edges stay in the safe viewport WITHOUT
+      // moving its x/y anchor (grows toward bottom-right and stops).
+      const maxW = Math.min(c.maxWidth, vw - panel.floatingRect.x);
+      const maxH = Math.min(c.maxHeight, usableBottom - panel.floatingRect.y);
+      let w = startW;
+      let h = startH;
+      if (mode !== 's') w = Math.max(c.minWidth, Math.min(maxW, startW + (ev.clientX - startX)));
+      if (mode !== 'e') h = Math.max(c.minHeight, Math.min(maxH, startH + (ev.clientY - startY)));
+      panel.floatingRect.width = w;
+      panel.floatingRect.height = h;
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      this.saveLayout();
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   /**

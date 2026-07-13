@@ -216,6 +216,79 @@ describe('DraggablePanelManager', () => {
     });
   });
 
+  describe('panel resize (SE grip)', () => {
+    const mountAndRegister = (id = 'xia-inspector') => {
+      const el = document.createElement('div');
+      el.id = id;
+      document.body.appendChild(el);
+      manager.registerAllPanels([id]);
+      return el;
+    };
+    const rectOf = (id: string) => (manager as any).panels.get(id).floatingRect;
+    const dragSE = (el: HTMLElement, dx: number, dy: number) => {
+      const se = el.querySelector('[data-panel-resize="se"]') as HTMLElement;
+      const x0 = 300, y0 = 300;
+      se.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: x0, clientY: y0, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: x0 + dx, clientY: y0 + dy, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    };
+
+    it('injects SE/E/S resize handles into the panel element', () => {
+      const el = mountAndRegister();
+      expect(el.querySelector('[data-panel-resize="se"]')).not.toBeNull();
+      expect(el.querySelector('[data-panel-resize="e"]')).not.toBeNull();
+      expect(el.querySelector('[data-panel-resize="s"]')).not.toBeNull();
+    });
+
+    it('does not inject handles twice on re-register', () => {
+      const el = mountAndRegister();
+      manager.registerAllPanels(['xia-inspector']); // re-run
+      expect(el.querySelectorAll('[data-panel-resize]').length).toBe(3);
+    });
+
+    it('SE drag grows the panel toward bottom-right', () => {
+      const el = mountAndRegister();
+      const r = rectOf('xia-inspector');
+      r.x = 100; r.y = 100;
+      const startW = r.width, startH = r.height;
+      dragSE(el, 80, 60);
+      expect(r.width).toBeGreaterThan(startW);
+      expect(r.height).toBeGreaterThan(startH);
+      expect(el.style.width).toBe(`${r.width}px`);
+      expect(el.style.height).toBe(`${r.height}px`);
+    });
+
+    it('clamps to sizeConstraints.maxWidth/maxHeight on a huge drag', () => {
+      const el = mountAndRegister();
+      const r = rectOf('xia-inspector');
+      r.x = 40; r.y = 40;
+      dragSE(el, 9000, 9000);
+      expect(r.width).toBeLessThanOrEqual(600); // xia-inspector maxWidth
+      expect(r.height).toBeLessThanOrEqual(1000); // xia-inspector maxHeight
+    });
+
+    it('never shrinks below sizeConstraints.minWidth/minHeight', () => {
+      const el = mountAndRegister();
+      const r = rectOf('xia-inspector');
+      r.x = 100; r.y = 100;
+      dragSE(el, -9000, -9000);
+      expect(r.width).toBeGreaterThanOrEqual(250); // xia-inspector minWidth
+      expect(r.height).toBeGreaterThanOrEqual(300); // xia-inspector minHeight
+    });
+
+    it('persists the new size to localStorage on mouseup', () => {
+      const el = mountAndRegister();
+      const r = rectOf('xia-inspector');
+      r.x = 100; r.y = 100;
+      const startW = r.width;
+      dragSE(el, 70, 50);
+      const saved = JSON.parse(store['axia-panel-layout']);
+      const sp = saved.panels.find((x: { id: string }) => x.id === 'xia-inspector');
+      expect(sp.floatingRect.width).toBeGreaterThan(startW);
+      expect(sp.floatingRect.width).toBe(r.width);
+    });
+  });
+
   describe('expandAutoHidePanel / collapseAutoHidePanel', () => {
     it('adds expanded class', () => {
       const el = document.createElement('div');

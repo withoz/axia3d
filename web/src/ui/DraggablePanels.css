@@ -186,10 +186,13 @@
   position: absolute;
   bottom: 0;
   right: 0;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   cursor: nwse-resize;
   background: linear-gradient(135deg, transparent 50%, #5b9bd5 50%);
+  /* Discoverable by default (the SE grip signals the panel is resizable);
+     brightens on hover via the shared [data-panel-resize]:hover rule. */
+  opacity: 0.55;
 }
 
 .draggable-panel [data-panel-resize="e"] {
