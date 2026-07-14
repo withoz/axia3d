@@ -461,8 +461,14 @@
       white-space: nowrap;
       /* 모든 숫자가 동일 너비 ('tabular nums') — 1234.5 vs 999.9 layout 동일 */
       font-variant-numeric: tabular-nums;
-      /* 일반 좌표 수용 너비 (±99999.9999 × 3) */
-      min-width: 220px;
+      /* 좌표 필드 고정폭 — 커서 이동으로 뒤따르는 F-키·평면 배지·치수칸이
+         밀리지 않도록 충분히 넓게 예약. 약 ±1 km/축 (±999,999.9999 × 3,
+         실측 284px) + 여유. monospace + tabular-nums 라 자릿수 흔들림 0.
+         범위 초과 시 clip (reflow 방지 — 이전 min-width:220px 는 ±100 m 만
+         넘어도 growth → downstream 이동). */
+      flex: 0 0 300px;
+      width: 300px;
+      overflow: hidden;
       display: inline-block;
       text-align: left;
     }
