@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (177, incl. tool-recess)', () => {
+  it('CommandCatalog count matches expected total (190, incl. Cmd-K coverage batch)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -92,9 +92,11 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // (draw-tool drift sweep) → 172; ADR-233 added nurbs-edit → 173;
     // ADR-247 added loft-selected-faces → 174; ADR-248 added revolve-face-solid
     // → 175; ADR-249 P5 added tool-polygon-hole → 176; recess UI added
-    // tool-recess (3D pocket) → 177. The matching ActionCatalog entries are
+    // tool-recess (3D pocket) → 177. Cmd-K palette coverage batch added the
+    // 9 view/diagnostic panel toggles + 3 imports (skp/step/iges) +
+    // resynthesize-faces = +13 → 190. The matching ActionCatalog entries are
     // kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
-    expect(count).toBe(177);
+    expect(count).toBe(190);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

@@ -544,7 +544,19 @@ async function main() {
   //   MenuBar; the catalog just gathers the metadata so toolbar / menu
   //   / keyboard / palette can all consult one list.
   void import('./commands/AxiaCommands').then(({ registerAxiaCommands }) => {
-    registerAxiaCommands({ toolManager });
+    // dispatchMenuAction — palette `action()` commands that ToolManager.
+    // executeAction doesn't handle (panels, imports, view modes) route through
+    // the MenuBar by dispatching a click on its (possibly hidden) #menubar
+    // [data-action] item. Scoped to #menubar so bare ids that only live on the
+    // toolbar / context menu (group / ungroup / make-component) fall through to
+    // executeAction. Returns false when no menubar item exists.
+    const dispatchMenuAction = (id: string): boolean => {
+      const item = document.querySelector<HTMLElement>(`#menubar [data-action="${id}"]`);
+      if (!item) return false;
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      return true;
+    };
+    registerAxiaCommands({ toolManager, dispatchMenuAction });
   });
   // Command Palette — Ctrl+K / Ctrl+Shift+P opens a searchable list of every
   //   registered command (single visible surface for the catalog).

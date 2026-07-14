@@ -19,7 +19,7 @@ export interface CommandRegistrationDeps {
   toolManager: ToolManager;
   /** Fallback for IDs that aren't tools and aren't in toolManager.executeAction.
    *  We forward to the legacy MenuBar dispatch here. */
-  dispatchMenuAction?: (id: string) => void;
+  dispatchMenuAction?: (id: string) => boolean;
 }
 
 /** Helper — define a tool-mode command (data-tool="X" → setTool('X')). */
@@ -60,10 +60,13 @@ function action(
     description: label,
     toolbar,
     execute: customExecute ?? (() => {
-      // Try toolManager.executeAction first; if unhandled, fall through to
-      // the legacy MenuBar dispatch.
-      try { deps.toolManager.executeAction(id); }
-      catch { deps.dispatchMenuAction?.(id); }
+      // executeAction is silent for ids it does not handle (no throw), so a
+      // try/catch can't detect a miss. Route menu-backed ids (panels, imports,
+      // view modes) through the MenuBar dispatcher first; fall back to
+      // executeAction for ids without a #menubar item (tools / edit ops like
+      // undo, delete, and bare group/ungroup/make-component).
+      if (deps.dispatchMenuAction?.(id)) return;
+      deps.toolManager.executeAction(id);
     }),
   };
 }
@@ -259,6 +262,16 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-ssao',   'view', 'SSAO 토글',     'SSAO',   undefined, false, deps));
   cmds.push(action('view-shadow-pro','view','그림자 PRO',  'Shadow', undefined, false, deps));
   cmds.push(action('view-sun-panel', 'view','태양 패널',   '태양',   undefined, false, deps));
+  // Panel / diagnostic toggles — catalog SSOT coverage (bottom-bar UX audit).
+  cmds.push(action('view-xia-inspector',          'view', 'XIA 인스펙터',        'XIA',   undefined, false, deps));
+  cmds.push(action('view-components',             'view', '컴포넌트 패널',        'Comp',  undefined, false, deps));
+  cmds.push(action('view-constraints',            'view', '제약 패널',           'Constr',undefined, false, deps));
+  cmds.push(action('view-capability-explorer',    'view', 'Capability Explorer', 'Cap',   undefined, false, deps));
+  cmds.push(action('view-invariant-verifier',     'view', '불변식 검증기',        'Invar', undefined, false, deps));
+  cmds.push(action('view-audit-log',              'view', '감사 로그 뷰어',       'Audit', undefined, false, deps));
+  cmds.push(action('view-analytic-hover-overlay', 'view', '분석 호버 오버레이',    'Hover', undefined, false, deps));
+  cmds.push(action('view-materials',              'view', '재질 뷰',             'Mat',   undefined, false, deps));
+  cmds.push(action('view-fur',                    'view', '퍼(fur) 렌더 토글',    'Fur',   undefined, false, deps));
 
   cmds.push(action('section-x',   'view', '단면 · X',  'Sec X', undefined, false, deps));
   cmds.push(action('section-y',   'view', '단면 · Y',  'Sec Y', undefined, false, deps));
@@ -292,6 +305,9 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('import-3ds',   'import', '3DS 가져오기',   '3DS',   undefined, false, deps));
   cmds.push(action('import-3dm',   'import', '3DM 가져오기',   '3DM',   undefined, false, deps));
   cmds.push(action('import-ifc',   'import', 'IFC 가져오기',   'IFC',   undefined, false, deps));
+  cmds.push(action('import-skp',   'import', 'SketchUp 가져오기', 'SKP',  undefined, false, deps));
+  cmds.push(action('import-step',  'import', 'STEP 가져오기',  'STEP',  undefined, false, deps));
+  cmds.push(action('import-iges',  'import', 'IGES 가져오기',  'IGES',  undefined, false, deps));
 
   // ── Export ──────────────────────────────────────────────────────
   cmds.push(action('export-dxf',  'export', 'DXF 내보내기',  'DXF',  undefined, false, deps));
@@ -302,6 +318,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   // ── Repair / Diagnostics ───────────────────────────────────────
   cmds.push(action('mesh-repair',       'repair', '🩹 메시 수리',           'Repair', undefined, false, deps));
   cmds.push(action('synthesize-faces',  'repair', '면 합성',                'Synth',  undefined, false, deps));
+  cmds.push(action('resynthesize-faces','repair', '경계 도구 (면 재합성)',    'Boundary', undefined, false, deps));
   cmds.push(action('clash-detect',      'repair', '간섭 검사',              'Clash',  undefined, false, deps));
   cmds.push(action('clash-clear',       'repair', '간섭 표시 제거',          'Clear',  undefined, false, deps));
   cmds.push(action('solar-heatmap',     'repair', '태양 히트맵',            'Solar',  undefined, false, deps));
