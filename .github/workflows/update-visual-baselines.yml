@@ -80,18 +80,23 @@ jobs:
         working-directory: ./web
         run: npx playwright install --with-deps chromium
 
-      # Temporarily un-skip every visual spec so --update-snapshots
-      # fires for all of them, regardless of when each was added.
-      # The flip is `test.describe.skip` → `test.describe`, in place;
-      # the file change is NOT committed — the artifact is the only
-      # output of this workflow.
+      # Visual specs are ACTIVE — no un-skip needed.
       #
-      # Glob (`e2e/visual/*.visual.spec.ts`) catches future specs
-      # automatically. Previously this step hard-coded two filenames
-      # and silently missed any spec added later (caught when 🅑 Phase
-      # 3 ran and produced 0 baselines for cylinder + edge-interaction
-      # specs — fixed 2026-05-14).
-      - name: Un-skip visual specs (in-place, run-only)
+      # This step used to `sed -i "s/test\.describe\.skip(/test.describe(/g"`
+      # the specs in place, back when they shipped as `test.describe.skip`
+      # "until baselines are committed". They were un-skipped once baselines
+      # landed (155e127), so the sed became a silent no-op: as of 2026-07-14
+      # an unanchored grep for `test.describe.skip(` across
+      # e2e/visual/*.visual.spec.ts matches 0 occurrences in code (only stale
+      # doc-comments mention it). Removed rather than left in place, because a
+      # no-op that claims to guarantee something is worse than no step at all —
+      # it implies the specs might be skipped when they never are.
+      #
+      # The spec-discovery + listing is kept: the glob catches specs added
+      # later (a previous version hard-coded two filenames and silently
+      # produced 0 baselines for the cylinder + edge-interaction specs —
+      # fixed 2026-05-14), and the listing makes the run auditable.
+      - name: List visual specs (auditability)
         working-directory: ./web
         run: |
           shopt -s nullglob
@@ -102,13 +107,16 @@ jobs:
           fi
           echo "Found ${#specs[@]} visual spec(s):"
           for f in "${specs[@]}"; do echo "  - $f"; done
-          sed -i "s/test\.describe\.skip(/test.describe(/g" "${specs[@]}"
           echo ""
-          echo "--- After un-skip ---"
+          echo "--- describe blocks (must NOT be .skip) ---"
           for f in "${specs[@]}"; do
             echo "[$f]"
             grep -n "test\.describe" "$f" || true
           done
+          if grep -q "test\.describe\.skip(" "${specs[@]}"; then
+            echo "::error::A visual spec is test.describe.skip — --update-snapshots would produce no baseline for it."
+            exit 1
+          fi
 
       # First pass generates baselines (exits 0 even if no prior baseline).
       - name: Generate baselines (playwright test --update-snapshots)
