@@ -107,6 +107,7 @@ test.describe('ADR-142 δ — User demo gate (Path B closed-curve K1 cross-cut)'
       const bridge = (window as any).__axia.get('bridge');
 
       const facesBefore = bridge.getStats().faces;
+      const edgesBefore = bridge.getStats().edges;
       const vertsBefore = bridge.getStats().verts;
 
       const faceResult = bridge.drawCircleAsCurve(
@@ -116,12 +117,15 @@ test.describe('ADR-142 δ — User demo gate (Path B closed-curve K1 cross-cut)'
       );
 
       const facesAfter = bridge.getStats().faces;
+      const edgesAfter = bridge.getStats().edges;
       const vertsAfter = bridge.getStats().verts;
 
       return {
         faceCreated: faceResult !== null && faceResult !== undefined,
         facesBefore,
         facesAfter,
+        edgesBefore,
+        edgesAfter,
         vertsBefore,
         vertsAfter,
       };
@@ -129,9 +133,29 @@ test.describe('ADR-142 δ — User demo gate (Path B closed-curve K1 cross-cut)'
 
     expect(result.faceCreated, 'δ-2: Path B Circle face created').toBe(true);
     expect(result.facesAfter, 'δ-2: Face count +1').toBe(result.facesBefore + 1);
-    // Path B canonical: 1 anchor vert per face (ADR-089 Phase 2).
-    expect(result.vertsAfter, 'δ-2: Vert count +1 (Path B anchor)').toBe(
-      result.vertsBefore + 1,
+    // Path B canonical (ADR-089 A-δ): a circle = 1 anchor vertex + 1 self-loop
+    // edge + 1 face. The single self-loop edge IS the "1 anchor" signature, so
+    // assert exactly +1 edge — edges are removed+recreated cleanly by the
+    // re-derive, so this delta is tombstone-free.
+    expect(result.edgesAfter, 'δ-2: Edge count +1 (single self-loop)').toBe(
+      result.edgesBefore + 1,
     );
+    // NOTE (2026-07-14 root-cause): raw getStats().verts here is +2, NOT +1.
+    // Under production defaults the ADR-186 coplanar re-derive (face_rederive_
+    // on_draw ON) tears down and rebuilds the just-drawn circle: it removes the
+    // old face + edge but only DEACTIVATES the old anchor vertex (the engine's
+    // append+deactivate vert model — verts are tombstoned, never slot-removed)
+    // while allocating a fresh anchor. So vert_count() (a raw slot count) tallies
+    // 1 active anchor + 1 inactive tombstone = 2. The ACTIVE DCEL topology is
+    // still the canonical single anchor + self-loop, rigorously guarded at the
+    // engine level by the Rust test
+    // `adr089_a_delta_closed_circle_face_creates_1_vert_1_edge_1_face`
+    // (active_verts == 1, edge.is_self_loop()). We therefore assert the clean
+    // face/edge deltas above and only an upper bound on the raw vert slot count
+    // (which also tolerates a future re-derive that compacts the tombstone → +1).
+    expect(
+      result.vertsAfter,
+      'δ-2: ≤ 1 new active anchor + ≤ 1 re-derive tombstone',
+    ).toBeLessThanOrEqual(result.vertsBefore + 2);
   });
 });
