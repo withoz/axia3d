@@ -41,6 +41,10 @@ export class StatusBar {
   private raycaster = new THREE.Raycaster();
   private _v2 = new THREE.Vector2();
   private _intersect = new THREE.Vector3();
+  /** Category C — inline quick unit/precision dropdown anchored on cb-unit (▾). */
+  private unitMenu: HTMLElement | null = null;
+  private _onUnitMenuDocDown: ((e: MouseEvent) => void) | null = null;
+  private _onUnitMenuKey: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(deps: StatusBarDeps) {
     this.deps = deps;
@@ -220,11 +224,13 @@ export class StatusBar {
   // ═══════════════════════════════════════════════════
 
   private setupCbTools(): void {
-    // 단위/정밀도 버튼 → Settings 패널
+    // 단위/정밀도 버튼 → 인라인 빠른 단위/정밀도 드롭다운 (▾ 셰브런이 실제
+    // 드롭다운을 의미하도록). 옆 ⚙ Settings 버튼과 역할 분리: 이 버튼은
+    // 빠른 단위/정밀도 선택, ⚙ 는 전체 설정 패널.
     const unitBtn = document.getElementById('cb-unit-btn');
-    unitBtn?.addEventListener('click', () => {
-      if (this.deps.openSettings) this.deps.openSettings();
-      else Toast.info('설정 패널을 열 수 없습니다');
+    unitBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleUnitMenu(unitBtn);
     });
 
     // 설정
@@ -251,6 +257,115 @@ export class StatusBar {
       const firstMenu = document.querySelector<HTMLElement>('.menu-item[data-menu="file"]');
       if (firstMenu) firstMenu.click();
     });
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  Quick unit / precision dropdown (cb-unit ▾)
+  // ═══════════════════════════════════════════════════
+
+  private toggleUnitMenu(anchor: HTMLElement): void {
+    if (this.unitMenu) { this.closeUnitMenu(); return; }
+
+    const menu = document.createElement('div');
+    menu.id = 'cb-unit-menu';
+    menu.className = 'cb-unit-menu';
+    menu.style.cssText =
+      'position:fixed; z-index:2000; min-width:180px; padding:6px;' +
+      'background:rgba(30,30,37,0.98); border:1px solid rgba(255,255,255,0.12);' +
+      'border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.5); font-size:12px;' +
+      'color:rgba(255,255,255,0.85); backdrop-filter:blur(8px);' +
+      '-webkit-backdrop-filter:blur(8px);';
+    this.unitMenu = menu;
+    this.renderUnitMenu(menu);
+    document.body.appendChild(menu);
+
+    // Anchor above the button (status/command bar sits at the bottom).
+    const r = anchor.getBoundingClientRect();
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+
+    // Close on outside mousedown (deferred so this click doesn't self-close) + Esc.
+    this._onUnitMenuDocDown = (ev: MouseEvent) => {
+      const t = ev.target as Node;
+      if (this.unitMenu && !this.unitMenu.contains(t) && !anchor.contains(t)) {
+        this.closeUnitMenu();
+      }
+    };
+    this._onUnitMenuKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') this.closeUnitMenu();
+    };
+    setTimeout(() => {
+      if (this._onUnitMenuDocDown) document.addEventListener('mousedown', this._onUnitMenuDocDown);
+    }, 0);
+    document.addEventListener('keydown', this._onUnitMenuKey);
+  }
+
+  private renderUnitMenu(menu: HTMLElement): void {
+    const units = this.deps.units;
+    menu.innerHTML = '';
+    const header = (text: string): HTMLElement => {
+      const h = document.createElement('div');
+      h.textContent = text;
+      h.style.cssText =
+        'padding:4px 8px 2px; font-size:10px; opacity:0.5;' +
+        'text-transform:uppercase; letter-spacing:0.05em;';
+      return h;
+    };
+
+    menu.appendChild(header('단위'));
+    for (const u of UnitSystem.allUnits) {
+      const active = u.type === units.unit;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = u.labelLong;
+      b.dataset.unit = u.type;
+      b.style.cssText =
+        'display:block; width:100%; text-align:left; padding:5px 8px; border:none;' +
+        'border-radius:4px; cursor:pointer; font-size:12px;' +
+        `background:${active ? 'rgba(91,155,213,0.30)' : 'transparent'};` +
+        `color:${active ? '#fff' : 'rgba(255,255,255,0.8)'};`;
+      if (!active) {
+        b.addEventListener('mouseenter', () => { b.style.background = 'rgba(255,255,255,0.08)'; });
+        b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+      }
+      b.addEventListener('click', () => {
+        units.unit = u.type; // fires onChange → updateUnitButton refreshes cb-unit-lbl
+        this.closeUnitMenu();
+      });
+      menu.appendChild(b);
+    }
+
+    menu.appendChild(header('정밀도 (소수점)'));
+    const prow = document.createElement('div');
+    prow.style.cssText = 'display:flex; align-items:center; gap:6px; padding:4px 8px 2px;';
+    const sel = document.createElement('select');
+    sel.id = 'cb-unit-precision';
+    sel.style.cssText =
+      'flex:1; background:#1a1e27; color:#fff; border:1px solid rgba(255,255,255,0.15);' +
+      'border-radius:4px; padding:3px; font-size:12px;';
+    for (let i = 0; i <= 8; i++) {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = String(i);
+      if (i === units.precision) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => { units.precision = parseInt(sel.value, 10); });
+    prow.appendChild(sel);
+    menu.appendChild(prow);
+  }
+
+  private closeUnitMenu(): void {
+    if (this._onUnitMenuDocDown) {
+      document.removeEventListener('mousedown', this._onUnitMenuDocDown);
+      this._onUnitMenuDocDown = null;
+    }
+    if (this._onUnitMenuKey) {
+      document.removeEventListener('keydown', this._onUnitMenuKey);
+      this._onUnitMenuKey = null;
+    }
+    this.unitMenu?.remove();
+    this.unitMenu = null;
   }
 
   /** 단위/정밀도 변경 시 호출 — 우측 유틸 버튼의 라벨 갱신 */
