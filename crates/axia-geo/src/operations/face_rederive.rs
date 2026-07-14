@@ -1339,7 +1339,32 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     // top without opening it. They are NOT removed (walls keep them); the new outer
     // loop reuses them via dedup. Non-empty ⇒ β-1 solid-top re-tile is active for
     // this plane; Level 1 (guard_imprint) is the fail-closed backstop.
-    let solid_top_boundary: HashSet<EdgeId> = volume_edges
+    // Fix (disjoint-coplanar-draw): scope the solid-top re-tile to the drawn
+    // region. Without this, drawing a shape DISJOINT from an existing solid but
+    // coplanar with its bottom/top face fed that solid's boundary edges into the
+    // arrange → the drawn face tiled onto them → 3-face non-manifold edges →
+    // guard_imprint rejected the whole draw (blocked "draw a box, then draw
+    // another shape elsewhere on the ground"). The criterion is whether the
+    // on-plane solid FACE that a boundary edge bounds overlaps the drawn region:
+    // an INTERIOR crossing shape overlaps the whole top face (ADR-281 β-1 needs
+    // its perimeter fed even though the shape doesn't reach it), while a disjoint
+    // solid elsewhere does not. Full-plane (None) keeps prior behavior.
+    let affected_aabbs: Vec<Aabb2> = match &scope {
+        Some((affected_faces, _)) => affected_faces
+            .iter()
+            .filter_map(|&f| face_aabb_2d_coplanar(mesh, f, &project, &on_plane))
+            .collect(),
+        None => Vec::new(),
+    };
+    // on-plane volume edges = a solid's top/bottom perimeter (shared with walls).
+    // Between draws the top FACE is DCEL-absent (only the wall bears these edges),
+    // so we group them into connected components (one loop per solid top/bottom)
+    // by shared endpoints and feed a component ONLY if its combined AABB overlaps
+    // the drawn region. Interior crossing shapes overlap the full top loop
+    // (ADR-281 β-1); a disjoint solid elsewhere does not (the disjoint-coplanar
+    // draw fix — otherwise its perimeter fed the arrange → 3-face non-manifold
+    // edges → guard_imprint rejected the whole draw).
+    let onp_ve: Vec<EdgeId> = volume_edges
         .iter()
         .copied()
         .filter(|&e| {
@@ -1351,6 +1376,62 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             })
         })
         .collect();
+    let solid_top_boundary: HashSet<EdgeId> = if scope.is_none() {
+        onp_ve.into_iter().collect() // full-plane: prior (unscoped) behavior
+    } else if affected_aabbs.is_empty() || onp_ve.is_empty() {
+        HashSet::new()
+    } else {
+        // Union-find over on-plane volume edges by shared endpoints.
+        let n = onp_ve.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut vert_edge: HashMap<VertId, usize> = HashMap::new();
+        for (i, &e) in onp_ve.iter().enumerate() {
+            if let Some(ed) = mesh.edges.get(e) {
+                for vtx in [ed.v_small(), ed.v_large()] {
+                    if let Some(&j) = vert_edge.get(&vtx) {
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        if a != b {
+                            parent[a] = b;
+                        }
+                    } else {
+                        vert_edge.insert(vtx, i);
+                    }
+                }
+            }
+        }
+        let comp_of: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
+        // combined AABB per component
+        let mut comp_aabb: HashMap<usize, Aabb2> = HashMap::new();
+        for (i, &e) in onp_ve.iter().enumerate() {
+            if let Some(ea) = edge_aabb_2d(mesh, e, &project) {
+                comp_aabb
+                    .entry(comp_of[i])
+                    .and_modify(|a| {
+                        a.expand(ea.min);
+                        a.expand(ea.max);
+                    })
+                    .or_insert(ea);
+            }
+        }
+        let active: HashSet<usize> = comp_aabb
+            .iter()
+            .filter(|(_, a)| affected_aabbs.iter().any(|aa| aa.overlaps(a, scope_margin)))
+            .map(|(&r, _)| r)
+            .collect();
+        onp_ve
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| active.contains(&comp_of[*i]))
+            .map(|(_, &e)| e)
+            .collect()
+    };
     let input_curves = reconstruct_input_curves(
         mesh,
         plane_origin,

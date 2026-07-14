@@ -14772,6 +14772,83 @@ mod tests {
         );
     }
 
+    /// Regression — after a box exists, drawing a DISJOINT rect elsewhere on the
+    /// same ground plane (z=0, coplanar with the box's bottom face) must SUCCEED
+    /// and not corrupt the mesh. Before the fix, the boundary-kernel re-derive
+    /// fed the box's disjoint z=0 bottom perimeter (ADR-281 β-1 `solid_top_
+    /// boundary`, built unscoped from ALL on-plane volume edges) into the
+    /// arrangement → the drawn face tiled onto it → 4 non-manifold edges →
+    /// `guard_imprint` rejected the whole draw (the common "draw a box, then draw
+    /// another shape on the ground" flow was blocked). The fix scopes
+    /// `solid_top_boundary` in `rebuild_coplanar_faces_analytic_scoped`: on-plane
+    /// volume edges are grouped into connected components (one loop per solid
+    /// top/bottom) and a component is fed ONLY if its AABB overlaps the drawn
+    /// region — so an interior crossing shape still re-tiles its host top
+    /// (ADR-281 β-1) while a disjoint solid elsewhere is left untouched.
+    #[test]
+    fn disjoint_coplanar_ground_rect_after_box_succeeds() {
+        let build_box = |scene: &mut Scene| {
+            scene.execute(Command::DrawRectAsShape {
+                center: DVec3::ZERO, normal: DVec3::Z, up: DVec3::Y, width: 1000.0, height: 800.0,
+            });
+            let profile = scene.mesh.faces.iter().find(|(_, f)| f.is_active()).map(|(id, _)| id).unwrap();
+            scene.execute(Command::CreateSolid {
+                face_id: profile,
+                mode: axia_geo::CreateSolidMode::Extrude { distance: 500.0 },
+            });
+        };
+
+        // Match the BROWSER production defaults (ADR-176): auto behaviors ON.
+        let mut scene = Scene::new();
+        scene.auto_intersect_on_draw = true;
+        scene.auto_face_synthesis_on_draw = true;
+        scene.face_rederive_on_draw = true;
+        build_box(&mut scene);
+        let faces_before = scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(scene.mesh.collect_non_manifold_edges().len(), 0, "box is manifold");
+
+        // Draw a DISJOINT rect far away on the SAME z=0 plane via the full guarded
+        // command path (exactly what the browser does).
+        let result = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(2000.0, 0.0, 0.0), normal: DVec3::Z, up: DVec3::Y, width: 600.0, height: 600.0,
+        });
+        assert!(
+            !matches!(result, CommandResult::Error(_)),
+            "disjoint coplanar ground rect must NOT be rejected, got {:?}",
+            result
+        );
+        // A new face was created and no non-manifold edge introduced.
+        let faces_after = scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(faces_after, faces_before + 1, "the disjoint rect adds exactly one face");
+        assert_eq!(
+            scene.mesh.collect_non_manifold_edges().len(), 0,
+            "disjoint coplanar draw must not introduce non-manifold edges"
+        );
+        assert!(scene.mesh.verify_face_invariants().is_valid(), "mesh stays valid");
+
+        // The overlap case still re-derives (auto-split), i.e. the fast path did
+        // not over-skip: draw a rect OVERLAPPING the box's z=0 bottom — this must
+        // still route through the arrangement (not the fast-path skip). We only
+        // assert it does not panic / stays invariant-valid or cleanly rejects.
+        let mut s2 = Scene::new();
+        s2.auto_intersect_on_draw = true;
+        s2.auto_face_synthesis_on_draw = true;
+        s2.face_rederive_on_draw = true;
+        s2.execute(Command::DrawRectAsShape {
+            center: DVec3::ZERO, normal: DVec3::Z, up: DVec3::Y, width: 1000.0, height: 800.0,
+        });
+        // (flat sheet only; no extrude) draw an overlapping rect → auto-split path.
+        let overlap = s2.execute(Command::DrawRectAsShape {
+            center: DVec3::new(300.0, 0.0, 0.0), normal: DVec3::Z, up: DVec3::Y, width: 1000.0, height: 800.0,
+        });
+        // Either it split (Ok) — the fast path did NOT skip an overlapping draw.
+        assert!(
+            !matches!(overlap, CommandResult::Error(_)),
+            "overlapping coplanar sheets should still auto-split, got {:?}",
+            overlap
+        );
+    }
+
     /// ADR-259 β-1 — tapered extrude through the Scene Command path (flat rect
     /// profile → frustum). Verifies the full dispatch + ADR-102 cleave + kernel
     /// via `exec_create_solid` (not just the engine fn) yields a manifold solid.
