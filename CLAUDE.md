@@ -4938,6 +4938,25 @@ governance 회복.
 > 일관성 + 명시 unlock path + sticky coexist + 🔒 badge 는 **불변 보존**.
 > cross-draw 평면 연속성은 ADR-164 sticky 담당. 자세히는 LOCKED #68 다음
 > 신설 예정 entry + `docs/adr/182-plane-lock-inprogress-scope.md`.
+>
+> ⚠ **Unlock path amended by ADR-270** (2026-07-14 사용자 결재 "Amend LOCKED
+> #67" — 2026-07-14 전체 E2E 스위트 감사에서 drift 발견 후 소급 등재). **L-166-4
+> 의 `Ctrl+Shift+P` 단축키 + L-166-8 의 "명시 unlock path 3중" 은 ADR-270 이
+> supersede** — ADR-270 (Accepted, 사용자 승인) 이 plane-reset 을 `Home`/F5/🏠
+> 로 **통합** 하면서 ContextMenu 의 "sticky 해제" + "평면 잠금 해제" 두 항목을
+> 단일 **"📐 기본 평면으로 (평면 초기화)"** (`data-action="reset-last-drawn-
+> plane"`, class `ctx-plane-reset-item`, key hint `Home`) 로 합쳤고, 그 과정에서
+> `Ctrl+Shift+P` 바인딩은 폐지됨 (현 코드베이스 refs 0).
+>
+> **불변 보존 (ADR-182 의 "명시 unlock path 불변 보존" 정합)** — unlock *능력*
+> 자체는 완전 유지: (1) `Home`/🏠 reset, (2) view change (`notifyViewModeChange`
+> → `_planeLock = null`), (3) ContextMenu "평면 초기화" (lock + sticky 동시 해제).
+> 변경된 것은 **키 바인딩 이름뿐** (Ctrl+Shift+P → Home). ADR-270 이 더 나중의
+> 사용자 결재이므로 본 supersede 가 사용자 의도의 정확한 반영.
+>
+> 회귀 자산: `web/e2e/adr-166-plane-lock-demo.spec.ts` γ-2/γ-3 를 현행
+> (`ctx-plane-reset-item` + `Home`) 기준으로 갱신. 자세히는 LOCKED #88 의
+> ADR-270 항목 + `docs/adr/270-*`.
 
 **Canonical anchor (사용자 작업지시, 2026-05-28)**:
 > "도형을 만들때 같은 plane에 그릴 확률을 높이는 방향으로 개선
@@ -4969,12 +4988,16 @@ sticky 와 coexist (lock 없을 때 sticky fallback).
 - **L-166-2** Q2=(a) cross-tool 유지 (명시 release 까지) — `setTool()`
   reset 안 함 (회귀 명시 검증)
 - **L-166-3** Q3=(a) strong lock (face hit 무시, 메타-원칙 #5)
-- **L-166-4** Q4=(a) `Ctrl+Shift+P` unlock 단축키 + ContextMenu menu
+- **L-166-4** ⚠ **Superseded by ADR-270** (위 amendment) — Q4=(a)
+  `Ctrl+Shift+P` unlock 단축키 + ContextMenu menu. 현행: `Home`/🏠 +
+  통합 ContextMenu "평면 초기화". Ctrl+Shift+P 폐지.
 - **L-166-5** Q5=(a) 🔒 badge upgrade (sticky → lock visual transition)
 - **L-166-6** Engine 변경 0 — TypeScript only
 - **L-166-7** ADR-164 자산 재활용 — 별도 file 신설 안 함
-- **L-166-8** 메타-원칙 #16 정합 — 명시 unlock path 3중 (Ctrl+Shift+P
-  / view change / ContextMenu)
+- **L-166-8** ⚠ **Amended by ADR-270** (위 amendment) — 메타-원칙 #16 정합,
+  명시 unlock path 3중. 현행 3중 = `Home`/🏠 / view change / ContextMenu
+  "평면 초기화" (Ctrl+Shift+P → Home 으로 재바인딩). unlock *능력* 3중은
+  불변 보존.
 - **L-166-9** ADR-046 P31 #4 additive only — ADR-164 sticky 동작 보존
   (coexist)
 - **L-166-10** ADR-164 답습 패턴 — `_planeLock` field naming + API
@@ -5011,8 +5034,9 @@ sticky 와 coexist (lock 없을 때 sticky fallback).
 **사용자 facing 변화 (canonical, demo-ready)**:
 - 첫 RECT 그림 → 자동 plane lock + 🔒 badge 표시
 - DrawCircle / DrawLine 등 도구 전환 → same plane 강제 (cross-tool 유지)
-- 다른 plane 그리고 싶음 → Ctrl+Shift+P 또는 우클릭 → "🔓 평면 잠금
-  해제" → 다음 도형이 자유 평면
+- 다른 plane 그리고 싶음 → ~~Ctrl+Shift+P~~ **`Home`**/🏠 또는 우클릭 →
+  ~~"🔓 평면 잠금 해제"~~ **"📐 기본 평면으로 (평면 초기화)"** → 다음 도형이
+  자유 평면 (ADR-270 amendment — 위 supersede note 참조)
 
 ### 68. ADR-167 — EPS_PLANE SSOT + same_plane() helper (γ closure, 2026-05-29) ✅
 

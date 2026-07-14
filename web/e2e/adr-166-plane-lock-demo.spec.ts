@@ -127,10 +127,18 @@ test.describe('ADR-166 γ — Active Sketch Plane Session Lock E2E', () => {
    * 우클릭 trigger 없이 DOM-level entry presence + visibility class
    * 검증. Initial visibility hidden (lock 미활성 시).
    */
-  test('γ-2: ContextMenu "평면 잠금 해제" item exists (β-3 wiring)', async ({ page }) => {
+  test('γ-2: ContextMenu "평면 초기화" item exists (β-3 wiring, ADR-270 amended)', async ({ page }) => {
+    // ⚠ ADR-270 §amendment (사용자 결재 2026-07-14 "Amend LOCKED #67"):
+    // 본 테스트의 원래 대상이던 별도 "🔓 평면 잠금 해제" 항목
+    // (data-action="unlock-plane-lock", class ctx-plane-lock-unlock-item) 은
+    // ADR-270 이 "sticky 해제" + "평면 잠금 해제" 두 항목을 단일
+    // "📐 기본 평면으로 (평면 초기화)" 로 **통합** 하면서 폐지됨. 클릭 시
+    // resetDrawingPlane() → lock + sticky 동시 해제 (unlock 능력 불변 보존).
+    // 'unlock-plane-lock' 은 ContextMenu 핸들러의 backward-compat alias 로만
+    // 잔존 (DOM 항목 아님) — 따라서 DOM 조회 대상은 현행 canonical id.
     const result = await page.evaluate(() => {
       const item = document.querySelector(
-        '[data-action="unlock-plane-lock"]',
+        '[data-action="reset-last-drawn-plane"]',
       );
       return {
         exists: item !== null,
@@ -139,19 +147,28 @@ test.describe('ADR-166 γ — Active Sketch Plane Session Lock E2E', () => {
       };
     });
     expect(result.exists).toBe(true);
-    expect(result.textContent).toContain('평면 잠금 해제');
-    expect(result.textContent).toContain('Ctrl+Shift+P');
-    // 가시성 class 정합 (β-3 ctx-plane-lock-unlock-item)
-    expect(result.className).toContain('ctx-plane-lock-unlock-item');
+    expect(result.textContent).toContain('평면 초기화');
+    // ADR-270 §amendment 2 (사용자 요청 2026-07-03) — Ctrl+Shift+P 는 Command
+    // Palette(Ctrl+K / Ctrl+Shift+P)와 충돌하여 Home 으로 재바인딩.
+    expect(result.textContent).toContain('Home');
+    // 가시성 class 정합 (ADR-270 통합 항목)
+    expect(result.className).toContain('ctx-plane-reset-item');
   });
 
   /**
-   * γ-3: Ctrl+Shift+P keyboard shortcut wiring (β-3 wiring verification).
+   * γ-3: `Home` keyboard shortcut wiring (β-3 wiring verification).
    *
-   * Lock activate → Ctrl+Shift+P → unlock. Real browser keyboard
-   * dispatch via Playwright `page.keyboard.press`.
+   * Lock activate → Home → unlock. Real browser keyboard dispatch via
+   * Playwright `page.keyboard.press`.
+   *
+   * ⚠ ADR-270 §amendment 2 (사용자 요청 2026-07-03, 사용자 결재 2026-07-14
+   * "Amend LOCKED #67"): 원래 LOCKED #67 L-166-4 가 명시한 `Ctrl+Shift+P` 는
+   * Command Palette(명령어 찾기 — main.ts Ctrl+K / Ctrl+Shift+P)와 **충돌**
+   * 하여 `Home` 으로 이전됨 (Home 은 keydown 미배정 — 카메라 홈은 F5 + 🏠).
+   * unlock *능력* 3중(Home/🏠 · view change · ContextMenu "평면 초기화")은
+   * 불변 보존 — 키 바인딩 이름만 변경.
    */
-  test('γ-3: Ctrl+Shift+P shortcut unlocks plane lock (β-3 wiring)', async ({ page }) => {
+  test('γ-3: Home shortcut unlocks plane lock (β-3 wiring, ADR-270 amended)', async ({ page }) => {
     // Setup: lock plane via API
     const setupOk = await page.evaluate(() => {
       const w = window as unknown as AxiaWindow;
@@ -176,8 +193,8 @@ test.describe('ADR-166 γ — Active Sketch Plane Session Lock E2E', () => {
     });
     expect(setupOk).toBe(true);
 
-    // Press Ctrl+Shift+P (real browser keyboard dispatch)
-    await page.keyboard.press('Control+Shift+P');
+    // Press Home (real browser keyboard dispatch) — ADR-270 §amendment 2
+    await page.keyboard.press('Home');
 
     // Verify: lock released
     const afterUnlock = await page.evaluate(() => {
