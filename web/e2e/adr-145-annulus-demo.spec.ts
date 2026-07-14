@@ -47,9 +47,20 @@ test.describe('ADR-145 γ — Circle annulus 명시 promote E2E', () => {
     // promote 는 사용자 우클릭 명시 trigger, 자동 trigger 와 분리
     // (메타-원칙 #16). 본 E2E 에서 auto-intersect 활성 시 두 Circle
     // 그리기 단계에서 분할 발생 가능 — 분리 보존 위해 OFF 유지.
+    //
+    // face-rederive 도 반드시 OFF (2026-07-14 root-cause): 엔진의 draw-time
+    // hook 은 OR gate —
+    //   `if self.auto_intersect_on_draw || self.face_rederive_on_draw { … }`
+    // (crates/axia-core/src/scene.rs, exec_draw_circle_as_curve).
+    // ADR-186 이후 face_rederive_on_draw 는 production default ON 이라, 위 두
+    // flag 만 끄면 자동 경로가 그대로 발동 → 두 동심원이 draw 단계에서 이미
+    // annulus(inner loop 1개)로 유도되어 "outer 시작 시 simple face" 전제가
+    // 깨짐. 세 flag 를 모두 꺼야 본 spec 의 의도(자동 분리 → 명시 promote)가
+    // 성립한다.
     await page.addInitScript(() => {
       localStorage.setItem('axia:auto-intersect-on-draw', 'false');
       localStorage.setItem('axia:auto-face-synthesis-on-draw', 'false');
+      localStorage.setItem('axia:face-rederive-on-draw', 'false');
     });
     await page.goto('/');
     await waitForBridgeReady(page);
