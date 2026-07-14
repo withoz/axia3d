@@ -56,7 +56,13 @@ jobs:
         with:
           node-version: '22.x'
           cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
+          # ADR-265 (8513ec3) moved web/package-lock.json → root package-lock.json
+          # (npm workspaces). ADR-266 (239112e) realigned build.yml + ci.yml but
+          # missed this workflow, so setup-node hard-threw before this generator
+          # could ever run — which mattered: this IS the designated tool to
+          # refresh the stale *-chromium-linux.png baselines that fail
+          # ci.yml/web-e2e, so the fix for that failure was itself blocked.
+          cache-dependency-path: 'package-lock.json'
 
       - name: npm ci (web)
         working-directory: ./web

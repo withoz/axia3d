@@ -39,11 +39,16 @@ concurrency:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
-  # Rust tests — axia-geo + axia-wasm.
+  # Rust tests — axia-core + axia-geo + axia-wasm.
   # build.yml does NOT run cargo test, only wasm-pack build.
+  #
+  # axia-core added 2026-07-14 (pre-push audit): the job ran only axia-geo +
+  # axia-wasm, so an axia-core regression could not be caught by CI at all —
+  # even though axia-core holds the Scene/Command layer and its own regression
+  # suite (e.g. scene::tests::disjoint_coplanar_ground_rect_after_box_succeeds).
   # ───────────────────────────────────────────────────────────────
   rust-test:
-    name: Rust tests (axia-geo + axia-wasm)
+    name: Rust tests (axia-core + axia-geo + axia-wasm)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -57,8 +62,12 @@ jobs:
         with:
           shared-key: rust-test
           workspaces: |
+            crates/axia-core
             crates/axia-geo
             crates/axia-wasm
+
+      - name: cargo test -p axia-core --lib
+        run: cargo test -p axia-core --lib
 
       - name: cargo test -p axia-geo --lib
         run: cargo test -p axia-geo --lib

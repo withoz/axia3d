@@ -27,7 +27,11 @@ jobs:
         with:
           node-version: '22.x'
           cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
+          # ADR-265 (8513ec3) moved web/package-lock.json → root package-lock.json
+          # (npm workspaces). ADR-266 (239112e) realigned build.yml + ci.yml but
+          # missed this workflow, so setup-node hard-threw "Some specified paths
+          # were not resolved, unable to cache dependencies" on any push to main.
+          cache-dependency-path: 'package-lock.json'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
