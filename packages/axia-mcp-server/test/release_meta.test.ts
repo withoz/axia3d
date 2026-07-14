@@ -210,4 +210,83 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
       });
     }
   });
+
+  // ────────────────────────────────────────────────────────────
+  // P29.6 — release.yml publish gate is fail-safe (2026-07-14).
+  //
+  // ADR-044 states the gate three times ("gated by `inputs.publish`",
+  // "manual trigger"), but release.yml's publish job condition read
+  //   github.event_name == 'push' || (workflow_dispatch && publish=='true')
+  // whose leading `push` clause auto-published on ANY `release/v*` tag,
+  // bypassing the input — i.e. the code violated the ADR's own success
+  // criterion. Harmless only while NPM_TOKEN is absent (npm publish →
+  // ENEEDAUTH); the moment a token lands, one tag push would have published
+  // all three packages to the public registry. Note guard-publish.mjs does
+  // NOT protect here: it allows anything when CI/GITHUB_ACTIONS is set, so
+  // this `if:` is the SOLE gate on CI publishes.
+  //
+  // The P29.7 six read package.json only — nothing locked the workflow, so
+  // nothing stopped the clause being re-added. This closes that gap.
+  // ────────────────────────────────────────────────────────────
+  describe('P29.6 — release.yml publish gate (fail-safe)', () => {
+    const releaseYml = () =>
+      readFileSync(resolve(repoRoot, '.github/workflows/release.yml'), 'utf8');
+
+    /** The `if:` line of the publish job. */
+    const publishIf = (): string => {
+      const yml = releaseYml();
+      const m = yml.match(/^\s*if:.*$/gm);
+      expect(m, 'release.yml must declare an if: gate').toBeTruthy();
+      // The publish job holds the only `if:` in this workflow.
+      expect(m!.length, 'exactly one if: gate expected').toBe(1);
+      return m![0];
+    };
+
+    it('publish requires an explicit workflow_dispatch input', () => {
+      const cond = publishIf();
+      expect(cond).toContain("github.event_name == 'workflow_dispatch'");
+      expect(cond).toContain("inputs.publish == 'true'");
+    });
+
+    it('publish does NOT auto-fire on a tag push (no bare push clause)', () => {
+      const cond = publishIf();
+      // The regression being locked: a bare `github.event_name == 'push'`
+      // disjunct (or any `||`) would re-open tag-push auto-publish.
+      expect(cond).not.toMatch(/event_name\s*==\s*'push'/);
+      expect(cond, 'no disjunct may widen the gate').not.toContain('||');
+    });
+
+    it('the publish input stays `type: choice` (string), not boolean', () => {
+      // `inputs` preserves real Booleans, so `type: boolean` would make
+      // `inputs.publish == 'true'` a boolean-vs-string compare → always
+      // false → publish unreachable forever (fails closed, but silently).
+      const yml = releaseYml();
+      const block = yml.slice(yml.indexOf('publish:'), yml.indexOf('permissions:'));
+      // Strip comments — the workflow explains the boolean footgun in prose,
+      // so a naive substring match would hit its own warning comment.
+      const code = block
+        .split('\n')
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n');
+      expect(code).toContain('type: choice');
+      expect(code).not.toContain('type: boolean');
+      expect(code).toContain("default: 'false'");
+    });
+
+    it('npm publish exists only in release.yml, and only in the gated job', () => {
+      const wfDir = resolve(repoRoot, '.github/workflows');
+      for (const f of ['ci.yml', 'build.yml', 'deploy.yml', 'mcp.yml', 'update-visual-baselines.yml']) {
+        const p = resolve(wfDir, f);
+        if (!existsSync(p)) continue;
+        expect(readFileSync(p, 'utf8'), `${f} must not publish`).not.toMatch(/^\s*run:.*npm publish/m);
+      }
+      // In release.yml every `npm publish` sits after the gated job header.
+      const yml = releaseYml();
+      const gateIdx = yml.search(/^\s*if:\s*github\.event_name/m);
+      expect(gateIdx).toBeGreaterThan(-1);
+      const publishRuns = [...yml.matchAll(/^\s*run:.*npm publish.*$/gm)];
+      expect(publishRuns.length, 'three packages are published').toBe(3);
+      for (const m of publishRuns) expect(m.index!).toBeGreaterThan(gateIdx);
+    });
+  });
 });

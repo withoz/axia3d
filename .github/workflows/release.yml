@@ -1,6 +1,8 @@
 name: Release (ADR-044)
 
 # Triggered by push of `release/v*` tags OR manual workflow_dispatch.
+#   - tag push        → preflight ONLY (build + schema-pin + tests). No publish.
+#   - workflow_dispatch with publish=true → preflight + publish.
 # Publishes:
 #   - axia-wasm           (wasm-pack-generated, scoped)
 #   - @axia/mcp-server
@@ -26,6 +28,12 @@ on:
         description: 'Publish to npm? (false = dry-run only)'
         required: true
         default: 'false'
+        # MUST stay `choice` (a choice input resolves to a STRING). The publish
+        # job's gate compares `inputs.publish == 'true'`. If this were changed
+        # to `type: boolean`, the `inputs` context would preserve a real Boolean
+        # (unlike `github.event.inputs`, which stringifies), so the comparison
+        # would be boolean-vs-string → always false → publish unreachable
+        # forever. Fails closed, but silently.
         type: choice
         options:
           - 'false'
@@ -91,12 +99,25 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     needs: preflight
-    # Only publish when:
-    #   - tag push, OR
-    #   - workflow_dispatch with publish=true
-    if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    # ADR-044 P29.6 — publish is FAIL-SAFE: it requires an EXPLICIT
+    # workflow_dispatch with publish=true. Pushing a `release/v*` tag runs
+    # preflight (build + schema-pin + tests) but does NOT publish.
+    #
+    # 2026-07-14 (pre-push audit): this previously read
+    #   `github.event_name == 'push' || (workflow_dispatch && publish == 'true')`
+    # whose leading `push` clause auto-published on ANY release/v* tag,
+    # bypassing the input entirely — contradicting this file's own header
+    # ("npm publish is GATED by the publish input (default: false). A real
+    # release requires explicit input"). Harmless only while NPM_TOKEN is
+    # absent (npm publish → ENEEDAUTH); the moment a token is added, one tag
+    # push would have published all three packages to the public registry.
+    # On a tag push `github.event_name` is 'push', so the FIRST conjunct is
+    # false and the job is skipped (skipped ≠ failed — the run still concludes
+    # green, and `preflight` has no `if:` so it always runs). Belt-and-braces:
+    # on a push the `inputs` context isn't populated and `inputs.publish`
+    # dereferences to an empty string, and '' == 'true' is false — no coercion
+    # path in GitHub's expression language reaches true.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == 'true'
     steps:
       - uses: actions/checkout@v4
 

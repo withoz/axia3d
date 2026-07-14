@@ -24,8 +24,10 @@ if (!isCI) {
       '  which records provenance attestations on the package metadata.\n' +
       '\n' +
       '  Trigger a release:\n' +
-      '    1. Push a `release/v*` tag, OR\n' +
-      '    2. Run the "Release" workflow manually from the Actions tab.\n' +
+      '    Run the "Release" workflow from the Actions tab with publish=true.\n' +
+      '    (A `release/v*` tag push runs preflight only — build + schema-pin\n' +
+      '     + tests — and does NOT publish. ADR-044 P29.6: publish is gated on\n' +
+      '     an explicit workflow_dispatch input.)\n' +
       '\n' +
       '  Emergency bypass (skips provenance — use only if you understand the trade-off):\n' +
       '    AXIA_PUBLISH_BYPASS=1 npm publish ...\n' +
