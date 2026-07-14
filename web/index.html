@@ -443,14 +443,14 @@
       color: #44ff88;
       white-space: nowrap;
       display: inline-block;
-      min-width: 0;
-      max-width: 110px;
+      /* 좌표 뒤 고정폭 슬롯 — 스냅 유무와 무관하게 항상 110px 예약 (상시 노출).
+         가장 긴 라벨 "●perpendicular"(≈84px) 수용. 이전엔 :empty 시 0px 로
+         collapse → 스냅이 뜰 때마다 116px 밀림. 이제 고정 → 레이아웃 불변. */
+      flex: 0 0 110px;
+      width: 110px;
+      margin-left: 8px;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-    #statusbar .sb-snap:not(:empty) {
-      min-width: 110px;
-      margin-right: 6px;
     }
 
     /* 좌표 (AutoCAD 스타일) — 고정 너비로 값 변해도 layout jitter 방지 */
@@ -2819,9 +2819,10 @@
     <!-- KAYAC-style bottom status bar (left half) -->
     <div id="bottombar">
     <div id="statusbar">
-      <!-- 좌표 (AutoCAD 스타일) — snap prefix는 별도 고정폭 span으로 분리 -->
-      <span class="sb-snap" id="sb-snap"></span>
+      <!-- 좌표 (AutoCAD 스타일) 먼저 — 고정폭. 스냅 표시는 좌표 뒤 고정폭 슬롯
+           으로 분리하여 스냅 유무와 무관하게 상태바 레이아웃이 변하지 않음. -->
       <span class="sb-coords" id="sb-coords">—, —, —</span>
+      <span class="sb-snap" id="sb-snap"></span>
       <!-- 단위/정밀도 readout(sb-meta) 제거 — commandbar 의 단위 설정
            버튼(cb-unit)이 단독 단위 설정. 명령 표시(#tool-label)는 그 앞에 위치. -->
 
