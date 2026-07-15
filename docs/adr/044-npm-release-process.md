@@ -188,6 +188,24 @@ admin 권한 확보 + repository secret 설정 후 별도 trigger.
 - **R5** — wasm-pack 자동 생성 package.json 이 P29.4 metadata 못 받음:
   Cargo.toml `[package.metadata.wasm-pack.profile.release]` 또는 별도
   patch 스크립트 (`scripts/patch-wasm-package.mjs` follow-up)
+  - ✅ **해소 (2026-07-14)** — named follow-up 이 실제로 작성됨:
+    `scripts/patch-wasm-package.mjs`. release.yml 의 preflight + publish
+    양쪽에 배선 (wasm-pack 이 매 빌드마다 package.json 을 재생성하므로
+    build 후 · `npm publish` 전 실행 필수). 주입: P29.4 metadata +
+    `publishConfig` (P29.3/P29.6) + `prepublishOnly` guard (P29.6) +
+    P29.1/P29.2 lockstep 검증.
+  - **이름 통일 (사용자 결재 2026-07-14)** — wasm-pack 은 Cargo crate 명
+    (`axia-wasm`) 을 emit 하나, 본 ADR P29.1/P29.3 + ADR-041 P26.4 +
+    ADR-043 P28.3 은 모두 `@axia/wasm-node` 를 전제하고 release.yml 도
+    `--access public` (unscoped 이름엔 no-op) 을 붙임 → patch 가 scoped
+    이름으로 통일. 코드 의존 0 (문서/ADR 참조뿐, `check-wasm.mjs` 는
+    경로로 해석). R1 관점에서도 새 blocker 없음 — `@axia/mcp-server` 가
+    이미 scoped 라 `@axia` org 는 어차피 release 전제이고, R1 발동 시엔
+    세 이름이 함께 이동 (P29.1 lockstep 정합).
+  - 회귀: `release_meta.test.ts` 의 "ADR-044 R5" 항목 (script 존재 +
+    scoped 이름 + guard + build↔patch↔publish 순서). 미작성 기간 동안
+    `PUBLISHABLES` 의 axia-wasm-node 제외 근거("covered by a separate
+    post-build patch script")가 실재하지 않는 파일을 가리켰음 — 이제 정합.
 
 ## Success Criteria
 

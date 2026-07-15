@@ -23,14 +23,26 @@
  * That script is this file; until it existed, the exclusion was unjustified and
  * the package was entirely uncovered.
  *
- * ## What it does NOT do
+ * ## The name
  *
- * It does not rename the package. wasm-pack derives `name` from Cargo.toml, so
- * the generated name is `axia-wasm`, while ADR-044 P29.1/P29.3 call the
- * publishable `@axia/wasm-node` (scoped, `--access public`). Renaming is a
- * product decision entangled with ADR-044 R1 (the `@axia` npm scope may not be
- * available, in which case ADR-044.1 renames everything), so this script leaves
- * `name` alone and the mismatch is reported for a human to settle.
+ * wasm-pack derives `name` from Cargo.toml, so it emits `axia-wasm`, while
+ * ADR-041 P26.4, ADR-043 P28.3 and ADR-044 P29.1/P29.3 all call this
+ * publishable `@axia/wasm-node` — and release.yml publishes it with
+ * `--access public`, which is a no-op for an unscoped name. This script
+ * therefore renames it to the ADR name (사용자 결재 2026-07-14).
+ *
+ * Safe because nothing depends on the published name: `@axia/wasm-node` appears
+ * only in docs/ADRs, no package.json declares either name as a dependency, and
+ * `check-wasm.mjs` / `verify-schema-pin.mjs` resolve by PATH
+ * (`packages/axia-wasm-node/dist/...`), not by package name. ADR-041 §114-117
+ * already documents the intended consumer import as
+ * `import { AxiaEngine } from '@axia/wasm-node'`.
+ *
+ * On ADR-044 R1 (the `@axia` npm scope may be unavailable → ADR-044.1 renames
+ * everything): scoping wasm-node adds no NEW blocker — `@axia/mcp-server` is
+ * already scoped, so the org is a prerequisite for the release either way. If
+ * R1 fires, all three names move together, which is exactly the lockstep the
+ * ADR asks for.
  *
  * ## Usage
  *
@@ -70,6 +82,10 @@ const mcpPkg = JSON.parse(
  * three stay consistent (P29.4) — nothing here is invented.
  */
 const PATCH = {
+  // ADR-041 P26.4 / ADR-043 P28.3 / ADR-044 P29.1+P29.3 (사용자 결재 2026-07-14).
+  // wasm-pack emits the Cargo crate name (`axia-wasm`); the scoped name is what
+  // every ADR and release.yml's `--access public` assume. See header.
+  name: '@axia/wasm-node',
   license: 'MIT',
   author: 'WYKO <withoz1111@gmail.com>',
   homepage: 'https://github.com/withoz/axia-3d#readme',
@@ -139,13 +155,13 @@ process.stdout.write(
     `    prepublishOnly: ${patched.scripts.prepublishOnly}\n`,
 );
 
-// ADR-044 P29.1/P29.3 expect the publishable to be `@axia/wasm-node`; wasm-pack
-// names it from Cargo.toml. Warn — do not rename (see header / ADR-044 R1).
+// Invariant: the published name must be the scoped ADR name. Unscoped would
+// silently make release.yml's `--access public` a no-op and publish to the
+// wrong package. Assert rather than trust the merge above.
 if (patched.name !== '@axia/wasm-node') {
-  process.stdout.write(
-    `\n[patch-wasm-package] ⚠ name is "${patched.name}", but ADR-044 P29.1/P29.3\n` +
-      `  call this publishable "@axia/wasm-node". release.yml publishes this dir\n` +
-      `  with --access public, which is a no-op for an unscoped name. Settle the\n` +
-      `  name (and ADR-044 R1: is the @axia scope available?) before publishing.\n\n`,
+  process.stderr.write(
+    `\n[patch-wasm-package] NAME INVARIANT VIOLATED (ADR-044 P29.1/P29.3):\n` +
+      `  expected "@axia/wasm-node", got "${patched.name}"\n\n`,
   );
+  process.exit(1);
 }

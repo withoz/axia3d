@@ -306,6 +306,25 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
       expect(publishJob.slice(envIdx, envIdx + 120)).toContain('name: npm-release');
     });
 
+    it('the patch script scopes the name to @axia/wasm-node (P29.1/P29.3)', () => {
+      // wasm-pack emits the Cargo crate name (`axia-wasm`), which would make
+      // release.yml's `--access public` a no-op and publish the wrong package.
+      // The scoped name is what ADR-041 P26.4 / ADR-043 P28.3 / ADR-044
+      // P29.1+P29.3 all assume (사용자 결재 2026-07-14). Asserts the script's
+      // source, since dist/ is a build artifact and isn't present in a fresh
+      // checkout — the runtime behaviour is covered by the script's own
+      // fail-closed name invariant.
+      const script = readFileSync(
+        resolve(repoRoot, 'scripts/patch-wasm-package.mjs'),
+        'utf8',
+      );
+      expect(script).toContain("name: '@axia/wasm-node'");
+      // …and it must hard-fail rather than warn if the name ends up unscoped.
+      expect(script).toMatch(/NAME INVARIANT VIOLATED/);
+      expect(script).toMatch(/prepublishOnly/);
+      expect(script).toMatch(/guard-publish\.mjs/);
+    });
+
     it('axia-wasm-node is patched before it is published (ADR-044 R5)', () => {
       // The publish job regenerates dist/package.json via wasm-pack on every
       // run, so the patch MUST sit between that build and the npm publish —
