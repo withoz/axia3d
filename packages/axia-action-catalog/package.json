@@ -5,14 +5,14 @@
   "description": "AxiA action SSOT — UI ↔ MCP bidirectional alias catalog (ADR-045 D1)",
   "license": "MIT",
   "author": "WYKO <withoz1111@gmail.com>",
-  "homepage": "https://github.com/withoz/axia-3d#readme",
+  "homepage": "https://github.com/withoz/axia3d#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/withoz/axia-3d.git",
+    "url": "https://github.com/withoz/axia3d.git",
     "directory": "packages/axia-action-catalog"
   },
   "bugs": {
-    "url": "https://github.com/withoz/axia-3d/issues"
+    "url": "https://github.com/withoz/axia3d/issues"
   },
   "keywords": [
     "axia-3d",

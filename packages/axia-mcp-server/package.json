@@ -5,14 +5,14 @@
   "description": "AxiA 3D MCP Surface — Capability-Sandboxed AI bridge (ADR-041)",
   "license": "MIT",
   "author": "WYKO <withoz1111@gmail.com>",
-  "homepage": "https://github.com/withoz/axia-3d#readme",
+  "homepage": "https://github.com/withoz/axia3d#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/withoz/axia-3d.git",
+    "url": "https://github.com/withoz/axia3d.git",
     "directory": "packages/axia-mcp-server"
   },
   "bugs": {
-    "url": "https://github.com/withoz/axia-3d/issues"
+    "url": "https://github.com/withoz/axia3d/issues"
   },
   "keywords": [
     "axia-3d",
