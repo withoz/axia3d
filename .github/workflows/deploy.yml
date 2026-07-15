@@ -1,8 +1,24 @@
 name: Deploy to GitHub Pages
 
+# AUTO-DEPLOY DISABLED (사용자 결재 2026-07-14).
+#
+# The `push: branches: [main]` trigger is removed, so this no longer fires on
+# every push — only a deliberate `workflow_dispatch` runs it. The workflow
+# itself is kept intact and ready.
+#
+# Why: on the first push to withoz/axia3d this failed at `actions/configure-
+# pages@v4` with "Get Pages site failed. Please verify that the repository has
+# Pages enabled and configured to build using GitHub Actions" / HttpError: Not
+# Found — Pages has never been configured for this repo. It would have gone red
+# on every single main push, training everyone to ignore CI failures.
+#
+# To re-enable: configure Settings → Pages → Source: GitHub Actions, run this
+# once via workflow_dispatch to confirm it deploys, then restore the trigger:
+#   on:
+#     push:
+#       branches: [ main ]
+#     workflow_dispatch:
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
