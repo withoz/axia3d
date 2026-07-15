@@ -3283,11 +3283,12 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distance, taperDeg) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : 'Tapered extrude 실패 — 테이퍼가 너무 가파르거나 (자기교차/붕괴) 평면 프로파일이 아닙니다',
+      // ADR-190 Phase 3 — via the SSOT so the kernel's own wording (ADR refs,
+      // enum names, the Q3 fallback note) never reaches the user.
+      Toast.fromBridgeError(
+        this,
+        'Tapered extrude 실패 — 테이퍼가 너무 가파르거나 (자기교차/붕괴) 평면 프로파일이 아닙니다',
+        'warning',
         5000,
       );
     }
@@ -3315,11 +3316,10 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distance, topScale) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : 'Cone extrude 실패 — top 비율은 0~1 (1 이상은 원통→직선 Extrude) 이어야 하고 평면 원 프로파일이어야 합니다',
+      Toast.fromBridgeError(
+        this,
+        'Cone extrude 실패 — top 비율은 0~1 (1 이상은 원통→직선 Extrude) 이어야 하고 평면 원 프로파일이어야 합니다',
+        'warning',
         5000,
       );
     }
@@ -3348,11 +3348,10 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distPos, distNeg) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : '양방향 extrude 실패 — 위/아래 거리는 0 이상, 합 > 0 이어야 하고 평면 프로파일이어야 합니다',
+      Toast.fromBridgeError(
+        this,
+        '양방향 extrude 실패 — 위/아래 거리는 0 이상, 합 > 0 이어야 하고 평면 프로파일이어야 합니다',
+        'warning',
         5000,
       );
     }

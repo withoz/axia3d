@@ -7,6 +7,7 @@ import { ITool, ToolContext } from './ITool';
 import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
 import { getExtrudeMode, getExtrudeDistNeg } from './ExtrudeModeSettings';
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
 
 export class PushPullTool implements ITool {
   readonly name = 'pushpull';
@@ -257,7 +258,7 @@ export class PushPullTool implements ITool {
           this.cleanup();
           return;
         }
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carveCurvedPocket declined:', why);
         Toast.error(why && why.length > 0 ? why : '이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요');
         this.cleanup();
@@ -283,7 +284,7 @@ export class PushPullTool implements ITool {
           this.cleanup();
           return;
         }
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carveCurvedBoss declined:', why);
         Toast.error(why && why.length > 0 ? why : '이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요');
         this.cleanup();
@@ -314,7 +315,7 @@ export class PushPullTool implements ITool {
         // pocket/through cut. If carve declines (e.g. cross-drilling through an
         // existing hole), surface the reason and abort — do NOT fall back to an
         // inward "boss" extrude, which produces confusing garbage geometry.
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carvePocket declined:', why);
         Toast.error(why && why.length > 0 ? why : '이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요');
         this.cleanup();
@@ -348,7 +349,7 @@ export class PushPullTool implements ITool {
           this.lastPPDist = dist;
           this.warnIfInwardClamped(clampLimit, dist);
         } else {
-          const err = this.ctx.bridge.lastError();
+          const err = this.engineWhy();
           Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
         }
         this.ctx.syncMesh();
@@ -369,6 +370,19 @@ export class PushPullTool implements ITool {
       }
       this.cleanup();
     }
+  }
+
+  /**
+   * ADR-190 Phase 3 — the engine's reason for declining, in the user's
+   * language. `lastError()` is the kernel's own error chain (ADR numbers, Rust
+   * type names, "Q3 fallback to legacy push_pull"); every Toast here goes
+   * through this so none of that reaches a modeller. Unknown messages still get
+   * through with only the internal noise stripped — never swallowed.
+   * `debugWarn` callers get the humanized text too; the raw chain stays
+   * available via `bridge.lastError()`.
+   */
+  private engineWhy(): string {
+    return humanizeEngineError(this.ctx.bridge.lastError());
   }
 
   /**
@@ -647,7 +661,7 @@ export class PushPullTool implements ITool {
         this.lastPPDist = value;
         this.warnIfInwardClamped(clampLimit, value);
       } else {
-        const err = this.ctx.bridge.lastError();
+        const err = this.engineWhy();
         Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
       this.ctx.syncMesh();
@@ -738,7 +752,7 @@ export class PushPullTool implements ITool {
         this.lastPPDist = dist;
         this.ctx.syncMesh();
       } else {
-        const err = this.ctx.bridge.lastError();
+        const err = this.engineWhy();
         Toast.error(err ? `곡면 돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     } else {
@@ -753,7 +767,7 @@ export class PushPullTool implements ITool {
         this.lastPPDist = dist;
         this.ctx.syncMesh();
       } else {
-        const err = this.ctx.bridge.lastError();
+        const err = this.engineWhy();
         Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     }

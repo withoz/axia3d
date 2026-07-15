@@ -10,6 +10,8 @@
  *   Toast.info('Processing...');
  */
 
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
+
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
 /**
@@ -258,6 +260,11 @@ export class Toast {
    * falling back to `fallback` when the engine didn't populate one.
    * Standardizes the `Toast.error(bridge.lastError() || 'X 실패')` idiom
    * used across action handlers.
+   *
+   * ADR-190 Phase 3 — the engine's message is humanized on the way out: raw
+   * `lastError()` text carries ADR numbers, Rust type names and internal enum
+   * variants that mean nothing to a modeller. Unknown messages still get
+   * through (noise stripped), never swallowed.
    */
   static fromBridgeError(
     bridge: { lastError(): string },
@@ -265,7 +272,7 @@ export class Toast {
     severity: 'error' | 'warning' = 'error',
     duration?: number,
   ): void {
-    const err = bridge.lastError();
+    const err = humanizeEngineError(bridge.lastError());
     const msg = err && err.trim().length > 0 ? err : fallback;
     if (severity === 'warning') {
       Toast.warning(msg, duration);

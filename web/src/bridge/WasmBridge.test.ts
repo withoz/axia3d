@@ -3356,7 +3356,14 @@ describe('WasmBridge', () => {
       const ok = bridge.createSolidExtrudeCone(1, 800, 1.5);
       expect(ok).toBe(false);
       expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(String(warnSpy.mock.calls[0][0])).toContain('top_scale');
+      // The engine's own reason is used, not the generic fallback — but it is
+      // now humanized on the way out (ADR-190 Phase 3), so this asserts the
+      // reason survived rather than the kernel's wording. `top_scale` used to
+      // be the marker here; that it reached a user at all was the defect.
+      const shown = String(warnSpy.mock.calls[0][0]);
+      expect(shown).toContain('100%');            // engine-derived, specific
+      expect(shown).not.toContain('top_scale');   // ...without the internals
+      expect(shown).not.toContain('top 비율은 0~1'); // i.e. not the fallback
       warnSpy.mockRestore();
     });
 
