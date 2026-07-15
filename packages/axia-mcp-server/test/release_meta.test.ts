@@ -273,6 +273,22 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
       expect(code).toContain("default: 'false'");
     });
 
+    it('publish is bound to an approval environment', () => {
+      // The `if:` narrows publishing to a deliberate dispatch, but that is
+      // still one click by ANY collaborator with write access. Binding the job
+      // to an environment lets the repo owner require reviewers.
+      //
+      // NOTE this asserts the YAML only. GitHub auto-creates a referenced
+      // environment with NO protection rules, so the real gate lives in
+      // Settings → Environments → npm-release (required reviewers). This test
+      // exists so the binding can't be silently dropped from the workflow.
+      const yml = releaseYml();
+      const publishJob = yml.slice(yml.indexOf('  publish:'));
+      const envIdx = publishJob.indexOf('environment:');
+      expect(envIdx, 'publish job must declare an environment').toBeGreaterThan(-1);
+      expect(publishJob.slice(envIdx, envIdx + 120)).toContain('name: npm-release');
+    });
+
     it('npm publish exists only in release.yml, and only in the gated job', () => {
       const wfDir = resolve(repoRoot, '.github/workflows');
       for (const f of ['ci.yml', 'build.yml', 'deploy.yml', 'mcp.yml', 'update-visual-baselines.yml']) {

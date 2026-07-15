@@ -99,6 +99,27 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     needs: preflight
+    # Approval gate (2026-07-14). The `if:` below narrows publishing to a
+    # deliberate dispatch, but that is still ONE click by ANY collaborator with
+    # write access — no review. Binding the job to an environment lets the repo
+    # owner require reviewers, turning "one click by anyone" into "reviewed
+    # release". Precedent in-repo: deploy.yml's `github-pages` environment.
+    #
+    # ⚠ THIS YAML ALONE PROTECTS NOTHING. GitHub auto-creates a referenced
+    # environment with NO protection rules, so until the environment is
+    # configured this job runs exactly as before. To make the gate real:
+    #   Settings → Environments → npm-release →
+    #     • Required reviewers: add the release approver(s)
+    #     • (recommended) Deployment branches: restrict to `release/*` / main
+    #     • (recommended) Move NPM_TOKEN here as an ENVIRONMENT secret and
+    #       remove the repository-wide one — then the token is unreachable from
+    #       every other job/workflow, not merely unused by them.
+    # Do this BEFORE adding NPM_TOKEN; today publish only fails at ENEEDAUTH
+    # because no token exists, and that accident is the only thing standing in
+    # for a real gate.
+    environment:
+      name: npm-release
+      url: https://www.npmjs.com/package/@axia/mcp-server
     # ADR-044 P29.6 — publish is FAIL-SAFE: it requires an EXPLICIT
     # workflow_dispatch with publish=true. Pushing a `release/v*` tag runs
     # preflight (build + schema-pin + tests) but does NOT publish.
