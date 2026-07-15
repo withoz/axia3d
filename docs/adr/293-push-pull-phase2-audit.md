@@ -1,115 +1,126 @@
-# ADR-293 — Push/Pull Phase 2 Audit (α): what "Hole-through / Boolean" actually needs
+# ADR-293 — Push/Pull Phase 2 Audit (α): Phase 2 already ships; the roadmap was stale
 
 - **Status**: Proposed
-- **Date**: 2026-07-15
-- **Supersedes / amends**: ADR-190 §4 Phase 2 (scope correction, measured)
-- **Cross-link**: ADR-190 (roadmap, LOCKED #78) · ADR-191/192 (Phase 1, LOCKED #79/#80) ·
-  ADR-196 (MoveOnly dispatch + inward clamp, LOCKED #82) · ADR-264 (embedded boss fuse,
-  LOCKED #93) · ADR-194/249/252 (punch/drill/carve assets) · ADR-277 (general mesh CSG) ·
-  메타-원칙 #6 (Preventive/measure-first)
+- **Date**: 2026-07-15 (**revised the same day — the first revision was wrong, see §7**)
+- **Amends**: ADR-190 §4 Phase 2 (scope correction, measured)
+- **Cross-link**: ADR-190 (roadmap, LOCKED #78) · ADR-252 (source-face carve routing, "옵션 A
+  스마트 자동 전환") · ADR-264 (embedded boss fuse, LOCKED #93) · ADR-196 (MoveOnly + inward
+  clamp, LOCKED #82) · ADR-267 (through-vs-blind for circles) · ADR-269 (through robustness /
+  cross-drill reject) · 메타-원칙 #6 (measure-first) · #16 (heuristic-automation boundary)
 
 ---
 
-## 1. Why this ADR exists
+## 1. Verdict
 
-ADR-190 §4 planned Phase 2 as:
+**ADR-190 §4 Phase 2 is already implemented.** P2.1 (자동 carve/recess) and P2.2 (관통 push →
+구멍) both work today, through `carve_pocket_from_source_face` (ADR-252). There is no β to build.
+The roadmap text is stale — same doc-lag as ADR-259 (β already shipped) and ADR-264 (code already
+there).
 
-> **Phase 2 — Hole-through / Boolean (signature CAD, 예정)**
-> - P2.1 면을 솔리드 안으로 push → 자동 subtract (carve/recess)
-> - P2.2 관통 push → 구멍 (punchHole + ADR-064/066 NURBS Boolean 연동)
-> - 예상 회귀 +40~50. 위험 중상. **최고 체감 가치**
-
-That text is from 2026-06-09. **Measurement (2026-07-15) shows P2.1 already ships, and P2.2's
-real behaviour is not what the roadmap assumes.** Writing β against the roadmap's wording would
-have built something that already exists and missed the thing that doesn't. This is the same
-doc-lag pattern that ADR-259 (β already shipped) and ADR-264 (code already there) hit.
+**One genuine gap remains, and it is not what the roadmap describes:** a **whole-face** inward push
+past the solid's thickness is silently clamped — the solid collapses to a sliver with no signal.
 
 ## 2. Method
 
-Measured through the **production path** (`window.__axia.get('bridge')` → WASM → Scene), not by
-reading source: the bridge is what the UI actually calls. **One scenario per fresh page reload** —
-an early polluted run (accumulated solids in one scene, plus `meshManifoldInfo()` whole-mesh
-`isClosedSolid` vs `verifyOutwardNormals()`) reported "rect never imprints, push rejected" and
-**inverted the conclusion**. Isolation was decisive; the polluted reading is recorded here so it
-isn't re-derived as a finding.
+Measured through the **production bridge** (`window.__axia.get('bridge')` → WASM → Scene), **one
+scenario per fresh page reload**. `wallThicknessFromSourceFace` is exported to WASM (returns `-1`
+for `None`), so the routing gate itself is directly observable rather than inferred.
 
-Authoritative check: `verifyOutwardNormals().isClosedSolid` + `verifyInvariants()` +
-`meshManifoldInfo()` (nm / boundary).
+## 3. The routing gate (measured, not read)
 
-## 3. Measured behaviour (clean scenes)
+`exec_create_solid` (scene.rs ~8305):
 
-### A — embedded rect on a box top (box 2000×1000×1000, z∈[0,1000]; rect 800×600 @ z=1000)
+```rust
+if !self.suppress_source_carve {
+    if let CreateSolidMode::Extrude { distance } = mode {
+        if distance < 0.0 && self.mesh.wall_thickness_from_source_face(face_id).is_some() {
+            let r = self.carve_pocket_from_source_face(face_id, -distance);  // auto pocket ↔ through
+            if !matches!(r, CommandResult::Error(_)) { return r; }
+        }
+    }
+}
+```
 
-| step | faces | closedSolid | valid | verdict |
-|---|---|---|---|---|
-| `create_box` | 6 | ✓ | ✓ | baseline |
-| `drawRectAsShape` on the top | **7** | **✓** | ✓ | **rect IS imprinted** — the top splits into ring + rect, solid stays closed |
-| `createSolidExtrude(rect, -300)` (shallow, 300 < 1000) | **11** | **✓** | ✓ | **pocket works** |
-| `createSolidExtrude(rect, -1500)` (through, 1500 > 1000) | 10 | ✓ | ✓ | **no hole** — see below |
+`wall_thickness_from_source_face` (carve.rs:1601) is `None` when: no larger coplanar container
+face · outline < 3 pts · no opposite wall on the inward ray.
 
-**⇒ P2.1 (자동 carve/recess) ALREADY WORKS.** ADR-264's fuse imprints the profile; an inward
-push carves a pocket. Roadmap says "예정"; reality says shipped.
+Measured gate values:
 
-**⇒ P2.2's actual behaviour is a SILENT CLAMP, not a rejection or a corruption.** The −1500 push
-returned `true` and left a *watertight* solid — but `facesCentroid` of the pushed face reads
-**z = 0**, i.e. it stopped exactly at the box's own bottom. ADR-196's inward clamp
-(`move_only_max_inward`, `dist.max(-(thickness - MIN_SOLID_THICKNESS))`) silently converted a
-through-cut into a floor-deep pocket. The user asked for a hole and got a floor, with no signal.
-
-### B — push a wall into ANOTHER solid (A x∈[-500,500], B x∈[1500,2500])
-
-| scenario | dist | result |
+| profile | gate | routes? |
 |---|---|---|
-| A alone, +X wall | +200 | `ret=true`, wall 500 → **700** ✓ |
-| A alone, +X wall | **+1200** | `ret=true`, wall 500 → **1700** ✓ |
-| **A with B in the path**, +X wall | **+1200** | **`ret=false`, wall unmoved, mesh byte-unchanged** |
+| box top, **whole face** | **−1 (None)** | ✗ → plain extrude + MoveOnly clamp |
+| **imprinted rect** on the top | **1000** (= thickness) | ✓ auto pocket↔through |
+| **imprinted circle** on the top | **1000** | ✓ (ADR-267 follow-up works) |
 
-The controls attribute this exactly: **the same distance succeeds without B and fails with B**, so
-the refusal is caused by *the penetration*, not the distance. Behaviour is **fail-closed** (no
-corruption, no silent overlap) — the conservative outcome LOCKED #82 intended when it deferred
-"다른-솔리드 carve" to Phase 2.
+**This is exactly the Q1 policy** (사용자 결재 2026-07-15: "route only when the profile is an
+imprinted inner loop — an unambiguous 'cut this shape through' intent; keep the clamp for a
+whole-face push"). It is already the shipped behaviour; the 결재 needs no code.
 
-## 4. Corrected Phase 2 scope
+## 4. Measured behaviour (clean scenes; box 2000×1000×1000, z∈[0,1000])
 
-| roadmap item | measured reality | remaining work |
+| scenario | result | verdict |
 |---|---|---|
-| **P2.1** 자동 carve/recess | **DONE** (ADR-264 fuse + inward push) | none — mark closed |
-| **P2.2** 관통 push → 구멍 | inward clamp silently makes a floor-deep pocket | **route through-depth pushes to a through-cut instead of clamping** |
-| (implied) push into another solid | fail-closed reject | **route to subtract (carve B)** |
+| `drawRectAsShape` 800×600 on the top | 7 faces, closedSolid ✓ | rect **imprints** (ADR-264 fuse) |
+| push rect **−300** (shallow) | 11 faces, closedSolid ✓ | **pocket** ✓ |
+| push rect **−1500** (> thickness) | **10 faces**, closedSolid ✓, nm=0, **+Z-normal faces = 1**, volume 2e9 → **1.68e9** | **THROUGH-HOLE** ✓ (P2.2 works) |
+| push **whole top −1500** | ret=true, 6 faces, closedSolid ✓, top z 1000 → **0.001**, **volume 2e9 → 2000** | **silent clamp** ← the real gap |
+| push A's wall **+1200** into box B | ret=false, wall unmoved, mesh byte-unchanged | **fail-closed** (intended, LOCKED #82) |
+| control: A alone, wall **+1200** | ret=true, wall 500 → 1700 | attributes the reject to **penetration**, not distance |
 
-**The remaining work is dispatch, not new geometry.** The primitives already exist and are
-regression-covered: `drill_rect_through_hole` (ADR-249), `carve_through_from_source_face`
-(ADR-252), `punch_rect_hole` (ADR-194), curved `carve_curved_through` (ADR-287/288), and
-general mesh CSG `boolean_solid` v2 — which ADR-277 proved watertight for arbitrary-angle,
-non-box polyhedra. This is the same Pattern-12 ("mechanism already exists") that ADR-172 and
-ADR-259/264 hit.
+The through-hole is proven structurally, not by face count alone: **exactly one +Z-normal face**
+(the top ring) — a floor-deep pocket would have two (top ring **+ pocket floor**) — plus a −Z
+bottom ring and 4 hole walls = 10 faces, watertight.
 
-## 5. Open questions for 결재 (β scope)
+## 5. The one real gap
 
-- **Q1 — through-cut trigger.** Should `|dist| ≥ thickness` auto-route to a through-cut, or should
-  the clamp stay the default with an explicit opt-in? Auto-routing is what a SketchUp/Fusion user
-  expects; but LOCKED #82 chose the clamp deliberately for manifold safety, and 메타-원칙 #16
-  warns that heuristic automation is the source of cascading side-effects. **Recommend: auto-route
-  when the profile is an imprinted inner loop (an unambiguous "cut this shape through" intent),
-  keep the clamp for a whole-face MoveOnly push (ambiguous).**
-- **Q2 — push into another solid.** Auto-subtract (carve B), or keep the fail-closed reject with a
-  Toast telling the user to use Boolean? Auto-subtract silently mutates a solid the user did not
-  select — the same intent problem as Q1.
-- **Q3 — scope.** P2.2 only, or P2.2 + cross-solid carve together?
+**Whole-face inward push past the thickness is silently clamped.** Gate = `-1` → no routing → the
+ADR-196 clamp (`move_only_max_inward`) pins the face `MIN_SOLID_THICKNESS` above the far side.
+Measured: a 2000×1000×1000 box (volume 2e9) pushed −1500 becomes **volume 2000** — a sliver — and
+`createSolidExtrude` returns **`true`**. The result is watertight and valid, so no gate objects;
+the user simply gets a degenerate solid with **no message**.
 
-## 6. Non-goals
+Keeping the clamp is correct (Q1, 메타-원칙 #16 — a whole-face push is ambiguous, and
+auto-cutting would be exactly the heuristic-automation trap). **The defect is the silence, not the
+clamp.** β scope, if taken: report the clamp (Toast: "두께에서 멈춤 — 관통하려면 면에 형상을
+그린 뒤 미세요"), and/or refuse a push that collapses the solid below a usable thickness.
 
-Curved-surface through (already done, ADR-287/288) · Boolean UI (exists) · P2.1 (shipped).
+## 6. Corrected Phase 2 scope
 
-## 7. Lock-ins (α — measurement only, no code)
+| roadmap item | measured | action |
+|---|---|---|
+| P2.1 자동 carve/recess | **SHIPPED** | mark ADR-190 §4 P2.1 closed |
+| P2.2 관통 push → 구멍 | **SHIPPED** (rect + circle) | mark closed |
+| push into another solid | fail-closed (Q2 결재 = 유지) | no action |
+| — | **whole-face push clamps silently** | the only β candidate (Q3 결재 = P2.2만 → out of scope for now) |
 
-- **L-293-1** P2.1 is CLOSED — do not re-implement. ADR-190 §4 Phase 2's P2.1 line is stale.
-- **L-293-2** P2.2's real defect is the **silent clamp** (measured `z=0` landing on a −1500 push),
-  not a rejection/corruption. Any β must fix the *silence*, at minimum.
-- **L-293-3** Cross-solid push is **fail-closed today** (measured: `ret=false`, byte-unchanged) —
-  it is safe, so β may take it or leave it; it is not a corruption risk.
-- **L-293-4** β is a **dispatch/routing** job over existing, regression-covered primitives — budget
-  and risk are far below ADR-190's "+40~50, 위험 중상" estimate, which assumed new geometry.
-- **L-293-5** Measure through the bridge on a **fresh page per scenario**. A polluted scene
-  inverted this audit's first conclusion.
-- **L-293-6** No code in α (메타-원칙 #6). β requires 사용자 결재 on Q1–Q3.
+ADR-190's "+40~50 회귀, 위험 중상" assumed new geometry; the geometry was already there.
+
+## 7. Honest record — this audit was wrong twice before it was right
+
+Written down so the next reader does not repeat it (메타-원칙 #6):
+
+1. **Polluted scene.** The first run accumulated solids in one scene and mixed
+   `meshManifoldInfo()` (whole-mesh) with `verifyOutwardNormals()`. It reported "the rect never
+   imprints (`closed=false, bnd=4`) and the push is rejected (`ret=false`)" — **the exact
+   opposite** of the truth. Isolation (one scenario per reload) flipped it.
+2. **Reading a centroid without checking the topology.** The −1500 push put `facesCentroid` of the
+   profile at **z=0**, which I declared a "silent clamp at the bottom" and wrote up as P2.2's
+   defect. It was a **through-hole** — the profile had become the bottom ring. Counting +Z-normal
+   faces (1, not 2) settled it in one probe. The first revision of this ADR asserted the wrong
+   conclusion and was committed (`6e67fa2`) before this correction.
+
+**L-293-5 (rewritten): measure through the bridge, one fresh page per scenario, and confirm a
+topological claim topologically (normals / loops), never by a single centroid.**
+
+## 8. Lock-ins
+
+- **L-293-1** P2.1 and **P2.2 are both CLOSED** — do not re-implement. ADR-190 §4 Phase 2 is stale.
+- **L-293-2** The routing gate is `wall_thickness_from_source_face(face).is_some()` and already
+  encodes the Q1 policy (imprinted inner loop → route; whole face → clamp). Measured: −1 / 1000 /
+  1000.
+- **L-293-3** Cross-solid push is fail-closed (measured, controls attribute it to penetration).
+  Q2 결재 = keep.
+- **L-293-4** The only measured defect is the **silent** whole-face clamp (2e9 → 2000 volume,
+  returns `true`). Q3 결재 = P2.2만 → out of scope; recorded for a future ADR.
+- **L-293-5** See §7 — bridge + fresh page + topological confirmation.
+- **L-293-6** α is measurement only; no code. No β is needed for Phase 2.
