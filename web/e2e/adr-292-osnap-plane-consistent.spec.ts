@@ -96,7 +96,70 @@ test.describe('ADR-292 — plane-consistent object snap', () => {
       vp.setCameraState({ radius: 280, phi: 0.9, theta: 0.75, targetX: 50, targetY: 50, targetZ: 0, orthoZoom: 4, viewMode: '3d' });
       tm.setTool('line');
     });
-    await page.waitForTimeout(400);
+
+    // Wait for the hover to ACTUALLY resolve to a snap instead of sleeping a
+    // fixed 400 ms and hoping.
+    //
+    // Why (2026-07-15, first CI run on withoz/axia3d): this test went flaky on
+    // ubuntu — `expect(r.locked).toBe(true)` got `false`, then passed on retry.
+    // Root cause is the step below: it locks `tm.snap.lastSnap` BLINDLY, and
+    // `setLockedInference(null)` is a silent no-op, so a hover that resolves to
+    // nothing surfaces two lines later as `locked === false`. The hover can
+    // resolve to nothing because `ToolManager.scheduleSnapRefresh` defers
+    // `snap.updateFromMesh` to a `requestIdleCallback` — the snap spatial hash
+    // is NOT warm the moment `syncMesh()` returns. A fixed sleep is a bet on
+    // machine speed; polling the real precondition is not. (Not reproducible on
+    // a fast Windows host: 20/20 passed even at --repeat-each=20 --workers=4.)
+    //
+    // Production is unaffected — the real K handler guards
+    // (`else if (toolManager.snap.lastSnap)`, KeyboardShortcuts.ts), so pressing
+    // K with no snap is a no-op there. Only this test bypasses that guard by
+    // calling setLockedInference directly.
+    // The sibling test above asserts these preconditions explicitly
+    // (`canvasOk`, `snapVerts >= 4`) and passed on the same CI run; this one
+    // asserted nothing, which is why its failure was a mystery. The catch below
+    // makes any recurrence self-diagnosing instead.
+    // NOTE the predicate must return a BOOLEAN — waitForFunction resolves on any
+    // truthy value, so returning a diagnostic object would make it a no-op that
+    // never actually waits. Diagnostics are stashed on window instead and read
+    // back only if it times out.
+    await page
+      .waitForFunction(
+        () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const w = window as any; const ax = w.__axia;
+          const tm = ax.get('toolManager'); const vp = ax.get('viewport');
+          const canvas = vp.renderer.domElement;
+          const rect = canvas.getBoundingClientRect();
+          const cam = vp.activeCamera;
+          const V3 = cam.position.constructor;
+          const v = new V3(100, 100, 0).project(cam);
+          const projFinite = Number.isFinite(v.x) && Number.isFinite(v.y);
+          const layoutOk = rect.width > 10 && rect.height > 10;
+          if (layoutOk && projFinite) {
+            const x = rect.left + (v.x * 0.5 + 0.5) * rect.width;
+            const y = rect.top + (-v.y * 0.5 + 0.5) * rect.height;
+            tm.get3DPoint({ clientX: x + 6, clientY: y - 5 });
+          }
+          w.__snapProbe = {
+            canvas: [Math.round(rect.width), Math.round(rect.height)],
+            snapVerts: tm.snap?.vertices?.length ?? 0, // 0 ⇒ idle refresh hasn't landed
+            projFinite,
+          };
+          return layoutOk && projFinite && tm.snap.lastSnap !== null;
+        },
+        undefined,
+        { timeout: 10_000 },
+      )
+      .catch(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = await page.evaluate(() => (window as any).__snapProbe);
+        throw new Error(
+          `hover never resolved to a snap in 10s — ${JSON.stringify(d)}. ` +
+            `snapVerts 0 ⇒ the deferred updateFromMesh never ran; ` +
+            `projFinite false / canvas ~0 ⇒ camera or layout, not the snap cache.`,
+        );
+      });
 
     const r = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
