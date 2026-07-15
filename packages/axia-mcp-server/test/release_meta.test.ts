@@ -42,7 +42,11 @@ const PUBLISHABLES: PublishablePackage[] = [
   { dir: 'create-axia-mcp', expectedName: 'create-axia-mcp' },
   // axia-wasm-node is wasm-pack auto-generated and lives at
   // packages/axia-wasm-node/dist/package.json after build. Excluded
-  // from this test — covered by a separate post-build patch script.
+  // from this test — covered by a separate post-build patch script
+  // (scripts/patch-wasm-package.mjs, ADR-044 R5) which is itself locked by
+  // the "ADR-044 R5" describe block below. NOTE: that script did not exist
+  // until 2026-07-14, so this exclusion was unjustified for ~2 months and the
+  // package shipped with no metadata, no publishConfig and no publish guard.
 ];
 
 function loadPkg(pkgDir: string): PackageJson {
@@ -232,6 +236,20 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
     const releaseYml = () =>
       readFileSync(resolve(repoRoot, '.github/workflows/release.yml'), 'utf8');
 
+    /**
+     * The publish JOB block. Anchored on `^  publish:$` — a plain
+     * `indexOf('  publish:')` matches the workflow_dispatch INPUT named
+     * `publish` first (its 6-space indent contains "  publish:" as a
+     * substring), which silently widens the slice to include the preflight
+     * job and makes these assertions false-pass. Caught by mutation testing.
+     */
+    const publishJobSlice = (): string => {
+      const yml = releaseYml();
+      const m = yml.match(/^ {2}publish:$/m);
+      expect(m, 'release.yml must declare a publish job').toBeTruthy();
+      return yml.slice(m!.index!);
+    };
+
     /** The `if:` line of the publish job. */
     const publishIf = (): string => {
       const yml = releaseYml();
@@ -282,11 +300,26 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
       // environment with NO protection rules, so the real gate lives in
       // Settings → Environments → npm-release (required reviewers). This test
       // exists so the binding can't be silently dropped from the workflow.
-      const yml = releaseYml();
-      const publishJob = yml.slice(yml.indexOf('  publish:'));
+      const publishJob = publishJobSlice();
       const envIdx = publishJob.indexOf('environment:');
       expect(envIdx, 'publish job must declare an environment').toBeGreaterThan(-1);
       expect(publishJob.slice(envIdx, envIdx + 120)).toContain('name: npm-release');
+    });
+
+    it('axia-wasm-node is patched before it is published (ADR-044 R5)', () => {
+      // The publish job regenerates dist/package.json via wasm-pack on every
+      // run, so the patch MUST sit between that build and the npm publish —
+      // otherwise the tarball ships without the guard/metadata. Locking the
+      // ORDER, not just the presence of the step.
+      const publishJob = publishJobSlice();
+      const buildIdx = publishJob.indexOf('wasm-pack build --target nodejs');
+      const patchIdx = publishJob.indexOf('node scripts/patch-wasm-package.mjs');
+      const pubIdx = publishJob.indexOf('working-directory: packages/axia-wasm-node/dist');
+      expect(buildIdx, 'publish job builds the wasm package').toBeGreaterThan(-1);
+      expect(patchIdx, 'publish job runs the ADR-044 R5 patch').toBeGreaterThan(-1);
+      expect(pubIdx, 'publish job publishes axia-wasm-node').toBeGreaterThan(-1);
+      expect(patchIdx, 'patch must run AFTER wasm-pack build').toBeGreaterThan(buildIdx);
+      expect(patchIdx, 'patch must run BEFORE npm publish').toBeLessThan(pubIdx);
     });
 
     it('npm publish exists only in release.yml, and only in the gated job', () => {

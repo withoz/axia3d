@@ -84,6 +84,15 @@ jobs:
         working-directory: packages/create-axia-mcp
         run: npm ci
 
+      # ADR-044 R5 — wasm-pack emits no license/repository/publishConfig and no
+      # prepublishOnly guard, so the generated dist/package.json is patched
+      # before it can be published. Run in preflight too (not just publish):
+      # the script also enforces P29.1/P29.2 lockstep between the Cargo
+      # workspace version and the npm packages, so drift fails here rather than
+      # halfway through a release.
+      - name: Patch axia-wasm-node package.json (ADR-044 R5)
+        run: node scripts/patch-wasm-package.mjs
+
       - name: Schema-pin verification (ADR-044 P29.2)
         run: node packages/axia-mcp-server/scripts/verify-schema-pin.mjs
 
@@ -170,6 +179,13 @@ jobs:
       - name: Install — create-axia-mcp
         working-directory: packages/create-axia-mcp
         run: npm ci
+
+      # ADR-044 R5 — MUST run before "Publish — axia-wasm-node" below: wasm-pack
+      # regenerates dist/package.json on every build, so without this the
+      # published tarball carries no license/repository/publishConfig and no
+      # prepublishOnly guard (P29.4/P29.3/P29.6).
+      - name: Patch axia-wasm-node package.json (ADR-044 R5)
+        run: node scripts/patch-wasm-package.mjs
 
       - name: Build — axia-mcp-server
         working-directory: packages/axia-mcp-server
