@@ -209,7 +209,33 @@ export class PushPullTool implements ITool {
     } else {
       // Phase 2: confirm distance (second click)
       // align 스냅이 발동됐다면 currentDragDist가 그 값을 담고 있음
-      const dist = this.currentDragDist !== 0 ? this.currentDragDist : this.ppRayDist(e);
+      let dist = this.currentDragDist !== 0 ? this.currentDragDist : this.ppRayDist(e);
+
+      // ── ADR-190 Phase 3 — REPEAT LAST (double-click) ──
+      // SketchUp parity: double-click a face to re-apply the last committed
+      // distance. `lastPPDist` was already recorded by all four commit paths
+      // (live / VCB / smooth-group / per-face fallback) but nothing ever READ
+      // it — a dead cache. This wires it.
+      //
+      // Why here: a double-click's 1st mousedown enters Phase 1 (ppActive =
+      // true), so the 2nd arrives HERE with `e.detail === 2` and the cursor
+      // still on the face → `dist ≈ 0` → it was swallowed by MIN_COMMIT_DIST
+      // and the gesture did nothing. That dead slot is exactly the hook.
+      //
+      // Two guards keep this additive — it can never divert a normal commit:
+      //   lastPPDist !== 0      — there is a real prior distance to repeat
+      //   currentDragDist === 0 — the cursor has not moved since Phase 1
+      //                           (every onMouseMove ends in `currentDragDist =
+      //                           dist`), so any click-move-click or align value
+      //                           already in flight wins outright.
+      // `e.detail >= 2` then means a genuine double-click: the browser only
+      // raises detail for clicks close in both time AND position.
+      if (e.detail >= 2 && this.lastPPDist !== 0 && this.currentDragDist === 0) {
+        dist = this.lastPPDist;
+        debugLog('[PP] Phase 2: REPEAT LAST dist=', dist.toFixed(2));
+        Toast.info(`직전 거리 반복: ${dist.toFixed(1)} mm`, 1800);
+      }
+
       debugLog('[PP] Phase 2: confirm dist=', dist.toFixed(2));
 
       // ── ADR-271 γ — CURVED pocket carve ──

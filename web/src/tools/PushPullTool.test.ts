@@ -491,4 +491,80 @@ describe('PushPullTool', () => {
       expect(ctx.bridge.createSolidExtrude).toHaveBeenCalledWith(5, expect.any(Number));
     });
   });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // ADR-190 Phase 3 — repeat last distance (double-click), SketchUp parity.
+  // `lastPPDist` was written by all four commit paths but READ by nothing —
+  // a dead cache. These lock the wiring AND its guards: the feature may only
+  // ADD behaviour, never divert a normal click-move-click.
+  // ════════════════════════════════════════════════════════════════════════
+  describe('ADR-190 Phase 3 — repeat last (double-click)', () => {
+    /** Phase-1 pick a single planar face (mirrors startSingleFaceDrag). */
+    function pickFace() {
+      ctx.viewport.pick.mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(0, -1000, 0) });
+      ctx.getFaceId.mockReturnValue(5);
+      ctx.bridge.getFaceNormal.mockReturnValue(new Float32Array([0, 1, 0]));
+      ctx.selection.getSmoothGroup.mockReturnValue([]);
+      tool.onMouseDown({ clientX: 400, clientY: 300 } as MouseEvent, null);
+    }
+    /** Commit once via VCB so lastPPDist is seeded by a REAL commit path. */
+    function seedLastDist(v: number) {
+      pickFace();
+      tool.applyVCBValue(v);
+      vi.clearAllMocks();
+    }
+
+    /**
+     * Whether the repeat block RAN — its Toast is the only observable signal.
+     * Asserting on the committed distance alone is not enough: with a live
+     * session the commit takes no argument (`commitLiveExtrude()`), so a
+     * mis-fire there would be invisible in the bridge calls.
+     */
+    function repeatFired(spy: ReturnType<typeof vi.spyOn>): boolean {
+      return spy.mock.calls.some((c) => String(c[0]).includes('직전 거리 반복'));
+    }
+
+    it('double-click re-applies the last committed distance', () => {
+      const info = vi.spyOn(Toast, 'info').mockImplementation(() => {});
+      seedLastDist(42);
+      pickFace();                                   // 1st click of the double
+      // 2nd click, cursor unmoved → no live session → legacy commit at 42
+      tool.onMouseDown({ clientX: 400, clientY: 300, detail: 2 } as MouseEvent, null);
+      expect(repeatFired(info)).toBe(true);
+      expect(ctx.bridge.createSolidExtrude).toHaveBeenCalledWith(5, 42);
+      info.mockRestore();
+    });
+
+    it('does NOT fire without a prior commit (lastPPDist still 0)', () => {
+      const info = vi.spyOn(Toast, 'info').mockImplementation(() => {});
+      pickFace();                                   // no seed
+      tool.onMouseDown({ clientX: 400, clientY: 300, detail: 2 } as MouseEvent, null);
+      expect(repeatFired(info), 'nothing to repeat → must not announce one').toBe(false);
+      info.mockRestore();
+    });
+
+    it('does NOT fire on a single click (detail 1), even with the cursor unmoved', () => {
+      const info = vi.spyOn(Toast, 'info').mockImplementation(() => {});
+      seedLastDist(42);
+      pickFace();
+      // same geometry as the repeat case — ONLY detail differs, so this pins
+      // the detail guard rather than being shadowed by the drag guard
+      tool.onMouseDown({ clientX: 400, clientY: 300, detail: 1 } as MouseEvent, null);
+      expect(repeatFired(info)).toBe(false);
+      expect(ctx.bridge.createSolidExtrude).not.toHaveBeenCalledWith(5, 42);
+      info.mockRestore();
+    });
+
+    it('does NOT override a distance already in flight, even on detail 2', () => {
+      const info = vi.spyOn(Toast, 'info').mockImplementation(() => {});
+      seedLastDist(42);
+      pickFace();
+      // every onMouseMove ends in `currentDragDist = dist`, so a moved cursor
+      // (drag or align) makes the guard decline regardless of detail
+      tool.onMouseMove({ clientX: 400, clientY: 200 } as MouseEvent, null);
+      tool.onMouseDown({ clientX: 400, clientY: 200, detail: 2 } as MouseEvent, null);
+      expect(repeatFired(info), 'a live drag distance must win').toBe(false);
+      info.mockRestore();
+    });
+  });
 });
