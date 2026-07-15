@@ -336,11 +336,17 @@ export class PushPullTool implements ITool {
         return;
       }
 
+      // ADR-190 Phase 3 — measure the inward clamp BEFORE committing: once the
+      // push lands, the face's own thickness IS the clamped value and the
+      // evidence is gone.
+      const clampLimit = this.inwardClampLimit(dist);
+
       // ADR-193 — single-face live session: commit the already-real preview.
       if (this.liveActive) {
         const ok = this.ctx.bridge.commitLiveExtrude();
         if (ok) {
           this.lastPPDist = dist;
+          this.warnIfInwardClamped(clampLimit, dist);
         } else {
           const err = this.ctx.bridge.lastError();
           Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
@@ -356,12 +362,47 @@ export class PushPullTool implements ITool {
       // no movement) → legacy commit path.
       if (Math.abs(dist) >= PushPullTool.MIN_COMMIT_DIST) {
         this.commitPushPull(dist);
+        this.warnIfInwardClamped(clampLimit, dist);
       } else if (Math.abs(dist) > 0.001) {
         // Bug C fix: 0 < |dist| < 0.5mm 일 때 조용히 실패하지 않고 피드백
         Toast.warning(`돌출/잘라내기 거리가 너무 짧습니다 (최소 ${PushPullTool.MIN_COMMIT_DIST}mm)`, 2500);
       }
       this.cleanup();
     }
+  }
+
+  /**
+   * ADR-190 Phase 3 — the thickness an inward push is about to be clamped at,
+   * or -1 when nothing will clamp (outward push, no face, or a flat/open
+   * profile with no connecting walls). MUST be read BEFORE the commit: the
+   * clamp works by moving the face itself, so afterwards the measurement
+   * returns the clamped value and the over-push is invisible.
+   */
+  private inwardClampLimit(dist: number): number {
+    if (dist >= 0 || this.ppFaceId < 0) return -1;
+    return this.ctx.bridge.moveOnlyMaxInward?.(this.ppFaceId) ?? -1;
+  }
+
+  /**
+   * ADR-190 Phase 3 — break the silence around the ADR-196 clamp.
+   *
+   * Pushing a whole face further in than the solid is thick is ambiguous (it
+   * could mean "cut through", but only the user knows), so ADR-196 stops the
+   * face just short of the far side rather than letting it flip inside-out.
+   * That is the right call — 메타-원칙 #16: guessing here is exactly the
+   * heuristic-automation trap. The defect was that it happened in silence:
+   * measured, a 2000×1000×1000 box pushed −1500 collapses to 0.001mm thick,
+   * `createSolidExtrude` still returns `true`, the mesh is watertight, and
+   * nothing is said (ADR-293 §5). Keep the clamp; explain it, and point at the
+   * path that DOES cut through (draw a profile on the face first — ADR-252).
+   */
+  private warnIfInwardClamped(clampLimit: number, dist: number): void {
+    if (clampLimit <= 0 || dist >= 0) return;
+    if (-dist <= clampLimit) return; // stayed within the solid → nothing clamped
+    Toast.warning(
+      `두께 ${clampLimit.toFixed(1)}mm 에서 멈췄습니다 — 관통하려면 면에 형상을 그린 뒤 미세요`,
+      4000,
+    );
   }
 
   /** Press-drag-release commit (SketchUp/Fusion 제스처). 좌버튼을 누른 채 면을
@@ -598,10 +639,13 @@ export class PushPullTool implements ITool {
     // ADR-193 — live session active: snap the preview to the typed value and
     // commit it (one clean Undo).
     if (this.liveActive) {
+      // ADR-190 Phase 3 — read the clamp limit before the commit consumes it
+      const clampLimit = this.inwardClampLimit(value);
       this.ctx.bridge.updateLiveExtrude(value);
       const ok = this.ctx.bridge.commitLiveExtrude();
       if (ok) {
         this.lastPPDist = value;
+        this.warnIfInwardClamped(clampLimit, value);
       } else {
         const err = this.ctx.bridge.lastError();
         Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
@@ -649,7 +693,11 @@ export class PushPullTool implements ITool {
       }
     }
     if (this.ppFaceId >= 0 || this.isSmoothGroup) {
+      // ADR-190 Phase 3 — typing "-1500" into the VCB is the most direct way to
+      // over-push, so this path must explain the clamp too. Read before commit.
+      const clampLimit = this.inwardClampLimit(value);
       this.commitPushPull(value);
+      this.warnIfInwardClamped(clampLimit, value);
     }
     this.cleanup();
   }

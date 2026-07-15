@@ -567,4 +567,75 @@ describe('PushPullTool', () => {
       info.mockRestore();
     });
   });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // ADR-190 Phase 3 — break the silence around the ADR-196 inward clamp.
+  // Measured (ADR-293 §5): a 2000×1000×1000 box pushed −1500 collapses to
+  // 0.001mm thick, createSolidExtrude returns true, the mesh is watertight,
+  // and nothing is said. The clamp stays; the silence goes.
+  // ════════════════════════════════════════════════════════════════════════
+  describe('ADR-190 Phase 3 — inward clamp is announced', () => {
+    /** Arm Push/Pull on a single planar face. Does NOT touch moveOnlyMaxInward,
+     *  so a test may install its own probe for it. */
+    function armFace() {
+      ctx.viewport.pick.mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(0, -1000, 0) });
+      ctx.getFaceId.mockReturnValue(5);
+      ctx.bridge.getFaceNormal.mockReturnValue(new Float32Array([0, 1, 0]));
+      ctx.selection.getSmoothGroup.mockReturnValue([]);
+      tool.onMouseDown({ clientX: 400, clientY: 300 } as MouseEvent, null);
+    }
+    function pickFaceThenCommit(pushDist: number, thickness: number) {
+      ctx.bridge.moveOnlyMaxInward = vi.fn().mockReturnValue(thickness);
+      armFace();
+      tool.applyVCBValue(pushDist);
+    }
+    const clampWarned = (spy: ReturnType<typeof vi.spyOn>) =>
+      spy.mock.calls.some((c) => String(c[0]).includes('에서 멈췄습니다'));
+
+    it('warns when an inward push exceeds the solid thickness', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      pickFaceThenCommit(-1500, 1000);
+      expect(clampWarned(warn), 'a silently clamped push must be explained').toBe(true);
+      expect(warn.mock.calls[0][0]).toContain('1000.0mm');   // the actual limit
+      warn.mockRestore();
+    });
+
+    it('stays quiet for an inward push within the thickness', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      pickFaceThenCommit(-300, 1000);
+      expect(clampWarned(warn)).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('stays quiet at exactly the thickness (the clamp has nothing to cut)', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      pickFaceThenCommit(-1000, 1000);
+      expect(clampWarned(warn), 'boundary must not false-positive').toBe(false);
+      warn.mockRestore();
+    });
+
+    it('stays quiet for an outward push, and for a flat profile (-1 = unclamped)', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      pickFaceThenCommit(1500, 1000);          // outward
+      expect(clampWarned(warn)).toBe(false);
+      tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+      pickFaceThenCommit(-1500, -1);           // flat/open profile → no walls
+      expect(clampWarned(warn), 'an unclamped profile must not be warned about').toBe(false);
+      warn.mockRestore();
+    });
+
+    it('measures the limit BEFORE the commit (afterwards the evidence is gone)', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      const order: string[] = [];
+      ctx.bridge.moveOnlyMaxInward = vi.fn(() => { order.push('measure'); return 1000; });
+      ctx.bridge.createSolidExtrude = vi.fn(() => { order.push('commit'); return true; });
+      armFace();                       // must not clobber the probes above
+      tool.applyVCBValue(-1500);
+      // both must actually have run — a bare index comparison would pass with
+      // `measure` missing entirely (-1 < 0), which is how this test first
+      // shipped vacuous
+      expect(order, 'both the measurement and the commit must run').toEqual(['measure', 'commit']);
+      warn.mockRestore();
+    });
+  });
 });

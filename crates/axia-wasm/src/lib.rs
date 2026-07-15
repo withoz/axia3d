@@ -8926,6 +8926,26 @@ impl AxiaEngine {
             .unwrap_or(-1.0)
     }
 
+    /// ADR-190 Phase 3 — how far an INWARD MoveOnly push may travel before the
+    /// solid would invert (the local thickness under `face`). Returns `-1` when
+    /// the face has no connecting walls parallel to its normal (a flat/open
+    /// profile → unclamped). Read-only, mirroring `wallThicknessFromSourceFace`.
+    ///
+    /// ADR-196 clamps an over-push here so a box top pushed past its own bottom
+    /// *sticks* instead of flipping inside-out — correct, but until now
+    /// **silent**: the push returns `true`, the result is watertight, and the
+    /// user is left with a sliver and no explanation (measured: a 2000×1000×1000
+    /// box pushed −1500 collapses to 0.001mm thick; ADR-293 §5). The tool reads
+    /// this to say so.
+    #[wasm_bindgen(js_name = "moveOnlyMaxInward")]
+    pub fn move_only_max_inward(&self, face_raw: u32) -> f64 {
+        axia_geo::operations::push_pull::move_only_max_inward(
+            &self.scene.mesh,
+            FaceId::new(face_raw),
+        )
+        .unwrap_or(-1.0)
+    }
+
     /// Tolerance 지정 단일 엣지 병합 (B1).
     /// `angle_tol_deg` — 허용 각도 (°). 기본 0.5° (strict). 관대하게는 2~5°.
     #[wasm_bindgen(js_name = "mergeFacesByEdgeTol")]

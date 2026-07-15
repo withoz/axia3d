@@ -534,6 +534,7 @@ type AxiaEngineExtended = AxiaEngine & {
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
   wallThicknessFromSourceFace?(faceRaw: number): number;
+  moveOnlyMaxInward?(faceRaw: number): number;
   /** 2026-04-24 — 크기 다른 coplanar 면들의 geometric merge */
   mergeCoplanarFacesGeometric?(f1: number, f2: number, angleTolDeg: number): number;
   tryMergeAdjacentFaces?(faceIds: Uint32Array): number;
@@ -4474,6 +4475,17 @@ export class WasmBridge {
 
   /** ADR-252 — wall thickness under a profile sheet drawn on a solid wall (the
    *  pocket↔through depth threshold), or -1 if not a source-on-wall face. */
+  /**
+   * ADR-190 Phase 3 — how far an inward MoveOnly push may travel before the
+   * solid would invert (the local thickness under `face`); `-1` when the face
+   * has no connecting walls parallel to its normal (flat/open profile →
+   * unclamped). Read-only. ADR-196 clamps an over-push here, correctly but
+   * silently; the Push/Pull tool reads this to say so.
+   */
+  moveOnlyMaxInward(face: number): number {
+    return this.engine?.moveOnlyMaxInward?.(face) ?? -1;
+  }
+
   wallThicknessFromSourceFace(face: number): number {
     return this.engine?.wallThicknessFromSourceFace?.(face) ?? -1;
   }
