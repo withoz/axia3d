@@ -35,7 +35,7 @@
 
 ```bash
 # 최초 1회 (또는 의존성 변경 후)
-cd E:\AXiA3D
+cd <저장소 루트>            # 클론한 위치 (npm workspace 루트)
 npm install                # 루트 workspace 설치 (web + packages/axia-action-catalog)
 
 # WASM 엔진 빌드 (Rust → wasm, SIMD)
