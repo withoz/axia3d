@@ -16,7 +16,7 @@ import { SelectionManager } from './SelectionManager';
 import { PickBox } from '../ui/PickBox';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { ConstraintCommands } from './ConstraintCommands';
-import { debugLog } from '../utils/debug';
+import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
 import { getMergeTolerance, getRespectMaterial, groupFacesByMaterial } from './MergeSettings';
 import { extractEdgeChain } from './EdgeChain';
@@ -686,7 +686,29 @@ export class ToolManager {
     'assign-quick-color': '선택 면에 색상 지정',
   };
 
-  executeAction(action: string): void {
+  /**
+   * ADR-069 — run an action; `false` means the dispatcher had NO branch for it
+   * (an unknown action), so nothing ran.
+   *
+   * It is deliberately NOT a general success flag. `dispatchAction` is a
+   * 1400-line if/else chain whose ~60 early `return`s mean different things —
+   * some bail on a failed precondition (nothing ran), others return straight
+   * after doing the work. Mapping all of them to a boolean would take 60
+   * separate judgement calls and get some backwards, which would make the
+   * audit trail lie in a NEW way. Unknown-vs-known is the one distinction the
+   * chain's structure gives us for free, and it is exactly the case that was
+   * silently recorded as 'ok'.
+   */
+  executeAction(action: string): boolean {
+    this.lastActionUnknown = false;
+    this.dispatchAction(action);
+    return !this.lastActionUnknown;
+  }
+
+  /** Set by `dispatchAction`'s final else — see `executeAction`. */
+  private lastActionUnknown = false;
+
+  private dispatchAction(action: string): void {
     // ═══ Busy 가드 (2026-04-17) ═══
     // 파괴적/구조적 명령은 도구가 작업 중일 때 차단.
     // undo는 별도 처리 (아래 분기) — busy 시 "cancel" 의미로 사용.
@@ -2080,6 +2102,13 @@ export class ToolManager {
       void import('../ui/BooleanHandler').then(({ intersectWithModel }) => {
         intersectWithModel({ bridge: this.bridge, toolManager: this });
       });
+    } else {
+      // No branch matched. Until now the chain simply ended here, so an
+      // unknown action did nothing at all — no Toast, no warning — while the
+      // caller recorded it as a success.
+      this.lastActionUnknown = true;
+      debugWarn(`[Action] unknown action: ${action}`);
+      Toast.warning(`알 수 없는 명령입니다: ${action}`, 3000);
     }
   }
 

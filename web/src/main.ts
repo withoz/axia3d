@@ -97,6 +97,27 @@ async function checkWasmFreshness(): Promise<void> {
   }
 }
 
+/**
+ * Route an action id through the MenuBar: many ids (panels, imports, view
+ * modes) are implemented as `#menubar [data-action]` items, not as branches of
+ * `ToolManager.dispatchAction`, so the only way to run them is to click the
+ * (possibly hidden) menu item. Scoped to `#menubar` so bare ids that live only
+ * on the toolbar / context menu (group / ungroup / make-component) fall through
+ * to executeAction. Returns false when no menubar item exists.
+ *
+ * ADR-069 — module scope so BOTH surfaces use it. It used to be a local inside
+ * the Command Palette's registration, which is why the Capability Explorer sent
+ * every id straight to executeAction: measured, 72 of the catalog's 136
+ * `action()` ids have no executeAction branch, so from the Explorer they did
+ * nothing at all — and were recorded as successes.
+ */
+const dispatchMenuAction = (id: string): boolean => {
+  const item = document.querySelector<HTMLElement>(`#menubar [data-action="${id}"]`);
+  if (!item) return false;
+  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  return true;
+};
+
 async function main() {
   debugLog('AXiA 3D starting...');
 
@@ -544,18 +565,6 @@ async function main() {
   //   MenuBar; the catalog just gathers the metadata so toolbar / menu
   //   / keyboard / palette can all consult one list.
   void import('./commands/AxiaCommands').then(({ registerAxiaCommands }) => {
-    // dispatchMenuAction — palette `action()` commands that ToolManager.
-    // executeAction doesn't handle (panels, imports, view modes) route through
-    // the MenuBar by dispatching a click on its (possibly hidden) #menubar
-    // [data-action] item. Scoped to #menubar so bare ids that only live on the
-    // toolbar / context menu (group / ungroup / make-component) fall through to
-    // executeAction. Returns false when no menubar item exists.
-    const dispatchMenuAction = (id: string): boolean => {
-      const item = document.querySelector<HTMLElement>(`#menubar [data-action="${id}"]`);
-      if (!item) return false;
-      item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      return true;
-    };
     registerAxiaCommands({ toolManager, dispatchMenuAction });
   });
   // Command Palette — Ctrl+K / Ctrl+Shift+P opens a searchable list of every
@@ -947,10 +956,35 @@ async function main() {
               return { ok: true, result: text ?? '(empty)' };
             }
           }
-          // 2. Tier 1/2 launcher — ToolManager executeAction (existing tool dispatch).
-          // executeAction is void — best-effort delegation. Unknown actions
-          // surface via Toast (ToolManager internal warning).
-          toolManager.executeAction(actionId);
+          // 2. Tier 1/2 launcher.
+          //
+          // ADR-069 — this used to go straight to a void executeAction and
+          // record 'ok' unconditionally, on the strength of a comment claiming
+          // "unknown actions surface via Toast (ToolManager internal warning)".
+          // They did not: the dispatcher's if/else chain simply ended, so an
+          // unknown action did nothing, said nothing, and was written to the
+          // audit trail as a success. An audit that invents successes is worse
+          // than no audit — it IS the intrusion signal (ADR-041 P26.7).
+          //
+          // Two fixes, in order:
+          //  - Menu-backed ids first, exactly as the Command Palette does.
+          //    Measured: 72 of the catalog's 136 `action()` ids (file-open,
+          //    export-obj, help, view modes…) have no executeAction branch —
+          //    they live as `#menubar [data-action]` items. From the Explorer
+          //    they therefore did NOTHING, and were logged as successes. Now
+          //    they actually run.
+          //  - Then executeAction, which reports whether it had a branch at
+          //    all. That boolean is not a general success flag (see its doc) —
+          //    it is exactly the case that was being fabricated.
+          if (dispatchMenuAction(actionId)) {
+            audit.record({ actionId, tier, result: 'ok', args });
+            return { ok: true, result: 'Launched (menu dispatch).' };
+          }
+          if (!toolManager.executeAction(actionId)) {
+            const err = `알 수 없는 명령입니다: ${actionId}`;
+            audit.record({ actionId, tier, result: 'error', error: err, args });
+            return { ok: false, error: err };
+          }
           audit.record({ actionId, tier, result: 'ok', args });
           return { ok: true, result: 'Launched (existing tool dispatch).' };
         } catch (e) {
