@@ -125,12 +125,7 @@ export class CapabilityExplorerPanel {
       <div class="cep-search">
         <input class="cep-search-input" type="text" placeholder="검색 (id / label / description)" data-role="search" />
       </div>
-      <div class="cep-toolbar">
-        <label class="cep-toggle-advanced">
-          <input type="checkbox" data-role="toggle-advanced" ${this.showAdvanced ? 'checked' : ''} />
-          <span>Show advanced (Tier 3 destructive)</span>
-        </label>
-      </div>
+      <div class="cep-toolbar" data-role="toolbar"></div>
       <div class="cep-body" data-role="body"></div>
     `;
     this.panelEl.style.display = 'none';
@@ -144,19 +139,45 @@ export class CapabilityExplorerPanel {
       this.renderTree();
     });
 
-    const toggleEl = this.panelEl.querySelector('[data-role="toggle-advanced"]') as HTMLInputElement;
-    toggleEl.addEventListener('change', () => {
-      this.showAdvanced = toggleEl.checked;
-      try {
-        localStorage.setItem(
-          CapabilityExplorerPanel.LS_KEY_SHOW_ADVANCED,
-          this.showAdvanced ? '1' : '0',
-        );
-      } catch {
-        // localStorage write 실패 — silent.
-      }
-      this.renderTree();
-    });
+    // ADR-045 D3/D5 — the "Show advanced (Tier 3)" toggle only exists if there
+    // is anything at Tier 3 to reveal.
+    //
+    // Measured 2026-07-16: the catalog has **zero** Tier 3 entries (54/72/88/0),
+    // so this control was a lie — `renderTree` looped the tier, found an empty
+    // bucket and continued, and toggling it changed nothing on screen. That is
+    // not a coverage gap to fill by re-tiering: the destructive actions
+    // (`delete`, `tool-erase`, `tool-explode`, `ungroup`) are all catalogued at
+    // Tier 2 today, and moving them to 3 would HIDE everyday tools behind an
+    // off-by-default toggle. Per ADR-045 D5, Tier 3 belongs to the Debug
+    // Panel's Danger Zone, not here. So: render the control when it has a job,
+    // and don't when it doesn't.
+    const toolbarEl = this.panelEl.querySelector('[data-role="toolbar"]') as HTMLElement;
+    const hasTier3 = CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3);
+    if (hasTier3) {
+      toolbarEl.innerHTML = `
+        <label class="cep-toggle-advanced">
+          <input type="checkbox" data-role="toggle-advanced" ${this.showAdvanced ? 'checked' : ''} />
+          <span>Show advanced (Tier 3 destructive)</span>
+        </label>
+      `;
+      const toggleEl = toolbarEl.querySelector('[data-role="toggle-advanced"]') as HTMLInputElement;
+      toggleEl.addEventListener('change', () => {
+        this.showAdvanced = toggleEl.checked;
+        try {
+          localStorage.setItem(
+            CapabilityExplorerPanel.LS_KEY_SHOW_ADVANCED,
+            this.showAdvanced ? '1' : '0',
+          );
+        } catch {
+          // localStorage write 실패 — silent.
+        }
+        this.renderTree();
+      });
+    } else {
+      // No toggle, and no stale `showAdvanced` either: a persisted '1' from an
+      // earlier build must not silently keep an unreachable filter on.
+      this.showAdvanced = false;
+    }
 
     this.injectStyles();
     this.renderTree();

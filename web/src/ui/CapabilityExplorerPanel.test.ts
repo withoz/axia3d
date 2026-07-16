@@ -181,9 +181,18 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
   });
 
   it('capability_explorer_tier3_hidden_by_default', () => {
-    // §D #2 lock-in — Tier 3 (destructive) actions are hidden unless
-    // user explicitly enables "Show advanced" toggle.
-    // Reset localStorage to ensure default state.
+    // §D #2 lock-in — Tier 3 (destructive) actions are hidden unless the user
+    // explicitly enables "Show advanced".
+    //
+    // The catalog currently has ZERO Tier 3 entries (measured 2026-07-16:
+    // 54/72/88/0), so the toggle used to be a control that could never do
+    // anything: renderTree looped the tier, found an empty bucket and
+    // continued. This test now pins BOTH halves — the lock-in for when Tier 3
+    // entries land, and the honest absence of the control until they do. It is
+    // not a coverage gap: `delete` / `tool-erase` / `tool-explode` / `ungroup`
+    // are catalogued at Tier 2, and moving them to 3 would hide everyday tools
+    // behind an off-by-default toggle. Per ADR-045 D5 Tier 3 belongs to the
+    // Debug Panel's Danger Zone.
     try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
 
     const container = document.createElement('div');
@@ -191,41 +200,58 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
     const panel = new CapabilityExplorerPanel(container, {});
     panel.show();
 
-    // Default: showAdvanced = false → Tier 3 not visible.
-    expect(panel.isAdvancedVisible()).toBe(false);
-    let tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    expect(tier3Group, 'Tier 3 group must NOT be rendered by default (§D #2)').toBeNull();
-
-    // Toggle on.
+    const hasTier3 = CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3);
     const toggle = container.querySelector(
       '.cep-toggle-advanced input[type="checkbox"]',
-    ) as HTMLInputElement;
-    expect(toggle, 'Show advanced toggle must exist').toBeTruthy();
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('change'));
+    ) as HTMLInputElement | null;
 
-    expect(panel.isAdvancedVisible()).toBe(true);
-    tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    // Tier 3 may or may not exist depending on catalog content; if present,
-    // it should now render.
-    const allActions = CapabilityExplorerPanel.getAllActions();
-    const hasTier3 = allActions.some((a) => a.tier === 3);
-    if (hasTier3) {
-      expect(tier3Group, 'Tier 3 group must render after toggle on').toBeTruthy();
+    // Default, either way: Tier 3 is not on screen.
+    expect(panel.isAdvancedVisible()).toBe(false);
+    expect(
+      container.querySelector('.cep-tier-group[data-tier="3"]'),
+      'Tier 3 group must NOT render by default (§D #2)',
+    ).toBeNull();
+
+    if (!hasTier3) {
+      expect(toggle, 'no Tier 3 actions → no control that cannot do anything').toBeNull();
+    } else {
+      expect(toggle, 'Tier 3 actions exist → the toggle must be offered').toBeTruthy();
+      toggle!.checked = true;
+      toggle!.dispatchEvent(new Event('change'));
+      expect(panel.isAdvancedVisible()).toBe(true);
+      expect(
+        container.querySelector('.cep-tier-group[data-tier="3"]'),
+        'Tier 3 group must render after toggle on',
+      ).toBeTruthy();
+      try {
+        expect(localStorage.getItem('axia.capabilityExplorer.showAdvanced')).toBe('1');
+      } catch { /* localStorage unavailable */ }
+
+      toggle!.checked = false;
+      toggle!.dispatchEvent(new Event('change'));
+      expect(panel.isAdvancedVisible()).toBe(false);
+      expect(
+        container.querySelector('.cep-tier-group[data-tier="3"]'),
+        'Tier 3 group must hide after toggle off',
+      ).toBeNull();
     }
 
-    // Verify localStorage persistence.
-    try {
-      expect(localStorage.getItem('axia.capabilityExplorer.showAdvanced')).toBe('1');
-    } catch {}
+    panel.dispose();
+    container.remove();
+    try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
+  });
 
-    // Toggle off again.
-    toggle.checked = false;
-    toggle.dispatchEvent(new Event('change'));
-    expect(panel.isAdvancedVisible()).toBe(false);
-    tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    expect(tier3Group, 'Tier 3 group must hide after toggle off').toBeNull();
-
+  it('a stale showAdvanced=1 cannot leave an unreachable filter on', () => {
+    // An earlier build persisted the flag; with no Tier 3 entries there is now
+    // no toggle to turn it back off, so construction must clear it.
+    try { localStorage.setItem('axia.capabilityExplorer.showAdvanced', '1'); } catch {}
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new CapabilityExplorerPanel(container, {});
+    panel.show();
+    if (!CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3)) {
+      expect(panel.isAdvancedVisible()).toBe(false);
+    }
     panel.dispose();
     container.remove();
     try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
