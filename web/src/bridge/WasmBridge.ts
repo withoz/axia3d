@@ -535,6 +535,7 @@ type AxiaEngineExtended = AxiaEngine & {
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
   wallThicknessFromSourceFace?(faceRaw: number): number;
   moveOnlyMaxInward?(faceRaw: number): number;
+  surfacePointAtGeodesicDistance?(faceRaw: number, cx: number, cy: number, cz: number, d: number): Float64Array;
   /** 2026-04-24 — 크기 다른 coplanar 면들의 geometric merge */
   mergeCoplanarFacesGeometric?(f1: number, f2: number, angleTolDeg: number): number;
   tryMergeAdjacentFaces?(faceIds: Uint32Array): number;
@@ -4483,6 +4484,25 @@ export class WasmBridge {
    */
   moveOnlyMaxInward(face: number): number {
     return this.engine?.moveOnlyMaxInward?.(face) ?? -1;
+  }
+
+  /**
+   * ADR-284 follow-up — a point on `face`'s surface whose GEODESIC distance
+   * from `center` is `d`. Feed it back as the radius point so a TYPED radius
+   * means what it says: offsetting `d` in the tangent plane instead lands ~2%
+   * short at r=200/d=50 and ~7% at d=100.
+   *
+   * `null` = not answerable (non-curved face, degenerate ask, or an engine
+   * without the export) — the caller keeps its planar path. Read-only.
+   */
+  surfacePointAtGeodesicDistance(
+    face: number, center: [number, number, number], d: number,
+  ): [number, number, number] | null {
+    const out = this.engine?.surfacePointAtGeodesicDistance?.(
+      face, center[0], center[1], center[2], d,
+    );
+    if (!out || out.length < 3) return null;
+    return [out[0], out[1], out[2]];
   }
 
   wallThicknessFromSourceFace(face: number): number {

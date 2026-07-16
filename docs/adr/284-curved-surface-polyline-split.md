@@ -411,6 +411,19 @@ Full re-verification of the curved-sketch closed-shape path:
 > identity is being more precise than SketchUp. **Follow-up:** an engine helper
 > for "surface point at geodesic distance d from centre" would make the VCB path
 > exact; until then the mouse path is the honest one.
+>
+> **Follow-up done (2026-07-16).** `surface_point_at_geodesic_distance` landed,
+> so the typed radius is now exact rather than declined. No inverse formula was
+> derived per surface: each has a direction along which the geodesic distance IS
+> the offset (cylinder → axial, sphere → a great circle at α = d/r, cone → the
+> slant, torus → the meridian), so the point is constructed, not solved for.
+> Measured in the browser: typing 50 on an r=200 cylinder yields a radius point
+> at an axial offset of exactly 50.000000, on the surface (axis distance
+> 200.000000); the tangent-plane shortcut would have given 48.996 (2.01% short).
+> Still fail-closed — a degenerate ask, a sphere radius past half a turn, or an
+> engine without the export declines rather than falling back to the flat circle
+> this exists to prevent. See `web/e2e/adr-284-geodesic-radius.spec.ts` and
+> `crates/axia-geo/src/surfaces/geodesic.rs`.
 
 **Menu/toolbar — UNCHANGED (additive-only, ADR-046 P31 #4):** the curved branch
 is INTERNAL to the existing rect/polygon/freehand/bezier tools — no new command,

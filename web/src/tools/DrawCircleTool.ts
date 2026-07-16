@@ -17,6 +17,7 @@ import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { getDrawCurveMode } from './DrawCurveSettings';
 import { Toast } from '../ui/Toast';
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
 
 /** Max distance from center to prevent runaway geometry when ray grazes the plane */
 const MAX_DRAW_DISTANCE = 50000;
@@ -326,23 +327,49 @@ export class DrawCircleTool implements ITool {
   applyVCBValue(value: number): void {
     if (!this.circleCenter) return;
 
-    // ADR-284 follow-up — the curved modes the mouse path sets are NOT handled
-    // here. Until now this fell straight through and drew a FLAT circle on the
-    // tangent plane, silently: the same tool behaved differently depending on
-    // whether you clicked the radius or typed it.
+    // ADR-284 follow-up — a typed radius on a curved host.
     //
-    // Declining rather than approximating. A typed radius is a promise of a
-    // number, and the mouse path takes a POINT — to honour "50" on a curved
-    // host we would have to place the radius point so that its GEODESIC
-    // distance is 50, which means inverting the projection per surface
-    // (d = r·tan(v/r) for a sphere, exact along a cylinder's axis but not
-    // around it…). Feeding the tangent-plane point straight through instead
-    // yields ~2% short at r=200/v=50 and ~7% at v=100 — a quietly wrong
-    // dimension in a tool whose whole point is being more precise than
-    // SketchUp. The engine helper for that is the real fix; this at least
-    // stops lying.
-    if (this.sphereMode || this.cylinderMode || this.coneMode || this.torusMode) {
-      Toast.warning('곡면에서는 반지름 입력이 아직 지원되지 않습니다 — 마우스로 지정해 주세요', 3500);
+    // The mouse path takes a POINT, so "50" can only be honoured by placing the
+    // radius point whose GEODESIC distance is 50. Offsetting 50 in the tangent
+    // plane is not that: it lands ~2% short at r=200/d=50 and ~7% at d=100 — a
+    // quietly wrong dimension in a tool whose whole point is being more precise
+    // than SketchUp. This path used to fall through and draw a flat circle
+    // regardless, then (7c6e4c2) declined rather than approximate. The engine
+    // now answers it exactly, so ask.
+    //
+    // Still fail-closed: if the engine cannot answer (degenerate ask, a sphere
+    // radius past half a turn, an older build without the export), decline as
+    // before rather than fall back to the flat circle this is here to prevent.
+    const curvedHost = this.sphereMode ? this.sphereHostFace
+      : this.cylinderMode ? this.cylinderHostFace
+        : this.coneMode ? this.coneHostFace
+          : this.torusMode ? this.torusHostFace
+            : -1;
+    if (curvedHost >= 0) {
+      const c = this.circleCenter;
+      const rp = this.ctx.bridge.surfacePointAtGeodesicDistance?.(
+        curvedHost, [c.x, c.y, c.z], value,
+      ) ?? null;
+      if (!rp) {
+        Toast.warning('이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요', 3500);
+        this.cleanup();
+        return;
+      }
+      const draw = this.sphereMode ? this.ctx.bridge.drawCircleOnSphere
+        : this.cylinderMode ? this.ctx.bridge.drawCircleOnCylinder
+          : this.coneMode ? this.ctx.bridge.drawCircleOnCone
+            : this.ctx.bridge.drawCircleOnTorus;
+      const res = draw?.call(this.ctx.bridge, curvedHost, [c.x, c.y, c.z], rp);
+      if (!res || res.includes('"error"')) {
+        Toast.warning(
+          humanizeEngineError(this.ctx.bridge.lastError())
+            || '이 곡면에는 원을 그릴 수 없습니다',
+          3500,
+        );
+      } else {
+        debugLog(`[VCB/Circle/Curved] host=${curvedHost} geodesic R=${value}`);
+      }
+      this.ctx.syncMesh();
       this.cleanup();
       return;
     }

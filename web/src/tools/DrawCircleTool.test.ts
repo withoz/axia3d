@@ -503,18 +503,51 @@ describe('DrawCircleTool', () => {
       return c;
     }
 
-    it('declines instead of drawing a flat circle on the tangent plane', () => {
-      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+    it('asks the engine for the geodesic radius point and draws ON the surface', () => {
+      // The typed radius now means what it says: the engine returns a point at
+      // geodesic distance 50, and THAT is what goes to drawCircleOnSphere.
       const c = onSphere();
+      c.bridge.surfacePointAtGeodesicDistance = vi.fn().mockReturnValue([3, 0, 4]);
       const t = new DrawCircleTool(c);
       t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
       t.applyVCBValue(50);
-      // THE guard: no flat circle may reach the engine
+      expect(c.bridge.surfacePointAtGeodesicDistance)
+        .toHaveBeenCalledWith(4, [0, 0, 5], 50);
+      expect(c.bridge.drawCircleOnSphere).toHaveBeenCalledWith(4, [0, 0, 5], [3, 0, 4]);
+      // and never the flat path
       expect(c.bridge.drawCircleAsShape).not.toHaveBeenCalled();
       expect(c.bridge.drawCircleAsCurve).not.toHaveBeenCalled();
+      expect(t.isBusy()).toBe(false);
+    });
+
+    it('FAILS CLOSED when the engine cannot answer — no flat fallback', () => {
+      // A degenerate ask, a sphere radius past half a turn, or an older build
+      // without the export. Falling back to the tangent-plane circle is exactly
+      // what this whole path exists to prevent, so decline instead.
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      const c = onSphere();
+      c.bridge.surfacePointAtGeodesicDistance = vi.fn().mockReturnValue(null);
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
+      t.applyVCBValue(50);
+      expect(c.bridge.drawCircleAsShape).not.toHaveBeenCalled();
+      expect(c.bridge.drawCircleAsCurve).not.toHaveBeenCalled();
+      expect(c.bridge.drawCircleOnSphere).not.toHaveBeenCalled();
       expect(warn, 'and the user is told which way does work').toHaveBeenCalled();
       expect(String(warn.mock.calls[0][0])).toContain('마우스로');
       expect(t.isBusy(), 'the tool resets rather than hanging').toBe(false);
+      warn.mockRestore();
+    });
+
+    it('an engine without the export declines too (graceful, no flat circle)', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      const c = onSphere(); // mock bridge has no surfacePointAtGeodesicDistance
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
+      t.applyVCBValue(50);
+      expect(c.bridge.drawCircleAsShape).not.toHaveBeenCalled();
+      expect(c.bridge.drawCircleAsCurve).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
       warn.mockRestore();
     });
 

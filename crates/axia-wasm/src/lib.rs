@@ -9006,6 +9006,31 @@ impl AxiaEngine {
     /// the returned polyline FOLLOWS the surface (curves along it) instead of the
     /// flat tangent-plane approximation. Empty array = non-curved face (the tool
     /// then draws its own flat preview). Safe every mouse-move (`&self`).
+    /// ADR-284 follow-up — a point on `host_face`'s surface whose GEODESIC
+    /// distance from the given centre is `d`, so a TYPED radius can mean what
+    /// it says. Feed the result back as `radius_pt` to drawCircleOn*.
+    ///
+    /// Empty array = not answerable here (non-curved / inactive face,
+    /// degenerate ask) — the caller keeps its planar path rather than guessing.
+    /// Read-only (`&self`), so it is safe to call while typing.
+    #[wasm_bindgen(js_name = "surfacePointAtGeodesicDistance")]
+    pub fn surface_point_at_geodesic_distance(
+        &self,
+        host_face_raw: u32,
+        cx: f64, cy: f64, cz: f64,
+        d: f64,
+    ) -> Vec<f64> {
+        self.scene
+            .mesh
+            .surface_point_at_geodesic_distance(
+                FaceId::new(host_face_raw),
+                DVec3::new(cx, cy, cz),
+                d,
+            )
+            .map(|p| vec![p.x, p.y, p.z])
+            .unwrap_or_default()
+    }
+
     #[wasm_bindgen(js_name = "previewCircleOnSurface")]
     pub fn preview_circle_on_surface(
         &self,
