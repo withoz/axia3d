@@ -1,15 +1,36 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
 import { UnitSystem } from './UnitSystem';
+import { getLocale, setLocale } from '../i18n';
 
 describe('SettingsPanel', () => {
   let units: UnitSystem;
   let panel: SettingsPanel;
+  let reloads = 0;
+  const realLocation = window.location;
 
   beforeEach(() => {
     document.body.innerHTML = '';
+    // jsdom does not implement location.reload (it throws "Not implemented"),
+    // and a real reload would tear the test down anyway. Count calls instead.
+    reloads = 0;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, reload: () => { reloads += 1; } },
+    });
+    // Pin the locale: jsdom reports navigator.language = 'en-US', so without
+    // this the panel would build with a locale that depends on test order.
+    setLocale('ko');
     units = new UnitSystem();
     panel = new SettingsPanel(units);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: realLocation,
+    });
+    setLocale('ko');
   });
 
   describe('constructor', () => {
@@ -24,7 +45,9 @@ describe('SettingsPanel', () => {
     });
 
     it('creates unit buttons for all unit types', () => {
-      const btns = document.querySelectorAll('.sp-ubtn');
+      // scoped to the unit container: the locale buttons (ADR-294 D7) share
+      // the .sp-ubtn look, so a global count would mean "units + languages"
+      const btns = document.querySelectorAll('#sp-unit-btns .sp-ubtn');
       expect(btns.length).toBe(UnitSystem.allUnits.length);
     });
 
@@ -178,6 +201,37 @@ describe('SettingsPanel', () => {
       panel.open();
       const checkbox = document.getElementById('sp-draw-shape-mode');
       expect(checkbox).toBeNull();
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // ADR-294 D7 — locale switch. A reload is destructive (unsaved work), so
+  // these pin exactly when it fires and when it must not.
+  // ════════════════════════════════════════════════════════════════════════
+  describe('ADR-294 D7 — language switch', () => {
+    const btn = (locale: string) =>
+      document.querySelector(`#sp-locale-btns [data-locale="${locale}"]`) as HTMLButtonElement;
+
+    it('offers both languages, with the current one marked', () => {
+      expect(btn('ko')).not.toBeNull();
+      expect(btn('en')).not.toBeNull();
+      expect(btn(getLocale()).classList.contains('active')).toBe(true);
+    });
+
+    it('switching sets the locale and reloads', () => {
+      setLocale('ko');
+      btn('en').click();
+      expect(getLocale()).toBe('en');
+      expect(reloads, 'the catalogs are init-once — a reload is what repaints them').toBe(1);
+    });
+
+    it('clicking the CURRENT language does not reload', () => {
+      // A reload throws away unsaved work. Doing it for a no-op click would be
+      // the worst kind of surprise.
+      setLocale('ko');
+      btn('ko').click();
+      expect(reloads).toBe(0);
+      expect(getLocale()).toBe('ko');
     });
   });
 });

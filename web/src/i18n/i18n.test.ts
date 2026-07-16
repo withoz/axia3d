@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { t, setLocale, getLocale } from './index';
@@ -54,6 +54,40 @@ describe('ADR-294 — t()', () => {
   it('persists the choice', () => {
     setLocale('en');
     expect(localStorage.getItem('axia:locale')).toBe('en');
+  });
+});
+
+describe('ADR-294 D6 — module-scope t() under reload semantics', () => {
+  afterEach(() => {
+    localStorage.removeItem('axia:locale');
+    vi.resetModules();
+  });
+
+  // D6 as first drafted said module-scope constants "must become getters".
+  // That would force every command/menu catalog to be restructured — the
+  // expensive half of the bulk migration. These two measure whether it is
+  // actually true, rather than asserting it from the spec.
+  //
+  // It is not, GIVEN reload-on-switch: ES modules evaluate depth-first, so
+  // i18n/index.ts's body (and its detect()) finishes before any importing
+  // module's body starts. A module-scope t() therefore already sees the
+  // persisted locale.
+  //
+  // The Korean case is the load-bearing one: jsdom reports
+  // navigator.language = 'en-US', so only 'ko' proves the persisted choice
+  // beat the browser default rather than coinciding with it.
+  it('a module-scope t() sees the persisted locale at import — ko over an en browser', async () => {
+    localStorage.setItem('axia:locale', 'ko');
+    vi.resetModules();
+    const mod = await import('./__fixtures__/moduleScope');
+    expect(mod.LABEL).toBe('그 면을 찾을 수 없습니다 — 다시 선택해 주세요');
+  });
+
+  it('…and English when that is what is persisted', async () => {
+    localStorage.setItem('axia:locale', 'en');
+    vi.resetModules();
+    const mod = await import('./__fixtures__/moduleScope');
+    expect(mod.LABEL).toBe('That face no longer exists — please select it again.');
   });
 });
 

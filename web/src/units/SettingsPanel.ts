@@ -9,6 +9,7 @@
  */
 
 import { UnitSystem, UnitType } from './UnitSystem';
+import { getLocale, setLocale } from '../i18n';
 import {
   getMergeTolerance, setMergeTolerance,
   getRespectMaterial, setRespectMaterial,
@@ -91,6 +92,14 @@ export class SettingsPanel {
     panel.id = 'settings-panel';
     panel.innerHTML = `
       <div class="sp-header">단위 설정</div>
+
+      <div class="sp-section">
+        <label class="sp-label">언어 / Language</label>
+        <div class="sp-unit-btns" id="sp-locale-btns"></div>
+        <div class="sp-hint">바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)</div>
+      </div>
+
+      <div class="sp-divider"></div>
 
       <div class="sp-section">
         <label class="sp-label">단위</label>
@@ -226,6 +235,29 @@ export class SettingsPanel {
     `;
 
     // 단위 버튼 생성
+    // 언어 (ADR-294) — 바꾸면 reload. 메뉴/명령 카탈로그는 init 때 한 번만
+    // 지어지므로 (measured: registerAxiaCommands / initMenuBar 모두 init-once),
+    // reload 없이 바꾸면 오류 문구만 새 언어고 화면 대부분은 옛 언어로 남는다.
+    // 그 혼합보다 reload 가 정직하다 — VS Code 도 같은 선택을 한다.
+    const localeBtns = panel.querySelector('#sp-locale-btns')!;
+    for (const cfg of [
+      { id: 'ko', label: '한국어', title: '한국어' },
+      { id: 'en', label: 'EN', title: 'English' },
+    ] as const) {
+      const btn = document.createElement('button');
+      btn.className = 'sp-ubtn';
+      btn.dataset.locale = cfg.id;
+      btn.textContent = cfg.label;
+      btn.title = cfg.title;
+      btn.classList.toggle('active', getLocale() === cfg.id);
+      btn.addEventListener('click', () => {
+        if (getLocale() === cfg.id) return;   // 같은 언어 클릭에 reload 하지 않는다
+        setLocale(cfg.id);
+        location.reload();
+      });
+      localeBtns.appendChild(btn);
+    }
+
     const btnContainer = panel.querySelector('#sp-unit-btns')!;
     for (const cfg of UnitSystem.allUnits) {
       const btn = document.createElement('button');
@@ -344,8 +376,9 @@ export class SettingsPanel {
   }
 
   private updateDisplay() {
-    // 단위 버튼 활성화
-    this.panel.querySelectorAll('.sp-ubtn').forEach(btn => {
+    // 단위 버튼 활성화 — #sp-unit-btns 안으로 한정. 언어 버튼도 .sp-ubtn 을
+    // 쓰므로, 전역으로 훑으면 dataset.unit 이 없는 그쪽 active 가 지워진다.
+    this.panel.querySelectorAll('#sp-unit-btns .sp-ubtn').forEach(btn => {
       btn.classList.toggle('active', (btn as HTMLElement).dataset.unit === this.units.unit);
     });
 

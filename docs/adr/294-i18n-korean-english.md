@@ -81,21 +81,58 @@ because that is the current behaviour and this must not surprise existing users.
 `t()` returns a string, so `` `<h2>${t('AXiA 3D 정보')}</h2>` `` needs nothing
 new. No template compiler, no DOM directive.
 
-### D6 — Module-scope constants are the one real trap
+### D6 — Module-scope constants are safe (measured; the α draft was wrong)
 
-A `t()` called at module load freezes whatever locale was current at import
-time — before `main.ts` runs. Several catalogs are module-level `const` maps.
-Those must become getters (called per render) rather than constants. The first
-slice deliberately includes none, and the batched migration must treat any
-module-level map as needing a getter, not a wrap.
+**The α draft claimed** a `t()` at module load "freezes whatever locale was
+current at import time — before main.ts runs", and concluded every module-level
+catalog "must become getters rather than constants". That was reasoned from the
+spec, not measured, and **it is wrong**.
+
+ES modules evaluate depth-first: `i18n/index.ts`'s body — including its
+`detect()` — finishes before the body of any module that imports it. So a
+module-scope `t()` already sees the persisted locale.
+
+Measured, not asserted: `i18n/__fixtures__/moduleScope.ts` is a module that
+calls `t()` at module scope, and `i18n.test.ts` imports it under each persisted
+locale. The load-bearing case is Korean — jsdom reports
+`navigator.language = 'en-US'`, so only `ko` proves the persisted choice beat
+the browser default rather than coinciding with it. Mutation-verified: making
+`detect()` ignore localStorage fails the test.
+
+This matters because it is the difference between the bulk migration being a
+wrap and being a restructure. **A module-level catalog can be wrapped in place.**
+
+What module scope genuinely cannot do is follow a *runtime* switch — which
+leads to D7.
+
+### D7 — Switching the language reloads the page
+
+Measured: `initMenuBar`, `registerAxiaCommands` and `initCommandRegistry` are
+all init-once functions, and the panels build their `innerHTML` once. Switching
+locale live would repaint nothing — the user would get new error toasts in
+English over a menu bar still in Korean. That mixed state is worse than either
+language alone.
+
+So `SettingsPanel` sets the locale and calls `location.reload()`, and says so in
+the hint. This is what VS Code does for the same reason, and it is what makes D6
+safe: after a reload, module scope re-reads the persisted choice.
+
+**Auto-detection made this urgent.** `detect()` honours `navigator.language`, so
+the moment the first slice landed, a user on an English browser saw English
+engine errors inside an otherwise-Korean UI. A switch the user controls is not a
+nicety here; it is what keeps the feature coherent while the migration is
+partial.
 
 ## 3. Rollout
 
 Not one pass. In batches, each its own commit, each independently green:
 
-1. **This pass** — infrastructure + `humanizeEngineError` as the first slice
+1. **Batch 1** — infrastructure + `humanizeEngineError` as the first slice
    (self-contained, entirely user-facing, and already the funnel every engine
-   error goes through), + a drift guard.
+   error goes through), + drift guards. `c6dda5f`.
+1b. **Locale switch** (D7) + the D6 correction. Auto-detect made this urgent:
+   until a user can choose, an English browser gets English errors in an
+   otherwise-Korean UI.
 2. `ui/` panels and modals — the visible surface.
 3. `commands/AxiaCommands.ts` + `ui/MenuBar.ts` + `ui/CommandRegistry.ts` — the
    45%, mechanical label/description pairs. Watch D6 here.
@@ -113,8 +150,11 @@ behaviour, so batches can land before their translations do.
   never render a key name at a user.
 - **L-294-4** Interpolation is `{name}`, not `${}` — the placeholder must be
   translatable text.
-- **L-294-5** `t()` resolves the locale at CALL time. Module-scope constants
-  must become getters (D6).
+- **L-294-5** `t()` resolves the locale at CALL time. Module-scope constants are
+  safe to wrap in place — measured, not assumed (D6). The α draft's "must become
+  getters" is superseded.
+- **L-294-9** Switching the locale reloads the page (D7). A live switch would
+  leave every init-once catalog stale.
 - **L-294-6** Locale = `navigator.language`, overridable via `setLocale`,
   persisted at `axia:locale`. Default Korean.
 - **L-294-7** Migration is batched and additive; an unmigrated string keeps
