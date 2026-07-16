@@ -6,6 +6,7 @@
  */
 
 import { Viewport, ViewMode } from '../viewport/Viewport';
+import { t } from '../i18n';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { vcbTools } from './VCB';
 import { Toast } from './Toast';
@@ -111,7 +112,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         nameInput.focus();
         nameInput.select();
       } else {
-        Toast.info('XIA가 선택되지 않았습니다');
+        Toast.info(t('XIA가 선택되지 않았습니다'));
       }
       return;
     }
@@ -123,7 +124,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.gridVisible;
       viewport.setGridVisible(next);
       document.getElementById('sb-fkey-grid')?.classList.toggle('on', next);
-      Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
       return;
     }
 
@@ -146,7 +147,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.edgeVisible;
       viewport.setEdgeStyle({ visible: next });
       document.getElementById('sb-fkey-edge')?.classList.toggle('on', next);
-      Toast.info(`엣지 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '엣지 표시' : '엣지 숨김'));
       return;
     }
 
@@ -157,7 +158,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.axisVisible;
       viewport.setAxisVisible(next);
       document.getElementById('sb-fkey-axis')?.classList.toggle('on', next);
-      Toast.info(`축 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '축 표시' : '축 숨김'));
       return;
     }
 
@@ -189,7 +190,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const s = viewport.getStyleSettings();
       const next = !s.gridVisible;
       viewport.setGridVisible(next);
-      Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
       return;
     }
 
@@ -219,7 +220,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       }
       // Visible feedback (previously written to the hidden legacy #stat-osnap
       // node → invisible; the K inference-lock had no visible feedback).
-      Toast.info(toolManager.snap.hasLockedInference() ? '🔒 추론 잠금' : '추론 잠금 해제');
+      Toast.info(t(toolManager.snap.hasLockedInference() ? '🔒 추론 잠금' : '추론 잠금 해제'));
       return;
     }
 
@@ -321,9 +322,9 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       e.preventDefault();
       if (toolManager.hasPinnedPlane()) {
         toolManager.resetDrawingPlane();
-        Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
+        Toast.info(t('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면'), 2500);
       } else {
-        Toast.info('이미 기본 평면 (빈 공간 = 바닥)', 1500);
+        Toast.info(t('이미 기본 평면 (빈 공간 = 바닥)'), 1500);
       }
       return;
     }
@@ -485,7 +486,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       // ADR-270 §F amendment 3 — 🏠 도 드로잉 평면을 기본(z=0)으로 복귀.
       const hadPlane = toolManager.hasPinnedPlane();
       toolManager.resetDrawingPlane();
-      if (hadPlane) Toast.info('뷰 원점 · 기본 평면(z=0) 복귀', 1800);
+      if (hadPlane) Toast.info(t('뷰 원점 · 기본 평면(z=0) 복귀'), 1800);
     });
     // Draggable (reposition + persist). A real drag suppresses the trailing
     // click so it doesn't also reset the camera; a plain click still resets.

@@ -1132,6 +1132,108 @@ export const EN: Record<string, string> = {
   '늘이기 실패 (경계에 닿지 않거나 자유 와이어 엣지가 아님)':
     'Could not extend that (it does not reach the boundary, or is not a free wire edge)',
 
+  // ══════════════════════════════════════════════════════════════════════
+  // batch 6 — what a menu or right-click action says back.
+  //
+  // The 표시/숨김 toggles are split into whole sentences here too: word order
+  // is not universal, and '그리드 {state}' cannot be translated.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── MenuBar ──
+  '현재 작업을 초기화하시겠습니까?': 'Discard the current work and start over?',
+  'DXF 내보내기에 실패했습니다': 'Could not export the DXF',
+  'OBJ 내보내기에 실패했습니다': 'Could not export the OBJ',
+  'glTF 내보내기에 실패했습니다': 'Could not export the glTF',
+  'STL 내보내기에 실패했습니다': 'Could not export the STL',
+  '유효한 숫자를 입력해주세요.': 'Please enter a valid number.',
+  '주변광 차폐 켜짐': 'Ambient occlusion on',
+  '주변광 차폐 꺼짐': 'Ambient occlusion off',
+  '털 쉐이더 켜짐 (24 shell, 드로우콜 증가 주의)':
+    'Fur shader on (24 shells — watch the draw calls)',
+  '털 쉐이더 꺼짐': 'Fur shader off',
+  '참조 이미지 불러옴 — Shift+휠로 크기, 드래그로 이동':
+    'Reference image loaded — Shift+wheel to resize, drag to move',
+  'Capability Explorer 를 사용할 수 없습니다.': 'The Capability Explorer is not available.',
+  'Invariant Verifier 를 사용할 수 없습니다.': 'The Invariant Verifier is not available.',
+  'Audit Log Viewer 를 사용할 수 없습니다.': 'The Audit Log Viewer is not available.',
+  'Analytic Hover Overlay 를 사용할 수 없습니다.': 'The Analytic Hover Overlay is not available.',
+  '컴포넌트 패널을 사용할 수 없습니다.': 'The components panel is not available.',
+  '구속 조건 패널을 사용할 수 없습니다.': 'The constraints panel is not available.',
+  'XIA 인스펙터를 사용할 수 없습니다.': 'The XIA inspector is not available.',
+  '재질 편집은 XIA 인스펙터에서 수행하세요.': 'Edit materials in the XIA inspector.',
+  '간섭 없음 ✓': 'No clashes ✓',
+  '간섭 표시 해제': 'Clash display cleared',
+  '텍스처 업로드 실패: ': 'Texture upload failed: ',
+  '섹션 평면 해제됨': 'Section plane cleared',
+  'AXiA 3D v0.1.0\n\n경량 3D 모델링 프로그램\nXIA Geometry Engine (Rust/WASM)':
+    'AXiA 3D v0.1.0\n\nA lightweight 3D modeller\nXIA Geometry Engine (Rust/WASM)',
+
+  // ── ContextMenu ──
+  'Annulus: 정확히 2개의 면을 선택해야 합니다': 'Annulus: select exactly 2 faces',
+  'Annulus 생성 완료': 'Annulus created',
+  'T-junction 없음 (mesh 정상)': 'No T-junctions — the mesh is clean',
+  'Coplanar 정리 대상 없음 (mesh 정상)': 'Nothing coplanar to clean up — the mesh is clean',
+  '작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면':
+    'Work plane reset — empty space draws on the ground (z=0), a face draws on that face',
+  '기본 평면으로 복귀': 'Back to the default plane',
+  'Connected Inner Merge: container + ≥1 inner (총 ≥2 face) 선택 필요':
+    'Connected inner merge: select a container plus at least 1 inner face (2 or more in total)',
+
+  // ── BooleanHandler ──
+  '모델과 교차: 먼저 면을 선택하세요': 'Intersect with model: select a face first',
+  '알 수 없는 오류': 'Unknown error',
+  '(상세 없음)': '(no details)',
+  '명시 그룹': 'explicit groups',
+  '자동 분할': 'auto-split',
+  'Boolean 연산 실패: WASM 엔진이 준비되지 않았습니다':
+    'Boolean failed: the engine is not ready',
+  ' · 곡면 보존됨 (NURBS surface)': ' · curved surfaces preserved (NURBS)',
+
+  // ── MergeActions ──
+  // These are diagnostics: they say what failed AND what to try. The English
+  // keeps both halves — dropping the "try this" is what makes an error useless.
+  '통합하려면 2개 이상의 면 또는 1개의 엣지를 선택하세요':
+    'To merge, select 2 or more faces, or 1 edge',
+  '재질 경계 존중 모드: 같은 재질 면이 2개 이상 필요합니다':
+    'Respecting material boundaries: 2 or more faces of the SAME material are needed',
+  '통합할 수 있는 면이 없습니다.': 'There are no faces that can be merged.',
+  '• 선택한 면들이 엣지를 공유하지 않습니다': '• The selected faces do not share an edge',
+  '  (엣지가 공유되려면 snap으로 정확히 정점 매칭 필요)':
+    '  (a shared edge needs vertices matched exactly, via snap)',
+  '  → "🧲 기하 머지" 컨텍스트 메뉴로 폴리곤 재구성 시도 가능':
+    '  → try "🧲 Geometric merge" from the right-click menu, which rebuilds the polygon',
+  ' (mergetol 2 명령으로 허용치 확장 가능)':
+    ' (the mergetol 2 command widens the tolerance)',
+  '  → "강제 머지"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능':
+    '  → "Force merge" (ADR-008 Axiom 9) joins them non-planar, hiding the interior edge',
+  ' · 재질별': ' · by material',
+  '통합할 수 있는 면이 없습니다.\n• 엣지를 공유하는 coplanar 면이 있어야 합니다\n• 두 면이 한 엣지만 공유해야 합니다 (C-slit 형태 불가)':
+    'There are no faces that can be merged.\n• They must be coplanar and share an edge\n• They must share exactly ONE edge (a C-slit shape will not work)',
+  '기하 머지는 2개 이상의 면을 선택해야 합니다. 현재: ':
+    'Geometric merge needs 2 or more faces. Selected: ',
+  '개': '',
+  '기하 머지 실패 — 두 면이 같은 평면 & 경계가 겹치는지 확인 (tol ':
+    'Geometric merge failed — check the faces are coplanar and their boundaries overlap (tol ',
+  '강제 머지는 2개 이상의 면을 선택해야 합니다': 'Force merge needs 2 or more faces',
+  '강제 머지 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.':
+    'Force merge failed — the selected faces do not share an edge. Select adjacent faces.',
+  '선택된 면이 속한 XIA를 찾을 수 없습니다. 먼저 XIA의 면을 하나 선택하세요.':
+    'Cannot find the XIA that face belongs to. Select a face of the XIA first.',
+  '이 XIA에는 병합할 면이 2개 이상 없습니다': 'This XIA does not have 2 or more faces to merge',
+  '통합 실패': 'Merge failed',
+  '정확히 2개의 면을 선택하세요 (바깥쪽 + 안쪽) · 참고: 새로 그린 내부 RECT는 자동으로 구멍이 됩니다':
+    'Select exactly 2 faces (outer + inner) · Note: a new inner rectangle becomes a hole automatically',
+  '면 경계 추출 실패': 'Could not read the face boundary',
+  '내부 면을 구멍으로 병합 완료': 'The inner face is now a hole',
+  '병합 실패 — 두 면이 같은 평면이고 하나가 다른 하나에 완전히 포함돼야 합니다':
+    'Merge failed — the faces must be coplanar, with one fully inside the other',
+
+  // ── KeyboardShortcuts ──
+  '뷰 원점 · 기본 평면(z=0) 복귀': 'View reset · back to the default plane (z=0)',
+  '🔒 추론 잠금': '🔒 Inference locked',
+  '추론 잠금 해제': 'Inference unlocked',
+  '이미 기본 평면 (빈 공간 = 바닥)': 'Already on the default plane (empty space = ground)',
+
   // ── help ──
   '도움말': 'Help',
   '단축키 보기': 'Keyboard shortcuts',

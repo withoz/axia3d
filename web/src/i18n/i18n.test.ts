@@ -142,8 +142,34 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   { file: 'src/tools/OffsetTool.ts', minLiteralKeys: 2 },
   { file: 'src/tools/EraseTool.ts', minLiteralKeys: 1 },
   { file: 'src/tools/DrawCircleTool.ts', minLiteralKeys: 1 },
+  // batch 6 — what a menu or right-click action says back
+  { file: 'src/ui/MenuBar.ts', minLiteralKeys: 13 },
+  { file: 'src/ui/ContextMenu.ts', minLiteralKeys: 7 },
+  { file: 'src/ui/BooleanHandler.ts', minLiteralKeys: 2 },
+  { file: 'src/tools/actions/MergeActions.ts', minLiteralKeys: 9 },
+  { file: 'src/ui/KeyboardShortcuts.ts', minLiteralKeys: 4 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
+
+/**
+ * The source spells `\n`; the string the code passes holds a real newline. So a
+ * guard that reads source text has to convert before comparing — the same rule
+ * as L-294-12 for `&#9633;` → `□`: **the key is what the runtime holds, not what
+ * the source spells.** Without this, every multi-line string looks untranslated
+ * AND its entry looks orphaned, from one cause.
+ */
+function asRuntimeString(sourceLiteral: string): string {
+  return sourceLiteral
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, '\\');
+}
+
+/** The inverse — for searching source text for a key that holds real newlines. */
+function asSourceLiteral(runtime: string): string {
+  return runtime.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+}
 
 /**
  * Files whose Korean IS a key but which never call t() — the panels translate
@@ -275,7 +301,8 @@ describe('ADR-294 — en.ts hygiene', () => {
     const ts = [...MIGRATED_PATHS, ...TRANSLATION_SOURCES]
       .map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
     const src = [...ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
-    const missing = Object.keys(EN).filter((k) => !src.includes(k));
+    const missing = Object.keys(EN)
+      .filter((k) => !src.includes(k) && !src.includes(asSourceLiteral(k)));
     expect(missing, 'en.ts entries whose Korean no longer exists in the source')
       .toEqual([]);
   });
@@ -305,7 +332,7 @@ describe('ADR-294 — en.ts hygiene', () => {
       // is written for whoever is reading the code, not for a user.
       if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
       for (const m of line.matchAll(/'([^']*)'/g)) {
-        const v = m[1];
+        const v = asRuntimeString(m[1]);
         if (/[가-힣]/.test(v) && !(v in EN) && !NOT_KEYS.has(v)) missing.push(v);
       }
     }
@@ -319,7 +346,7 @@ describe('ADR-294 — en.ts hygiene', () => {
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const keys = [...src.matchAll(/\bt\(\s*'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]);
     expect(keys.length, `${file} must actually be wrapped`).toBeGreaterThanOrEqual(minLiteralKeys);
-    const untranslated = keys.filter((k) => /[가-힣]/.test(k) && !(k in EN));
+    const untranslated = keys.map(asRuntimeString).filter((k) => /[가-힣]/.test(k) && !(k in EN));
     expect(untranslated, `wrapped in ${file} but missing from en.ts`).toEqual([]);
   });
 

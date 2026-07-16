@@ -10,6 +10,7 @@ import {
   BooleanDispatchDcelMultiResult,
 } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
+import { t } from '../i18n';
 import { Toast } from './Toast';
 import { debugLog } from '../utils/debug';
 
@@ -54,7 +55,7 @@ export function intersectWithModel(deps: BooleanHandlerDeps): void {
   const { bridge, toolManager } = deps;
   const faceIds = toolManager.selection.getSelectedFaces();
   if (!faceIds.length) {
-    Toast.info('모델과 교차: 먼저 면을 선택하세요');
+    Toast.info(t('모델과 교차: 먼저 면을 선택하세요'));
     return;
   }
   const result = bridge.intersectWithModel(faceIds);
@@ -378,7 +379,7 @@ export function startBooleanOp(
 
   const result = bridge.booleanOp(facesA, facesB, op);
   if (!result) {
-    Toast.error('Boolean 연산 실패: WASM 엔진이 준비되지 않았습니다', 4000);
+    Toast.error(t('Boolean 연산 실패: WASM 엔진이 준비되지 않았습니다'), 4000);
     return;
   }
 

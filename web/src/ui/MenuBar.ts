@@ -7,6 +7,8 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
+import { toggleShortcutHelp } from './ShortcutHelpModal';
 import { Viewport, ViewMode } from '../viewport/Viewport';
 import { WasmBridge } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
@@ -202,7 +204,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
     switch (act) {
       // ── 파일 ──
       case 'file-new':
-        if (confirm('현재 작업을 초기화하시겠습니까?')) {
+        if (confirm(t('현재 작업을 초기화하시겠습니까?'))) {
           location.reload();
         }
         break;
@@ -277,7 +279,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
           .then(() => debugLog('[MenuBar] DXF 내보내기 완료'))
           .catch((err) => {
             console.error('[MenuBar] DXF 내보내기 실패:', err);
-            alert('DXF 내보내기에 실패했습니다');
+            alert(t('DXF 내보내기에 실패했습니다'));
           });
         break;
       }
@@ -285,21 +287,21 @@ export function initMenuBar(deps: MenuBarDeps): void {
         const objName = timestampedName('obj');
         lazyExportObj(viewport.scene, objName)
           .then(() => debugLog('[MenuBar] OBJ 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] OBJ 내보내기 실패:', err); alert('OBJ 내보내기에 실패했습니다'); });
+          .catch((err) => { console.error('[MenuBar] OBJ 내보내기 실패:', err); alert(t('OBJ 내보내기에 실패했습니다')); });
         break;
       }
       case 'export-gltf': {
         const glbName = timestampedName('glb');
         lazyExportGltf(viewport.scene, glbName)
           .then(() => debugLog('[MenuBar] glTF 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] glTF 내보내기 실패:', err); alert('glTF 내보내기에 실패했습니다'); });
+          .catch((err) => { console.error('[MenuBar] glTF 내보내기 실패:', err); alert(t('glTF 내보내기에 실패했습니다')); });
         break;
       }
       case 'export-stl': {
         const stlName = timestampedName('stl');
         lazyExportStl(viewport.scene, stlName)
           .then(() => debugLog('[MenuBar] STL 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] STL 내보내기 실패:', err); alert('STL 내보내기에 실패했습니다'); });
+          .catch((err) => { console.error('[MenuBar] STL 내보내기 실패:', err); alert(t('STL 내보내기에 실패했습니다')); });
         break;
       }
 
@@ -330,14 +332,14 @@ export function initMenuBar(deps: MenuBarDeps): void {
         const s = viewport.getStyleSettings();
         const next = !s.gridVisible;
         viewport.setGridVisible(next);
-        Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+        Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
         break;
       }
       case 'view-axis': {
         const s = viewport.getStyleSettings();
         const next = !s.axisVisible;
         viewport.setAxisVisible(next);
-        Toast.info(`축 ${next ? '표시' : '숨김'}`);
+        Toast.info(t(next ? '축 표시' : '축 숨김'));
         break;
       }
       case 'measure-selection':
@@ -347,13 +349,13 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'view-ssao': {
         const next = !viewport.isSsaoEnabled();
         viewport.setSsaoEnabled(next);
-        Toast.info(`주변광 차폐 ${next ? '켜짐' : '꺼짐'}`);
+        Toast.info(t(next ? '주변광 차폐 켜짐' : '주변광 차폐 꺼짐'));
         break;
       }
       case 'view-fur': {
         const next = !viewport.isFurEnabled();
         viewport.setFurEnabled(next);
-        Toast.info(`털 쉐이더 ${next ? '켜짐 (24 shell, 드로우콜 증가 주의)' : '꺼짐'}`);
+        Toast.info(t(next ? '털 쉐이더 켜짐 (24 shell, 드로우콜 증가 주의)' : '털 쉐이더 꺼짐'));
         break;
       }
       // case 'view-shadow-pro': removed 2026-05-16 — shadow system deferred to ADR-106
@@ -367,7 +369,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // HTML <img> overlay 방식: 3D 씬과 독립, 카메라 이동해도 고정.
         void import('./ReferenceImage').then(({ promptAndAddReferenceImage }) => {
           void promptAndAddReferenceImage(viewport.container).then(ref => {
-            if (ref) Toast.info('참조 이미지 불러옴 — Shift+휠로 크기, 드래그로 이동', 3500);
+            if (ref) Toast.info(t('참조 이미지 불러옴 — Shift+휠로 크기, 드래그로 이동'), 3500);
           });
         });
         break;
@@ -498,7 +500,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // discoverability surface). 단축키 보류, 메뉴만 (D-C=(b)).
         const cep = (window as unknown as { __axia_capabilityExplorer?: { toggle(): void } }).__axia_capabilityExplorer;
         if (cep?.toggle) cep.toggle();
-        else Toast.warning('Capability Explorer 를 사용할 수 없습니다.');
+        else Toast.warning(t('Capability Explorer 를 사용할 수 없습니다.'));
         break;
       }
       case 'view-invariant-verifier': {
@@ -506,7 +508,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // (ADR-007 검증 surface). 단축키 보류, 메뉴만.
         const ivp = (window as unknown as { __axia_invariantVerifier?: { toggle(): void } }).__axia_invariantVerifier;
         if (ivp?.toggle) ivp.toggle();
-        else Toast.warning('Invariant Verifier 를 사용할 수 없습니다.');
+        else Toast.warning(t('Invariant Verifier 를 사용할 수 없습니다.'));
         break;
       }
       case 'view-audit-log': {
@@ -514,7 +516,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // (web-side action audit, P26.7 subset).
         const alp = (window as unknown as { __axia_auditLogViewer?: { toggle(): void } }).__axia_auditLogViewer;
         if (alp?.toggle) alp.toggle();
-        else Toast.warning('Audit Log Viewer 를 사용할 수 없습니다.');
+        else Toast.warning(t('Audit Log Viewer 를 사용할 수 없습니다.'));
         break;
       }
       case 'view-analytic-hover-overlay': {
@@ -526,7 +528,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         if (aho) {
           aho.setEnabled(!aho.isEnabled());
         } else {
-          Toast.warning('Analytic Hover Overlay 를 사용할 수 없습니다.');
+          Toast.warning(t('Analytic Hover Overlay 를 사용할 수 없습니다.'));
         }
         break;
       }
@@ -539,14 +541,14 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // ComponentPanel — `Shift+G` 단축키와 동일 (KeyboardShortcuts 와 정합)
         const cp = (window as unknown as { __axia_componentPanel?: { toggle(): void } }).__axia_componentPanel;
         if (cp?.toggle) cp.toggle();
-        else Toast.warning('컴포넌트 패널을 사용할 수 없습니다.');
+        else Toast.warning(t('컴포넌트 패널을 사용할 수 없습니다.'));
         break;
       }
       case 'view-constraints': {
         // ConstraintPanel — `J` 단축키와 동일
         const cp = (window as unknown as { __axia_constraintPanel?: { toggle(): void } }).__axia_constraintPanel;
         if (cp?.toggle) cp.toggle();
-        else Toast.warning('구속 조건 패널을 사용할 수 없습니다.');
+        else Toast.warning(t('구속 조건 패널을 사용할 수 없습니다.'));
         break;
       }
       case 'view-materials': {
@@ -556,16 +558,16 @@ export function initMenuBar(deps: MenuBarDeps): void {
         const xi = (window as unknown as { __axia_xiaInspector?: { toggle(): void } }).__axia_xiaInspector;
         if (xi?.toggle) {
           xi.toggle();
-          Toast.info('재질 편집은 XIA 인스펙터에서 수행하세요.', 3000);
+          Toast.info(t('재질 편집은 XIA 인스펙터에서 수행하세요.'), 3000);
         } else {
-          Toast.warning('XIA 인스펙터를 사용할 수 없습니다.');
+          Toast.warning(t('XIA 인스펙터를 사용할 수 없습니다.'));
         }
         break;
       }
       case 'view-xia-inspector': {
         const xi = (window as unknown as { __axia_xiaInspector?: { toggle(): void } }).__axia_xiaInspector;
         if (xi?.toggle) xi.toggle();
-        else Toast.warning('XIA 인스펙터를 사용할 수 없습니다.');
+        else Toast.warning(t('XIA 인스펙터를 사용할 수 없습니다.'));
         break;
       }
       case 'clash-detect': {
@@ -575,7 +577,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
           const results = cd.detect();
           (window as unknown as { __axia_clash?: typeof cd }).__axia_clash = cd;
           if (results.length === 0) {
-            Toast.info('간섭 없음 ✓', 2500);
+            Toast.info(t('간섭 없음 ✓'), 2500);
           } else {
             const totalVol = results.reduce((s, r) => s + r.volume_mm3, 0);
             Toast.info(
@@ -589,7 +591,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'clash-clear': {
         const cd = (window as unknown as { __axia_clash?: { clear(): void } }).__axia_clash;
         cd?.clear();
-        Toast.info('간섭 표시 해제');
+        Toast.info(t('간섭 표시 해제'));
         break;
       }
       // case 'solar-heatmap' / 'solar-heatmap-off': removed 2026-05-16
@@ -617,7 +619,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         const axis = act.replace('section-', '') as 'x'|'y'|'z'|'off';
         if (axis === 'off') {
           sp.setAxis('off');
-          Toast.info('섹션 평면 해제됨', 2000);
+          Toast.info(t('섹션 평면 해제됨'), 2000);
           break;
         }
         const posStr = prompt(
@@ -626,7 +628,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         );
         if (posStr === null) break;
         const pos = parseFloat(posStr);
-        if (!Number.isFinite(pos)) { alert('유효한 숫자를 입력해주세요.'); break; }
+        if (!Number.isFinite(pos)) { alert(t('유효한 숫자를 입력해주세요.')); break; }
         sp.setAxis(axis);
         sp.setPosition(pos);
         Toast.info(`섹션 ${axis.toUpperCase()}축 @ ${pos}mm 활성`, 2500);
@@ -671,25 +673,16 @@ export function initMenuBar(deps: MenuBarDeps): void {
 
       // ── 도움말 ──
       case 'help-shortcuts':
-        alert(
-          'AXiA 3D 단축키\n\n' +
-          '[ 그리기 ]\n' +
-          'P — 선택 (Select)\nL — 선 (Line)\nShift+L — 폴리선 (Polyline)\nR — 사각형 (Rect)\nG — 다각형 (Polygon)\n' +
-          'C — 원 (Circle)\nA — 호 (Arc)\nShift+F — 자유선 (Freehand)\n\n' +
-          '[ 수정 ]\n' +
-          'V — 돌출/잘라내기 (Extrude/Cut · Volume)\nM — 이동 (Move)\nQ — 회전 (Rotate)\n' +
-          'S — 크기 조정 (Scale)\nO — 오프셋 (Offset)\n\n' +
-          '[ 편집 ]\n' +
-          'Ctrl+G — 그룹\nCtrl+Shift+G — 그룹 해제\n' +
-          'Ctrl+S — 저장\nCtrl+O — 열기\nCtrl+Z — 실행취소\nCtrl+Y — 다시실행\n\n' +
-          '[ 탐색 ]\n' +
-          'H — 원점 복귀\nF3 — 스냅 토글\n' +
-          '→ X축 잠금 / ↑ Y축 잠금 / ← Z축 잠금 / ↓ 해제\n\n' +
-          'Alt+드래그 — 궤도 회전\n중버튼 드래그 — 이동\n스크롤 — 줌'
-        );
+        // Was a hardcoded alert() listing the shortcuts — a second, unmaintained
+        // copy of the F1 sheet, and it had drifted into being WRONG: it told
+        // users "H — 원점 복귀" while the actual binding is 'h': 'sphere'
+        // (KeyboardShortcuts.ts) and the F1 sheet says Sphere. Two sources, one
+        // of them lying. Found while translating it — which is reason enough not
+        // to translate it. The menu now opens the sheet F1 opens.
+        toggleShortcutHelp();
         break;
       case 'help-about':
-        alert('AXiA 3D v0.1.0\n\n경량 3D 모델링 프로그램\nXIA Geometry Engine (Rust/WASM)');
+        alert(t('AXiA 3D v0.1.0\n\n경량 3D 모델링 프로그램\nXIA Geometry Engine (Rust/WASM)'));
         break;
     }
   });

@@ -7,6 +7,7 @@
  */
 
 import { Viewport, ViewMode } from '../viewport/Viewport';
+import { t } from '../i18n';
 import { WasmBridge } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { Toast } from './Toast';
@@ -198,7 +199,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       case 'promote-circles-to-annulus': {
         const faces = toolManager.selection.getSelectedFaces();
         if (faces.length !== 2) {
-          Toast.error('Annulus: 정확히 2개의 면을 선택해야 합니다');
+          Toast.error(t('Annulus: 정확히 2개의 면을 선택해야 합니다'));
           break;
         }
         const [faceA, faceB] = faces;
@@ -218,7 +219,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         if (err) {
           Toast.error(`Annulus 만들기 실패: ${err}`);
         } else {
-          Toast.success('Annulus 생성 완료');
+          Toast.success(t('Annulus 생성 완료'));
           toolManager.selection.clearSelection();
           toolManager.syncMesh();
         }
@@ -244,7 +245,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           break;
         }
         if (reports.length === 0) {
-          Toast.info('T-junction 없음 (mesh 정상)');
+          Toast.info(t('T-junction 없음 (mesh 정상)'));
           break;
         }
         // β-4 MVP: serial heal — re-detect 필요한 경우 사용자가 재호출 가능.
@@ -301,7 +302,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           break;
         }
         if (pairs.length === 0) {
-          Toast.info('Coplanar 정리 대상 없음 (mesh 정상)');
+          Toast.info(t('Coplanar 정리 대상 없음 (mesh 정상)'));
           break;
         }
         try {
@@ -339,12 +340,12 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         };
         if (typeof tm.resetDrawingPlane === 'function') {
           tm.resetDrawingPlane();
-          Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
+          Toast.info(t('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면'), 2500);
         } else {
           // Older builds: best-effort partial reset.
           tm.unlockPlane?.();
           tm.clearLastDrawnPlane?.();
-          Toast.info('기본 평면으로 복귀', 2000);
+          Toast.info(t('기본 평면으로 복귀'), 2000);
         }
         break;
       }
@@ -363,7 +364,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       case 'enforce-p7-canonical': {
         const faces = toolManager.selection.getSelectedFaces();
         if (faces.length < 2) {
-          Toast.error('Connected Inner Merge: container + ≥1 inner (총 ≥2 face) 선택 필요');
+          Toast.error(t('Connected Inner Merge: container + ≥1 inner (총 ≥2 face) 선택 필요'));
           break;
         }
         // β-4 MVP: first selected = container, 나머지 = inners

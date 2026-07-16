@@ -19,6 +19,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../../i18n';
 import { WasmBridge } from '../../bridge/WasmBridge';
 import { SelectionManager } from '../SelectionManager';
 import { Toast } from '../../ui/Toast';
@@ -62,7 +63,7 @@ export function mergeFaces(ctx: MergeActionContext): void {
   }
 
   if (faces.length < 2) {
-    Toast.warning('통합하려면 2개 이상의 면 또는 1개의 엣지를 선택하세요', 3000);
+    Toast.warning(t('통합하려면 2개 이상의 면 또는 1개의 엣지를 선택하세요'), 3000);
     return;
   }
 
@@ -76,7 +77,7 @@ export function mergeFaces(ctx: MergeActionContext): void {
       if (ids.length > bestSize) { bestMat = mat; bestSize = ids.length; }
     }
     if (bestSize < 2) {
-      Toast.warning('재질 경계 존중 모드: 같은 재질 면이 2개 이상 필요합니다', 3000);
+      Toast.warning(t('재질 경계 존중 모드: 같은 재질 면이 2개 이상 필요합니다'), 3000);
       return;
     }
     workingFaces = groups.get(bestMat)!;
@@ -148,7 +149,7 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
   const faces = ctx.selection.getSelectedFaces();
   debugLog('[merge-faces-geometric] selected faces:', faces);
   if (faces.length < 2) {
-    Toast.warning('기하 머지은 2개 이상의 면을 선택해야 합니다. 현재: ' + faces.length + '개', 3500);
+    Toast.warning(t('기하 머지는 2개 이상의 면을 선택해야 합니다. 현재: ') + faces.length + '개', 3500);
     return;
   }
   const tol = Math.max(getMergeTolerance(), 2.0);
@@ -195,7 +196,7 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
 export function mergeFacesForce(ctx: MergeActionContext): void {
   const faces = ctx.selection.getSelectedFaces();
   if (faces.length < 2) {
-    Toast.warning('강제 머지은 2개 이상의 면을 선택해야 합니다', 3000);
+    Toast.warning(t('강제 머지는 2개 이상의 면을 선택해야 합니다'), 3000);
     return;
   }
   const softened = ctx.bridge.softenInternalEdges(faces);
@@ -204,7 +205,7 @@ export function mergeFacesForce(ctx: MergeActionContext): void {
     Toast.info(`${faces.length}개 면을 하나의 폴리곤 서피스로 결합 (${softened}개 내부 엣지 숨김)`, 3000);
     debugLog('[Action] merge-faces-force:', softened);
   } else {
-    Toast.warning('강제 머지 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.', 3500);
+    Toast.warning(t('강제 머지 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.'), 3500);
   }
 }
 
@@ -215,12 +216,12 @@ export function mergeXiaCoplanar(ctx: MergeActionContext): void {
     xiaId = ctx.bridge.getXiaForFace(selectedFaces[0]);
   }
   if (xiaId < 0 || xiaId === 0xffffffff) {
-    Toast.warning('선택된 면이 속한 XIA를 찾을 수 없습니다. 먼저 XIA의 면을 하나 선택하세요.', 3000);
+    Toast.warning(t('선택된 면이 속한 XIA를 찾을 수 없습니다. 먼저 XIA의 면을 하나 선택하세요.'), 3000);
     return;
   }
   const xiaFaceIds = ctx.bridge.getXiaFaceIds(xiaId);
   if (xiaFaceIds.length < 2) {
-    Toast.info('이 XIA에는 병합할 면이 2개 이상 없습니다', 2500);
+    Toast.info(t('이 XIA에는 병합할 면이 2개 이상 없습니다'), 2500);
     return;
   }
   const tol = getMergeTolerance();
@@ -260,7 +261,7 @@ export function mergeAsHole(ctx: MergeActionContext): void {
   const v0 = ctx.extractFaceBoundary(sel[0]);
   const v1 = ctx.extractFaceBoundary(sel[1]);
   if (v0.length < 3 || v1.length < 3) {
-    Toast.warning('면 경계 추출 실패', 2500);
+    Toast.warning(t('면 경계 추출 실패'), 2500);
     return;
   }
   const polyArea = (verts: THREE.Vector3[]): number => {
@@ -280,7 +281,7 @@ export function mergeAsHole(ctx: MergeActionContext): void {
   if (result >= 0) {
     ctx.syncMesh();
     ctx.selection.clearSelection();
-    Toast.info('내부 면을 구멍으로 병합 완료', 2500);
+    Toast.info(t('내부 면을 구멍으로 병합 완료'), 2500);
   } else {
     Toast.warning(
       ctx.bridge.lastError() ||
