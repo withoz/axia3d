@@ -524,7 +524,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-chamfer',
-    label: '꼭짓점 모따기',
+    label: '꼭짓점 챔퍼',
     description: 'Vertex chamfer tool — bevel a 3-valence corner.',
     tier: 2,
     surfaces: ['menu'],
@@ -569,7 +569,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-fillet',
-    label: '모깎기',
+    label: '필렛',
     description: 'Fillet tool — round an edge by a radius.',
     tier: 2,
     surfaces: ['menu'],
@@ -578,7 +578,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-corner-fillet',
-    label: '코너 둥글리기',
+    label: '코너 필렛',
     description: '2D corner fillet — round a 2-valence wire corner by radius.',
     tier: 2,
     surfaces: ['menu'],
@@ -587,7 +587,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-corner-chamfer',
-    label: '코너 모따기',
+    label: '코너 챔퍼',
     description: '2D corner chamfer — bevel a 2-valence wire corner by distance.',
     tier: 2,
     surfaces: ['menu'],
@@ -596,7 +596,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-join',
-    label: '선 병합',
+    label: '조인',
     description: 'Join collinear edges at a 2-valence straight corner into one.',
     tier: 2,
     surfaces: ['menu'],
@@ -673,7 +673,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-recess',
-    label: '홈파기',
+    label: '포켓',
     description: 'Recess tool — inset a face then push it inward into a pocket.',
     tier: 2,
     surfaces: ['menu'],
@@ -690,7 +690,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-trim',
-    label: '자르기',
+    label: '트림',
     description: 'Trim — click a wire segment to delete it (deleteEdgeCascade), cutting the line back to its nearest intersections.',
     tier: 2,
     surfaces: ['menu'],
@@ -700,7 +700,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'tool-extend',
-    label: '연장',
+    label: '익스텐드',
     description: "Extend — move a target edge's endpoint to a boundary edge's supporting line.",
     tier: 2,
     surfaces: ['menu'],
@@ -728,7 +728,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   // ─── Edge ops ────────────────────────────────────────────────────
   {
     id: 'fillet-edge',
-    label: '엣지 모깎기',
+    label: '엣지 필렛',
     description: 'Round a manifold edge with a circular arc fillet.',
     tier: 2,
     surfaces: ['menu', 'context'],
@@ -741,7 +741,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'chamfer-edge',
-    label: '엣지 모따기',
+    label: '엣지 챔퍼',
     description: 'Chamfer (1-segment fillet) on a manifold edge.',
     tier: 2,
     surfaces: ['menu', 'context'],
@@ -772,7 +772,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'thicken-faces',
-    label: '두께 부여',
+    label: '셸',
     description: 'Shell operation — extrude faces uniformly.',
     tier: 2,
     surfaces: ['menu', 'context'],
@@ -798,7 +798,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'subdivide',
-    label: '매끄럽게 분할',
+    label: '서브디비전',
     description: 'Catmull-Clark subdivision on full mesh.',
     tier: 2,
     surfaces: ['menu'],
@@ -834,7 +834,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   // ─── Merge variants ──────────────────────────────────────────────
   {
     id: 'merge-faces',
-    label: '면 통합',
+    label: '면 머지',
     description: 'Merge coplanar adjacent faces (default tolerance).',
     tier: 2,
     surfaces: ['menu', 'keyboard', 'context'],
@@ -843,7 +843,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'merge-faces-geometric',
-    label: '기하 병합',
+    label: '기하 머지',
     description: 'Geometric coplanar merge with size-mismatch tolerance.',
     tier: 2,
     surfaces: ['context-only'],
@@ -854,7 +854,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'merge-faces-force',
-    label: '강제 통합',
+    label: '강제 머지',
     description: 'Force merge unrelated faces by softening interior edges.',
     tier: 2,
     surfaces: ['context-only'],

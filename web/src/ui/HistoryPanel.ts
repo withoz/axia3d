@@ -58,7 +58,7 @@ export class HistoryPanel {
       </div>
       <div class="hp-hint">
         파라미터 기반 작업만 기록됩니다. 항목을 클릭하면 같은 연산을 새 값으로
-        재실행합니다. (예: 모깎기 반경만 변경해 재적용)
+        재실행합니다. (예: 필렛 반경만 변경해 재적용)
       </div>
       <div class="hp-list"></div>
       <div class="hp-empty">기록된 작업이 없습니다.</div>
@@ -166,8 +166,8 @@ export class HistoryPanel {
 
   private promptLabelFor(kind: OperationKind): string {
     switch (kind) {
-      case 'fillet-edge':    return '모깎기 반경 (mm) — 현재 선택된 엣지에 적용:';
-      case 'chamfer-edge':   return '모따기 거리 (mm) — 현재 선택된 엣지에 적용:';
+      case 'fillet-edge':    return '필렛 반경 (mm) — 현재 선택된 엣지에 적용:';
+      case 'chamfer-edge':   return '챔퍼 거리 (mm) — 현재 선택된 엣지에 적용:';
       case 'thicken-faces':  return '두께 (mm) — 현재 선택된 면에 적용:';
       case 'array-linear':   return '선형 배열 "N, dx, dy, dz":';
       case 'array-radial':   return '원형 배열 "N, axis(x|y|z), 총각도°":';
@@ -181,9 +181,9 @@ export class HistoryPanel {
 
   private displayKind(kind: OperationKind): string {
     const map: Record<OperationKind, string> = {
-      'fillet-edge': '모깎기',
-      'chamfer-edge': '모따기',
-      'thicken-faces': '두께 부여',
+      'fillet-edge': '필렛',
+      'chamfer-edge': '챔퍼',
+      'thicken-faces': '셸',
       'array-linear': '선형 배열',
       'array-radial': '원형 배열',
       'subdivide': 'Catmull-Clark 분할',

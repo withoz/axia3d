@@ -84,10 +84,10 @@ export class CornerFilletTool implements ITool {
     if (e >= 0) {
       try { localStorage.setItem(LS_KEY, String(radius)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`코너 둥글리기 완료 (반지름 ${radius}mm)`, 2000);
+      Toast.info(`코너 필렛 완료 (반지름 ${radius}mm)`, 2000);
       debugLog(`[CornerFillet] vertex ${this.vertId} radius=${radius} → edge ${e}`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '둥글리기 실패 (2-valence 코너만 가능 · 반지름 확인)');
+      Toast.fromBridgeError(this.ctx.bridge, '필렛 실패 (2-valence 코너만 가능 · 반지름 확인)');
     }
     this.cleanup();
   }

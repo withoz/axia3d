@@ -222,7 +222,7 @@ export class EraseTool implements ITool {
       }
       if (total > 1 || mergedCount > 0 || synthesizedCount > 0) {
         const parts: string[] = [];
-        if (mergedCount > 0) parts.push(`${mergedCount}개 면 통합`);
+        if (mergedCount > 0) parts.push(`${mergedCount}개 면 머지`);
         if (synthesizedCount > 0) parts.push(`${synthesizedCount}개 면 자동 생성`);
         if (cascadedFaces > 0) parts.push(`${cascadedFaces}개 면 삭제`);
         if (cascadedEdges > 0) parts.push(`${cascadedEdges}개 엣지 삭제`);

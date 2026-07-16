@@ -634,9 +634,9 @@ export class ToolManager {
   private static readonly ACTION_DISPLAY: Record<string, string> = {
     'delete': '삭제',
     'flip-faces': '면 반전',
-    'merge-faces': '면 통합',
+    'merge-faces': '면 머지',
     'merge-xia-coplanar': 'XIA 내 coplanar 면 일괄 통합',
-    'merge-faces-force': '비평면 강제 통합 (내부 엣지 숨김)',
+    'merge-faces-force': '비평면 강제 머지 (내부 엣지 숨김)',
     'merge-as-hole': '내부 면을 구멍으로 합치기',
     'synthesize-faces': '자유 엣지 → 면 합성',
     'redo': '다시 실행',
@@ -655,11 +655,11 @@ export class ToolManager {
     'revolve-y': '선택 엣지를 Y축으로 회전 (Revolve)',
     'revolve-z': '선택 엣지를 Z축으로 회전 (Revolve)',
     'subdivide': '전체 메시 Catmull-Clark 분할',
-    'fillet-edge': '선택 엣지 모깎기 (Fillet)',
-    'chamfer-edge': '선택 엣지 모따기 (Chamfer)',
+    'fillet-edge': '선택 엣지 필렛 (Fillet)',
+    'chamfer-edge': '선택 엣지 챔퍼 (Chamfer)',
     'array-linear': '선택을 선형 배열로 복제',
     'array-radial': '선택을 원형 배열로 복제',
-    'thicken-faces': '선택 면에 두께 부여 (Shell/Thicken)',
+    'thicken-faces': '선택 면에 셸 (Shell/Thicken)',
     'loft-selected-faces': '선택 면 2개를 로프트로 블렌드 (Loft)',
     'revolve-face-solid': '선택 면을 축 기준 각도만큼 회전 (Revolve · 부분/360°)',
     'solidify': '열린 쉘을 닫힌 솔리드로 변환 (Solidify)',
@@ -1242,7 +1242,7 @@ export class ToolManager {
         }
         debugLog(`[Action] thicken-faces: ${success}/${selFaces.length}, d=${distance}mm`);
       } else {
-        Toast.error(`두께 부여 실패: ${firstFailure || '모든 면에서 push_pull 실패'}`, 4000);
+        Toast.error(`셸 실패: ${firstFailure || '모든 면에서 push_pull 실패'}`, 4000);
       }
     } else if (action === 'loft-selected-faces') {
       // ADR-247 (Phase 3 E2) — Loft between exactly TWO selected profile
@@ -1761,11 +1761,11 @@ export class ToolManager {
       // code path unified.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 1) {
-        Toast.warning('모따기할 엣지 1개를 먼저 선택하세요', 2500);
+        Toast.warning('챔퍼할 엣지 1개를 먼저 선택하세요', 2500);
         return;
       }
       const lastDist = Number(localStorage.getItem('axia:chamfer:distance') ?? '50');
-      const input = window.prompt('모따기 거리 (mm):', String(lastDist));
+      const input = window.prompt('챔퍼 거리 (mm):', String(lastDist));
       if (input == null) return;
       const distance = parseFloat(input);
       if (!Number.isFinite(distance) || distance <= 0) {
@@ -1777,12 +1777,12 @@ export class ToolManager {
       if (n >= 0) {
         this.syncMesh();
         this.selection.clearSelection();
-        getOperationLog().record('chamfer-edge', `모따기 ${distance}mm`, String(distance),
+        getOperationLog().record('chamfer-edge', `챔퍼 ${distance}mm`, String(distance),
           { inputs: edges.slice(0, 1) });
-        Toast.info(`모따기 완료 — 거리 ${distance}mm`, 2500);
+        Toast.info(`챔퍼 완료 — 거리 ${distance}mm`, 2500);
         debugLog(`[Action] chamfer-edge: distance=${distance}, n=${n}`);
       } else {
-        Toast.fromBridgeError(this.bridge, '모따기 실패');
+        Toast.fromBridgeError(this.bridge, '챔퍼 실패');
       }
     } else if (action === 'fillet-edge') {
       // 선택된 엣지들을 radius 반경으로 모깎기.
@@ -1796,12 +1796,12 @@ export class ToolManager {
       // localStorage `axia:fillet:radius`로 마지막 반경 기본값, 없으면 50mm.
       const edges = this.selection.getSelectedEdges();
       if (edges.length === 0) {
-        Toast.warning('모깎기할 엣지를 1개 이상 선택하세요', 2500);
+        Toast.warning('필렛할 엣지를 1개 이상 선택하세요', 2500);
         return;
       }
       const lastRadius = Number(localStorage.getItem('axia:fillet:radius') ?? '50');
       const input = window.prompt(
-        `모깎기 반경 (mm) — 선택 ${edges.length}개 엣지:`,
+        `필렛 반경 (mm) — 선택 ${edges.length}개 엣지:`,
         String(lastRadius),
       );
       if (input == null) return;
@@ -1829,13 +1829,13 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record(
           'fillet-edge',
-          `모깎기 ${radius}mm × ${successEdges}개 엣지`,
+          `필렛 ${radius}mm × ${successEdges}개 엣지`,
           String(radius),
           { inputs: edges.slice() },
         );
         if (successEdges === edges.length) {
           Toast.info(
-            `모깎기 완료 — ${successEdges}개 엣지, ${totalFaces}개 fillet face 생성`,
+            `필렛 완료 — ${successEdges}개 엣지, ${totalFaces}개 fillet face 생성`,
             2500,
           );
         } else {
@@ -1848,7 +1848,7 @@ export class ToolManager {
         }
         debugLog(`[Action] fillet-edge: ${successEdges}/${edges.length} edges, ${totalFaces} faces`);
       } else {
-        Toast.fromBridgeError(this.bridge, `${edges.length}개 엣지 모두 모깎기 실패`);
+        Toast.fromBridgeError(this.bridge, `${edges.length}개 엣지 모두 필렛 실패`);
       }
     } else if (action === 'subdivide') {
       // 전체 메시에 Catmull-Clark subdivision 1회 적용.
@@ -2446,7 +2446,7 @@ export class ToolManager {
         if (ok > 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('fillet-edge', `모깎기 ${r}mm × ${ok}개 엣지 (재실행)`, String(r));
+          getOperationLog().record('fillet-edge', `필렛 ${r}mm × ${ok}개 엣지 (재실행)`, String(r));
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');
@@ -2462,7 +2462,7 @@ export class ToolManager {
         if (n >= 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('chamfer-edge', `모따기 ${d}mm (재실행)`, String(d));
+          getOperationLog().record('chamfer-edge', `챔퍼 ${d}mm (재실행)`, String(d));
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');

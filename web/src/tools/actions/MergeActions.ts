@@ -48,7 +48,7 @@ export function mergeFaces(ctx: MergeActionContext): void {
       ctx.syncMesh();
       ctx.selection.clearSelection();
       const tolNote = tol !== 0.5 ? ` (tol ${tol}°)` : '';
-      Toast.info(`엣지 양옆 면 통합 완료${tolNote}`, 2000);
+      Toast.info(`엣지 양옆 면 머지 완료${tolNote}`, 2000);
       debugLog('[Action] merge-faces (edge):', result, 'tol=', tol);
     } else {
       const err = ctx.bridge.lastError();
@@ -97,7 +97,7 @@ export function mergeFaces(ctx: MergeActionContext): void {
       if (result >= 0) {
         ctx.syncMesh();
         ctx.selection.clearSelection();
-        Toast.info(`기하 병합으로 통합 완료 (snap 드리프트 보정 · tol ${geoTol}°/mm)`, 2800);
+        Toast.info(`기하 머지으로 통합 완료 (snap 드리프트 보정 · tol ${geoTol}°/mm)`, 2800);
         debugLog('[Action] merge-faces → geometric fallback: success', result);
         return;
       }
@@ -108,12 +108,12 @@ export function mergeFaces(ctx: MergeActionContext): void {
     if (analysis.total === 0) {
       lines.push('• 선택한 면들이 엣지를 공유하지 않습니다');
       lines.push('  (엣지가 공유되려면 snap으로 정확히 정점 매칭 필요)');
-      lines.push('  → "🧲 기하 병합" 컨텍스트 메뉴로 폴리곤 재구성 시도 가능');
+      lines.push('  → "🧲 기하 머지" 컨텍스트 메뉴로 폴리곤 재구성 시도 가능');
     }
     if (analysis.nonCoplanar > 0) {
       const tolHint = tol === 0.5 ? ' (mergetol 2 명령으로 허용치 확장 가능)' : '';
       lines.push(`• ${analysis.nonCoplanar}쌍이 평면 불일치${tolHint}`);
-      lines.push('  → "강제 통합"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능');
+      lines.push('  → "강제 머지"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능');
     }
     if (analysis.ambiguous > 0) {
       lines.push(`• ${analysis.ambiguous}쌍이 C-slit 형태 (hole 필요 — 미지원)`);
@@ -148,7 +148,7 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
   const faces = ctx.selection.getSelectedFaces();
   debugLog('[merge-faces-geometric] selected faces:', faces);
   if (faces.length < 2) {
-    Toast.warning('기하 병합은 2개 이상의 면을 선택해야 합니다. 현재: ' + faces.length + '개', 3500);
+    Toast.warning('기하 머지은 2개 이상의 면을 선택해야 합니다. 현재: ' + faces.length + '개', 3500);
     return;
   }
   const tol = Math.max(getMergeTolerance(), 2.0);
@@ -181,11 +181,11 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
   if (mergedCount > 0) {
     ctx.syncMesh();
     ctx.selection.clearSelection();
-    Toast.info(`기하 병합 ${mergedCount}회 완료`, 2500);
+    Toast.info(`기하 머지 ${mergedCount}회 완료`, 2500);
     debugLog('[Action] merge-faces-geometric: success', mergedCount);
   } else {
     Toast.warning(
-      lastError || '기하 병합 실패 — 두 면이 같은 평면 & 경계가 겹치는지 확인 (tol ' + tol + '°/mm)',
+      lastError || '기하 머지 실패 — 두 면이 같은 평면 & 경계가 겹치는지 확인 (tol ' + tol + '°/mm)',
       4000,
     );
     debugLog('[Action] merge-faces-geometric: all attempts failed', lastError);
@@ -195,7 +195,7 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
 export function mergeFacesForce(ctx: MergeActionContext): void {
   const faces = ctx.selection.getSelectedFaces();
   if (faces.length < 2) {
-    Toast.warning('강제 통합은 2개 이상의 면을 선택해야 합니다', 3000);
+    Toast.warning('강제 머지은 2개 이상의 면을 선택해야 합니다', 3000);
     return;
   }
   const softened = ctx.bridge.softenInternalEdges(faces);
@@ -204,7 +204,7 @@ export function mergeFacesForce(ctx: MergeActionContext): void {
     Toast.info(`${faces.length}개 면을 하나의 폴리곤 서피스로 결합 (${softened}개 내부 엣지 숨김)`, 3000);
     debugLog('[Action] merge-faces-force:', softened);
   } else {
-    Toast.warning('강제 통합 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.', 3500);
+    Toast.warning('강제 머지 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.', 3500);
   }
 }
 

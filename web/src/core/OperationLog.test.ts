@@ -6,7 +6,7 @@ describe('OperationLog', () => {
   beforeEach(() => { log = new OperationLog(5); });
 
   it('records entries with unique ids and timestamps', () => {
-    const a = log.record('fillet-edge', '모깎기 50mm', '50');
+    const a = log.record('fillet-edge', '필렛 50mm', '50');
     const b = log.record('thicken-faces', '두께 200mm', '200');
     expect(a.id).not.toBe(b.id);
     expect(a.kind).toBe('fillet-edge');

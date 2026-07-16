@@ -27,8 +27,8 @@ export class CornerChamferTool implements ITool {
   }
 
   onActivate(): void {
-    debugLog('[CornerChamferTool] Activated — 모따기할 코너(2-valence 꼭짓점)를 클릭하세요');
-    Toast.info('모따기할 코너 꼭짓점을 클릭하세요', 2500);
+    debugLog('[CornerChamferTool] Activated — 챔퍼할 코너(2-valence 꼭짓점)를 클릭하세요');
+    Toast.info('챔퍼할 코너 꼭짓점을 클릭하세요', 2500);
   }
 
   onDeactivate(): void {
@@ -42,7 +42,7 @@ export class CornerChamferTool implements ITool {
       if (!pt) return;
       const vid = this.ctx.bridge.findVertexIdAt?.(pt.x, pt.y, pt.z, PICK_TOL) ?? -1;
       if (vid < 0) {
-        Toast.warning('모따기할 코너 꼭짓점 위를 클릭하세요', 2000);
+        Toast.warning('챔퍼할 코너 꼭짓점 위를 클릭하세요', 2000);
         return;
       }
       this.vertId = vid;
@@ -84,10 +84,10 @@ export class CornerChamferTool implements ITool {
     if (e >= 0) {
       try { localStorage.setItem(LS_KEY, String(dist)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`코너 모따기 완료 (거리 ${dist}mm)`, 2000);
+      Toast.info(`코너 챔퍼 완료 (거리 ${dist}mm)`, 2000);
       debugLog(`[CornerChamfer] vertex ${this.vertId} dist=${dist} → edge ${e}`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '모따기 실패 (2-valence 코너만 가능 · 거리 확인)');
+      Toast.fromBridgeError(this.ctx.bridge, '챔퍼 실패 (2-valence 코너만 가능 · 거리 확인)');
     }
     this.cleanup();
   }

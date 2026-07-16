@@ -144,19 +144,19 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(tool('tool-rotate',   'rotate',   'modify', '회전 (Rotate)',   '회전',   'Q', false, undefined, deps));
   cmds.push(tool('tool-scale',    'scale',    'modify', '크기 (Scale)',    '크기',   'S', false, undefined, deps));
   cmds.push(tool('tool-offset',   'offset',   'modify', '오프셋 (Offset)', '오프셋', 'O', true, 'modify', deps));
-  cmds.push(tool('tool-recess',   'recess',   'modify', '홈파기 (Recess · Pocket)', '홈파기', undefined, true, 'modify', deps));
+  cmds.push(tool('tool-recess',   'recess',   'modify', '포켓 (Recess · Pocket)', '포켓', undefined, true, 'modify', deps));
   cmds.push(tool('tool-erase',    'erase',    'modify', '삭제 (Erase)',    '삭제',   'E', true, 'modify', deps));
-  cmds.push(tool('tool-chamfer',  'chamfer',  'modify', '꼭짓점 모따기 (Vertex Chamfer)', '모따기', undefined, false, undefined, deps));
+  cmds.push(tool('tool-chamfer',  'chamfer',  'modify', '꼭짓점 챔퍼 (Vertex Chamfer)', '챔퍼', undefined, false, undefined, deps));
   cmds.push(tool('tool-copy',     'copy',     'modify', '복제 (Copy · 2-click offset)', '복제', undefined, false, undefined, deps));
   cmds.push(tool('tool-mirror',   'mirror',   'modify', '미러 (Mirror · X/Y/Z 평면)', '미러', undefined, false, undefined, deps));
   cmds.push(tool('tool-array-linear', 'array-linear', 'modify', '선형 배열 도구 (Array Linear · 2-click)', '선형배열', undefined, false, undefined, deps));
   cmds.push(tool('tool-array-radial', 'array-radial', 'modify', '원형 배열 도구 (Array Radial · X/Y/Z 축)', '원형배열', undefined, false, undefined, deps));
-  cmds.push(tool('tool-fillet',   'fillet',   'modify', '모깎기 도구 (Fillet · 엣지+반지름)', '모깎기', undefined, false, undefined, deps));
-  cmds.push(tool('tool-trim',     'trim',     'modify', '자르기 (Trim)',   '자르기', undefined, false, undefined, deps));
-  cmds.push(tool('tool-extend',   'extend',   'modify', '연장 (Extend)',   '연장',   undefined, false, undefined, deps));
-  cmds.push(tool('tool-corner-fillet',  'corner-fillet',  'modify', '코너 둥글리기 (Corner Fillet · 2D 코너+반지름)', '코너둥글리기', undefined, false, undefined, deps));
-  cmds.push(tool('tool-corner-chamfer', 'corner-chamfer', 'modify', '코너 모따기 (Corner Chamfer · 2D 코너+거리)', '코너모따기', undefined, false, undefined, deps));
-  cmds.push(tool('tool-join',     'join',     'modify', '선 병합 (Join · 일직선 2-valence 코너)', '선병합', undefined, false, undefined, deps));
+  cmds.push(tool('tool-fillet',   'fillet',   'modify', '필렛 도구 (Fillet · 엣지+반지름)', '필렛', undefined, false, undefined, deps));
+  cmds.push(tool('tool-trim',     'trim',     'modify', '트림 (Trim)',   '트림', undefined, false, undefined, deps));
+  cmds.push(tool('tool-extend',   'extend',   'modify', '익스텐드 (Extend)',   '익스텐드',   undefined, false, undefined, deps));
+  cmds.push(tool('tool-corner-fillet',  'corner-fillet',  'modify', '코너 필렛 (Corner Fillet · 2D 코너+반지름)', '코너필렛', undefined, false, undefined, deps));
+  cmds.push(tool('tool-corner-chamfer', 'corner-chamfer', 'modify', '코너 챔퍼 (Corner Chamfer · 2D 코너+거리)', '코너챔퍼', undefined, false, undefined, deps));
+  cmds.push(tool('tool-join',     'join',     'modify', '조인 (Join · 일직선 2-valence 코너)', '조인', undefined, false, undefined, deps));
   // ADR-226 — 분해(Explode) = ungroup 동의어 재배선. 'explode' tool 미구현(phantom)
   // 이라 작동하는 ungroup action 으로 dispatch (분해 live). 일회성 action (tool mode
   // 아님). ungroup 은 단축키(Ctrl+Shift+G)+메뉴 현행 유지 (동의어 공존).
@@ -171,12 +171,12 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('revolve-y',        'modify', 'Revolve · Y축 회전',         'Revolve Y', undefined, false, deps));
   cmds.push(action('revolve-z',        'modify', 'Revolve · Z축 회전',         'Revolve Z', undefined, false, deps));
   cmds.push(action('revolve-face-solid', 'modify', '회전체 — 선택 면 (Revolve · 각도)', 'Revolve', undefined, false, deps));
-  cmds.push(action('subdivide',        'modify', '매끄럽게 분할 (Subdivide)',   'Subdiv',   undefined, false, deps));
-  cmds.push(action('thicken-faces',    'modify', '🧱 두께 부여 (Thicken/Shell)…', 'Thicken', undefined, false, deps));
+  cmds.push(action('subdivide',        'modify', '서브디비전 (Subdivide)',   'Subdiv',   undefined, false, deps));
+  cmds.push(action('thicken-faces',    'modify', '🧱 셸 (Thicken/Shell)…', 'Thicken', undefined, false, deps));
   cmds.push(action('loft-selected-faces', 'modify', '로프트 — 선택 면 2개 (Loft 2 faces)', 'Loft2', undefined, false, deps));
   cmds.push(action('solidify',         'modify', '🧩 솔리드화 (Solidify)',     'Solidify', undefined, false, deps));
-  cmds.push(action('fillet-edge',      'modify', '엣지 모깎기 (Fillet)…',      'Fillet',   undefined, false, deps));
-  cmds.push(action('chamfer-edge',     'modify', '엣지 모따기 (Chamfer)…',     'Chamfer',  undefined, false, deps));
+  cmds.push(action('fillet-edge',      'modify', '엣지 필렛 (Fillet)…',      'Fillet',   undefined, false, deps));
+  cmds.push(action('chamfer-edge',     'modify', '엣지 챔퍼 (Chamfer)…',     'Chamfer',  undefined, false, deps));
   cmds.push(action('bend-selection',   'modify', '선택 구부리기 (Bend)…',       'Bend',     undefined, false, deps));
   cmds.push(action('twist-selection',  'modify', '선택 비틀기 (Twist)…',        'Twist',    undefined, false, deps));
   cmds.push(action('taper-selection',  'modify', '선택 테이퍼 (Taper)…',        'Taper',    undefined, false, deps));
@@ -196,11 +196,11 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('intersect-with-model', 'boolean', '모델과 교차 (Intersect with Model)', '✕',  undefined, false, deps));
 
   // ── Merge family ───────────────────────────────────────────────
-  cmds.push(action('merge-faces',           'modify', '면 합치기 (Merge)',          'Merge',    undefined, false, deps));
-  cmds.push(action('merge-faces-geometric', 'modify', '면 합치기 · 기하 기반',      'Merge-G',  undefined, false, deps));
-  cmds.push(action('merge-faces-force',     'modify', '면 합치기 · 강제',           'Merge-F',  undefined, false, deps));
+  cmds.push(action('merge-faces',           'modify', '면 머지 (Merge)',          'Merge',    undefined, false, deps));
+  cmds.push(action('merge-faces-geometric', 'modify', '면 머지 · 기하 기반',      'Merge-G',  undefined, false, deps));
+  cmds.push(action('merge-faces-force',     'modify', '면 머지 · 강제',           'Merge-F',  undefined, false, deps));
   cmds.push(action('merge-as-hole',         'modify', '내부 면 → 구멍으로 합치기',   'Hole',     undefined, false, deps));
-  cmds.push(action('merge-xia-coplanar',    'modify', '동일 XIA · 동일평면 합치기',  'XIA-Co',   undefined, false, deps));
+  cmds.push(action('merge-xia-coplanar',    'modify', '동일 XIA · 동일평면 머지',  'XIA-Co',   undefined, false, deps));
 
   // ── Sketch ──────────────────────────────────────────────────────
   cmds.push(action('sketch-start-auto',  'sketch', '✨ 스케치 시작 · 자동 평면',  '자동',  '⇧S', false, deps));
@@ -242,7 +242,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('delete',          'edit', '삭제',               'Del',   'Delete',        false, deps));
   cmds.push(action('duplicate',       'edit', '복제',               '복제',   'Ctrl+D',        false, deps));
   cmds.push(action('clipboard-copy',  'edit', '복사',               '복사',   'Ctrl+C',        false, deps));
-  cmds.push(action('clipboard-cut',   'edit', '잘라내기',           '자르기', 'Ctrl+X',        false, deps));
+  cmds.push(action('clipboard-cut',   'edit', '잘라내기',           '트림', 'Ctrl+X',        false, deps));
   cmds.push(action('clipboard-paste', 'edit', '붙여넣기',           '붙여',   'Ctrl+V',        false, deps));
   cmds.push(action('rename',          'edit', '이름 변경',           '이름',   'F2',           false, deps));
 

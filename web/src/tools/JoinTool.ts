@@ -46,7 +46,7 @@ export class JoinTool implements ITool {
     const merged = this.ctx.bridge.joinCollinearAt?.(vid) ?? -1;
     if (merged >= 0) {
       this.ctx.syncMesh();
-      Toast.info('선 병합 완료', 1500);
+      Toast.info('조인 완료', 1500);
       debugLog(`[Join] vertex ${vid} → merged edge ${merged}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '병합 실패 (일직선 2-valence 꼭짓점만 가능)');

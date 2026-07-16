@@ -214,6 +214,56 @@ English translation of each batch is a separate concern from wrapping it: a
 wrapped-but-untranslated string renders Korean, which is exactly today's
 behaviour, so batches can land before their translations do.
 
+### D9 — Hard CAD terms use the transliteration in Korean too (사용자 결재 2026-07-16)
+
+> 사용자: "어려운것은 영어발음을 사용합니다."
+
+This is a change to the **Korean** UI, not a translation decision, and it is
+user-visible. It is recorded here because i18n is what surfaced it: writing 266
+English labels put every Korean label side by side, and the inconsistency was
+impossible to miss.
+
+The convention already existed — 로프트, 스윕, 스플라인, 테이퍼, 오프셋, 미러,
+스냅 are all transliterations. The translated ones were the deviation.
+
+"Difficult" is defined as: **the Korean is a coined literal or a descriptive
+phrase that a CAD user would not actually say.** Everyday Korean stays Korean —
+선, 원, 사각형, 이동, 회전, 삭제 are not renamed.
+
+| was | now | why |
+|---|---|---|
+| 모깎기 | 필렛 | coined; users say 필렛 |
+| 모따기 | 챔퍼 | coined |
+| 코너 둥글리기 | 코너 필렛 | coined |
+| 홈파기 | 포켓 | coined |
+| 매끄럽게 분할 | 서브디비전 | a description, not a term |
+| 두께 부여 | 셸 | a description, not a term |
+| 선 병합 | 조인 | a description, not a term |
+| 면 합치기 / 면 통합 / 기하 병합 | 면 머지 / 기하 머지 | **three Korean words for one concept** |
+| 자르기 (Trim) | 트림 | 자르기 vs 잘라내기(Cut) read the same |
+| 연장 (Extend) | 익스텐드 | pairs with 트림 |
+
+**Substring replacement would have broken two things**, both found by reading
+the occurrences rather than trusting the term list:
+
+- `연장 (Extend)` is the tool, but **`연장선` and `연장(X)` are snap modes**
+  (extension). Renaming the substring would have renamed the snap panel.
+- `자르기 (Trim)` is the tool, but **`평면으로 자르기` is Slice.**
+
+So the renames are full-label, and the two bare labels are matched only when
+quote- or tag-delimited.
+
+Source-as-key made this safe rather than dangerous: changing the Korean changes
+the key, so every rename had to move its `en.ts` entry with it — and the orphan
+guard fails on any that did not. It also caught a real collision: `선 병합` and
+its palette abbreviation `선병합` both became `조인`, because a transliteration
+is already short enough not to need an abbreviation. One key, one English.
+
+**ADR-046 P31 #4** says menu changes are additive only, muscle-memory-preserving.
+A label rename is a muscle-memory change, so it needs a decision on the record:
+this is it. Positions, ids, shortcuts and toolbar order are untouched — only the
+words change.
+
 ## 4. Lock-ins
 
 - **L-294-1** No i18n dependency. ADR-035 P20.C #2.
@@ -233,6 +283,10 @@ behaviour, so batches can land before their translations do.
 - **L-294-11** `translateDom` covers static markup ONLY, and runs before any
   panel is built. TS-built DOM re-renders, so it must be wrapped with `t()`
   rather than swept (D8).
+- **L-294-13** Hard CAD terms are transliterated in Korean (D9). "Hard" = a
+  coined literal or a descriptive phrase; everyday Korean stays Korean.
+- **L-294-14** Renames are full-label. `연장선`/`연장(X)` (snap) and
+  `평면으로 자르기` (Slice) are homographs a substring pass would destroy.
 - **L-294-12** Keys are what the DOM holds, not what the markup spells
   (`&#9633;` → `□`). Guards parse `index.html`; they never read it as text.
 - **L-294-6** Locale = `navigator.language`, overridable via `setLocale`,

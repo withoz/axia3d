@@ -78,10 +78,10 @@ export class FilletTool implements ITool {
     if (ok > 0) {
       try { localStorage.setItem(LS_KEY, String(radius)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`엣지 모깎기 완료 (${ok}개 · 반지름 ${radius}mm)`, 2000);
+      Toast.info(`엣지 필렛 완료 (${ok}개 · 반지름 ${radius}mm)`, 2000);
       debugLog(`[Fillet] ${ok}/${edges.length} edges, radius=${radius}`);
     } else if (firstErr) {
-      Toast.fromBridgeError(this.ctx.bridge, '모깎기 실패 (3-way corner 등은 미지원)');
+      Toast.fromBridgeError(this.ctx.bridge, '필렛 실패 (3-way corner 등은 미지원)');
     }
   }
 }

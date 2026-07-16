@@ -17,7 +17,7 @@ export interface VCBDeps {
 /** 도구별 VCB 라벨 */
 const vcbLabels: Record<string, string> = {
   offset: '오프셋 거리:',
-  recess: '홈파기 — 여유(inset), 깊이:',
+  recess: '포켓 — 여유(inset), 깊이:',
   pushpull: '돌출 거리 (,각도° = 테이퍼 / ,비율% = 콘):',
   line: '길이:',
   rect: '가로, 세로:',

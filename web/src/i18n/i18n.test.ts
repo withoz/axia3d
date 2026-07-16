@@ -118,6 +118,20 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
 /**
+ * Files whose Korean IS a key but which never call t() — the panels translate
+ * them at render (batch 4). They are translation sources all the same, so the
+ * orphan guard must search them or every catalog entry looks orphaned.
+ *
+ * The catalogs deliberately do not import t(): @axia/action-catalog is a
+ * zero-dependency data package, and reaching into web/src/i18n from it would
+ * invert the layering (ADR-294 §3 batch 4).
+ */
+const TRANSLATION_SOURCES = [
+  '../packages/axia-action-catalog/src/catalog.ts',
+  'src/commands/AxiaCommands.ts',
+];
+
+/**
  * index.html holds the app's chrome as static markup, so it is a translation
  * source like any .ts file. It must be PARSED, not read as text: the markup
  * writes `&#9633; 직사각형` where the DOM — and therefore the key — has
@@ -205,7 +219,8 @@ describe('ADR-294 — en.ts hygiene', () => {
   it('no orphan: every entry is still referenced in the source', () => {
     // The honest cost of source-as-key (D2): editing the Korean orphans its
     // English silently. This finds the orphan.
-    const ts = MIGRATED_PATHS.map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
+    const ts = [...MIGRATED_PATHS, ...TRANSLATION_SOURCES]
+      .map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
     const src = [...ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
     const missing = Object.keys(EN).filter((k) => !src.includes(k));
     expect(missing, 'en.ts entries whose Korean no longer exists in the source')

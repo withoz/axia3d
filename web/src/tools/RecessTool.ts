@@ -41,7 +41,7 @@ export class RecessTool implements ITool {
     } else {
       this.phase = 0;
       this.faceId = -1;
-      Toast.info('홈파기: 면을 클릭하세요.', 2000);
+      Toast.info('포켓: 면을 클릭하세요.', 2000);
       debugLog('[RecessTool] Activated; awaiting face pick');
     }
   }
@@ -75,7 +75,7 @@ export class RecessTool implements ITool {
   onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
       this.cleanup();
-      Toast.info('홈파기 취소됨', 1500);
+      Toast.info('포켓 취소됨', 1500);
     }
   }
 
@@ -86,7 +86,7 @@ export class RecessTool implements ITool {
       return;
     }
     if (depth === undefined || !Number.isFinite(inset) || !Number.isFinite(depth)) {
-      Toast.warning('홈파기는 두 값이 필요합니다 — "여유 깊이" (예: 20 100).', 3000);
+      Toast.warning('포켓은 두 값이 필요합니다 — "여유 깊이" (예: 20 100).', 3000);
       return;
     }
     if (inset <= 0 || depth <= 0) {
@@ -206,6 +206,6 @@ export class RecessTool implements ITool {
   }
 
   private promptValues(): void {
-    Toast.info('홈파기: VCB에 "여유 깊이" 입력 (예: 20 100). ESC 로 취소.', 3000);
+    Toast.info('포켓: VCB에 "여유 깊이" 입력 (예: 20 100). ESC 로 취소.', 3000);
   }
 }

@@ -81,7 +81,7 @@ export function initCommandRegistry(deps: CommandRegistryDeps): void {
   commandInput.registerHandler({
     name: 'mergetol',
     aliases: ['mtol'],
-    help: '면 통합 각도 tolerance 설정 (°). 예: mergetol 2 — 2°까지 허용',
+    help: '면 머지 각도 tolerance 설정 (°). 예: mergetol 2 — 2°까지 허용',
     execute: (args: string[]) => {
       if (args.length === 0) {
         commandInput.printInfo(`현재 merge tolerance: ${getMergeTolerance()}°`);
@@ -92,7 +92,7 @@ export function initCommandRegistry(deps: CommandRegistryDeps): void {
         throw new Error('유효한 각도(0~10°)를 입력하세요');
       }
       setMergeTolerance(v);
-      commandInput.printSuccess(`면 통합 tolerance: ${v}° (0.5° = strict, 2~5° = loose)`);
+      commandInput.printSuccess(`면 머지 tolerance: ${v}° (0.5° = strict, 2~5° = loose)`);
     },
   });
 
@@ -345,7 +345,7 @@ export function initCommandRegistry(deps: CommandRegistryDeps): void {
   commandInput.registerHandler({
     name: 'mergemat',
     aliases: ['mmat'],
-    help: '면 통합 시 재질 경계 존중 토글 (on/off/toggle). 현재값 출력: 인수 없음',
+    help: '면 머지 시 재질 경계 존중 토글 (on/off/toggle). 현재값 출력: 인수 없음',
     execute: (args: string[]) => {
       const cur = getRespectMaterial();
       if (args.length === 0) {
