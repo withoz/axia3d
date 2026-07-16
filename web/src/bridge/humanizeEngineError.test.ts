@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { humanizeEngineError } from './humanizeEngineError';
+import { setLocale, t } from '../i18n';
 
 /**
  * ADR-190 Phase 3 — engine error humanization.
@@ -24,6 +25,11 @@ const RAW = {
 } as const;
 
 describe('humanizeEngineError', () => {
+  // ADR-294 — these assert Korean, so pin the locale. jsdom reports
+  // navigator.language = 'en-US', which the detector honours; without this
+  // the suite would silently test the English table instead.
+  beforeEach(() => setLocale('ko'));
+
   it('turns the cylinder-side rejection into what to do instead', () => {
     const out = humanizeEngineError(RAW.cylinderSidePush);
     expect(out).not.toContain('verts');
@@ -101,5 +107,19 @@ describe('humanizeEngineError', () => {
         expect(out, `"${raw}" → "${out}" still leaks ${leak}`).not.toMatch(leak);
       }
     }
+  });
+  it('speaks English when the locale is English (ADR-294)', () => {
+    setLocale('en');
+    const out = humanizeEngineError(RAW.cylinderSidePush);
+    expect(out).toContain('draw a circle on it first');
+    expect(out, 'no Korean must leak through').not.toMatch(/[가-힣]/);
+    setLocale('ko');
+  });
+
+  it('an untranslated string falls back to Korean, never to a key name', () => {
+    setLocale('en');
+    // not in en.ts — the Korean IS the key, so this must render Korean
+    expect(t('아직 번역되지 않은 문구')).toBe('아직 번역되지 않은 문구');
+    setLocale('ko');
   });
 });
