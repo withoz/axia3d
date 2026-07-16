@@ -564,15 +564,30 @@ describe('ADR-294 — en.ts hygiene', () => {
     '(?:Toast\\.(?:info|success|warning|error)|alert|confirm|prompt' +
     '|printInfo|printSuccess|printError|window\\.alert|window\\.confirm|window\\.prompt)';
 
+  /**
+   * Assignments that put text on screen. Same bug, different shape: the call
+   * list above missed `input.placeholder = '명령 검색…'` in CommandPalette —
+   * the key was in en.ts, the assignment was raw, and the palette showed
+   * Korean under `en` while its own rows were English. Found by opening it.
+   */
+  const SCREEN_PROPS = '(?:placeholder|textContent|innerText|innerHTML|title|value|label)';
+
   it.each(MIGRATED_FILES)('no raw Korean reaches a user-facing call in $file', ({ file }) => {
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const raw: string[] = [];
-    const re = new RegExp(SINKS + String.raw`\s*\(\s*'((?:[^'\\]|\\.)*)'`, 'g');
-    for (const m of src.matchAll(re)) {
-      const v = asRuntimeString(m[1]);
-      if (/[가-힣]/.test(v) && !NOT_KEYS.has(v)) raw.push(v);
+    const patterns = [
+      new RegExp(SINKS + String.raw`\s*\(\s*'((?:[^'\\]|\\.)*)'`, 'g'),
+      new RegExp(String.raw`\.${SCREEN_PROPS}\s*=\s*'((?:[^'\\]|\\.)*)'`, 'g'),
+      // setAttribute('title'|'placeholder'|'aria-label', '한글')
+      new RegExp(String.raw`setAttribute\s*\(\s*'[^']*'\s*,\s*'((?:[^'\\]|\\.)*)'`, 'g'),
+    ];
+    for (const re of patterns) {
+      for (const m of src.matchAll(re)) {
+        const v = asRuntimeString(m[1]);
+        if (/[가-힣]/.test(v) && !NOT_KEYS.has(v)) raw.push(v);
+      }
     }
-    expect(raw, `${file}: Korean passed to a user-facing call without t()`).toEqual([]);
+    expect(raw, `${file}: Korean put on screen without t()`).toEqual([]);
   });
 
   it.each(MIGRATED_FILES)('every Korean data table in $file is read through t()', ({ file }) => {

@@ -46,7 +46,7 @@ import { debugLog } from './utils/debug';
 import { Toast } from './ui/Toast';
 import { getConsolePanel } from './ui/ConsolePanel';
 import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
-import './ui/DraggablePanels.css';
+import './ui/DraggablePanels.css';
 import { t } from './i18n';
 
 // Install in-UI console panel as early as possible so any errors during
@@ -114,7 +114,17 @@ async function checkWasmFreshness(): Promise<void> {
  * nothing at all — and were recorded as successes.
  */
 const dispatchMenuAction = (id: string): boolean => {
-  const item = document.querySelector<HTMLElement>(`#menubar [data-action="${id}"]`);
+  // #statusbar too: osnap / grid / edge / axis / help / rename are F-key
+  // buttons down there, handled by StatusBar.ts — they exist in neither
+  // #menubar nor executeAction, so from the palette they fell through both
+  // hops and produced "unknown command". Measured in the wiring audit.
+  //
+  // Still NOT the context menu: those ids (group-edit / snap-override …)
+  // depend on what is selected when you right-click, so firing them from a
+  // palette has nothing to act on.
+  const item = document.querySelector<HTMLElement>(
+    `#menubar [data-action="${id}"], #statusbar [data-action="${id}"]`,
+  );
   if (!item) return false;
   item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   return true;
@@ -837,7 +847,15 @@ async function main() {
   initContextMenu({ viewport, bridge, toolManager, viewModeBar, openOsnapPanel });
 
   // Keyboard Shortcuts (depends on saveProject/openProject)
-  initKeyboardShortcuts({ toolManager, viewport, toolbar, viewModeBar, saveProject, openProject });
+  initKeyboardShortcuts({
+    toolManager, viewport, toolbar, viewModeBar, saveProject, openProject,
+    // Same handlers the File menu runs (MenuBar 'file-saveas' / 'file-new'),
+    // so the key and the menu item cannot drift apart.
+    saveAsProject: () => fileManager.saveAsProject(),
+    newProject: () => {
+      if (confirm(t('현재 작업을 초기화하시겠습니까?'))) location.reload();
+    },
+  });
 
   // ═══ 11. Style Side Panel — see ui/StylePanel.ts ═══
   initStylePanel({

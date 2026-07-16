@@ -21,12 +21,18 @@ export interface KeyboardShortcutsDeps {
   viewModeBar: HTMLElement | null;
   saveProject: () => void;
   openProject: () => void;
+  /** Ctrl+Shift+S — the File menu advertises it. Optional so existing callers
+   *  and tests keep working without it. */
+  saveAsProject?: () => void;
+  /** Ctrl+N — likewise advertised in the File menu. */
+  newProject?: () => void;
 }
 
 // Tool/view display names live in the shared SSOT (./toolDisplayNames).
 
 export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
-  const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject } = deps;
+  const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject,
+          saveAsProject, newProject } = deps;
 
   // ── View switch helper ──
   const switchView = (mode: ViewMode) => {
@@ -295,10 +301,27 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       return;
     }
 
+    // Ctrl+Shift+S: 다른 이름으로 저장.
+    // The File menu prints "Ctrl+Shift+S" next to it (index.html:1800) and
+    // AxiaCommands advertises the same, but nothing was bound — and Ctrl+S
+    // below had no !shiftKey guard, so Ctrl+Shift+S quietly ran a plain save
+    // instead. The menu promised one thing and the app did another.
+    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      saveAsProject?.();
+      return;
+    }
     // Ctrl+S: 저장
-    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+    if (e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       saveProject();
+      return;
+    }
+    // Ctrl+N: 새 파일 — advertised in the File menu (index.html:1796) and in
+    // AxiaCommands, never bound.
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'n' || e.key === 'N')) {
+      e.preventDefault();
+      newProject?.();
       return;
     }
     // Ctrl+O: 열기

@@ -124,7 +124,7 @@ export class CommandPalette {
 
     const input = document.createElement('input');
     input.className = 'cmd-palette-input';
-    input.placeholder = '명령 검색… (예: line, push, 단면, undo)';
+    input.placeholder = t('명령 검색… (예: line, push, 단면, undo)');
     input.addEventListener('input', () => this.refresh());
     this.input = input;
 
@@ -195,7 +195,7 @@ export class CommandPalette {
   private renderRows(): void {
     if (!this.list) return;
     if (this.results.length === 0) {
-      this.list.innerHTML = '<li class="cmd-palette-empty">일치하는 명령이 없습니다</li>';
+      this.list.innerHTML = `<li class="cmd-palette-empty">${t('일치하는 명령이 없습니다')}</li>`;
       return;
     }
     this.list.innerHTML = '';

@@ -407,7 +407,7 @@ export const EN: Record<string, string> = {
   '축 (F7)': 'Axes (F7)',
   '그리드 표시/숨기기 (`)': 'Show/hide grid (`)',
   '뷰 원점 복귀 (F5)': 'Reset view (F5)',
-  '원점으로 (H)': 'Home (H)',
+  '원점으로 (F5)': 'Home (F5)',
   '건축 그림자 토글': 'Toggle architectural shadows',
   '변형 선택': 'Pick a variant',
   '선 종류 선택': 'Pick a line type',
@@ -539,7 +539,6 @@ export const EN: Record<string, string> = {
   'Select All (전체 선택)': 'Select all',
   '프로젝트 저장': 'Save project',
   '프로젝트 열기': 'Open project',
-  '재질 패널': 'Materials panel',
   '취소 / 선택 해제': 'Cancel / deselect',
   '선택 XIA 이름 변경': 'Rename the selected XIA',
   'Face Reverse (면 뒤집기)': 'Reverse face',
@@ -2165,7 +2164,7 @@ export const EN: Record<string, string> = {
   'AXiA 엔진이 업데이트됐습니다. 최신 기능이 적용됩니다.': 'The AXiA engine has been updated. The newest features are now available.',
   '알 수 없는 명령입니다: {actionId}': 'Unknown command: {actionId}',
   '명령 검색… (예: line, push, 단면, undo)': 'Search commands… (e.g. line, push, section, undo)',
-  '<li class="cmd-palette-empty">일치하는 명령이 없습니다</li>': '<li class="cmd-palette-empty">No matching commands</li>',
+  '일치하는 명령이 없습니다': 'No matching commands',
   '클릭하여 치수 편집': 'Click to edit the dimension',
   '클릭하여 각도 편집': 'Click to edit the angle',
   '올바른 .xia 파일이 아닙니다.': 'This is not a valid .xia file.',
@@ -2190,4 +2189,11 @@ export const EN: Record<string, string> = {
   // templates sat in files the ledger called done. Guard now reads
   // backticks too; these are the keys that turned up.
   '다각형 변의 수 (3~24)\n\n6 = 육각형 (벌집/기하)\n5 = 오각형\n8 = 팔각형 (볼트 헤드)': 'Number of sides (3–24)\n\n6 = hexagon (honeycomb, geometric)\n5 = pentagon\n8 = octagon (bolt head)',
+
+  // ── batch 8 — backtick templates in already-migrated files.
+  // The strong guard only read 'single quotes', so 185 `${n}개 …`
+  // templates sat in files the ledger called done. Guard now reads
+  // backticks too; these are the keys that turned up.
+  'IFC 가져오기는 준비중입니다.\n': 'IFC import is not ready yet.\n',
+  '대안: Revit / ArchiCAD 에서 OBJ 또는 DXF 로 내보낸 뒤 가져오세요.': 'Alternative: export to OBJ or DXF from Revit / ArchiCAD, then import that.',
 };

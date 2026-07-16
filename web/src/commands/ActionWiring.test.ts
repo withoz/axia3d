@@ -1,0 +1,113 @@
+/**
+ * Wiring guard — every `data-action` in index.html reaches a handler.
+ *
+ * CatalogConsistency already proves DOM ⊆ ActionCatalog, but that only says
+ * the id is *known*, not that clicking it *does* anything. Those are different
+ * questions, and the gap between them is where dead menu items live.
+ *
+ * A click on `#menubar [data-action="x"]` runs MenuBar's switch. That switch
+ * has no `default:`, so an unmatched id is a silent no-op — the menu closes
+ * and nothing happens. Worse, the Command Palette and Capability Explorer
+ * route through `dispatchMenuAction` (main.ts), which fires a synthetic click
+ * and returns `true` because the *element* exists; main.ts then writes
+ * `audit.record({ result: 'ok' })`. So a dead id is recorded as a success —
+ * exactly what ADR-069 set out to stop, one layer further down.
+ *
+ * Measured when this landed: 3 dead ids (file-export, file-import, import-ifc).
+ *
+ * The four dispatchers are matched to their DOM containers, because an id
+ * handled by ContextMenu does nothing for a #menubar item.
+ */
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+
+/** `case 'x':` / `case 'x': case 'y':` in a dispatcher switch. */
+function switchCases(file: string): Set<string> {
+  const src = read(file);
+  return new Set([...src.matchAll(/^\s*case\s+'([^']+)'\s*:/gm)].map((m) => m[1]));
+}
+
+/** `action === 'x'` in ToolManager.dispatchAction. */
+function dispatchIds(file: string): Set<string> {
+  const src = read(file);
+  return new Set([...src.matchAll(/action\s*===\s*'([^']+)'/g)].map((m) => m[1]));
+}
+
+/** data-action ids inside a given container element of index.html. */
+function idsInContainer(containerId: string): string[] {
+  const html = read('index.html');
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const root = doc.getElementById(containerId);
+  if (!root) return [];
+  return [...root.querySelectorAll('[data-action]')]
+    .map((el) => el.getAttribute('data-action')!)
+    .filter(Boolean);
+}
+
+describe('action wiring — every data-action reaches a handler', () => {
+  const MENU = switchCases('src/ui/MenuBar.ts');
+  const CONTEXT = switchCases('src/ui/ContextMenu.ts');
+  const STATUS = switchCases('src/ui/StatusBar.ts');
+  const DISPATCH = dispatchIds('src/tools/ToolManagerRefactored.ts');
+
+  it('the dispatchers were actually parsed', () => {
+    // Guards the guard: a regex that silently matches nothing would make every
+    // assertion below vacuously pass.
+    expect(MENU.size).toBeGreaterThan(100);
+    expect(CONTEXT.size).toBeGreaterThan(30);
+    expect(STATUS.size).toBeGreaterThan(3);
+    expect(DISPATCH.size).toBeGreaterThan(50);
+  });
+
+  it('#menubar: every item is handled by MenuBar or executeAction', () => {
+    const ids = idsInContainer('menubar');
+    expect(ids.length).toBeGreaterThan(150);
+    const dead = [...new Set(ids)].filter((id) => !MENU.has(id) && !DISPATCH.has(id));
+    expect(
+      dead,
+      'Dead menu items: clicking does nothing, and the palette/Explorer record ' +
+        'them as successful (main.ts dispatchMenuAction returns true on element ' +
+        'existence). Add a `case` in MenuBar.ts or a branch in dispatchAction.',
+    ).toEqual([]);
+  });
+
+  it('#context-menu: every item is handled by ContextMenu or executeAction', () => {
+    const ids = idsInContainer('context-menu');
+    expect(ids.length).toBeGreaterThan(20);
+    const dead = [...new Set(ids)].filter((id) => !CONTEXT.has(id) && !DISPATCH.has(id));
+    expect(dead, 'Dead context-menu items').toEqual([]);
+  });
+
+  it('#statusbar: every item is handled by StatusBar or executeAction', () => {
+    const ids = idsInContainer('statusbar');
+    expect(ids.length).toBeGreaterThan(3);
+    const dead = [...new Set(ids)].filter((id) => !STATUS.has(id) && !DISPATCH.has(id));
+    expect(dead, 'Dead statusbar items').toEqual([]);
+  });
+
+  it('no catalog command points at a handler that no longer exists', () => {
+    // The palette lists what the catalog holds. view-shadow-pro and the two
+    // solar-heatmap ids outlived their MenuBar cases (deleted 2026-05-16) and
+    // sat in the catalog for two months: searchable, and "unknown command" on
+    // execute. Anything reachable from the palette must land somewhere.
+    const src = read('src/commands/AxiaCommands.ts');
+    const actionIds = [...src.matchAll(/\baction\('([^']+)'/g)].map((m) => m[1]);
+    expect(actionIds.length).toBeGreaterThan(100);
+
+    const html = read('index.html');
+    const domIds = new Set(
+      [...html.matchAll(/data-action="([^"]+)"/g)].map((m) => m[1]),
+    );
+    const stranded = actionIds.filter(
+      (id) => !domIds.has(id) && !DISPATCH.has(id) && !MENU.has(id),
+    );
+    expect(
+      stranded,
+      'Catalog commands with no handler anywhere — the palette offers a feature ' +
+        'that does not exist. Remove the entry, or wire it.',
+    ).toEqual([]);
+  });
+});

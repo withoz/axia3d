@@ -260,7 +260,6 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-history','view', '작업 기록 패널', 'History','⇧H',     false, deps));
   cmds.push(action('view-scenes', 'view', '장면 패널',     'Scenes', undefined, false, deps));
   cmds.push(action('view-ssao',   'view', 'SSAO 토글',     'SSAO',   undefined, false, deps));
-  cmds.push(action('view-shadow-pro','view','그림자 PRO',  'Shadow', undefined, false, deps));
   cmds.push(action('view-sun-panel', 'view','태양 패널',   '태양',   undefined, false, deps));
   // Panel / diagnostic toggles — catalog SSOT coverage (bottom-bar UX audit).
   cmds.push(action('view-xia-inspector',          'view', 'XIA 인스펙터',        'XIA',   undefined, false, deps));
@@ -321,8 +320,6 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('resynthesize-faces','repair', '경계 도구 (면 재합성)',    'Boundary', undefined, false, deps));
   cmds.push(action('clash-detect',      'repair', '간섭 검사',              'Clash',  undefined, false, deps));
   cmds.push(action('clash-clear',       'repair', '간섭 표시 제거',          'Clear',  undefined, false, deps));
-  cmds.push(action('solar-heatmap',     'repair', '태양 히트맵',            'Solar',  undefined, false, deps));
-  cmds.push(action('solar-heatmap-off', 'repair', '태양 히트맵 OFF',         'Off',    undefined, false, deps));
   cmds.push(action('reference-image',   'repair', '참조 이미지 추가',        'RefImg', undefined, false, deps));
 
   // ── Format / Settings ──────────────────────────────────────────

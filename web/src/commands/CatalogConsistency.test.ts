@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (190, incl. Cmd-K coverage batch)', () => {
+  it('CommandCatalog count matches expected total (187, after removing 3 ghost commands)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -96,7 +96,13 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // 9 view/diagnostic panel toggles + 3 imports (skp/step/iges) +
     // resynthesize-faces = +13 → 190. The matching ActionCatalog entries are
     // kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
-    expect(count).toBe(190);
+    //
+    // 187: the wiring audit removed view-shadow-pro / solar-heatmap /
+    // solar-heatmap-off. Their MenuBar handlers were deleted on 2026-05-16
+    // (shadow → ADR-106) but the catalog entries stayed, so the palette
+    // listed three features that no longer exist — searching found them,
+    // running them said "unknown command".
+    expect(count).toBe(187);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

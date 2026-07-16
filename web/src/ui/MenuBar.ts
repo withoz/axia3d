@@ -261,6 +261,26 @@ export function initMenuBar(deps: MenuBarDeps): void {
         break;
       }
 
+      // ── 서브메뉴 부모 (hover 로 열림) ──
+      // Handled so the switch does not fall off the end. `.menu-sub` opens its
+      // dropdown on hover (index.html CSS); a click on the parent should not
+      // close the whole menu, which is what happened when this had no case.
+      case 'file-export':
+      case 'file-import':
+        break;
+
+      // ── 가져오기 IFC (준비중) ──
+      // export-step / export-iges below have said "준비중" via Toast since
+      // Stage 5; import-ifc is the same kind of placeholder but had no case, so
+      // it did nothing — and the palette recorded it as a success.
+      case 'import-ifc':
+        Toast.info(
+          t('IFC 가져오기는 준비중입니다.\n') +
+          t('대안: Revit / ArchiCAD 에서 OBJ 또는 DXF 로 내보낸 뒤 가져오세요.'),
+          5000,
+        );
+        break;
+
       // ── 내보내기 STEP/IGES (Stage 5 placeholder) ──
       case 'export-step':
       case 'export-iges': {

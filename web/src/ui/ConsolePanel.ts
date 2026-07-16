@@ -356,10 +356,10 @@ export class ConsolePanel {
       try {
         await navigator.clipboard.writeText(this.formatAsText());
         copyBtn.textContent = t('복사됨 ✓');
-        setTimeout(() => (copyBtn.textContent = '복사'), 1500);
+        setTimeout(() => (copyBtn.textContent = t('복사')), 1500);
       } catch {
         copyBtn.textContent = t('복사 실패');
-        setTimeout(() => (copyBtn.textContent = '복사'), 1500);
+        setTimeout(() => (copyBtn.textContent = t('복사')), 1500);
       }
     });
     toolbar.appendChild(copyBtn);
