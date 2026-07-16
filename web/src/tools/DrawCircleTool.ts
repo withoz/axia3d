@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { getDrawCurveMode } from './DrawCurveSettings';
+import { Toast } from '../ui/Toast';
 
 /** Max distance from center to prevent runaway geometry when ray grazes the plane */
 const MAX_DRAW_DISTANCE = 50000;
@@ -324,6 +325,27 @@ export class DrawCircleTool implements ITool {
 
   applyVCBValue(value: number): void {
     if (!this.circleCenter) return;
+
+    // ADR-284 follow-up — the curved modes the mouse path sets are NOT handled
+    // here. Until now this fell straight through and drew a FLAT circle on the
+    // tangent plane, silently: the same tool behaved differently depending on
+    // whether you clicked the radius or typed it.
+    //
+    // Declining rather than approximating. A typed radius is a promise of a
+    // number, and the mouse path takes a POINT — to honour "50" on a curved
+    // host we would have to place the radius point so that its GEODESIC
+    // distance is 50, which means inverting the projection per surface
+    // (d = r·tan(v/r) for a sphere, exact along a cylinder's axis but not
+    // around it…). Feeding the tangent-plane point straight through instead
+    // yields ~2% short at r=200/v=50 and ~7% at v=100 — a quietly wrong
+    // dimension in a tool whose whole point is being more precise than
+    // SketchUp. The engine helper for that is the real fix; this at least
+    // stops lying.
+    if (this.sphereMode || this.cylinderMode || this.coneMode || this.torusMode) {
+      Toast.warning('곡면에서는 반지름 입력이 아직 지원되지 않습니다 — 마우스로 지정해 주세요', 3500);
+      this.cleanup();
+      return;
+    }
 
     // ADR-103-δ-1 (Z-up): fallback plane = XY ground (Z=0), normal +Z.
     const plane = this.plane || {

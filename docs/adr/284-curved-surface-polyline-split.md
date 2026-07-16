@@ -394,6 +394,23 @@ Full re-verification of the curved-sketch closed-shape path:
 >
 > Lesson: a grep proves a call site exists, not that a user gets a face. Curved
 > claims need a runtime gate.
+>
+> **Typed radius on a curved host — declined, not approximated (2026-07-16).**
+> `DrawCircleTool.applyVCBValue` had no curved branch either: it ignored the
+> sphere/cylinder/cone/torusMode the mouse path sets and drew a FLAT circle on
+> the tangent plane, so the same tool behaved differently depending on whether
+> you clicked the radius or typed it — and typing looked like it worked.
+>
+> It now declines: "곡면에서는 반지름 입력이 아직 지원되지 않습니다 — 마우스로
+> 지정해 주세요". Approximating was the tempting fix and is wrong here. The mouse
+> path takes a *point*, so honouring a typed "50" means placing the radius point
+> whose GEODESIC distance is 50 — inverting the projection per surface
+> (`d = r·tan(v/r)` on a sphere; exact along a cylinder's axis but not around
+> it). Feeding the tangent-plane point straight through lands ~2% short at
+> r=200/v=50 and ~7% at v=100: a quietly wrong dimension in a tool whose stated
+> identity is being more precise than SketchUp. **Follow-up:** an engine helper
+> for "surface point at geodesic distance d from centre" would make the VCB path
+> exact; until then the mouse path is the honest one.
 
 **Menu/toolbar — UNCHANGED (additive-only, ADR-046 P31 #4):** the curved branch
 is INTERNAL to the existing rect/polygon/freehand/bezier tools — no new command,

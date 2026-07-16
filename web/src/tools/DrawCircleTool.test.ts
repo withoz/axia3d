@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import { DrawCircleTool } from './DrawCircleTool';
+import { Toast } from '../ui/Toast';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 
@@ -476,6 +477,59 @@ describe('DrawCircleTool', () => {
       t.onMouseDown({ clientX: 150, clientY: 100 } as MouseEvent, new THREE.Vector3(600, 40, 0));
       expect(c.bridge.drawCircleOnTorus).not.toHaveBeenCalled();     // torus ≠ cone
       expect(c.bridge.drawCircleOnCone).toHaveBeenCalledTimes(1);
+    });
+  });
+  // ══════════════════════════════════════════════════════════════════════
+  // ADR-284 follow-up — a typed radius on a curved host.
+  //
+  // applyVCBValue had no curved branch: it ignored the sphere/cylinder/cone/
+  // torusMode the mouse path sets and drew a FLAT circle on the tangent plane.
+  // The same tool behaved differently depending on whether you clicked the
+  // radius or typed it — and typing looked like it worked.
+  // ══════════════════════════════════════════════════════════════════════
+  describe('VCB radius on a curved host (ADR-284 follow-up)', () => {
+    function onSphere() {
+      const c = mockToolContext();
+      // sphereMode is only entered when the bridge actually exposes the endpoint
+      c.bridge.drawCircleOnSphere = vi.fn().mockReturnValue('{"cap":1,"annulus":0}');
+      c.bridge.drawCircleAsCurve = vi.fn().mockReturnValue(0);
+      c.getDrawPlane = vi.fn().mockReturnValue({
+        normal: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0),
+        right: new THREE.Vector3(1, 0, 0),
+        onFace: true, surfaceKind: 3, origin: new THREE.Vector3(0, 0, 5),
+      });
+      c.viewport.pick = vi.fn().mockReturnValue({ faceIndex: 0, point: new THREE.Vector3(0, 0, 5) });
+      c.getFaceId = vi.fn().mockReturnValue(4);
+      return c;
+    }
+
+    it('declines instead of drawing a flat circle on the tangent plane', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      const c = onSphere();
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 5));
+      t.applyVCBValue(50);
+      // THE guard: no flat circle may reach the engine
+      expect(c.bridge.drawCircleAsShape).not.toHaveBeenCalled();
+      expect(c.bridge.drawCircleAsCurve).not.toHaveBeenCalled();
+      expect(warn, 'and the user is told which way does work').toHaveBeenCalled();
+      expect(String(warn.mock.calls[0][0])).toContain('마우스로');
+      expect(t.isBusy(), 'the tool resets rather than hanging').toBe(false);
+      warn.mockRestore();
+    });
+
+    it('a typed radius on a PLANAR face still works (no regression)', () => {
+      const warn = vi.spyOn(Toast, 'warning').mockImplementation(() => {});
+      const c = mockToolContext();
+      c.bridge.drawCircleAsCurve = vi.fn().mockReturnValue(0);
+      const t = new DrawCircleTool(c);
+      t.onMouseDown({ clientX: 100, clientY: 100 } as MouseEvent, new THREE.Vector3(0, 0, 0));
+      t.applyVCBValue(50);
+      const drew = (c.bridge.drawCircleAsShape as ReturnType<typeof vi.fn>).mock.calls.length
+        + (c.bridge.drawCircleAsCurve as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(drew, 'the planar VCB path must be untouched').toBeGreaterThan(0);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 });
