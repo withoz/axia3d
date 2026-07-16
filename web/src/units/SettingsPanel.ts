@@ -9,7 +9,7 @@
  */
 
 import { UnitSystem, UnitType } from './UnitSystem';
-import { getLocale, setLocale } from '../i18n';
+import { getLocale, setLocale, t } from '../i18n';
 import {
   getMergeTolerance, setMergeTolerance,
   getRespectMaterial, setRespectMaterial,
@@ -91,23 +91,23 @@ export class SettingsPanel {
     const panel = document.createElement('div');
     panel.id = 'settings-panel';
     panel.innerHTML = `
-      <div class="sp-header">단위 설정</div>
+      <div class="sp-header">${t('단위 설정')}</div>
 
       <div class="sp-section">
-        <label class="sp-label">언어 / Language</label>
+        <label class="sp-label">${t('언어 / Language')}</label>
         <div class="sp-unit-btns" id="sp-locale-btns"></div>
-        <div class="sp-hint">바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)</div>
+        <div class="sp-hint">${t('바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)')}</div>
       </div>
 
       <div class="sp-divider"></div>
 
       <div class="sp-section">
-        <label class="sp-label">단위</label>
+        <label class="sp-label">${t('단위')}</label>
         <div class="sp-unit-btns" id="sp-unit-btns"></div>
       </div>
 
       <div class="sp-section">
-        <label class="sp-label">소수점 자릿수</label>
+        <label class="sp-label">${t('소수점 자릿수')}</label>
         <div class="sp-row">
           <input type="range" id="sp-precision" min="0" max="8" step="1" />
           <span id="sp-precision-val" class="sp-value"></span>
@@ -119,12 +119,12 @@ export class SettingsPanel {
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-snap" />
-          그리드 스냅
+          ${t('그리드 스냅')}
         </label>
       </div>
 
       <div class="sp-section">
-        <label class="sp-label">스냅 간격</label>
+        <label class="sp-label">${t('스냅 간격')}</label>
         <div class="sp-row">
           <input type="number" id="sp-snap-interval" step="0.1" min="0.0001" />
           <span id="sp-snap-unit" class="sp-value"></span>
@@ -134,100 +134,100 @@ export class SettingsPanel {
       <div class="sp-divider"></div>
 
       <div class="sp-section">
-        <label class="sp-label">원통 세그먼트 (원주 분할 수)</label>
+        <label class="sp-label">${t('원통 세그먼트 (원주 분할 수)')}</label>
         <div class="sp-row">
           <input type="range" id="sp-cyl-seg" min="${CYLINDER_SEGMENTS_MIN}" max="${CYLINDER_SEGMENTS_MAX}" step="1" />
           <span id="sp-cyl-seg-val" class="sp-value"></span>
         </div>
-        <div class="sp-hint">많을수록 매끈하지만 면·정점 증가 (기본 16)</div>
+        <div class="sp-hint">${t('많을수록 매끈하지만 면·정점 증가 (기본 16)')}</div>
       </div>
 
       <div class="sp-divider"></div>
 
       <div class="sp-section">
-        <label class="sp-label">면 병합 허용 각도</label>
+        <label class="sp-label">${t('면 병합 허용 각도')}</label>
         <div class="sp-row">
           <input type="range" id="sp-merge-tol" min="0" max="${MERGE_TOL_MAX}" step="0.1" />
           <span id="sp-merge-tol-val" class="sp-value"></span>
         </div>
-        <div class="sp-hint">작은 값(0.5°)은 CAD-grade · 큰 값은 관대한 병합</div>
+        <div class="sp-hint">${t('작은 값(0.5°)은 CAD-grade · 큰 값은 관대한 병합')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-merge-respect-mat" />
-          재질 경계 존중 (다른 재질은 병합 안 함)
+          ${t('재질 경계 존중 (다른 재질은 병합 안 함)')}
         </label>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-auto-intersect" />
-          그릴 때 자동 교차 (Auto-intersect on draw)
+          ${t('그릴 때 자동 교차 (Auto-intersect on draw)')}
         </label>
-        <div class="sp-hint">새 면이 기존 면과 3D 교차하면 edge 로 자동 분할 (SketchUp 스타일)</div>
+        <div class="sp-hint">${t('새 면이 기존 면과 3D 교차하면 edge 로 자동 분할 (SketchUp 스타일)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-draw-curve-mode" />
-          곡선 모드 (실험) — kernel-native 닫힌 곡선
+          ${t('곡선 모드 (실험) — kernel-native 닫힌 곡선')}
         </label>
-        <div class="sp-hint">DrawCircle: 24-segment polygon 대신 1 self-loop edge + AnalyticCurve::Circle 로 그리기 (ADR-089)</div>
+        <div class="sp-hint">${t('DrawCircle: 24-segment polygon 대신 1 self-loop edge + AnalyticCurve::Circle 로 그리기 (ADR-089)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-auto-topology-recovery" />
-          위상 손상 자동 복구 (실험)
+          ${t('위상 손상 자동 복구 (실험)')}
         </label>
-        <div class="sp-hint">토폴로지 변경 op 후 손상 감지 → 자동 복구. PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-097 Phase 4)</div>
+        <div class="sp-hint">${t('토폴로지 변경 op 후 손상 감지 → 자동 복구. PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-097 Phase 4)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-asset-library-user-tier" />
-          User 라이브러리 활성화 (실험)
+          ${t('User 라이브러리 활성화 (실험)')}
         </label>
-        <div class="sp-hint">자산 라이브러리 의 User tier (사용자 재사용 재질 모음) 활성. localStorage 보존, opt-in default OFF (ADR-098 Phase 5-A)</div>
+        <div class="sp-hint">${t('자산 라이브러리 의 User tier (사용자 재사용 재질 모음) 활성. localStorage 보존, opt-in default OFF (ADR-098 Phase 5-A)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-auto-material-recovery" />
-          재질 삭제 자동 복구 (실험)
+          ${t('재질 삭제 자동 복구 (실험)')}
         </label>
-        <div class="sp-hint">Material 제거 시 owning Xia 의 자동 복구 (auto-demote → fallback Concrete). PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-100 Phase 5-C)</div>
+        <div class="sp-hint">${t('Material 제거 시 owning Xia 의 자동 복구 (auto-demote → fallback Concrete). PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-100 Phase 5-C)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-text3d-sprite" />
-          3D 텍스트: 스프라이트 모드
+          ${t('3D 텍스트: 스프라이트 모드')}
         </label>
-        <div class="sp-hint">체크 = 캔버스 빌보드 라벨 (한국어 즉시, 카메라 대면). 해제 = 압출 3D 텍스트 (Latin, 한국어는 자동 스프라이트 fallback) (ADR-228)</div>
+        <div class="sp-hint">${t('체크 = 캔버스 빌보드 라벨 (한국어 즉시, 카메라 대면). 해제 = 압출 3D 텍스트 (Latin, 한국어는 자동 스프라이트 fallback) (ADR-228)')}</div>
       </div>
 
       <div class="sp-section">
         <label class="sp-label">
           <input type="checkbox" id="sp-nurbs-vault" />
-          NURBS 곡면: 볼트(반원통) 모드
+          ${t('NURBS 곡면: 볼트(반원통) 모드')}
         </label>
-        <div class="sp-hint">체크 = 정확한 rational 반원통 vault (createNurbsSurface, 정확한 원호 단면). 해제 = bicubic Bezier bulge (현재) (ADR-231)</div>
+        <div class="sp-hint">${t('체크 = 정확한 rational 반원통 vault (createNurbsSurface, 정확한 원호 단면). 해제 = bicubic Bezier bulge (현재) (ADR-231)')}</div>
       </div>
 
       <div class="sp-section">
-        <label class="sp-label">Push/Pull 돌출 방향 (ADR-261)</label>
+        <label class="sp-label">${t('Push/Pull 돌출 방향 (ADR-261)')}</label>
         <select id="sp-extrude-mode">
-          <option value="oneway">단방향 (OneWay) — 기존</option>
-          <option value="symmetric">대칭 (Symmetric) — 양쪽 각 거리</option>
-          <option value="twosided">비대칭 (TwoSided) — 위/아래 따로</option>
+          <option value="oneway">${t('단방향 (OneWay) — 기존')}</option>
+          <option value="symmetric">${t('대칭 (Symmetric) — 양쪽 각 거리')}</option>
+          <option value="twosided">${t('비대칭 (TwoSided) — 위/아래 따로')}</option>
         </select>
         <label class="sp-label" id="sp-extrude-dist-neg-row" style="display:none">
-          아래(−) 거리 (mm)
+          ${t('아래(−) 거리 (mm)')}
           <input type="number" id="sp-extrude-dist-neg" step="1" min="0" />
         </label>
-        <div class="sp-hint">대칭 = profile 평면 기준 양쪽 각 d (총 2d). 비대칭 = +방향은 돌출 거리, −방향은 위 값. 단방향이 기본 (동작 불변).</div>
+        <div class="sp-hint">${t('대칭 = profile 평면 기준 양쪽 각 d (총 2d). 비대칭 = +방향은 돌출 거리, −방향은 위 값. 단방향이 기본 (동작 불변).')}</div>
       </div>
 
       <div class="sp-divider"></div>

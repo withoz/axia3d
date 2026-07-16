@@ -184,13 +184,30 @@ Not one pass. In batches, each its own commit, each independently green:
 2. **The static chrome** (D8) — `index.html`'s 306 text nodes + 44 tooltips,
    plus `translateDom` and its drift guard. This is the whole menu bar and
    toolbar, i.e. what the app looks like. Done.
-3. `ui/` panels and modals — measured after batch 2: **280 Korean text nodes
-   and 14 tooltips still render Korean**, all of them TS-built panels
-   (ComponentPanel, ConstraintPanel, HistoryPanel, NurbsPatchPanel, …). All are
-   hidden until opened, so the default view is fully English. These need `t()`,
-   not a DOM sweep.
-4. `commands/AxiaCommands.ts` + `ui/CommandRegistry.ts` — the command palette's
-   labels and descriptions. Mechanical pairs; D6 says wrap in place.
+3. `ui/` panels and modals. **§3 correction:** I wrote that the 280 leftover
+   nodes were "all of them TS-built panels". Measured per-container, **210 of
+   the 280 are inside one panel — the Capability Explorer — and they are not
+   its chrome at all. They are ActionCatalog labels**, i.e. catalog *data*
+   rendered in a panel, which belongs with batch 4. The panels' own chrome is
+   ~70 nodes: Settings 28, XiaInspector's material section 12, console 6, and
+   1–3 each across the rest. Every panel is hidden until opened, so the default
+   view stays fully English throughout this batch. `SettingsPanel` done — it is
+   where the language switch lives, so a Korean panel there was the sharpest
+   version of the mixed-UI problem.
+4. The catalogs — `packages/axia-action-catalog` (214 labels, rendered by the
+   Capability Explorer) and `web/src/commands/AxiaCommands.ts` (190 labels +
+   190 shorts, rendered by the Command Palette). **349 unique Korean strings
+   across the two.** ActionCatalog must NOT import `t()`: the MCP server (Node)
+   reads that package, and pulling `web/src/i18n` into it would invert the
+   layering. Source-as-key makes that unnecessary — the *panels* call
+   `t(action.label)` at render and the catalog stays pure data. 32 of the
+   Explorer's 206 labels are already translated, because they are the same
+   Korean strings as the menu's.
+
+   Measured on the way past, out of scope here: of the 190 ids both catalogs
+   define, **only 87 (45%) carry the same label** ('선형 배열' vs
+   '선형 배열 (Array Linear)…'). LOCKED #61 guards the ids, not the fields;
+   field-level drift is ADR-134's problem, not i18n's.
 5. `tools/` Toasts.
 
 English translation of each batch is a separate concern from wrapping it: a

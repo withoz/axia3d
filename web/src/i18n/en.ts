@@ -440,4 +440,61 @@ export const EN: Record<string, string> = {
     'Sticky plane on — the next shape lands on the same plane (ADR-164)',
   '인접 면 각도 임계 (도). 작을수록 panel 경계 더 많이 표시. 건축=10°, 기계=20°, 캐릭터=30°':
     'Angle threshold between adjacent faces (degrees). Lower shows more panel edges. Architecture = 10°, mechanical = 20°, character = 30°',
+
+  // ══════════════════════════════════════════════════════════════════════
+  // batch 3 — TS-built panels (ADR-294 §3). These re-render, so they are
+  // wrapped with t() rather than swept by translateDom (L-294-11).
+  //
+  // Settings first: it is where the language switch lives, so a user who
+  // switches to English and lands on a Korean panel is the sharpest possible
+  // version of the mixed-UI problem.
+  //
+  // The hints name ADRs and engine internals. That is deliberate — these are
+  // experimental toggles for someone who reads ADRs, so the reference is the
+  // useful part and is kept verbatim.
+  // ══════════════════════════════════════════════════════════════════════
+  '언어 / Language': 'Language',
+  '단위': 'Units',
+  '바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)':
+    'Changing this reloads the page (ADR-294)',
+  '소수점 자릿수': 'Decimal places',
+  '그리드 스냅': 'Grid snap',
+  '스냅 간격': 'Snap spacing',
+  '원통 세그먼트 (원주 분할 수)': 'Cylinder segments (divisions around the circumference)',
+  '많을수록 매끈하지만 면·정점 증가 (기본 16)':
+    'More is smoother but adds faces and vertices (default 16)',
+  '면 병합 허용 각도': 'Face-merge angle tolerance',
+  '작은 값(0.5°)은 CAD-grade · 큰 값은 관대한 병합':
+    'Small (0.5°) is CAD-grade · large merges more freely',
+  '재질 경계 존중 (다른 재질은 병합 안 함)':
+    'Respect material boundaries (never merge across materials)',
+  '그릴 때 자동 교차 (Auto-intersect on draw)': 'Auto-intersect on draw',
+  '새 면이 기존 면과 3D 교차하면 edge 로 자동 분할 (SketchUp 스타일)':
+    'A new face that intersects an existing one in 3D is split at the edge automatically (SketchUp style)',
+  '곡선 모드 (실험) — kernel-native 닫힌 곡선':
+    'Curve mode (experimental) — kernel-native closed curves',
+  'DrawCircle: 24-segment polygon 대신 1 self-loop edge + AnalyticCurve::Circle 로 그리기 (ADR-089)':
+    'DrawCircle draws 1 self-loop edge + AnalyticCurve::Circle instead of a 24-segment polygon (ADR-089)',
+  '위상 손상 자동 복구 (실험)': 'Auto-recover topology damage (experimental)',
+  '토폴로지 변경 op 후 손상 감지 → 자동 복구. PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-097 Phase 4)':
+    'Detects damage after a topology-changing op and repairs it. On partial failure you get a dialog ([Undo] / [Demote] / [Fix manually]) (ADR-097 Phase 4)',
+  'User 라이브러리 활성화 (실험)': 'Enable the User library (experimental)',
+  '자산 라이브러리 의 User tier (사용자 재사용 재질 모음) 활성. localStorage 보존, opt-in default OFF (ADR-098 Phase 5-A)':
+    'Enables the asset library\'s User tier (your reusable materials). Kept in localStorage, opt-in, off by default (ADR-098 Phase 5-A)',
+  '재질 삭제 자동 복구 (실험)': 'Auto-recover on material removal (experimental)',
+  'Material 제거 시 owning Xia 의 자동 복구 (auto-demote → fallback Concrete). PartialFailure 시 사용자 다이얼로그 ([Undo]/[강등]/[수동수정]) (ADR-100 Phase 5-C)':
+    'Recovers the owning XIA when its material is removed (auto-demote → fall back to Concrete). On partial failure you get a dialog ([Undo] / [Demote] / [Fix manually]) (ADR-100 Phase 5-C)',
+  '3D 텍스트: 스프라이트 모드': '3D text: sprite mode',
+  '체크 = 캔버스 빌보드 라벨 (한국어 즉시, 카메라 대면). 해제 = 압출 3D 텍스트 (Latin, 한국어는 자동 스프라이트 fallback) (ADR-228)':
+    'On = canvas billboard label (Korean works immediately, always faces the camera). Off = extruded 3D text (Latin; Korean falls back to a sprite automatically) (ADR-228)',
+  'NURBS 곡면: 볼트(반원통) 모드': 'NURBS surface: vault (half-cylinder) mode',
+  '체크 = 정확한 rational 반원통 vault (createNurbsSurface, 정확한 원호 단면). 해제 = bicubic Bezier bulge (현재) (ADR-231)':
+    'On = an exact rational half-cylinder vault (createNurbsSurface, exact arc section). Off = a bicubic Bezier bulge (current) (ADR-231)',
+  'Push/Pull 돌출 방향 (ADR-261)': 'Push/Pull extrude direction (ADR-261)',
+  '단방향 (OneWay) — 기존': 'One-way — the existing behaviour',
+  '대칭 (Symmetric) — 양쪽 각 거리': 'Symmetric — that distance each way',
+  '비대칭 (TwoSided) — 위/아래 따로': 'Two-sided — up and down set separately',
+  '아래(−) 거리 (mm)': 'Down (−) distance (mm)',
+  '대칭 = profile 평면 기준 양쪽 각 d (총 2d). 비대칭 = +방향은 돌출 거리, −방향은 위 값. 단방향이 기본 (동작 불변).':
+    'Symmetric = d each way from the profile plane (2d total). Two-sided = the extrude distance goes up, this value goes down. One-way is the default and behaves as before.',
 };

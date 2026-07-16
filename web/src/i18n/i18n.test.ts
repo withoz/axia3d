@@ -103,6 +103,16 @@ describe('ADR-294 D6 — module-scope t() under reload semantics', () => {
 });
 
 /**
+ * Files a batch has claimed (ADR-294 §3). This list is the batch ledger: both
+ * guards below read it, so adding a file here without translating it fails,
+ * and translating one without listing it leaves its entries looking orphaned.
+ */
+const MIGRATED_FILES = [
+  'src/bridge/humanizeEngineError.ts',   // batch 1
+  'src/units/SettingsPanel.ts',          // batch 3
+];
+
+/**
  * index.html holds the app's chrome as static markup, so it is a translation
  * source like any .ts file. It must be PARSED, not read as text: the markup
  * writes `&#9633; 직사각형` where the DOM — and therefore the key — has
@@ -190,25 +200,36 @@ describe('ADR-294 — en.ts hygiene', () => {
   it('no orphan: every entry is still referenced in the source', () => {
     // The honest cost of source-as-key (D2): editing the Korean orphans its
     // English silently. This finds the orphan.
-    const ts = readFileSync(
-      resolve(process.cwd(), 'src/bridge/humanizeEngineError.ts'), 'utf8',
-    );
-    const src = [ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
+    const ts = MIGRATED_FILES.map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
+    const src = [...ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
     const missing = Object.keys(EN).filter((k) => !src.includes(k));
     expect(missing, 'en.ts entries whose Korean no longer exists in the source')
       .toEqual([]);
   });
 
-  it('every t() call in a migrated file has an English entry', () => {
+  it.each(MIGRATED_FILES)('every t() call in %s has an English entry', (file) => {
     // The other direction: a wrapped string with no translation renders Korean,
     // which is fine — but for a file the batch claims to have DONE, silence is
     // an omission, not a fallback.
-    const src = readFileSync(
-      resolve(process.cwd(), 'src/bridge/humanizeEngineError.ts'), 'utf8',
-    );
+    const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const keys = [...src.matchAll(/\bt\(\s*'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]);
-    expect(keys.length, 'the slice must actually be wrapped').toBeGreaterThan(5);
+    expect(keys.length, `${file} must actually be wrapped`).toBeGreaterThan(5);
     const untranslated = keys.filter((k) => /[가-힣]/.test(k) && !(k in EN));
-    expect(untranslated, 'wrapped but missing from en.ts').toEqual([]);
+    expect(untranslated, `wrapped in ${file} but missing from en.ts`).toEqual([]);
+  });
+
+  it('no migrated file still has a bare Korean literal in its markup', () => {
+    // The gap the t()-call guard cannot see: a string that was never wrapped at
+    // all. Scoped to innerHTML/textContent assignments, which is where a panel's
+    // copy lives — code-level Korean (comments, console) is out of scope.
+    for (const file of MIGRATED_FILES) {
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+      for (const m of src.matchAll(/(innerHTML|textContent)\s*=\s*`([\s\S]*?)`/g)) {
+        // strip every ${...} — a wrapped string lives inside one
+        const bare = m[2].replace(/\$\{[\s\S]*?\}/g, '');
+        expect(/[가-힣]/.test(bare) ? `${file}: ${bare.match(/[^\n]*[가-힣][^\n]*/)?.[0]?.trim()}` : '',
+          'unwrapped Korean in a template the batch claims to have done').toBe('');
+      }
+    }
   });
 });
