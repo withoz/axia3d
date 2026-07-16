@@ -371,6 +371,30 @@ Full re-verification of the curved-sketch closed-shape path:
   ADR-284) — each has the `surfaceKind 2/3/4/5` detect + host pick + closed-loop
   dispatch (freehand/bezier gate on closure). grep-confirmed 4/4.
 
+> ⚠ **"grep-confirmed" was not "works" (2026-07-16, measured).** The call sites
+> were all present and the tools still produced nothing. In real Chromium on a
+> Path B cylinder: Circle 3→4 ✓, but **Polygon 3→3** (engine refused "wraps";
+> only a `console.warn`, no toast) and **Rect 3→3** (never reached the engine).
+> Root cause was one level up: `get3DPoint` treated a curved face as a plane —
+> a Path B cylinder's side is ONE face wrapping 360°, so its averaged DCEL
+> normal points along the axis and the "face plane" passes through the axis. A
+> click on the surface at (200,0,200) returned **(0,0,200)**, the axis, so every
+> tool centring on it built its shape around the axis and the engine correctly
+> refused it as encircling. Circle was the sole survivor because it reads
+> `plane.origin` instead. Fixed by making `get3DPoint` return the surface point
+> for `surfaceKind >= 2`; runtime-verified by
+> `web/e2e/adr-284-curved-draw-tools.spec.ts` (4/4 tools actually split).
+>
+> **Ellipse was dropped without a word.** §2's audit table groups "Rect /
+> Polygon / **Ellipse**" as one gap row; this closure lists only Rect / Polygon
+> / Freehand / Bezier. The claim "closed shapes × 4 tools" held only by silently
+> redefining which four. Ellipse kept drawing flat on the tangent plane — no
+> split, no error, no toast — until it was wired in the same pass as the
+> `get3DPoint` fix.
+>
+> Lesson: a grep proves a call site exists, not that a user gets a face. Curved
+> claims need a runtime gate.
+
 **Menu/toolbar — UNCHANGED (additive-only, ADR-046 P31 #4):** the curved branch
 is INTERNAL to the existing rect/polygon/freehand/bezier tools — no new command,
 export-on-menu, `MenuBar` entry, `index.html` toolbar entry, or ActionCatalog

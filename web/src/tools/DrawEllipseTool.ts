@@ -13,7 +13,9 @@
 
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
-import { debugLog } from '../utils/debug';
+import { debugLog, debugWarn } from '../utils/debug';
+import { Toast } from '../ui/Toast';
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
 
 /** Max distance from center to prevent runaway geometry when the ray grazes the plane. */
 const MAX_DRAW_DISTANCE = 50000;
@@ -29,6 +31,15 @@ export class DrawEllipseTool implements ITool {
 
   private plane: DrawPlaneInfo | null = null;
   private drawPlane3: THREE.Plane | null = null;
+
+  // ADR-284 follow-up — curved host captured on the first click. Ellipse was in
+  // ADR-284's own audit table ("Rect / Polygon / Ellipse") but dropped from the
+  // fix without a word in the closure, leaving it the worst case in the matrix:
+  // a CLOSED shape (exactly what the engine handles) on surfaces that all work,
+  // drawn flat on the tangent plane with no split, no error and no toast —
+  // strictly worse than Line, which at least says why it declines.
+  private curvedKind: 'cylinder' | 'sphere' | 'cone' | 'torus' | null = null;
+  private curvedHostFace = -1;
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx;
@@ -61,6 +72,23 @@ export class DrawEllipseTool implements ITool {
       this.drawPlane3 = new THREE.Plane().setFromNormalAndCoplanarPoint(
         this.plane.normal, this.center,
       );
+      // ADR-284 follow-up — a curved host: capture it now, exactly as
+      // DrawPolygonTool does. getDrawPlane gives the TANGENT plane for
+      // surfaceKind >= 2, which is why an unwired tool draws a flat shape that
+      // touches the surface at one point and floats off it everywhere else.
+      this.curvedKind = null;
+      this.curvedHostFace = -1;
+      const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
+        this.plane.surfaceKind as 2 | 3 | 4 | 5
+      ];
+      if (ck && typeof this.ctx.viewport?.pick === 'function') {
+        const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+        if (hit && hit.faceIndex != null) {
+          const fid = this.ctx.getFaceId(hit.faceIndex);
+          if (fid >= 0) { this.curvedKind = ck; this.curvedHostFace = fid; }
+        }
+      }
+
       this.ctx.snap.setReferencePoint(this.center);
 
       // ADR-166 β-2 — first_click plane lock (idempotent).
@@ -139,15 +167,69 @@ export class DrawEllipseTool implements ITool {
     this.radiusX = 0;
     this.plane = null;
     this.drawPlane3 = null;
+    // curvedKind / curvedHostFace are deliberately NOT reset here: the first
+    // click re-derives both before anything can read them, so a reset in
+    // cleanup would be redundant — and mutation-testing confirmed no test can
+    // tell the difference, which is the tell for a guard that isn't earning its
+    // place. The "does not leak the host" regression pins the behaviour.
     this.removePreview();
     this.ctx.dimLabel.clear();
     this.ctx.snap.setReferencePoint(null);
+  }
+
+  /**
+   * ADR-284 follow-up — the ellipse's world verts, sampled in the tangent plane
+   * for the engine to project onto the host surface (mirrors
+   * DrawPolygonTool.ngonWorldVerts). 48 samples matches the chord fidelity the
+   * other closed curved shapes use.
+   */
+  private ellipseWorldVerts(
+    center: THREE.Vector3, refDir: THREE.Vector3, rx: number, ry: number, normal: THREE.Vector3,
+  ): Array<[number, number, number]> {
+    const minorDir = normal.clone().cross(refDir).normalize();
+    const out: Array<[number, number, number]> = [];
+    const N = 48;
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * Math.PI * 2;
+      const p = center.clone()
+        .addScaledVector(refDir, rx * Math.cos(t))
+        .addScaledVector(minorDir, ry * Math.sin(t));
+      out.push([p.x, p.y, p.z]);
+    }
+    return out;
   }
 
   private commitEllipse(refDir: THREE.Vector3, rx: number, ry: number): void {
     if (!this.center || !this.plane) { this.cleanup(); return; }
     if (rx < 1 || ry < 1) { this.cleanup(); return; }
     const n = this.plane.normal;
+
+    // ADR-284 follow-up — curved host: project + split instead of laying a flat
+    // ellipse on the tangent plane. This lives in commitEllipse, which the VCB
+    // path also calls, so typing the radii behaves the same as clicking them —
+    // DrawCircleTool's applyVCBValue skips its own curved branch and silently
+    // draws flat, and that split-brain is not worth reproducing here.
+    if (this.curvedKind && this.curvedHostFace >= 0
+        && typeof this.ctx.bridge.drawPolylineOnCurved === 'function') {
+      const verts = this.ellipseWorldVerts(this.center, refDir, rx, ry, n);
+      const res = this.ctx.bridge.drawPolylineOnCurved(
+        this.curvedKind, this.curvedHostFace, verts, true,
+      );
+      if (!res || res.includes('"error"')) {
+        debugWarn(`[Ellipse] curved split on ${this.curvedKind} failed: ${res}`);
+        Toast.warning(
+          humanizeEngineError(this.ctx.bridge.lastError())
+            || '이 곡면에는 타원을 그릴 수 없습니다',
+          3500,
+        );
+      } else {
+        debugLog(`[Ellipse] curved split on ${this.curvedKind} host=${this.curvedHostFace} rx=${rx.toFixed(2)} ry=${ry.toFixed(2)}`);
+      }
+      this.ctx.syncMesh();
+      this.cleanup();
+      return;
+    }
+
     this.ctx.bridge.drawEllipseAsCurve?.(
       this.center.x, this.center.y, this.center.z,
       refDir.x, refDir.y, refDir.z,

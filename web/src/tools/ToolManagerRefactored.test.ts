@@ -1263,6 +1263,51 @@ describe('ToolManager', () => {
         (tm as any).get3DPoint(mockEvent());
       }).not.toThrow();
     });
+
+    // ADR-284 follow-up — a CURVED face has no plane to draw on.
+    //
+    // A Path B cylinder's side is ONE face wrapping 360°, so its averaged DCEL
+    // normal points along the AXIS and the "face plane" passes through the
+    // axis. Measured in real Chromium: clicking the surface at (200,0,200)
+    // returned (0,0,200) — the axis. Every tool that centres on get3DPoint then
+    // built its shape around the axis, and the engine correctly refused it as
+    // encircling. DrawCircle was the one curved tool that worked, precisely
+    // because it reads plane.origin instead of this.
+    it('curved face hit → returns the SURFACE point, not a face-plane intersection', () => {
+      viewport.pick.mockReturnValue(mockHit(0, { x: 200, y: 0, z: 200 }));
+      bridge.faceSurfaceKind.mockReturnValue(2); // Cylinder
+      bridge.getFaceNormal.mockClear();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(mockEvent());
+
+      expect(pt).toMatchObject({ x: 200, y: 0, z: 200 });
+      // THE guard: the planar branch must not run — consulting getFaceNormal
+      // is what produced the axis point.
+      expect(bridge.getFaceNormal, 'a curved face has no plane to intersect')
+        .not.toHaveBeenCalled();
+    });
+
+    for (const [name, kind] of [['sphere', 3], ['cone', 4], ['torus', 5]] as const) {
+      it(`${name} face hit → surface point (kind ${kind})`, () => {
+        viewport.pick.mockReturnValue(mockHit(0, { x: 5, y: 6, z: 7 }));
+        bridge.faceSurfaceKind.mockReturnValue(kind);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((tm as any).get3DPoint(mockEvent())).toMatchObject({ x: 5, y: 6, z: 7 });
+      });
+    }
+
+    it('planar face (kind ≤ 1) still uses the face plane — no regression', () => {
+      viewport.pick.mockReturnValue(mockHit(0, { x: 1, y: 2, z: 200 }));
+      bridge.faceSurfaceKind.mockReturnValue(1); // Plane
+      bridge.getFaceNormal.mockReturnValue([0, 0, 1]);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tm as any).get3DPoint(mockEvent());
+
+      expect(bridge.getFaceNormal, 'ADR-175 planar behaviour must be untouched')
+        .toHaveBeenCalledWith(7);
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────

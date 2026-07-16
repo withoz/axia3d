@@ -3193,6 +3193,24 @@ export class ToolManager {
     if (faceHit && faceHit.faceIndex != null && faceHit.point) {
       const fid = this.getFaceId(faceHit.faceIndex);
       if (fid >= 0) {
+        // ADR-284 follow-up — a CURVED face has no meaningful plane, so the
+        // face-plane intersection below is nonsense for one. A Path B
+        // cylinder's side is a SINGLE face wrapping 360°: its averaged DCEL
+        // normal points along the axis, so the "face plane" passes through the
+        // axis. Measured — a click on the surface at (200,0,200) returned
+        // (0,0,200), the axis itself. Every tool that centres on this point
+        // then built its shape around the axis, and the engine correctly
+        // refused it as encircling ("wraps"). On a curved face the click IS the
+        // surface point; that is what getDrawPlane already reports as `origin`,
+        // and why DrawCircleTool — the one curved tool that worked — reads
+        // plane.origin instead of this.
+        //
+        // No object snap here: ADR-292's invariant is that a snap must be
+        // re-projected onto the ACTIVE PLANE, and a curved face has none.
+        // Snapping on curved surfaces needs its own design.
+        const kind = this.bridge.faceSurfaceKind?.(fid) ?? -1;
+        if (kind >= 2) return faceHit.point.clone();
+
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);
         if (Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)) {
           const faceNormal = new THREE.Vector3(nx, ny, nz);
