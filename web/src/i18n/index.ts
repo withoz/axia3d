@@ -75,7 +75,13 @@ export function setLocale(next: Locale): void {
  */
 export function t(key: string, params?: Record<string, string | number>): string {
   const table = TABLES[current];
-  let out = (table && table[key]) || key;
+  // Explicit `undefined` check, not `||`: an empty translation is legitimate.
+  // A sentence split across DOM nodes — `재질을 부여하면 이 객체는
+  // <strong>XIA</strong>로 승격됩니다` — reorders in English, so the trailing
+  // fragment must translate to ''. With `||` that fell back to the Korean and
+  // the sentence rendered half-translated.
+  const hit = table?.[key];
+  let out = hit === undefined ? key : hit;
   if (params) {
     for (const [name, value] of Object.entries(params)) {
       out = out.split(`{${name}}`).join(String(value));

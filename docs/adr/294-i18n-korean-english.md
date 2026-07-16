@@ -11,6 +11,13 @@
 
 ## 1. Scope, measured
 
+> **§1 correction (batch 2).** The count below is TS string literals, and on
+> that basis I called the command/menu catalogs "the app's chrome". They are
+> not. The chrome — the menu bar, the toolbars and their tooltips — lives as
+> **static markup in `index.html`**, which this count excluded entirely: 344
+> Korean text nodes (306 unique) and 44 Korean `title` tooltips. The 64 Hangul
+> literals in `ui/MenuBar.ts` are its handlers' toasts, not its labels. See D8.
+
 ADR-129 and my own earlier note said "~3,271 Hangul literals across 182 files".
 That counted **comments**, which this codebase has a great many of and which are
 not user-facing. Measured properly — Hangul inside string literals only,
@@ -40,6 +47,15 @@ realistic rather than a rewrite.
 idiom is a small SSOT module (`AutoIntersectSettings`, `DrawCurveSettings`,
 `MergeSettings`…), and there are currently zero i18n dependencies. A framework
 would buy plural rules and lazy namespaces we do not need for two languages.
+
+Measured cost, built with and without: the machinery is **+1.67 kB** (gzip
++0.52). The `en.ts` table is the part that grows — batch 2's 350 strings cost
+**+18.2 kB** (gzip +7.6). That is kB, not MB, so it is within P20.C #2 today,
+but it is worth naming the trend: at ~2,000 strings the table lands near
++100 kB, and a Korean user never needs a byte of it. The exit is a lazy chunk —
+`main.ts` awaits the table when, and only when, the locale is English. Not worth
+doing at 350 strings; worth doing before the table is finished. Deliberately not
+done now, so the change lands with a number behind it rather than a guess.
 
 ### D2 — The Korean source text IS the key
 
@@ -123,6 +139,38 @@ engine errors inside an otherwise-Korean UI. A switch the user controls is not a
 nicety here; it is what keeps the feature coherent while the migration is
 partial.
 
+### D8 — Static markup translates in place at boot; the DOM already holds the keys
+
+The chrome is static markup in `index.html`. The obvious options were to add
+`data-i18n` attributes to 350 elements, or to move the menus into TS. Neither is
+needed: **source-as-key means the DOM already contains the keys.** So
+`translateDom()` walks the markup once at boot and rewrites it in place —
+`index.html` is untouched.
+
+Two details that decide the implementation:
+
+- It translates **text nodes, not `textContent`**. A menu row is
+  `<div class="menu-action">새로 만들기<span class="mk">Ctrl+N</span></div>`;
+  `textContent` would fuse label and shortcut into one unkeyable string, and
+  writing it back would destroy the span.
+- It runs **before any panel is constructed**, so its scope is exactly the
+  static markup. Panels build their own DOM from TS and re-render, so a
+  boot-time sweep would only paint over them until their first repaint. They
+  get `t()` in their own batch.
+
+Two things the markup forced out into the open:
+
+- **Keys are what the DOM holds, not what the markup spells.** `index.html`
+  writes `&#9633; 직사각형`; the key is the decoded `□ 직사각형`. The guard
+  therefore *parses* index.html rather than reading it as text.
+- **A sentence split across nodes reorders.**
+  `재질을 부여하면 이 객체는 <strong>XIA (특성)</strong>로 승격됩니다` is three
+  text nodes, and English puts the strong in a different place. The trailing
+  fragment's correct translation is `''` — which exposed a real bug: `t()` used
+  `(table[key] || key)`, so an empty translation fell back to Korean and the
+  sentence rendered half-translated. It now checks for `undefined` explicitly
+  (L-294-10).
+
 ## 3. Rollout
 
 Not one pass. In batches, each its own commit, each independently green:
@@ -132,11 +180,18 @@ Not one pass. In batches, each its own commit, each independently green:
    error goes through), + drift guards. `c6dda5f`.
 1b. **Locale switch** (D7) + the D6 correction. Auto-detect made this urgent:
    until a user can choose, an English browser gets English errors in an
-   otherwise-Korean UI.
-2. `ui/` panels and modals — the visible surface.
-3. `commands/AxiaCommands.ts` + `ui/MenuBar.ts` + `ui/CommandRegistry.ts` — the
-   45%, mechanical label/description pairs. Watch D6 here.
-4. `tools/` Toasts.
+   otherwise-Korean UI. `b3cdcde`.
+2. **The static chrome** (D8) — `index.html`'s 306 text nodes + 44 tooltips,
+   plus `translateDom` and its drift guard. This is the whole menu bar and
+   toolbar, i.e. what the app looks like. Done.
+3. `ui/` panels and modals — measured after batch 2: **280 Korean text nodes
+   and 14 tooltips still render Korean**, all of them TS-built panels
+   (ComponentPanel, ConstraintPanel, HistoryPanel, NurbsPatchPanel, …). All are
+   hidden until opened, so the default view is fully English. These need `t()`,
+   not a DOM sweep.
+4. `commands/AxiaCommands.ts` + `ui/CommandRegistry.ts` — the command palette's
+   labels and descriptions. Mechanical pairs; D6 says wrap in place.
+5. `tools/` Toasts.
 
 English translation of each batch is a separate concern from wrapping it: a
 wrapped-but-untranslated string renders Korean, which is exactly today's
@@ -155,6 +210,14 @@ behaviour, so batches can land before their translations do.
   getters" is superseded.
 - **L-294-9** Switching the locale reloads the page (D7). A live switch would
   leave every init-once catalog stale.
+- **L-294-10** An empty translation is honoured, not treated as missing — a
+  sentence split across DOM nodes reorders in English and its trailing fragment
+  has no counterpart (D8).
+- **L-294-11** `translateDom` covers static markup ONLY, and runs before any
+  panel is built. TS-built DOM re-renders, so it must be wrapped with `t()`
+  rather than swept (D8).
+- **L-294-12** Keys are what the DOM holds, not what the markup spells
+  (`&#9633;` → `□`). Guards parse `index.html`; they never read it as text.
 - **L-294-6** Locale = `navigator.language`, overridable via `setLocale`,
   persisted at `axia:locale`. Default Korean.
 - **L-294-7** Migration is batched and additive; an unmigrated string keeps

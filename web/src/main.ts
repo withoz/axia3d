@@ -12,6 +12,7 @@ import { ToolManager } from './tools/ToolManagerRefactored';
 import { WasmBridge } from './bridge/WasmBridge';
 import { UnitSystem } from './units/UnitSystem';
 import { SettingsPanel } from './units/SettingsPanel';
+import { translateDom } from './i18n/translateDom';
 // FileImporter is now lazy-loaded via MenuBar (dynamic import on first use)
 import { ComponentPanel } from './ui/ComponentPanel';
 import { ConstraintPanel } from './ui/ConstraintPanel';
@@ -120,6 +121,19 @@ const dispatchMenuAction = (id: string): boolean => {
 
 async function main() {
   debugLog('AXiA 3D starting...');
+
+  // 0a. Translate index.html's static chrome (ADR-294 D8). FIRST, before any
+  //     panel is constructed, so its scope is exactly the static markup —
+  //     panels build their own DOM from TS and re-render, so a boot-time sweep
+  //     would only paint over them until their first repaint. They get wrapped
+  //     with t() in their own batch instead. A no-op in Korean.
+  const domI18n = translateDom(document.body);
+  if (domI18n.texts || domI18n.attrs || domI18n.untranslated.length) {
+    debugLog(
+      `[i18n] chrome: ${domI18n.texts} texts + ${domI18n.attrs} attrs translated` +
+      (domI18n.untranslated.length ? `, ${domI18n.untranslated.length} untranslated` : ''),
+    );
+  }
 
   // 0. Initialize the Toast singleton FIRST — every Toast.info/warning/error/
   //    success is `Toast.getInstance()?.show(...)`, so without this init the
