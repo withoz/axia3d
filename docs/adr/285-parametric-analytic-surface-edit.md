@@ -1,6 +1,6 @@
 # ADR-285 — Parametric Direct Edit of Analytic Curved Faces (α spec)
 
-**Status:** Accepted (β-1~β-5 landed 2026-07-09~10 — all 4 curved primitives
+**Status**: Accepted (β-1~β-5 landed 2026-07-09~10 — all 4 curved primitives
 editable in place, Inspector polish + real-Chromium E2E complete)
 **Date:** 2026-07-09
 **Track:** "진짜 analytic 곡면 커널 편집" — 사용자 결재 방향 = **파라메트릭 직접 편집**

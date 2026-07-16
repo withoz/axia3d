@@ -43,13 +43,13 @@ LOCKED #43 priority track 100% closure 도달 (2026-05-17, ADR-128 β implementa
 
 | # | 후보 | 현재 state | Maturity | Readiness | Priority signal |
 |---|---|---|---|---|---|
-| **1** | AI MCP capability coverage (ADR-041/042/043/044) | 15 capabilities (Tier 0 read 5 + Tier 1 construct 10) in `packages/axia-mcp-server/`. Tier 2/3 = 0/0. | Level 2 (persistent graph) | High | MCP surface stable; gap is breadth |
+| **1** | AI MCP capability coverage (ADR-041/042/043/044) | ~~15 capabilities (Tier 0 read 5 + Tier 1 construct 10). Tier 2/3 = 0/0.~~ **Every number here was wrong — measured 2026-07-16: 32 declared / 22 wired (T0 7, T1 6, T2 9, T3 0). Tier 2 is nearly complete, not zero.** Gaps: 10 declared-but-unwired; Tier 3 is blocked by the missing per-call consent gate (`tiers.ts` specifies one; none exists), NOT by engine ops — erase_face / erase_edge / delete_group all have working ops today. | Level 2 (persistent graph) | High | MCP surface stable; gap is breadth |
 | **2** | Runtime benchmark infrastructure (ADR-124/126) | `crates/axia-geo/benches/practicality_bench.rs` 10-suite + `BASELINE_2026-05-16.md`. No CI regression detection. | Level 1 (baseline only) | Medium | SIMD/drawcall wins unquantified |
 | **3** | Vendor STEP corpus expansion (ADR-082/083) | 1 fixture (`test_part_1.step`, 3.1 KB hand-crafted AP203). No SolidWorks/Fusion/CATIA. Slow-channel only. | Level 1 (minimal proof) | Low | Risk for edge-case bugs |
 | **4** | Reference rendering (ADR-095 Phase 4) | 3 types defined (`ConstructionLine`/`ImportedMesh`/`PointCloud`), data structure complete. **Render visual deferred** (ADR-095 §8). | Level 1 (data only) | Medium | ADR-046 Pillar 2 requirement |
 | **5** | Constraint solver (ADR-3x) | Level 2 persistent graph (4 kinds). No iterative XPBD. | Level 2 | Low | Production stable; XPBD = long-arc research |
 | **6** | Multi-document / project mgmt | Single-doc snapshot only. No workspace tabs / recent files. | Level 1 | Low-Medium | No user signal; Phase 5 scope |
-| **7** | **ADR-046 P31 Pillar progress (UI/UX)** | **Pillar 1 (Discoverability): CapabilityExplorerPanel scaffolded, no impl. Pillar 3 (Mode Coherence): spec only, no UI filter. Pillar 4 (AI Seam): ActionCatalog locked. Pillar 5: no tier UI.** | Level 2 (policy locked, ~20% impl) | **High-Critical** | **P31 explicitly "가장 시급" (most urgent)** |
+| **7** | **ADR-046 P31 Pillar progress (UI/UX)** | **Pillar 1 (Discoverability): ~~CapabilityExplorerPanel scaffolded, no impl~~ → measured 2026-07-16: 742 lines, tree + search + Step 4 dispatch + Step 5 Tier 3 toggle all implemented, 12 passing tests. The real Pillar 1 gaps are elsewhere — see the note below §3.1. Pillar 3 (Mode Coherence): spec only, no UI filter. Pillar 4 (AI Seam): ActionCatalog locked. Pillar 5: no tier UI.** | Level 2 (policy locked) | **High-Critical** | **P31 explicitly "가장 시급" (most urgent)** |
 | **8** | Tessellation cache + LOD (ADR-123 B) | No cache layer. NURBS surfaces tessellate fresh per-call. ADR-123 audit closure: current state already optimal. | Level 1 | Low-Medium | ADR-123 B deprioritized post-audit |
 | **9** | Visual quality + baselines (ADR-077) | V-3 Linux baseline generated (manual dispatch). V-4 cross-OS matrix **not CI-integrated**. Visual specs `skip()`. | Level 2 (Linux ready, multi-OS spec) | Medium | Regression coverage gap |
 | **10** | ADR-104 family follow-ups | Family 100% complete (ADR-117). STEP export NURBSSurface round-trip = "future track". | Level 3 (family complete) | Very Low | No trigger condition |
@@ -76,6 +76,32 @@ LOCKED #43 priority track 100% closure 도달 (2026-05-17, ADR-128 β implementa
 | **사용자 가치** | P31 product identity anchor. Discoverability = first-class principle (ADR-046 §6.5). "가장 시급" per ADR-046 §8. |
 | **trigger 조건** | Pillar 1 = Phase 2 prerequisite (ADR-046 Phase 1 "~1개월" deadline). |
 | **canonical 답습** | ADR-045 D1 (ActionCatalog SSOT) + ADR-045 D3 (CapabilityExplorer 안), ADR-046 P31 Pillar 1 |
+
+> ⚠ **Scope correction (measured 2026-07-16).** "`CapabilityExplorerPanel.ts`
+> (existing scaffold)" understates it by a lot: the panel is 742 lines with the
+> tree, search, Step 4 dispatch and Step 5 Tier 3 toggle all implemented, and
+> 12 passing tests. The Cmd-K palette also already exists in production (286
+> lines, 148 commands, bound in `main.ts`) — ADR-131 recorded that and this row
+> was never updated.
+>
+> The real Pillar 1 gaps, measured:
+> 1. **Two catalogs, no single identity.** The Explorer reads ActionCatalog
+>    (214) while the palette reads CommandCatalog (190). ADR-133 made
+>    AC ⊇ CC hold for ids; the UX overlap is unresolved.
+> 2. **The Explorer could not run most of what it listed.** 72 of the catalog's
+>    136 `action()` ids have no `executeAction` branch — they are
+>    `#menubar [data-action]` items — and the Explorer never used the menu
+>    dispatcher, so those did nothing while being logged as successes. Fixed
+>    2026-07-16 (commit "stop writing fabricated successes to the audit trail");
+>    the Explorer now routes menu-backed ids the same way the palette does.
+> 3. **i18n: genuinely not started.** ~3,271 Hangul literals across 182 files,
+>    no framework, strings built inline in `innerHTML` — a multi-week arc, not
+>    a task.
+> 4. **ActionCatalog Tier 3 = 0 entries**, which makes the Explorer's "Show
+>    advanced (Tier 3)" toggle a dead control: `renderTree` loops the tier,
+>    finds an empty bucket and continues. The engine ops exist.
+>
+> So the "~2주 atomic / Engine work 0" estimate stands only for items 1+4.
 
 ### 3.2 Priority #2 — Visual Baseline Multi-OS Matrix (ADR-077 V-4)
 
