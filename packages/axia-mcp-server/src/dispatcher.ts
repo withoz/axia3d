@@ -12,8 +12,9 @@ import type { z } from 'zod';
 import {
   UnknownCapabilityError,
   CapabilityBlockedError,
-  type TierConfig,
+  type TierConfig,
   tierOf,
+  type Tier,
 } from './tiers.js';
 import {
   evaluatePolicy,
@@ -39,6 +40,46 @@ export interface VersionInfo {
   engine_version: string;
 }
 
+/**
+ * The outcome of asking the user to approve a Tier 3 call.
+ *
+ * `accept` / `decline` / `cancel` mirror MCP elicitation's own actions;
+ * `unavailable` is ours — there was no way to ask (no consent channel wired, or
+ * a client without elicitation support). It is deliberately NOT folded into
+ * `decline`: an operator reading the audit log needs to tell "the user said no"
+ * apart from "nobody could be asked", which is a deployment problem.
+ */
+export type ConsentDecision = 'accept' | 'decline' | 'cancel' | 'unavailable';
+
+export interface ConsentRequest {
+  capability: string;
+  tier: Tier;
+  /** Validated args — what will actually run if approved. */
+  args: unknown;
+  request_id: string;
+  /** The capability's own description, for the prompt. */
+  description: string;
+}
+
+export type ConsentFn = (req: ConsentRequest) => Promise<ConsentDecision>;
+
+/** A Tier 3 call that the user did not approve — or could not be asked about. */
+export class ConsentDeniedError extends Error {
+  public readonly capability: string;
+  public readonly decision: ConsentDecision;
+
+  constructor(capability: string, decision: ConsentDecision) {
+    super(
+      decision === 'unavailable'
+        ? `Tier 3 capability '${capability}' requires per-call user consent, but no consent channel is available (client must support MCP elicitation).`
+        : `Tier 3 capability '${capability}' was not approved by the user (${decision}).`,
+    );
+    this.name = 'ConsentDeniedError';
+    this.capability = capability;
+    this.decision = decision;
+  }
+}
+
 export interface DispatcherOptions {
   engine: EngineInstance;
   /**
@@ -53,6 +94,12 @@ export interface DispatcherOptions {
   client?: string;
   /** From handshake. Stamped onto every audit entry for drift correlation. */
   versions: VersionInfo;
+  /**
+   * ADR-041 P26.1 — asks the user to approve a Tier 3 (destructive) call.
+   * Absent = no consent channel = every Tier 3 call is denied (fail-closed).
+   * `wireTools` supplies one backed by MCP elicitation.
+   */
+  consent?: ConsentFn;
   /** Override request id for client correlation; auto-generated otherwise. */
   request_id?: string;
 }
@@ -207,6 +254,51 @@ export async function dispatch(
       schema_version: versions.schema_version,
     });
     throw new CapabilityInputError(capability, parsed.error.issues);
+  }
+
+  // 3.5. Tier 3 — per-call user consent.
+  //
+  // `tiers.ts` has specified "Opt-in + per-call user consent + audit log" for
+  // Tier 3 since it was written; the opt-in and the audit log existed, the
+  // consent never did. So the tier that erases faces and deletes objects was
+  // gated by exactly the same thing as Tier 2 — a config flag — despite the
+  // spec promising a person in the loop.
+  //
+  // Asked here, after validation, so the user is only interrupted for a call
+  // that would actually run, and the prompt can show the parsed args rather
+  // than whatever arrived on the wire.
+  //
+  // FAIL CLOSED. No consent channel (`opts.consent` absent, or a client that
+  // does not support elicitation) means consent cannot be obtained — not that
+  // it can be assumed. Every outcome other than an explicit accept is recorded
+  // as a denial, because "the user said no" and "nobody asked" are both things
+  // an operator needs to see (ADR-041 P26.7).
+  if (handler.tier === 3) {
+    const decision: ConsentDecision = opts.consent
+      ? await opts.consent({
+        capability,
+        tier: handler.tier,
+        args: parsed.data,
+        request_id,
+        description: handler.description,
+      })
+      : 'unavailable';
+
+    if (decision !== 'accept') {
+      recordAudit(auditSink, {
+        request_id,
+        client,
+        tier: handler.tier,
+        capability,
+        args: parsed.data,
+        duration_ms: performance.now() - start,
+        result: 'denied',
+        reason: `Tier 3 consent ${decision}`,
+        engine_version: versions.engine_version,
+        schema_version: versions.schema_version,
+      });
+      throw new ConsentDeniedError(capability, decision);
+    }
   }
 
   // 4-5. Run + record outcome.

@@ -69,6 +69,30 @@ Tier 3 (destructive, explicit user consent each call):
   - import_step (file system access)
 ```
 
+> **"explicit user consent each call" was unimplemented until 2026-07-16.** The
+> opt-in (tier config) and the audit log shipped with P26.1; the consent did
+> not, so Tier 3 was gated by exactly the same thing as Tier 2 — a config flag.
+> Now: `dispatch` asks `opts.consent` before invoking any Tier 3 handler, and
+> `wireTools` supplies one backed by **MCP elicitation** (SDK 1.29 —
+> `server.elicitInput`, `action: accept | decline | cancel`).
+>
+> **Fail-closed.** Anything other than an explicit `accept` is denied and
+> audited. A client that does not support elicitation, or a transport error,
+> becomes `unavailable` — deliberately NOT folded into `decline`, so an operator
+> can tell "the user said no" from "nobody could be asked" (the second is a
+> deployment problem, and collapsing them would hide it).
+>
+> The prompt names the capability, its description and the **validated args** —
+> "approve erase_face" without saying which face is not consent. Tier ≤ 2 is
+> never prompted: a confirm on every push/pull trains people to click through
+> the one that matters.
+>
+> Consent is the precondition, not the feature: all five Tier 3 capabilities are
+> still declared-but-unwired, so **which destructive ops to expose to agents
+> remains an open decision.** erase_face / erase_edge / delete_group have
+> working engine ops today and are the obvious first candidates.
+> See `test/tier3_consent.test.ts`.
+
 각 tier 는 `axia.config.json` 의 `mcp.enabled_tiers: [0, 1]` 로 제어. 기본값
 **Tier 0 + 1** (read + constructive). Tier 2/3 는 opt-in.
 
