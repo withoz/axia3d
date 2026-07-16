@@ -87,11 +87,36 @@ Tier 3 (destructive, explicit user consent each call):
 > never prompted: a confirm on every push/pull trains people to click through
 > the one that matters.
 >
-> Consent is the precondition, not the feature: all five Tier 3 capabilities are
-> still declared-but-unwired, so **which destructive ops to expose to agents
-> remains an open decision.** erase_face / erase_edge / delete_group have
-> working engine ops today and are the obvious first candidates.
-> See `test/tier3_consent.test.ts`.
+> Consent was the precondition, and it landed first — deliberately, so nothing
+> destructive was ever reachable without it.
+>
+> **Wired 2026-07-16 (사용자 결재 "열어주세요"): erase_face, erase_edge,
+> delete_group.** Each goes through the consent gate, is hidden on the default
+> policy (`DEFAULT_TIER_CONFIG` = tiers [0, 1]), and is audited. Every clause of
+> their agent-facing descriptions is read off the engine rather than assumed —
+> which corrected two of my own drafts:
+> - `delete_face` **no-ops to `true`** when the face is already gone; `ok=false`
+>   means the engine could not remove it. Edges survive as wires (ADR-019).
+> - `erase_edge` uses `deleteEdgeCascade`, not the legacy bool `delete_edge`,
+>   because deleting an edge **also deletes every face sharing it**
+>   (SketchUp-style cascade) and only the cascade variant reports how many. An
+>   agent's caller needs that number.
+> - `delete_group` **does not destroy geometry** — it dissolves the grouping,
+>   un-indexes the faces and re-parents children. It is ungroup, not erase, and
+>   the consent prompt says so.
+>
+> **Still unwired, with reasons:**
+> - `delete_xia` — there is no `Scene::delete_xia`. It would be
+>   `demoteXiaToShape` + `deleteShape`: two transactions (two undo steps), and a
+>   failure of the second leaves a demotion nobody asked for. Needs a
+>   Scene-level op first.
+> - `import_step` — `axia-wasm` has no `axia-foreign` dependency at all (grep:
+>   0), so the STEP parser is not reachable from the engine build. Blocked by
+>   ADR-082 Drift #2 territory, not by policy.
+>
+> See `test/tier3_consent.test.ts` (the gate) and `test/tier3_wired.test.ts`
+> (opt-in hidden by default, nothing runs without accept, decline leaves the
+> engine untouched).
 
 각 tier 는 `axia.config.json` 의 `mcp.enabled_tiers: [0, 1]` 로 제어. 기본값
 **Tier 0 + 1** (read + constructive). Tier 2/3 는 opt-in.

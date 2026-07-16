@@ -28,6 +28,9 @@ import { scaleXiaCapability } from './scale_xia.js';
 import { offsetFaceCapability } from './offset_face.js';
 import { booleanUnionCapability } from './boolean_union.js';
 import { booleanIntersectCapability } from './boolean_intersect.js';
+import { eraseFaceCapability } from './erase_face.js';
+import { eraseEdgeCapability } from './erase_edge.js';
+import { deleteGroupCapability } from './delete_group.js';
 import type { CapabilityHandler } from './types.js';
 import { isKnownCapability } from '../tiers.js';
 
@@ -57,6 +60,11 @@ export const ALL_CAPABILITY_HANDLERS: ReadonlyArray<CapabilityHandler<any, any>>
   booleanSubtractCapability,
   booleanIntersectCapability,
   filletEdgeCapability,
+  // Tier 3 — destructive (consent-gated per call, ADR-041 P26.1). Hidden on
+  // the default policy: DEFAULT_TIER_CONFIG enables tiers [0, 1] only.
+  eraseFaceCapability,
+  eraseEdgeCapability,
+  deleteGroupCapability,
 ];
 
 const REGISTRY = new Map<string, CapabilityHandler<any, any>>();
