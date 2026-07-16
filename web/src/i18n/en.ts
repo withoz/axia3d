@@ -1402,7 +1402,7 @@ export const EN: Record<string, string> = {
   '알 수 없는 명령입니다: {action}': 'Unknown command: {action}',
 
   // ── ToolManagerRefactored — the {param} outcome toasts ──
-  "'{name}'은 도구 작업 중 실행할 수 없습니다 — Esc 또는 Space로 먼저 완료하세요":
+  "도구 작업 중에는 '{name}' 실행 불가 — Esc 또는 Space로 먼저 완료하세요":
     "'{name}' cannot run while a tool is busy — finish it with Esc or Space first",
   '치수 표시: 켜짐': 'Dimensions: on',
   '치수 표시: 꺼짐': 'Dimensions: off',

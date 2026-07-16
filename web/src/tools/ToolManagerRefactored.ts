@@ -714,8 +714,11 @@ export class ToolManager {
     // 파괴적/구조적 명령은 도구가 작업 중일 때 차단.
     // undo는 별도 처리 (아래 분기) — busy 시 "cancel" 의미로 사용.
     if (ToolManager.BUSY_BLOCKED_ACTIONS.has(action) && this.isToolBusy()) {
-      const name = ToolManager.ACTION_DISPLAY[action] ?? action;
-      Toast.warning(t("'{name}'은 도구 작업 중 실행할 수 없습니다 — Esc 또는 Space로 먼저 완료하세요", { name }));
+      // ACTION_DISPLAY is a data table (the batch-4 catalog pattern): the
+      // Korean is the key, translated here at the read site. Used raw it put
+      // a Korean command name inside an otherwise-English sentence.
+      const name = t(ToolManager.ACTION_DISPLAY[action] ?? action);
+      Toast.warning(t("도구 작업 중에는 '{name}' 실행 불가 — Esc 또는 Space로 먼저 완료하세요", { name }));
       debugLog(`[Action] ${action} blocked — tool is busy`);
       return;
     }

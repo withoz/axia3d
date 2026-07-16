@@ -393,6 +393,57 @@ describe('ADR-294 — en.ts hygiene', () => {
     expect(missing, `Korean in ${file} with no en.ts entry`).toEqual([]);
   });
 
+  it.each(MIGRATED_FILES)('every Korean data table in $file is read through t()', ({ file }) => {
+    // The blind spot the two guards above share. A Korean-valued lookup table
+    // — OP_NAME_KO, ACTION_DISPLAY — puts its Korean IN en.ts, so "has an
+    // entry" passes; but if the read site never calls t(), it renders Korean
+    // whatever the locale. Both shipped that way: English users saw
+    // "차집합 (multi, auto-split) done" and "'면 머지'은 도구 작업 중…".
+    // The Korean is the key; t() belongs at the read site.
+    const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+    const raw: string[] = [];
+    for (const m of src.matchAll(/(?:const|readonly)\s+([A-Z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*[{[]/g)) {
+      const open = m.index! + m[0].length - 1;
+      let depth = 0;
+      let end = open;
+      for (; end < src.length; end++) {
+        if (src[end] === '{' || src[end] === '[') depth++;
+        else if (src[end] === '}' || src[end] === ']') {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      // Korean must sit in a VALUE, not just a comment in the body — else
+      // LOD_THRESHOLDS and friends (Korean comments, numeric values) trip it.
+      const body = src.slice(open, end);
+      const hasKoreanValue = [...body.matchAll(/'((?:[^'\\]|\\.)*)'/g)].some((v) =>
+        /[가-힣]/.test(v[1]),
+      );
+      if (!hasKoreanValue) continue;
+
+      const name = m[1];
+      for (const use of src.matchAll(new RegExp(String.raw`\b${name}\s*[[.]`, 'g'))) {
+        const from = src.lastIndexOf('\n', use.index!) + 1;
+        const to = src.indexOf('\n', use.index!);
+        const line = src.slice(from, to < 0 ? src.length : to);
+        if (new RegExp(String.raw`\b(?:const|readonly)\s+${name}\b`).test(line)) continue;
+        if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
+        // .map/.forEach hand each entry to a callback that can call t() itself
+        if (new RegExp(String.raw`\b${name}\s*\.\s*(map|forEach|filter|find|some|every|length)\b`).test(line)) continue;
+        // Is THIS read wrapped — not merely "is there a t( somewhere on the
+        // line". `t('…{op}', { op: OP_NAME_KO[o] })` has a t( and is still a
+        // raw read; testing the line let that mutation through. Walk back over
+        // any qualifier (`ToolManager.`) and look for the opening `t(`.
+        let k = use.index!;
+        while (k > 0 && /[\w$.]/.test(src[k - 1])) k--;
+        while (k > 0 && /\s/.test(src[k - 1])) k--;
+        if (src.slice(k - 2, k) === 't(') continue;
+        raw.push(`${name} @ ${line.trim().slice(0, 70)}`);
+      }
+    }
+    expect(raw, `${file}: Korean table read without t() — renders Korean in every locale`).toEqual([]);
+  });
+
   it.each(MIGRATED_FILES)('every t() call in $file has an English entry', ({ file, minLiteralKeys }) => {
     // The other direction: a wrapped string with no translation renders Korean,
     // which is fine — but for a file the batch claims to have DONE, silence is
