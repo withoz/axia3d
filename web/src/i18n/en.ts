@@ -2196,4 +2196,30 @@ export const EN: Record<string, string> = {
   // backticks too; these are the keys that turned up.
   'IFC 가져오기는 준비중입니다.\n': 'IFC import is not ready yet.\n',
   '대안: Revit / ArchiCAD 에서 OBJ 또는 DXF 로 내보낸 뒤 가져오세요.': 'Alternative: export to OBJ or DXF from Revit / ArchiCAD, then import that.',
+
+  // ══════════════════════════════════════════════════════════════════════
+  // batch 13 — the status-bar tool label (toolDisplayNames.ts)
+  //
+  // The tool names were English-only, so a Korean user clicked 「사각형」 and
+  // the status bar said "Rectangle". The survey never saw it: the scanner
+  // hunts raw Korean, and hard-coded English has none. survey 0 means "no
+  // raw Korean", not "i18n complete" — this is the gap.
+  //
+  // 52 of the 64 names already had keys here, because a tool name is the
+  // same word the menu uses. Only these 12 are new.
+  // ══════════════════════════════════════════════════════════════════════
+  '다각형 구멍': 'Polygon Hole',
+  '분할': 'Split',
+  '슬라이스': 'Slice',
+  '경계': 'Boundary',
+  'NURBS 편집': 'NURBS Edit',
+  // Views keep the axis hint: with Z-up (LOCKED #43), "Top" being XY is not
+  // self-evident, and the drawing vocabulary (평면도/정면도) is the Korean
+  // AxiaCommands already uses.
+  '평면도 (XY)': 'Top (XY)',
+  '저면도 (XY)': 'Bottom (XY)',
+  '정면도 (XZ)': 'Front (XZ)',
+  '배면도 (XZ)': 'Back (XZ)',
+  '우측면도 (YZ)': 'Right (YZ)',
+  '좌측면도 (YZ)': 'Left (YZ)',
 };

@@ -193,6 +193,10 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   { file: 'src/tools/DrawText3DTool.ts', minLiteralKeys: 3 },
   { file: 'src/tools/MeasureTool.ts', minLiteralKeys: 3 },
   { file: 'src/tools/NurbsEditTool.ts', minLiteralKeys: 3 },
+  // batch 13 — the status-bar tool label. Found by clicking, not by scanning:
+  // the names were hard-coded English, and a scanner hunting raw Korean sees
+  // nothing in an English string.
+  { file: 'src/ui/toolDisplayNames.ts', minLiteralKeys: 60 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -588,6 +592,66 @@ describe('ADR-294 — en.ts hygiene', () => {
       }
     }
     expect(raw, `${file}: Korean put on screen without t()`).toEqual([]);
+  });
+
+  /**
+   * Display maps whose values reach the screen.
+   *
+   * The blind spot the whole survey shares, and the reason it can report 0 and
+   * still be wrong: every guard here hunts raw *Korean*. A map of hard-coded
+   * *English* has none, so it scans clean — while a Korean user clicks 「사각형」
+   * on the toolbar and the status bar answers "Rectangle". TOOL_DISPLAY_NAMES
+   * sat that way through twelve batches and was found by clicking, not by
+   * scanning. survey 0 means "no raw Korean", not "i18n complete".
+   *
+   * Nothing generic can tell a UI string from an identifier, so the maps are
+   * named. Adding a map here is cheap; the guard is what makes the next tool
+   * added to it fail loudly instead of silently shipping English.
+   */
+  const DISPLAY_MAPS: { file: string; maps: string[]; allow: string[] }[] = [
+    {
+      file: 'src/ui/toolDisplayNames.ts',
+      maps: ['TOOL_DISPLAY_NAMES', 'VIEW_DISPLAY_NAMES'],
+      // Identical in both locales, and D2 keys on the source text — there is
+      // no Korean here to key on.
+      allow: ['Extrude/Cut'],
+    },
+  ];
+
+  it.each(DISPLAY_MAPS)('every display value in $file goes through t()', ({ file, maps, allow }) => {
+    const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+    const bad: string[] = [];
+    for (const name of maps) {
+      const start = src.indexOf(`export const ${name}`);
+      // Guards the guard: a renamed map would make this vacuously pass.
+      expect(start, `${name} not found in ${file}`).toBeGreaterThan(-1);
+      const open = src.indexOf('{', start);
+      let depth = 0;
+      let end = open;
+      for (; end < src.length; end++) {
+        if (src[end] === '{') depth++;
+        else if (src[end] === '}') {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      const body = src.slice(open, end);
+      const entries = [...body.matchAll(/^\s+'?[\w-]+'?:\s*(.+?),\s*$/gm)];
+      expect(entries.length, `${name}: no entries parsed`).toBeGreaterThan(5);
+      for (const m of entries) {
+        const v = m[1].trim();
+        if (v.startsWith('t(')) continue;
+        const lit = /^'((?:[^'\\]|\\.)*)'$/.exec(v);
+        if (lit && allow.includes(lit[1])) continue;
+        bad.push(`${name} → ${m[0].trim()}`);
+      }
+    }
+    expect(
+      bad,
+      `${file}: display value not wrapped in t(). A hard-coded name renders ` +
+        'the same in every locale — which is exactly the bug that let the ' +
+        'status bar show English to a Korean user for twelve batches.',
+    ).toEqual([]);
   });
 
   it.each(MIGRATED_FILES)('every Korean data table in $file is read through t()', ({ file }) => {

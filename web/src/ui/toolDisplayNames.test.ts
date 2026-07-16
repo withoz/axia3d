@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import {
   TOOL_DISPLAY_NAMES,
   VIEW_DISPLAY_NAMES,
@@ -7,10 +8,14 @@ import {
 } from './toolDisplayNames';
 
 /**
- * Every tool id registered in ToolManagerRefactored (`this.tools.set('<id>', …)`).
- * Kept here as a drift guard: if a new tool is registered without a friendly
- * name, this list drives the "no raw-id leak" test below to fail so the status
- * bar never shows a lowercase raw id again (the original "plane" bug).
+ * These names are `t()` keys as of 2026-07-16 (ADR-294 batch 13), so this file
+ * is locale-dependent where it used to be constant. The static import above
+ * evaluates the map once, at the locale jsdom starts in — `navigator.language`
+ * is 'en-US', so the English assertions below are what the module holds. That
+ * is deliberate, not luck: the English values are the ones other call sites and
+ * tests already assert, so they are the regression surface. The Korean side
+ * needs a fresh module (the map is built at import time, which is exactly why
+ * D7 reloads the page on a locale switch) and is checked at the bottom.
  */
 const REGISTERED_TOOL_IDS = [
   'angular-dimension', 'arc', 'array-linear', 'array-radial', 'bezier',
@@ -25,14 +30,18 @@ const REGISTERED_TOOL_IDS = [
 ];
 
 describe('toolDisplayNames (status-bar command indicator SSOT)', () => {
-  it('fixes the original bug: plane → "Work Plane" (not raw "plane")', () => {
-    expect(toolDisplayName('plane')).toBe('Work Plane');
+  it('fixes the original bug: plane → a name, not the raw "plane"', () => {
+    // 'Work plane' (lower p) because the key 「작업 평면」 was already in en.ts
+    // for the menu — a tool name is the same word the menu uses, and reusing
+    // the key is what stops the two from drifting apart again.
+    expect(toolDisplayName('plane')).toBe('Work plane');
   });
 
   it('preserves the values other call sites / tests assert', () => {
     expect(toolDisplayName('select')).toBe('Select');
     expect(toolDisplayName('line')).toBe('Line');
     expect(toolDisplayName('rect')).toBe('Rectangle');
+    // Not a t() key: identical in both locales, and D2 keys on source text.
     expect(toolDisplayName('pushpull')).toBe('Extrude/Cut');
   });
 
@@ -52,7 +61,7 @@ describe('toolDisplayNames (status-bar command indicator SSOT)', () => {
   });
 
   it('resolves the view modes shown in #tool-label', () => {
-    expect(viewDisplayName('3d')).toBe('3D Perspective');
+    expect(viewDisplayName('3d')).toBe('3D view');
     expect(viewDisplayName('top')).toBe('Top (XY)');
     expect(viewDisplayName('left')).toBe('Left (YZ)');
     expect(Object.keys(VIEW_DISPLAY_NAMES).sort()).toEqual(
@@ -62,5 +71,30 @@ describe('toolDisplayNames (status-bar command indicator SSOT)', () => {
 
   it('falls back to the raw mode for an unknown view (never throws)', () => {
     expect(viewDisplayName('iso')).toBe('iso');
+  });
+});
+
+describe('toolDisplayNames under ko', () => {
+  beforeEach(() => {
+    setLocale('ko');
+    // The map is built once, at import. Without a fresh module we would be
+    // re-reading the English values the static import already froze — the test
+    // would pass while proving nothing.
+    vi.resetModules();
+  });
+
+  it('shows Korean names, which is the whole point of batch 13', async () => {
+    const m = await import('./toolDisplayNames');
+    // The bug: a Korean user clicked 「사각형」 and the status bar said
+    // "Rectangle", because these were hard-coded English.
+    expect(m.toolDisplayName('rect')).toBe('사각형');
+    expect(m.toolDisplayName('plane')).toBe('작업 평면');
+    expect(m.viewDisplayName('top')).toBe('평면도 (XY)');
+  });
+
+  it('leaves the id fallback and the un-keyed name alone', async () => {
+    const m = await import('./toolDisplayNames');
+    expect(m.toolDisplayName('no-such-tool')).toBe('no-such-tool');
+    expect(m.toolDisplayName('pushpull')).toBe('Extrude/Cut');
   });
 });

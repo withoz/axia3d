@@ -2871,7 +2871,10 @@
       <div class="cb-tools">
         <!-- 현재 명령/도구 표시 (명령 안내) — 단위 설정(cb-unit) 바로 앞에 위치.
              도구(Rectangle 등) 또는 뷰 모드(3D Perspective 등) 표시. -->
-        <div id="tool-label">Select</div>
+        <!-- Korean is the key (ADR-294 D2); translateDom swaps it under `en`.
+             It was hard-coded "Select", so the status bar opened in English
+             for a Korean user and only became Korean once a tool was picked. -->
+        <div id="tool-label">선택</div>
         <button class="cb-unit" id="cb-unit-btn" title="단위 / 정밀도">
           <span id="cb-unit-val">0.0000</span>
           <span id="cb-unit-lbl">mm</span>

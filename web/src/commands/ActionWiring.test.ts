@@ -88,6 +88,30 @@ describe('action wiring — every data-action reaches a handler', () => {
     expect(dead, 'Dead statusbar items').toEqual([]);
   });
 
+  it('every registered tool has a display name', () => {
+    // toolDisplayName falls back to the raw id, so a missing entry does not
+    // throw — it just shows the user "nurbs-edit" where a name belongs. That
+    // is the drift this module was created to end (메타-원칙 #4); without a
+    // guard it re-opens the moment someone registers a tool.
+    const tm = read('src/tools/ToolManagerRefactored.ts');
+    const registered = [...tm.matchAll(/tools\.set\('([^']+)'/g)].map((m) => m[1]);
+    expect(registered.length).toBeGreaterThan(30);
+
+    const disp = read('src/ui/toolDisplayNames.ts');
+    const block = disp.slice(
+      disp.indexOf('TOOL_DISPLAY_NAMES'),
+      disp.indexOf('VIEW_DISPLAY_NAMES'),
+    );
+    const named = new Set([...block.matchAll(/^\s+'?([\w-]+)'?:/gm)].map((m) => m[1]));
+
+    const unnamed = registered.filter((id) => !named.has(id));
+    expect(
+      unnamed,
+      'Tools with no entry in TOOL_DISPLAY_NAMES — the status bar will show ' +
+        'the raw tool id instead of a name.',
+    ).toEqual([]);
+  });
+
   it('no catalog command points at a handler that no longer exists', () => {
     // The palette lists what the catalog holds. view-shadow-pro and the two
     // solar-heatmap ids outlived their MenuBar cases (deleted 2026-05-16) and

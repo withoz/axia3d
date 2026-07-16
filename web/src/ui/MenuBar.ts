@@ -18,7 +18,7 @@ import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import type { ImportFormat } from '../import/FileImporter';
 import { timestampedName } from '../export/ExportUtils';
-import { toolDisplayName } from './toolDisplayNames';
+import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
 
 export interface MenuBarDeps {
   viewport: Viewport;
@@ -190,6 +190,11 @@ export function initMenuBar(deps: MenuBarDeps): void {
     vmBar?.querySelectorAll('.view-btn').forEach(b =>
       b.classList.toggle('active', (b as HTMLElement).dataset.view === view)
     );
+    // Three ways to switch the view; this was the only one that left the label
+    // showing the previous *tool*. The ViewModeBar buttons and the t/b/f keys
+    // both write it (KeyboardShortcuts), so the menu was the odd one out.
+    const toolLabel = document.getElementById('tool-label');
+    if (toolLabel) toolLabel.textContent = viewDisplayName(view);
   };
 
   // ── Action Dispatcher ──
