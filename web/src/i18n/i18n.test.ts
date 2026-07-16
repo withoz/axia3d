@@ -169,6 +169,12 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   // else, so there is no literal to count. The 11 preset names are still
   // held to account — as en.ts keys, by the Korean-literal guard.
   { file: 'src/ui/StylePanel.ts', minLiteralKeys: 0 },
+  // batch 10 — the command line. Its `help` strings were dead (nothing read
+  // them) and the `help` command printed a hardcoded list naming three
+  // commands that do not exist; both are fixed, so the help text is now
+  // reachable copy and has to be translated.
+  { file: 'src/ui/CommandRegistry.ts', minLiteralKeys: 67 },
+  { file: 'src/ui/CommandInput.ts', minLiteralKeys: 5 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -362,6 +368,7 @@ describe('ADR-294 — en.ts hygiene', () => {
     '면 #$1',                        // a regex REPLACEMENT template, not a string
     '부피 무결성 위반으로 취소됨',    // a matcher for engine output, not output
     '한국어',                        // the language button: names stay in their own language
+    '무결성',                        // a command ALIAS — what the user types, not what they read
   ]);
 
   it.each(MIGRATED_FILES)('every Korean literal in $file has an English entry', ({ file }) => {

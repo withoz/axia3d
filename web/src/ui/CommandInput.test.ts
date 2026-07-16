@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CommandInput, CommandHandler } from './CommandInput';
+import { setLocale } from '../i18n';
 
 // Stub debugLog
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
@@ -8,6 +9,8 @@ describe('CommandInput', () => {
   let cmd: CommandInput;
 
   beforeEach(() => {
+    // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+    setLocale('ko');
     // Clean up previous DOM artifacts
     document.getElementById('command-input-panel')?.remove();
     document.getElementById('command-input-styles')?.remove();
@@ -93,6 +96,47 @@ describe('CommandInput', () => {
   });
 
   describe('command execution', () => {
+    it('a handler that printed keeps its output', () => {
+      // Regression: every print* writes the same element, and executeCommand
+      // used to append an unconditional "실행됨: X" right after execute().
+      // So `curves`, `verify`, `mergetol` and `help` printed their result and
+      // had it wiped in the same tick — measured in the browser, all four
+      // showed only "실행됨: <name>".
+      cmd.registerHandler({
+        name: 'speaks',
+        help: 'h',
+        execute: () => cmd.printInfo('the real answer'),
+      });
+      cmd.show();
+      const input = document.querySelector('.command-input-field') as HTMLInputElement;
+      input.value = 'speaks';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      const output = document.querySelector('.command-output') as HTMLElement;
+      expect(output.textContent).toBe('the real answer');
+      expect(output.textContent).not.toContain('실행됨');
+    });
+
+    it('a silent handler still confirms it ran', () => {
+      cmd.registerHandler({ name: 'silent', help: 'h', execute: () => {} });
+      cmd.show();
+      const input = document.querySelector('.command-input-field') as HTMLInputElement;
+      input.value = 'silent';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      const output = document.querySelector('.command-output') as HTMLElement;
+      expect(output.textContent).toContain('실행됨');
+      expect(output.textContent).toContain('silent');
+    });
+
+    it('listHandlers returns each command once, not once per alias', () => {
+      cmd.registerHandler({ name: 'solo', help: 'h', execute: () => {} });
+      cmd.registerHandler({ name: 'aliased', aliases: ['a1', 'a2'], help: 'h', execute: () => {} });
+      const names = cmd.listHandlers().map((h) => h.name);
+      expect(names.filter((n) => n === 'aliased')).toHaveLength(1);
+      expect(names).toContain('solo');
+    });
+
     it('unknown command shows error', () => {
       cmd.show();
       const input = document.querySelector('.command-input-field') as HTMLInputElement;

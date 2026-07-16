@@ -1,15 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { initCommandRegistry, CommandRegistryDeps } from './CommandRegistry';
+import { setLocale } from '../i18n';
 
 function mockDeps(): CommandRegistryDeps {
   return {
-    commandInput: {
-      registerHandler: vi.fn(),
-      toggle: vi.fn(),
-      printSuccess: vi.fn(),
-      printInfo: vi.fn(),
-      printError: vi.fn(),
-    } as any,
+    commandInput: (() => {
+      const handlers: any[] = [];
+      return {
+        registerHandler: vi.fn((h: any) => handlers.push(h)),
+        listHandlers: vi.fn(() => handlers),
+        toggle: vi.fn(),
+        printSuccess: vi.fn(),
+        printInfo: vi.fn(),
+        printError: vi.fn(),
+      };
+    })() as any,
     bridge: {
       drawLineAsShape: vi.fn(),
       normalizeForImport: vi.fn().mockReturnValue({
@@ -33,6 +38,8 @@ describe('CommandRegistry', () => {
   let deps: ReturnType<typeof mockDeps>;
 
   beforeEach(() => {
+    // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+    setLocale('ko');
     deps = mockDeps();
     initCommandRegistry(deps);
   });
@@ -154,9 +161,21 @@ describe('CommandRegistry', () => {
       expect(helpHandler.aliases).toContain('?');
     });
 
-    it('prints command list', () => {
+    it('lists the commands that are actually registered', () => {
       helpHandler.execute([]);
-      expect(deps.commandInput.printInfo).toHaveBeenCalled();
+      const text = (deps.commandInput.printInfo as any).mock.calls[0][0] as string;
+      // Every registered command appears...
+      for (const h of (deps.commandInput as any).listHandlers()) {
+        expect(text).toContain(h.name);
+      }
+      // ...and nothing invented. The old hardcoded list named these three,
+      // none of which are commands, which is the bug this test exists for.
+      expect(text).not.toMatch(/^R \[/m);
+      expect(text).not.toMatch(/^C \[/m);
+      expect(text).not.toMatch(/^P \[/m);
+      // and it reaches the ones the hardcoded list forgot
+      expect(text).toContain('mergetol');
+      expect(text).toContain('repair');
     });
   });
 
