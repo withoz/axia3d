@@ -107,10 +107,15 @@ describe('ADR-294 D6 — module-scope t() under reload semantics', () => {
  * guards below read it, so adding a file here without translating it fails,
  * and translating one without listing it leaves its entries looking orphaned.
  */
-const MIGRATED_FILES = [
-  'src/bridge/humanizeEngineError.ts',   // batch 1
-  'src/units/SettingsPanel.ts',          // batch 3
+const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
+  { file: 'src/bridge/humanizeEngineError.ts', minLiteralKeys: 6 },  // batch 1
+  { file: 'src/units/SettingsPanel.ts', minLiteralKeys: 25 },        // batch 3
+  // Translates at render — t(sec.title) / t(r.description) — so only the two
+  // modal-chrome strings are literals. Its 75 SECTIONS strings are covered by
+  // ShortcutHelpModal.test.ts, which renders the sheet and looks for Hangul.
+  { file: 'src/ui/ShortcutHelpModal.ts', minLiteralKeys: 2 },        // batch 3
 ];
+const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
 /**
  * index.html holds the app's chrome as static markup, so it is a translation
@@ -200,20 +205,20 @@ describe('ADR-294 — en.ts hygiene', () => {
   it('no orphan: every entry is still referenced in the source', () => {
     // The honest cost of source-as-key (D2): editing the Korean orphans its
     // English silently. This finds the orphan.
-    const ts = MIGRATED_FILES.map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
+    const ts = MIGRATED_PATHS.map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
     const src = [...ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
     const missing = Object.keys(EN).filter((k) => !src.includes(k));
     expect(missing, 'en.ts entries whose Korean no longer exists in the source')
       .toEqual([]);
   });
 
-  it.each(MIGRATED_FILES)('every t() call in %s has an English entry', (file) => {
+  it.each(MIGRATED_FILES)('every t() call in $file has an English entry', ({ file, minLiteralKeys }) => {
     // The other direction: a wrapped string with no translation renders Korean,
     // which is fine — but for a file the batch claims to have DONE, silence is
     // an omission, not a fallback.
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const keys = [...src.matchAll(/\bt\(\s*'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]);
-    expect(keys.length, `${file} must actually be wrapped`).toBeGreaterThan(5);
+    expect(keys.length, `${file} must actually be wrapped`).toBeGreaterThanOrEqual(minLiteralKeys);
     const untranslated = keys.filter((k) => /[가-힣]/.test(k) && !(k in EN));
     expect(untranslated, `wrapped in ${file} but missing from en.ts`).toEqual([]);
   });
@@ -222,7 +227,7 @@ describe('ADR-294 — en.ts hygiene', () => {
     // The gap the t()-call guard cannot see: a string that was never wrapped at
     // all. Scoped to innerHTML/textContent assignments, which is where a panel's
     // copy lives — code-level Korean (comments, console) is out of scope.
-    for (const file of MIGRATED_FILES) {
+    for (const { file } of MIGRATED_FILES) {
       const src = readFileSync(resolve(process.cwd(), file), 'utf8');
       for (const m of src.matchAll(/(innerHTML|textContent)\s*=\s*`([\s\S]*?)`/g)) {
         // strip every ${...} — a wrapped string lives inside one

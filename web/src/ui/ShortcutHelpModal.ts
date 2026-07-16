@@ -5,6 +5,8 @@
  * ESC 또는 배경 클릭으로 닫히며, 다시 F1을 누르면 토글.
  */
 
+import { t } from '../i18n';
+
 const MODAL_ID = 'shortcut-help-modal';
 
 interface ShortcutRow {
@@ -117,15 +119,27 @@ const SECTIONS: ShortcutSection[] = [
   },
 ];
 
+/**
+ * SECTIONS stays pure data and t() is applied HERE, at render (ADR-294).
+ *
+ * Either place would work — D6 measured that a module-scope t() already sees
+ * the persisted locale — but translating at render keeps the table readable as
+ * a table, and it is the same shape batch 4 needs for the catalogs, which
+ * cannot import t() at all.
+ *
+ * `key` is never translated: 'Ctrl+Z' is a key, not a word. The one exception
+ * is the two Korean keys ('Alt+엣지 클릭'), which describe a gesture rather
+ * than name a key.
+ */
 function buildModalHtml(): string {
   const columns = SECTIONS.map(sec => `
     <div class="sh-section">
-      <h3>${sec.title}</h3>
+      <h3>${t(sec.title)}</h3>
       <table>
         ${sec.rows.map(r => `
           <tr>
-            <td class="sh-key"><kbd>${r.key}</kbd></td>
-            <td class="sh-desc">${r.description}</td>
+            <td class="sh-key"><kbd>${t(r.key)}</kbd></td>
+            <td class="sh-desc">${t(r.description)}</td>
           </tr>
         `).join('')}
       </table>
@@ -136,11 +150,11 @@ function buildModalHtml(): string {
     <div class="sh-modal-overlay">
       <div class="sh-modal">
         <div class="sh-header">
-          <h2>AXiA 3D 키보드 단축키</h2>
+          <h2>${t('AXiA 3D 키보드 단축키')}</h2>
           <button class="sh-close" aria-label="Close">✕</button>
         </div>
         <div class="sh-grid">${columns}</div>
-        <div class="sh-footer">F1로 다시 열기 · Esc로 닫기</div>
+        <div class="sh-footer">${t('F1로 다시 열기 · Esc로 닫기')}</div>
       </div>
     </div>
   `;

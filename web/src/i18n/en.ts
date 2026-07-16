@@ -497,4 +497,91 @@ export const EN: Record<string, string> = {
   '아래(−) 거리 (mm)': 'Down (−) distance (mm)',
   '대칭 = profile 평면 기준 양쪽 각 d (총 2d). 비대칭 = +방향은 돌출 거리, −방향은 위 값. 단방향이 기본 (동작 불변).':
     'Symmetric = d each way from the profile plane (2d total). Two-sided = the extrude distance goes up, this value goes down. One-way is the default and behaves as before.',
+
+  // ── batch 3 — ShortcutHelpModal (F1) ──
+  // Most rows are `English (Korean gloss)` — 'Select (선택)' — so the English
+  // is just the term with the gloss dropped. Keys are never translated
+  // ('Ctrl+Z' is a key, not a word); the three Korean "keys" are gestures.
+  'AXiA 3D 키보드 단축키': 'AXiA 3D keyboard shortcuts',
+  'F1로 다시 열기 · Esc로 닫기': 'F1 to reopen · Esc to close',
+
+  '도구': 'Tools',
+  '편집': 'Edit',
+  '보기 / 화면': 'View / display',
+  '스냅 / 축': 'Snap / axis',
+  '패널': 'Panels',
+  '스케치 / 선택': 'Sketch / selection',
+
+  'Select (선택)': 'Select',
+  'Line (선)': 'Line',
+  'Rect (사각형)': 'Rect',
+  'Circle (원)': 'Circle',
+  '📐 Centerline (중심선)': '📐 Centerline',
+  'Arc (호)': 'Arc',
+  'Polygon (다각형)': 'Polygon',
+  'Extrude/Cut (돌출/잘라내기 · Volume)': 'Extrude / Cut (volume)',
+  'Sphere (구)': 'Sphere',
+  'Cylinder (원통)': 'Cylinder',
+  'Cone (원뿔)': 'Cone',
+  'Move (이동)': 'Move',
+  'Rotate (회전)': 'Rotate',
+  'Erase (지우기)': 'Erase',
+  'Measure Tool (2점 거리 / 3점 각도)': 'Measure (2-point distance / 3-point angle)',
+  'Select 도구로 복귀': 'Back to the Select tool',
+
+  'Undo (되돌리기)': 'Undo',
+  'Redo (다시 실행)': 'Redo',
+  '복사 (선택된 면)': 'Copy (selected faces)',
+  '잘라내기 (복사 + 삭제)': 'Cut (copy + delete)',
+  '붙여넣기 (offset 500,0,500mm)': 'Paste (offset 500,0,500mm)',
+  '복제 (즉시 duplicate)': 'Duplicate (immediately)',
+  'Select All (전체 선택)': 'Select all',
+  '프로젝트 저장': 'Save project',
+  '프로젝트 열기': 'Open project',
+  '재질 패널': 'Materials panel',
+  '취소 / 선택 해제': 'Cancel / deselect',
+  '선택 XIA 이름 변경': 'Rename the selected XIA',
+  'Face Reverse (면 뒤집기)': 'Reverse face',
+
+  '이 도움말': 'This help',
+  'OSNAP 토글': 'Toggle OSNAP',
+  '그리드 표시/숨김': 'Show/hide grid',
+  '뷰 원점 복귀 (카메라 리셋)': 'Reset the view (camera)',
+  '엣지 표시/숨김': 'Show/hide edges',
+  '축 표시/숨김': 'Show/hide axes',
+  '그리드 표시/숨김 (대체)': 'Show/hide grid (alternative)',
+  'Top / Bottom 뷰': 'Top / Bottom view',
+  'Front / Back 뷰': 'Front / Back view',
+  '3D 투시 뷰': '3D perspective view',
+
+  'Tentative snap 순환': 'Cycle tentative snaps',
+  'Inference Lock (스냅 고정)': 'Inference lock (pin the snap)',
+  'X축 고정': 'Lock to the X axis',
+  'Y축 고정': 'Lock to the Y axis',
+  'Z축 고정': 'Lock to the Z axis',
+  '축 고정 해제': 'Release the axis lock',
+  'Endpoint 스냅 토글': 'Toggle endpoint snap',
+  'Midpoint 스냅 토글': 'Toggle midpoint snap',
+  'Intersection 스냅 토글': 'Toggle intersection snap',
+  'Center 스냅 토글': 'Toggle center snap',
+  'Perpendicular 스냅 토글': 'Toggle perpendicular snap',
+  'Parallel 스냅 토글': 'Toggle parallel snap',
+  'OnFace 스냅 토글': 'Toggle on-face snap',
+  'Grid 스냅 토글': 'Toggle grid snap',
+  'Nearest 스냅 토글': 'Toggle nearest snap',
+
+  'Outliner (컴포넌트 패널)': 'Outliner (components panel)',
+  'Constraint 패널': 'Constraints panel',
+  '작업 기록 패널 (Parametric History)': 'History panel (parametric)',
+
+  'Alt+엣지 클릭': 'Alt + click an edge',
+  '메뉴 → ✏️': 'Menu → ✏️',
+  '메뉴 → 스케치 종료': 'Menu → Exit sketch',
+  '폴리라인 체인 자동 선택 (Loop Select)': 'Select the whole polyline chain (loop select)',
+  'Sketch 모드 시작 (XZ 바닥 / XY 정면 / YZ 측면 / 선택 면)':
+    'Start sketch mode (XZ ground / XY front / YZ side / selected face)',
+  '닫힌 프로필 자동 감지 → 높이 prompt → Extrude/Cut':
+    'Detects a closed profile → asks for a height → extrudes / cuts',
+  '우클릭 → 색상 지정 (선택 면에 즉석 커스텀 material)':
+    'Right-click → set a colour (an instant custom material on the selected faces)',
 };
