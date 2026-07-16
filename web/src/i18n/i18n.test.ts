@@ -148,6 +148,9 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   { file: 'src/ui/BooleanHandler.ts', minLiteralKeys: 2 },
   { file: 'src/tools/actions/MergeActions.ts', minLiteralKeys: 9 },
   { file: 'src/ui/KeyboardShortcuts.ts', minLiteralKeys: 4 },
+  // batch 7 — the action dispatcher. Biggest single file: most of what a menu
+  // item or a command-palette entry actually runs ends up reporting here.
+  { file: 'src/tools/ToolManagerRefactored.ts', minLiteralKeys: 70 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 

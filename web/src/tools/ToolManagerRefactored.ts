@@ -4,6 +4,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { Viewport } from '../viewport/Viewport';
 import { WasmBridge } from '../bridge/WasmBridge';
 import { frameScheduler } from '../core/FrameScheduler';
@@ -714,7 +715,7 @@ export class ToolManager {
     // undo는 별도 처리 (아래 분기) — busy 시 "cancel" 의미로 사용.
     if (ToolManager.BUSY_BLOCKED_ACTIONS.has(action) && this.isToolBusy()) {
       const name = ToolManager.ACTION_DISPLAY[action] ?? action;
-      Toast.warning(`'${name}'은 도구 작업 중 실행할 수 없습니다 — Esc 또는 Space로 먼저 완료하세요`);
+      Toast.warning(t("'{name}'은 도구 작업 중 실행할 수 없습니다 — Esc 또는 Space로 먼저 완료하세요", { name }));
       debugLog(`[Action] ${action} blocked — tool is busy`);
       return;
     }
@@ -751,7 +752,7 @@ export class ToolManager {
         this.selectionDimLines = [];
         this.dimLabel.clear();
       }
-      Toast.info(`치수 표시: ${this._selectionDimsEnabled ? 'ON' : 'OFF'}`, 1500);
+      Toast.info(t(this._selectionDimsEnabled ? '치수 표시: 켜짐' : '치수 표시: 꺼짐'), 1500);
       debugLog(`[Action] toggle-selection-dims → ${this._selectionDimsEnabled}`);
     } else if (action === 'clipboard-copy' || action === 'clipboard-cut') {
       // Ctrl+C / Ctrl+X — 현재 선택된 face를 클립보드에 저장.
@@ -760,15 +761,15 @@ export class ToolManager {
       const edges = this.selection.getSelectedEdges();
       if (faces.length === 0) {
         if (edges.length > 0) {
-          Toast.warning('엣지 복사는 아직 미지원 — 면을 선택하세요', 3000);
+          Toast.warning(t('엣지 복사는 아직 미지원 — 면을 선택하세요'), 3000);
         } else {
-          Toast.info('복사할 항목이 선택되지 않음', 2000);
+          Toast.info(t('복사할 항목이 선택되지 않음'), 2000);
         }
         return;
       }
       getClipboard().copy('faces', faces);
       const verb = action === 'clipboard-cut' ? '잘라내기' : '복사';
-      Toast.info(`${faces.length}개 면 ${verb} — Ctrl+V로 붙여넣기`, 2500);
+      Toast.info(t('{n}개 면 {verb} — Ctrl+V로 붙여넣기', { n: faces.length, verb }), 2500);
       debugLog(`[Action] ${action}: ${faces.length} faces`);
       if (action === 'clipboard-cut') {
         // cut = copy + delete. delete는 이미 batchDelete 경로가 있으므로 재사용.
@@ -793,13 +794,13 @@ export class ToolManager {
       if (action === 'duplicate') {
         sourceFaces = this.selection.getSelectedFaces();
         if (sourceFaces.length === 0) {
-          Toast.warning('복제할 면을 먼저 선택하세요', 2500);
+          Toast.warning(t('복제할 면을 먼저 선택하세요'), 2500);
           return;
         }
       } else {
         const clip = getClipboard().get();
         if (!clip || clip.ids.length === 0) {
-          Toast.info('붙여넣을 내용이 없습니다 — 먼저 Ctrl+C로 복사하세요', 2500);
+          Toast.info(t('붙여넣을 내용이 없습니다 — 먼저 Ctrl+C로 복사하세요'), 2500);
           return;
         }
         sourceFaces = clip.ids;
@@ -871,7 +872,7 @@ export class ToolManager {
       // Busy 가드는 executeAction 진입부의 BUSY_BLOCKED_ACTIONS에서 일괄 처리.
       const faces = this.selection.getSelectedFaces();
       if (faces.length === 0) {
-        Toast.warning('반전할 면을 먼저 선택하세요');
+        Toast.warning(t('반전할 면을 먼저 선택하세요'));
         return;
       }
       // ADR-007 Rev 2 — Sheet 면은 양면 동등 → flip 의미 없음.
@@ -890,12 +891,12 @@ export class ToolManager {
         return;
       }
       if (sheetSkipped > 0) {
-        Toast.info(`${sheetSkipped}개 sheet 면 건너뜀 (Wall 면만 반전)`, 2500);
+        Toast.info(t('{n}개 sheet 면 건너뜀 (Wall 면만 반전)', { n: sheetSkipped }), 2500);
       }
       const flipped = this.bridge.flipFaces(wallOnly);
       if (flipped > 0) {
         this.syncMesh();
-        Toast.info(`${flipped}개 면 반전됨`, 1800);
+        Toast.info(t('{n}개 면 반전됨', { n: flipped }), 1800);
         debugLog('[Action] flip-faces:', flipped);
       } else {
         const err = this.bridge.lastError();
@@ -922,7 +923,7 @@ export class ToolManager {
       // 대칭 워크플로우 (반만 모델링 후 반대쪽 복제)에 유용.
       const sel = this.selection.getSelectedFaces();
       if (sel.length === 0) {
-        Toast.warning('미러링할 면을 먼저 선택하세요', 2500);
+        Toast.warning(t('미러링할 면을 먼저 선택하세요'), 2500);
         return;
       }
       // Plane origin = world 원점, normal = 해당 축
@@ -935,7 +936,7 @@ export class ToolManager {
         // 새로 생성된 면을 선택 상태로 전환 — 사용자가 바로 이어서 편집 가능
         this.selection.clearSelection();
         const label = action === 'mirror-x' ? 'YZ' : action === 'mirror-y' ? 'XZ' : 'XY';
-        Toast.info(`${sel.length}개 면을 ${label} 평면 기준 미러링 (${newFaces.length}개 생성)`, 2500);
+        Toast.info(t('{n}개 면을 {label} 평면 기준 미러링 ({m}개 생성)', { n: sel.length, label, m: newFaces.length }), 2500);
         debugLog(`[Action] ${action}: ${newFaces.length} mirrored faces`);
       } else {
         Toast.fromBridgeError(this.bridge, '미러링 실패');
@@ -946,7 +947,7 @@ export class ToolManager {
       // 축 origin은 프로파일 bbox의 해당 축 위 점 (bbox 중심을 축에 투영).
       const sel = this.selection.getSelectedEdges();
       if (sel.length < 1) {
-        Toast.warning('회전시킬 엣지 체인을 먼저 선택하세요', 2500);
+        Toast.warning(t('회전시킬 엣지 체인을 먼저 선택하세요'), 2500);
         return;
       }
       const chain = extractEdgeChain(sel, this.bridge);
@@ -985,7 +986,7 @@ export class ToolManager {
         this.syncMesh();
         this.selection.clearSelection();
         const axisLabel = action === 'revolve-x' ? 'X' : action === 'revolve-y' ? 'Y' : 'Z';
-        Toast.info(`${chain.positions.length} point profile → ${axisLabel} 축 revolve (${newFaces.length} faces)`, 2500);
+        Toast.info(t('{n} point profile → {axis} 축 revolve ({m} faces)', { n: chain.positions.length, axis: axisLabel, m: newFaces.length }), 2500);
         debugLog(`[Action] ${action}: ${newFaces.length} faces`);
       } else {
         Toast.fromBridgeError(this.bridge, 'Revolve 실패');
@@ -999,7 +1000,7 @@ export class ToolManager {
       const faces = this.selection.getSelectedFaces();
       const edges = this.selection.getSelectedEdges();
       if (faces.length === 0 && edges.length === 0) {
-        Toast.warning('변형할 면 또는 에지를 먼저 선택하세요', 2500);
+        Toast.warning(t('변형할 면 또는 에지를 먼저 선택하세요'), 2500);
         return;
       }
       // Collect unique vertex IDs from selected faces + edges.
@@ -1012,7 +1013,7 @@ export class ToolManager {
         if (eps.length === 2) { vertSet.add(eps[0]); vertSet.add(eps[1]); }
       }
       if (vertSet.size === 0) {
-        Toast.warning('선택에서 정점을 추출할 수 없습니다', 2500);
+        Toast.warning(t('선택에서 정점을 추출할 수 없습니다'), 2500);
         return;
       }
       const vertIds = Array.from(vertSet);
@@ -1034,7 +1035,7 @@ export class ToolManager {
       else if (dy >= dz)        { axisDir = [0, 1, 0]; axisLen = dy; }
       else                      { axisDir = [0, 0, 1]; axisLen = dz; }
       if (axisLen < 1e-3) {
-        Toast.warning('선택 범위가 너무 작습니다', 2500);
+        Toast.warning(t('선택 범위가 너무 작습니다'), 2500);
         return;
       }
 
@@ -1042,7 +1043,7 @@ export class ToolManager {
         const input = window.prompt('구부리기 각도 (도, +/-):', '30');
         if (input == null) return;
         const deg = parseFloat(input);
-        if (!Number.isFinite(deg)) { Toast.warning('유효한 숫자를 입력하세요'); return; }
+        if (!Number.isFinite(deg)) { Toast.warning(t('유효한 숫자를 입력하세요')); return; }
         // Bend axis is perpendicular to the longest direction AND to world
         // up (Y) by default. This matches the natural "bend this rod" feel.
         const upish: [number, number, number] = axisDir[1] !== 0 ? [0, 0, 1] : [0, 1, 0];
@@ -1054,7 +1055,7 @@ export class ToolManager {
         const ok = this.bridge.bendVerts(vertIds, bendAxis, axisDir, origin, deg, axisLen);
         if (ok) {
           this.syncMesh();
-          Toast.info(`${vertIds.length}개 정점을 ${deg.toFixed(1)}° 구부림`, 2000);
+          Toast.info(t('{n}개 정점을 {deg}° 구부림', { n: vertIds.length, deg: deg.toFixed(1) }), 2000);
         } else {
           Toast.fromBridgeError(this.bridge, 'Bend 실패');
         }
@@ -1064,12 +1065,12 @@ export class ToolManager {
         const input = window.prompt('비틀기 각도 (축 전체에 대해 총 도수):', '45');
         if (input == null) return;
         const totalDeg = parseFloat(input);
-        if (!Number.isFinite(totalDeg)) { Toast.warning('유효한 숫자를 입력하세요'); return; }
+        if (!Number.isFinite(totalDeg)) { Toast.warning(t('유효한 숫자를 입력하세요')); return; }
         const degPerUnit = totalDeg / axisLen;
         const ok = this.bridge.twistVertsDeform(vertIds, origin, axisDir, degPerUnit);
         if (ok) {
           this.syncMesh();
-          Toast.info(`${vertIds.length}개 정점을 총 ${totalDeg.toFixed(1)}° 비틈`, 2000);
+          Toast.info(t('{n}개 정점을 총 {deg}° 비틈', { n: vertIds.length, deg: totalDeg.toFixed(1) }), 2000);
         } else {
           Toast.fromBridgeError(this.bridge, 'Twist 실패');
         }
@@ -1080,12 +1081,12 @@ export class ToolManager {
       if (input == null) return;
       const endScale = parseFloat(input);
       if (!Number.isFinite(endScale) || endScale <= 0) {
-        Toast.warning('유효한 양수 스케일을 입력하세요'); return;
+        Toast.warning(t('유효한 양수 스케일을 입력하세요')); return;
       }
       const ok = this.bridge.taperVerts(vertIds, origin, axisDir, 1.0, endScale, axisLen);
       if (ok) {
         this.syncMesh();
-        Toast.info(`${vertIds.length}개 정점을 ×${endScale.toFixed(2)} 테이퍼`, 2000);
+        Toast.info(t('{n}개 정점을 ×{s} 테이퍼', { n: vertIds.length, s: endScale.toFixed(2) }), 2000);
       } else {
         Toast.fromBridgeError(this.bridge, 'Taper 실패');
       }
@@ -1146,7 +1147,7 @@ export class ToolManager {
       // Prompt에서 "N,dx,dy,dz" 형식으로 입력받음.
       const sel = this.selection.getSelectedFaces();
       if (sel.length === 0) {
-        Toast.warning('배열할 면을 먼저 선택하세요', 2500);
+        Toast.warning(t('배열할 면을 먼저 선택하세요'), 2500);
         return;
       }
       const last = localStorage.getItem('axia:array:params') ?? '5, 2000, 0, 0';
@@ -1157,7 +1158,7 @@ export class ToolManager {
       if (input == null) return;
       const parts = input.split(/[,\s]+/).map(s => s.trim()).filter(s => s.length);
       if (parts.length !== 4) {
-        Toast.warning('4개 값이 필요합니다: N,dx,dy,dz', 3000);
+        Toast.warning(t('4개 값이 필요합니다: N,dx,dy,dz'), 3000);
         return;
       }
       const count = parseInt(parts[0], 10);
@@ -1166,7 +1167,7 @@ export class ToolManager {
       const dz = parseFloat(parts[3]);
       if (!Number.isFinite(count) || count < 1 ||
           ![dx, dy, dz].every(Number.isFinite)) {
-        Toast.warning('유효한 숫자 값을 입력하세요', 3000);
+        Toast.warning(t('유효한 숫자 값을 입력하세요'), 3000);
         return;
       }
       try { localStorage.setItem('axia:array:params', input); } catch { /* ignore */ }
@@ -1180,7 +1181,7 @@ export class ToolManager {
           input,
           { inputs: sel, outputs: newFaces },
         );
-        Toast.info(`${sel.length}개 면을 ${count}회 복제 (총 ${newFaces.length}개)`, 2500);
+        Toast.info(t('{n}개 면을 {count}회 복제 (총 {m}개)', { n: sel.length, count, m: newFaces.length }), 2500);
         debugLog(`[Action] array-linear: count=${count}, offset=(${dx},${dy},${dz})`);
       } else {
         Toast.fromBridgeError(this.bridge, '배열 실패');
@@ -1196,7 +1197,7 @@ export class ToolManager {
       // shell" 모드 고려 대상)
       const selFaces = this.selection.getSelectedFaces();
       if (selFaces.length === 0) {
-        Toast.warning('두께를 부여할 면을 먼저 선택하세요', 2500);
+        Toast.warning(t('두께를 부여할 면을 먼저 선택하세요'), 2500);
         return;
       }
       const last = localStorage.getItem('axia:thicken:distance') ?? '200';
@@ -1207,7 +1208,7 @@ export class ToolManager {
       if (input == null) return;
       const distance = parseFloat(input);
       if (!Number.isFinite(distance) || distance === 0) {
-        Toast.warning('0이 아닌 유효한 숫자를 입력하세요', 2500);
+        Toast.warning(t('0이 아닌 유효한 숫자를 입력하세요'), 2500);
         return;
       }
       try { localStorage.setItem('axia:thicken:distance', String(distance)); } catch { /* ignore */ }
@@ -1233,7 +1234,7 @@ export class ToolManager {
           { inputs: selFaces.slice() },
         );
         if (success === selFaces.length) {
-          Toast.info(`${success}개 면에 두께 ${distance}mm 부여`, 2500);
+          Toast.info(t('{n}개 면에 두께 {mm}mm 부여', { n: success, mm: distance }), 2500);
         } else {
           Toast.warning(
             `${success}/${selFaces.length}개 면 성공 — 실패: ${firstFailure || '알 수 없는 오류'}`,
@@ -1242,7 +1243,7 @@ export class ToolManager {
         }
         debugLog(`[Action] thicken-faces: ${success}/${selFaces.length}, d=${distance}mm`);
       } else {
-        Toast.error(`셸 실패: ${firstFailure || '모든 면에서 push_pull 실패'}`, 4000);
+        Toast.error(t('셸 실패: {reason}', { reason: firstFailure || t('모든 면에서 push_pull 실패') }), 4000);
       }
     } else if (action === 'loft-selected-faces') {
       // ADR-247 (Phase 3 E2) — Loft between exactly TWO selected profile
@@ -1261,7 +1262,7 @@ export class ToolManager {
       if (ok) {
         this.syncMesh();
         this.selection.clearSelection();
-        Toast.info('두 면을 로프트로 블렌드했습니다 (Loft)', 2500);
+        Toast.info(t('두 면을 로프트로 블렌드했습니다 (Loft)'), 2500);
         debugLog(`[Action] loft-selected-faces: ${lofts[0]} ↔ ${lofts[1]} OK`);
       } else {
         Toast.error(
@@ -1276,21 +1277,21 @@ export class ToolManager {
       // The face plane must contain the axis and (for partial) stay clear of it.
       const rev = this.selection.getSelectedFaces();
       if (rev.length !== 1) {
-        Toast.warning(`회전체는 프로파일 면 1개를 선택하세요 (현재 ${rev.length}개)`, 3000);
+        Toast.warning(t('회전체는 프로파일 면 1개를 선택하세요 (현재 {n}개)', { n: rev.length }), 3000);
         return;
       }
       const angStr = window.prompt('회전 각도 (도, 1~360):', localStorage.getItem('axia:revolve:angle') ?? '90');
       if (angStr == null) return;
       const deg = parseFloat(angStr);
       if (!Number.isFinite(deg) || deg <= 0 || deg > 360) {
-        Toast.warning('1~360 사이 각도를 입력하세요', 2500);
+        Toast.warning(t('1~360 사이 각도를 입력하세요'), 2500);
         return;
       }
       const axStr = (window.prompt('회전축 (X / Y / Z, 면 평면이 축을 포함해야 함):', localStorage.getItem('axia:revolve:axis') ?? 'Z') ?? '').trim().toUpperCase();
       const axis: [number, number, number] | null =
         axStr === 'X' ? [1, 0, 0] : axStr === 'Y' ? [0, 1, 0] : axStr === 'Z' ? [0, 0, 1] : null;
       if (!axis) {
-        Toast.warning('축은 X, Y, Z 중 하나여야 합니다', 2500);
+        Toast.warning(t('축은 X, Y, Z 중 하나여야 합니다'), 2500);
         return;
       }
       try {
@@ -1302,7 +1303,7 @@ export class ToolManager {
       if (ok) {
         this.syncMesh();
         this.selection.clearSelection();
-        Toast.info(`회전체 생성 — ${deg}° around ${axStr} (Revolve)`, 2500);
+        Toast.info(t('회전체 생성 — {deg}° around {axis} (Revolve)', { deg, axis: axStr }), 2500);
         debugLog(`[Action] revolve-face-solid: face ${rev[0]} ${deg}° ${axStr} OK`);
       } else {
         Toast.error(
@@ -1341,12 +1342,12 @@ export class ToolManager {
       // 선택된 단일 면의 평면에서 스케치 시작.
       const faces = this.selection.getSelectedFaces();
       if (faces.length !== 1) {
-        Toast.warning('스케치 기준 면 1개를 선택하세요', 2500);
+        Toast.warning(t('스케치 기준 면 1개를 선택하세요'), 2500);
         return;
       }
       const boundary = this.toolContext.extractFaceBoundary(faces[0]);
       if (boundary.length < 3) {
-        Toast.error('선택 면의 경계를 읽을 수 없습니다', 3000);
+        Toast.error(t('선택 면의 경계를 읽을 수 없습니다'), 3000);
         return;
       }
       // Compute plane from 3 non-colinear boundary points
@@ -1357,7 +1358,7 @@ export class ToolManager {
       const edgeB = new THREE.Vector3().subVectors(p2, p0);
       const normal = new THREE.Vector3().crossVectors(edgeA, edgeB).normalize();
       if (normal.lengthSq() < 1e-8) {
-        Toast.error('선택 면이 퇴화되어 스케치 평면을 계산할 수 없습니다', 3000);
+        Toast.error(t('선택 면이 퇴화되어 스케치 평면을 계산할 수 없습니다'), 3000);
         return;
       }
       // Up: prefer world Y projection onto plane; fall back to edgeA
@@ -1371,7 +1372,7 @@ export class ToolManager {
         normal,
         up,
       });
-      Toast.info(`✏️ 스케치 시작 — 면 #${faces[0]}. 모든 드로잉이 이 평면에 고정됩니다.`, 4000);
+      Toast.info(t('✏️ 스케치 시작 — 면 #{id}. 모든 드로잉이 이 평면에 고정됩니다.', { id: faces[0] }), 4000);
     } else if (action === 'sketch-start-auto') {
       // Phase 4 — auto-detect 평면.
       this.startSketchAuto();
@@ -1381,7 +1382,7 @@ export class ToolManager {
       try {
         const raw = localStorage.getItem('axia.sketch.lastPlane');
         if (!raw) {
-          Toast.warning('이전에 사용한 스케치 평면 정보가 없습니다', 2500);
+          Toast.warning(t('이전에 사용한 스케치 평면 정보가 없습니다'), 2500);
           return;
         }
         const data = JSON.parse(raw) as {
@@ -1393,20 +1394,20 @@ export class ToolManager {
           normal: new THREE.Vector3().fromArray(data.normal),
           up: new THREE.Vector3().fromArray(data.up),
         });
-        Toast.info(`✏️ 스케치 재개 — ${data.label}`, 3000);
+        Toast.info(t('✏️ 스케치 재개 — {label}', { label: data.label }), 3000);
       } catch (e) {
-        Toast.error(`스케치 재개 실패: ${String(e)}`, 3000);
+        Toast.error(t('스케치 재개 실패: {reason}', { reason: String(e) }), 3000);
       }
     } else if (action === 'convert-to-centerline' || action === 'convert-to-geometry') {
       // 선택된 엣지들의 class를 일괄 flip. Geometry → Centerline은 face를
       // 감싸는 엣지는 Rust에서 거부됨 (dangling face 방지).
       const edges = this.selection.getSelectedEdges();
       if (edges.length === 0) {
-        Toast.warning('변환할 엣지를 먼저 선택하세요', 2500);
+        Toast.warning(t('변환할 엣지를 먼저 선택하세요'), 2500);
         return;
       }
       const targetClass = action === 'convert-to-centerline' ? 1 : 0;
-      const label = action === 'convert-to-centerline' ? '중심선' : '일반선';
+      const label = action === 'convert-to-centerline' ? t('중심선') : t('일반선');
       let ok = 0;
       let firstErr = '';
       for (const eid of edges) {
@@ -1416,7 +1417,7 @@ export class ToolManager {
       if (ok > 0) {
         this.syncMesh();
         if (ok === edges.length) {
-          Toast.info(`${ok}개 엣지 → ${label} 변환 완료`, 2500);
+          Toast.info(t('{n}개 엣지 → {label} 변환 완료', { n: ok, label }), 2500);
         } else {
           Toast.warning(
             `${ok}/${edges.length}개 변환 — 나머지 거부: ${firstErr || '원인 불명'}`,
@@ -1424,11 +1425,11 @@ export class ToolManager {
           );
         }
       } else {
-        Toast.error(`변환 실패: ${firstErr || '알 수 없는 오류'}`, 3500);
+        Toast.error(t('변환 실패: {reason}', { reason: firstErr || t('알 수 없는 오류') }), 3500);
       }
     } else if (action === 'sketch-exit') {
       if (!this.isSketching()) {
-        Toast.info('활성 스케치 세션이 없습니다', 2000);
+        Toast.info(t('활성 스케치 세션이 없습니다'), 2000);
         return;
       }
       const info = this.getSketchInfo();
@@ -1479,7 +1480,7 @@ export class ToolManager {
       }
       const height = parseFloat(heightInput);
       if (!Number.isFinite(height) || height === 0) {
-        Toast.warning('유효한 양/음수 높이를 입력하세요 — 면은 이미 생성됨', 3500);
+        Toast.warning(t('유효한 양/음수 높이를 입력하세요 — 면은 이미 생성됨'), 3500);
         return;
       }
       try { localStorage.setItem('axia:sketch:extrude:height', String(height)); } catch { /* ignore */ }
@@ -1493,7 +1494,7 @@ export class ToolManager {
       // getMeshBuffers()의 faceMap에서 뒤쪽 N개 FaceId를 타깃으로 잡음.
       const buffers = this.bridge.getMeshBuffers();
       if (!buffers || !buffers.faceMap) {
-        Toast.warning('면 ID 조회 실패 — 수동으로 Push/Pull하세요', 3500);
+        Toast.warning(t('면 ID 조회 실패 — 수동으로 Push/Pull하세요'), 3500);
         return;
       }
       // 중복 제거: faceMap은 per-triangle face id 배열이므로 unique Set
@@ -1578,7 +1579,7 @@ export class ToolManager {
           );
         }
       } else {
-        Toast.info('재합성할 닫힌 라인 cycle 이 없습니다', 2500);
+        Toast.info(t('재합성할 닫힌 라인 cycle 이 없습니다'), 2500);
       }
     } else if (action === 'solidify') {
       // Solidify — 열린 쉘의 boundary edge 루프를 자동 cap. 전형 사용 시나리오:
@@ -1610,7 +1611,7 @@ export class ToolManager {
         return;
       }
       if (before.boundaryEdgeCount === 0 && before.faceCount === 0) {
-        Toast.warning('솔리드화할 메시가 없습니다 (활성 face 0개)', 3000);
+        Toast.warning(t('솔리드화할 메시가 없습니다 (활성 face 0개)'), 3000);
         return;
       }
       if (before.boundaryEdgeCount === 0) {
@@ -1652,7 +1653,7 @@ export class ToolManager {
       // 축 원점은 선택 면의 bounding box center(X축은 YZ-평면, 등)에서 유추.
       const sel = this.selection.getSelectedFaces();
       if (sel.length === 0) {
-        Toast.warning('배열할 면을 먼저 선택하세요', 2500);
+        Toast.warning(t('배열할 면을 먼저 선택하세요'), 2500);
         return;
       }
       const last = localStorage.getItem('axia:array-radial:params') ?? '6, y, 360';
@@ -1663,21 +1664,21 @@ export class ToolManager {
       if (input == null) return;
       const parts = input.split(/[,\s]+/).map(s => s.trim()).filter(s => s.length);
       if (parts.length !== 3) {
-        Toast.warning('3개 값이 필요합니다: N, axis, 총각도°', 3000);
+        Toast.warning(t('3개 값이 필요합니다: N, axis, 총각도°'), 3000);
         return;
       }
       const count = parseInt(parts[0], 10);
       const axisChar = parts[1].toLowerCase();
       const totalDeg = parseFloat(parts[2]);
       if (!Number.isFinite(count) || count < 1 || !Number.isFinite(totalDeg)) {
-        Toast.warning('유효한 숫자 값을 입력하세요', 3000);
+        Toast.warning(t('유효한 숫자 값을 입력하세요'), 3000);
         return;
       }
       let axis: [number, number, number];
       if (axisChar === 'x') axis = [1, 0, 0];
       else if (axisChar === 'y') axis = [0, 1, 0];
       else if (axisChar === 'z') axis = [0, 0, 1];
-      else { Toast.warning('축은 x / y / z 중 하나여야 합니다', 3000); return; }
+      else { Toast.warning(t('축은 x / y / z 중 하나여야 합니다'), 3000); return; }
       // axis_origin = 월드 원점. (선택 중심을 축 원점으로 하면 원형 배열이
       // 제자리에서 시작 — 대부분의 사용자가 원하는 "원점 중심 원형 배열"과 달라짐)
       const origin: [number, number, number] = [0, 0, 0];
@@ -1693,7 +1694,7 @@ export class ToolManager {
           input,
           { inputs: sel, outputs: newFaces },
         );
-        Toast.info(`${sel.length}개 면을 ${count}회 원형 복제 (${axisChar}축, ${totalDeg}°)`, 2500);
+        Toast.info(t('{n}개 면을 {count}회 원형 복제 ({axis}축, {deg}°)', { n: sel.length, count, axis: axisChar, deg: totalDeg }), 2500);
         debugLog(`[Action] array-radial: count=${count}, axis=${axisChar}, deg=${totalDeg}`);
       } else {
         Toast.fromBridgeError(this.bridge, '원형 배열 실패');
@@ -1706,7 +1707,7 @@ export class ToolManager {
       // 즉시 색이 반영됨.
       const selFaces = this.selection.getSelectedFaces();
       if (selFaces.length === 0) {
-        Toast.warning('색상을 지정할 면을 먼저 선택하세요', 2500);
+        Toast.warning(t('색상을 지정할 면을 먼저 선택하세요'), 2500);
         return;
       }
       const lastColor = localStorage.getItem('axia:quickcolor:last') ?? '#3b82f6';
@@ -1744,10 +1745,10 @@ export class ToolManager {
         const ok = lib.assignToFaces(selFaces, id);
         if (ok) {
           this.syncMesh();
-          Toast.info(`${selFaces.length}개 면에 ${hex} 색상 적용`, 2000);
+          Toast.info(t('{n}개 면에 {hex} 색상 적용', { n: selFaces.length, hex }), 2000);
           debugLog(`[Action] assign-quick-color: ${selFaces.length} faces, color=${hex}`);
         } else {
-          Toast.error('색상 적용 실패', 2500);
+          Toast.error(t('색상 적용 실패'), 2500);
         }
         cleanup();
       });
@@ -1761,7 +1762,7 @@ export class ToolManager {
       // code path unified.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 1) {
-        Toast.warning('챔퍼할 엣지 1개를 먼저 선택하세요', 2500);
+        Toast.warning(t('챔퍼할 엣지 1개를 먼저 선택하세요'), 2500);
         return;
       }
       const lastDist = Number(localStorage.getItem('axia:chamfer:distance') ?? '50');
@@ -1769,7 +1770,7 @@ export class ToolManager {
       if (input == null) return;
       const distance = parseFloat(input);
       if (!Number.isFinite(distance) || distance <= 0) {
-        Toast.warning('유효한 양수 거리를 입력하세요', 2500);
+        Toast.warning(t('유효한 양수 거리를 입력하세요'), 2500);
         return;
       }
       try { localStorage.setItem('axia:chamfer:distance', String(distance)); } catch { /* ignore */ }
@@ -1779,7 +1780,7 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record('chamfer-edge', `챔퍼 ${distance}mm`, String(distance),
           { inputs: edges.slice(0, 1) });
-        Toast.info(`챔퍼 완료 — 거리 ${distance}mm`, 2500);
+        Toast.info(t('챔퍼 완료 — 거리 {mm}mm', { mm: distance }), 2500);
         debugLog(`[Action] chamfer-edge: distance=${distance}, n=${n}`);
       } else {
         Toast.fromBridgeError(this.bridge, '챔퍼 실패');
@@ -1796,7 +1797,7 @@ export class ToolManager {
       // localStorage `axia:fillet:radius`로 마지막 반경 기본값, 없으면 50mm.
       const edges = this.selection.getSelectedEdges();
       if (edges.length === 0) {
-        Toast.warning('필렛할 엣지를 1개 이상 선택하세요', 2500);
+        Toast.warning(t('필렛할 엣지를 1개 이상 선택하세요'), 2500);
         return;
       }
       const lastRadius = Number(localStorage.getItem('axia:fillet:radius') ?? '50');
@@ -1807,7 +1808,7 @@ export class ToolManager {
       if (input == null) return;
       const radius = parseFloat(input);
       if (!Number.isFinite(radius) || radius <= 0) {
-        Toast.warning('유효한 양수 반경을 입력하세요', 2500);
+        Toast.warning(t('유효한 양수 반경을 입력하세요'), 2500);
         return;
       }
       try { localStorage.setItem('axia:fillet:radius', String(radius)); } catch { /* ignore */ }
@@ -1858,7 +1859,7 @@ export class ToolManager {
         this.syncMesh();
         this.selection.clearSelection();
         getOperationLog().record('subdivide', `Catmull-Clark 분할 (${count}개 quad)`, '');
-        Toast.info(`Catmull-Clark 분할 완료 — ${count}개 quad 생성`, 2500);
+        Toast.info(t('Catmull-Clark 분할 완료 — {n}개 quad 생성', { n: count }), 2500);
         debugLog(`[Action] subdivide: ${count} quads`);
       } else {
         Toast.fromBridgeError(this.bridge, 'Subdivision 실패');
@@ -1869,13 +1870,13 @@ export class ToolManager {
       // 자동이 아니라 사용자가 명시적으로 호출 → 의도 왜곡 방지.
       const freeEdgeCount = this.bridge.countFreeEdges();
       if (freeEdgeCount === 0) {
-        Toast.info('자유 엣지가 없습니다 (모든 엣지가 이미 면에 속함)', 2500);
+        Toast.info(t('자유 엣지가 없습니다 (모든 엣지가 이미 면에 속함)'), 2500);
         return;
       }
       const created = this.bridge.synthesizeFacesFromFreeEdges();
       if (created > 0) {
         this.syncMesh();
-        Toast.info(`${created}개 면 합성 완료 (자유 엣지 ${freeEdgeCount}개 중)`, 3000);
+        Toast.info(t('{n}개 면 합성 완료 (자유 엣지 {total}개 중)', { n: created, total: freeEdgeCount }), 3000);
       } else {
         Toast.warning(
           `자유 엣지 ${freeEdgeCount}개 발견했으나 닫힌 polygon 미감지.\n` +
@@ -1887,15 +1888,15 @@ export class ToolManager {
       // 1개 엣지 선택 → 중점에서 split
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 1) {
-        Toast.warning('1개의 엣지를 선택해야 합니다');
+        Toast.warning(t('1개의 엣지를 선택해야 합니다'));
         return;
       }
       const edgeId = edges[0];
       const eps = this.bridge.getEdgeEndpoints(edgeId);
-      if (eps.length !== 2) { Toast.error('엣지 엔드포인트 조회 실패'); return; }
+      if (eps.length !== 2) { Toast.error(t('엣지 엔드포인트 조회 실패')); return; }
       const p0 = this.bridge.getVertexPos(eps[0]);
       const p1 = this.bridge.getVertexPos(eps[1]);
-      if (!p0 || !p1) { Toast.error('엣지 좌표 조회 실패'); return; }
+      if (!p0 || !p1) { Toast.error(t('엣지 좌표 조회 실패')); return; }
       const mx = (p0[0] + p1[0]) / 2;
       const my = (p0[1] + p1[1]) / 2;
       const mz = (p0[2] + p1[2]) / 2;
@@ -1903,7 +1904,7 @@ export class ToolManager {
       if (newVid >= 0) {
         this.selection.clearSelection();
         this.syncMesh();
-        Toast.info(`엣지 중점 분할 → 새 vertex ${newVid}`, 1800);
+        Toast.info(t('엣지 중점 분할 → 새 vertex {id}', { id: newVid }), 1800);
         debugLog(`[Action] split-edge-midpoint: edge=${edgeId} → vert=${newVid}`);
       } else {
         const err = this.bridge.lastError();
@@ -1913,18 +1914,18 @@ export class ToolManager {
       // 선택된 1개 엣지의 길이를 고정 — 양 끝 vertex 간 Distance 제약으로 변환.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 1) {
-        Toast.warning('1개의 엣지를 선택해야 합니다');
+        Toast.warning(t('1개의 엣지를 선택해야 합니다'));
         return;
       }
       const edgeId = edges[0];
       const eps = this.bridge.getEdgeEndpoints(edgeId);
       if (eps.length !== 2) {
-        Toast.error('엣지 엔드포인트 조회 실패');
+        Toast.error(t('엣지 엔드포인트 조회 실패'));
         return;
       }
       const p0 = this.bridge.getVertexPos(eps[0]);
       const p1 = this.bridge.getVertexPos(eps[1]);
-      if (!p0 || !p1) { Toast.error('엣지 좌표 조회 실패'); return; }
+      if (!p0 || !p1) { Toast.error(t('엣지 좌표 조회 실패')); return; }
       const current = Math.sqrt(
         (p1[0]-p0[0])**2 + (p1[1]-p0[1])**2 + (p1[2]-p0[2])**2
       );
@@ -1933,13 +1934,13 @@ export class ToolManager {
       if (input == null) return;
       const target = parseFloat(input);
       if (!(target > 0) || !Number.isFinite(target)) {
-        Toast.warning('유효한 양수 값을 입력하세요');
+        Toast.warning(t('유효한 양수 값을 입력하세요'));
         return;
       }
       const id = this.bridge.addDistanceConstraint(eps[0], eps[1], target);
       if (id > 0) {
         this.syncMesh();
-        Toast.info(`엣지 길이 제약 추가 (id=${id}, ${target.toFixed(2)} mm)`, 2200);
+        Toast.info(t('엣지 길이 제약 추가 (id={id}, {mm} mm)', { id, mm: target.toFixed(2) }), 2200);
         debugLog(`[Action] constrain-edge-length: edge=${edgeId}, verts=${eps[0]},${eps[1]}, length=${target}`);
         const cp = (window as unknown as { __axia_constraintPanel?: { refresh: () => void } })
           .__axia_constraintPanel;
@@ -1953,14 +1954,14 @@ export class ToolManager {
       // 공유 정점이 있으면 나머지 2개 사이 거리로 자동 해석.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 2) {
-        Toast.warning('2개의 엣지를 선택해야 합니다');
+        Toast.warning(t('2개의 엣지를 선택해야 합니다'));
         return;
       }
       const [edgeA, edgeB] = edges;
       const epA = this.bridge.getEdgeEndpoints(edgeA);
       const epB = this.bridge.getEdgeEndpoints(edgeB);
       if (epA.length !== 2 || epB.length !== 2) {
-        Toast.error('엣지 엔드포인트 조회 실패'); return;
+        Toast.error(t('엣지 엔드포인트 조회 실패')); return;
       }
       // 공유 정점이 있는지 확인
       const shared = [epA[0], epA[1]].filter(v => epB.includes(v));
@@ -1977,7 +1978,7 @@ export class ToolManager {
           [epB[0], this.bridge.getVertexPos(epB[0])],
           [epB[1], this.bridge.getVertexPos(epB[1])],
         ];
-        if (positions.some(([, p]) => !p)) { Toast.error('정점 좌표 조회 실패'); return; }
+        if (positions.some(([, p]) => !p)) { Toast.error(t('정점 좌표 조회 실패')); return; }
         let best = { vA: epA[0], vB: epB[0], dist: Infinity };
         for (const a of [0, 1]) {
           for (const b of [2, 3]) {
@@ -1992,7 +1993,7 @@ export class ToolManager {
 
       const pA = this.bridge.getVertexPos(vA);
       const pB = this.bridge.getVertexPos(vB);
-      if (!pA || !pB) { Toast.error('정점 좌표 조회 실패'); return; }
+      if (!pA || !pB) { Toast.error(t('정점 좌표 조회 실패')); return; }
       const current = Math.sqrt((pA[0]-pB[0])**2 + (pA[1]-pB[1])**2 + (pA[2]-pB[2])**2);
 
       const input = window.prompt(
@@ -2002,12 +2003,12 @@ export class ToolManager {
       if (input == null) return;
       const target = parseFloat(input);
       if (!(target > 0) || !Number.isFinite(target)) {
-        Toast.warning('유효한 양수 값을 입력하세요'); return;
+        Toast.warning(t('유효한 양수 값을 입력하세요')); return;
       }
       const id = this.bridge.addDistanceConstraint(vA, vB, target);
       if (id > 0) {
         this.syncMesh();
-        Toast.info(`끝점 거리 제약 추가 (id=${id}, v${vA}↔v${vB} = ${target.toFixed(2)})`, 2500);
+        Toast.info(t('끝점 거리 제약 추가 (id={id}, v{a}↔v{b} = {d})', { id, a: vA, b: vB, d: target.toFixed(2) }), 2500);
         const cp = (window as unknown as { __axia_constraintPanel?: { refresh: () => void } })
           .__axia_constraintPanel;
         cp?.refresh();
@@ -2020,20 +2021,20 @@ export class ToolManager {
       // 엔진에 제약이 영속 저장되고 이후 transform 때마다 자동 재해결.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 2) {
-        Toast.warning('2개의 엣지를 선택해야 합니다 (첫 번째 = 기준, 두 번째 = 이동 대상)');
+        Toast.warning(t('2개의 엣지를 선택해야 합니다 (첫 번째 = 기준, 두 번째 = 이동 대상)'));
         return;
       }
       const [edgeA, edgeB] = edges;
       const cc = new ConstraintCommands(this.bridge);
       let id = 0;
       let label = '';
-      if (action === 'constrain-parallel')            { id = cc.addParallel(edgeA, edgeB); label = '평행'; }
-      else if (action === 'constrain-perpendicular')  { id = cc.addPerpendicular(edgeA, edgeB); label = '수직'; }
-      else                                            { id = cc.addCollinear(edgeA, edgeB); label = '동일 선상'; }
+      if (action === 'constrain-parallel')            { id = cc.addParallel(edgeA, edgeB); label = t('평행'); }
+      else if (action === 'constrain-perpendicular')  { id = cc.addPerpendicular(edgeA, edgeB); label = t('수직'); }
+      else                                            { id = cc.addCollinear(edgeA, edgeB); label = t('동일 선상'); }
 
       if (id > 0) {
         this.syncMesh();
-        Toast.info(`${label} 제약 추가 (id=${id}) — 이후 이동 시 자동 유지`, 2200);
+        Toast.info(t('{label} 제약 추가 (id={id}) — 이후 이동 시 자동 유지', { label, id }), 2200);
         debugLog(`[Action] ${action}: edges=${edgeA},${edgeB}, constraintId=${id}`);
         // Constraint Panel 자동 새로고침 (열려 있는 경우)
         const cp = (window as unknown as { __axia_constraintPanel?: { refresh: () => void } })
@@ -2108,7 +2109,7 @@ export class ToolManager {
       // caller recorded it as a success.
       this.lastActionUnknown = true;
       debugWarn(`[Action] unknown action: ${action}`);
-      Toast.warning(`알 수 없는 명령입니다: ${action}`, 3000);
+      Toast.warning(t('알 수 없는 명령입니다: {action}', { action }), 3000);
     }
   }
 
@@ -2434,9 +2435,9 @@ export class ToolManager {
     switch (kind) {
       case 'fillet-edge': {
         const r = parseFloat(params);
-        if (!Number.isFinite(r) || r <= 0) { Toast.warning('유효한 반경 필요', 2500); return false; }
+        if (!Number.isFinite(r) || r <= 0) { Toast.warning(t('유효한 반경 필요'), 2500); return false; }
         const edges = this.selection.getSelectedEdges();
-        if (edges.length === 0) { Toast.warning('재실행할 엣지를 선택하세요', 2500); return false; }
+        if (edges.length === 0) { Toast.warning(t('재실행할 엣지를 선택하세요'), 2500); return false; }
         try { localStorage.setItem('axia:fillet:radius', String(r)); } catch { /* ignore */ }
         let ok = 0, faces = 0;
         for (const eid of edges) {
@@ -2454,9 +2455,9 @@ export class ToolManager {
       }
       case 'chamfer-edge': {
         const d = parseFloat(params);
-        if (!Number.isFinite(d) || d <= 0) { Toast.warning('유효한 거리 필요', 2500); return false; }
+        if (!Number.isFinite(d) || d <= 0) { Toast.warning(t('유효한 거리 필요'), 2500); return false; }
         const edges = this.selection.getSelectedEdges();
-        if (edges.length !== 1) { Toast.warning('1개 엣지 선택 필요', 2500); return false; }
+        if (edges.length !== 1) { Toast.warning(t('1개 엣지 선택 필요'), 2500); return false; }
         try { localStorage.setItem('axia:chamfer:distance', String(d)); } catch { /* ignore */ }
         const n = this.bridge.filletEdge(edges[0], d, 1);
         if (n >= 0) {
@@ -2469,31 +2470,31 @@ export class ToolManager {
         return false;
       }
       case 'thicken-faces': {
-        const t = parseFloat(params);
-        if (!Number.isFinite(t) || t === 0) { Toast.warning('0이 아닌 두께 필요', 2500); return false; }
+        const thickness = parseFloat(params);
+        if (!Number.isFinite(thickness) || thickness === 0) { Toast.warning(t('0이 아닌 두께 필요'), 2500); return false; }
         const sel = this.selection.getSelectedFaces();
-        if (sel.length === 0) { Toast.warning('재실행할 면을 선택하세요', 2500); return false; }
-        try { localStorage.setItem('axia:thicken:distance', String(t)); } catch { /* ignore */ }
+        if (sel.length === 0) { Toast.warning(t('재실행할 면을 선택하세요'), 2500); return false; }
+        try { localStorage.setItem('axia:thicken:distance', String(thickness)); } catch { /* ignore */ }
         let ok = 0;
-        for (const fid of sel) { if (this.bridge.createSolidExtrude(fid, t)) ok++; }
+        for (const fid of sel) { if (this.bridge.createSolidExtrude(fid, thickness)) ok++; }
         if (ok > 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('thicken-faces', `두께 ${t}mm × ${ok}개 면 (재실행)`, String(t));
+          getOperationLog().record('thicken-faces', t('두께 {mm}mm × {n}개 면 (재실행)', { mm: thickness, n: ok }), String(thickness));
           return true;
         }
-        Toast.error('재실행 실패', 3000);
+        Toast.error(t('재실행 실패'), 3000);
         return false;
       }
       case 'array-linear': {
         const sel = this.selection.getSelectedFaces();
-        if (sel.length === 0) { Toast.warning('재실행할 면을 선택하세요', 2500); return false; }
+        if (sel.length === 0) { Toast.warning(t('재실행할 면을 선택하세요'), 2500); return false; }
         const parts = params.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
-        if (parts.length !== 4) { Toast.warning('"N, dx, dy, dz" 4개 값 필요', 2500); return false; }
+        if (parts.length !== 4) { Toast.warning(t('"N, dx, dy, dz" 4개 값 필요'), 2500); return false; }
         const count = parseInt(parts[0], 10);
         const [dx, dy, dz] = [parts[1], parts[2], parts[3]].map(parseFloat);
         if (!Number.isFinite(count) || count < 1 || ![dx, dy, dz].every(Number.isFinite)) {
-          Toast.warning('유효한 숫자 필요', 2500); return false;
+          Toast.warning(t('유효한 숫자 필요'), 2500); return false;
         }
         try { localStorage.setItem('axia:array:params', params); } catch { /* ignore */ }
         const newFaces = this.bridge.arrayLinearFaces(sel, count, [dx, dy, dz]);
@@ -2508,20 +2509,20 @@ export class ToolManager {
       }
       case 'array-radial': {
         const sel = this.selection.getSelectedFaces();
-        if (sel.length === 0) { Toast.warning('재실행할 면을 선택하세요', 2500); return false; }
+        if (sel.length === 0) { Toast.warning(t('재실행할 면을 선택하세요'), 2500); return false; }
         const parts = params.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
-        if (parts.length !== 3) { Toast.warning('"N, axis, deg" 3개 값 필요', 2500); return false; }
+        if (parts.length !== 3) { Toast.warning(t('"N, axis, deg" 3개 값 필요'), 2500); return false; }
         const count = parseInt(parts[0], 10);
         const axisChar = parts[1].toLowerCase();
         const totalDeg = parseFloat(parts[2]);
         if (!Number.isFinite(count) || count < 1 || !Number.isFinite(totalDeg)) {
-          Toast.warning('유효한 숫자 필요', 2500); return false;
+          Toast.warning(t('유효한 숫자 필요'), 2500); return false;
         }
         let axis: [number, number, number];
         if (axisChar === 'x') axis = [1, 0, 0];
         else if (axisChar === 'y') axis = [0, 1, 0];
         else if (axisChar === 'z') axis = [0, 0, 1];
-        else { Toast.warning('축은 x/y/z 중 하나', 2500); return false; }
+        else { Toast.warning(t('축은 x/y/z 중 하나'), 2500); return false; }
         try { localStorage.setItem('axia:array-radial:params', params); } catch { /* ignore */ }
         const newFaces = this.bridge.arrayRadialFaces(sel, count, [0, 0, 0], axis, totalDeg * Math.PI / 180);
         if (newFaces.length > 0) {
@@ -2545,7 +2546,7 @@ export class ToolManager {
         return false;
       }
       default:
-        Toast.warning(`재실행 지원 안 함: ${kind}`, 2500);
+        Toast.warning(t('재실행 지원 안 함: {kind}', { kind }), 2500);
         return false;
     }
   }
@@ -2623,7 +2624,7 @@ export class ToolManager {
    *  projected camera-up direction (keeps drawing aligned with view). */
   alignSketchUpToCamera(): void {
     if (!this._sketch) {
-      Toast.warning('스케치 모드가 아닙니다', 2500);
+      Toast.warning(t('스케치 모드가 아닙니다'), 2500);
       return;
     }
     const cam = this.viewport.activeCamera;
@@ -2632,13 +2633,13 @@ export class ToolManager {
     const n = this._sketch.normal;
     const u = camUp.clone().sub(n.clone().multiplyScalar(camUp.dot(n)));
     if (u.lengthSq() < 1e-6) {
-      Toast.warning('카메라가 스케치 평면에 직각 — 정렬 불가', 2500);
+      Toast.warning(t('카메라가 스케치 평면에 직각 — 정렬 불가'), 2500);
       return;
     }
     u.normalize();
     this._sketch.up = u;
     this.viewport.setSketchPlaneVisual(this._sketch);
-    Toast.info('스케치 up 방향을 카메라에 정렬했습니다', 2000);
+    Toast.info(t('스케치 up 방향을 카메라에 정렬했습니다'), 2000);
   }
 
   /** Exit sketch mode. Geometry created during the session stays in the
@@ -2994,9 +2995,9 @@ export class ToolManager {
     // lock visual indicator). 사용자 명시 unlock 까지 유지.
     if (this._planeLock) {
       const lock = this._planeLock;
-      badge.textContent = `🔒 평면 잠금 (${axisLabel(lock.normal)})`;
+      badge.textContent = t('🔒 평면 잠금 ({axis})', { axis: axisLabel(lock.normal) });
       badge.style.color = '#d94545';  // 빨강 — strong lock 표시
-      badge.title = 'Home 또는 우클릭 → 기본 평면으로 (평면 초기화)';
+      badge.title = t('Home 또는 우클릭 → 기본 평면으로 (평면 초기화)');
       badge.style.display = '';
       return;
     }
@@ -3011,11 +3012,11 @@ export class ToolManager {
       return;
     }
     const srcLabel = sticky.source === 'sketch'
-      ? '스케치'
+      ? t('스케치')
       : sticky.source === 'face'
-        ? '면'
-        : '마지막';
-    badge.textContent = `📐 평면: ${srcLabel} (${axisLabel(sticky.normal)})`;
+        ? t('면')
+        : t('마지막');
+    badge.textContent = t('📐 평면: {src} ({axis})', { src: srcLabel, axis: axisLabel(sticky.normal) });
     badge.style.color = '';  // default color (ADR-164 normal)
     badge.title = '';
     badge.style.display = '';
