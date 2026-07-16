@@ -161,8 +161,30 @@ export async function dispatch(
   const handler: CapabilityHandler<unknown, unknown> | undefined =
     getCapabilityHandler(capability);
   if (!handler) {
-    // Should be unreachable: evaluatePolicy returns unknown=false above
-    // when capability is not in tiers.ts. Belt-and-braces: still guard.
+    // NOT unreachable — the comment here used to claim it was. `evaluatePolicy`
+    // checks membership in tiers.ts (what is DECLARED); it says nothing about
+    // whether a handler was ever written. Measured: 32 declared, 22 wired, so
+    // ten capabilities pass policy and land here — and four of them
+    // (create_xia, export_obj, export_stl, export_step) are Tier 1, i.e.
+    // reachable on the DEFAULT config.
+    //
+    // The genuine-unknown path above records an audit entry before throwing;
+    // this one threw silently, so the one case an operator most wants to see —
+    // an agent calling an advertised capability that does not exist — left no
+    // trace at all. Record it the same way, with a reason that says which of
+    // the two it is.
+    recordAudit(auditSink, {
+      request_id,
+      client,
+      tier: tierOf(capability) ?? null,
+      capability,
+      args: rawInput,
+      duration_ms: performance.now() - start,
+      result: 'denied',
+      reason: `declared but not implemented: ${capability}`,
+      engine_version: versions.engine_version,
+      schema_version: versions.schema_version,
+    });
     throw new UnknownCapabilityError(capability);
   }
 

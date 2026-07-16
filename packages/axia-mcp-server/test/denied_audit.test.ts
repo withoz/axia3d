@@ -37,6 +37,44 @@ describe('denied calls are audited (intrusion signal)', () => {
     expect(entry.request_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  // ADR-041 P26.7 — a capability that is DECLARED in tiers.ts but has no
+  // handler used to throw with NO audit entry, behind a comment claiming the
+  // branch was "unreachable: evaluatePolicy returns unknown=false above".
+  // evaluatePolicy checks tiers.ts membership — what is declared — and says
+  // nothing about whether a handler exists. Measured: 32 declared, 22 wired.
+  // Four of the ten gaps (create_xia, export_obj, export_stl, export_step) are
+  // Tier 1, so they are reachable on the DEFAULT config: an agent calling an
+  // advertised-but-absent capability left no trace at all.
+  it('declared-but-unimplemented → denied entry, not a silent throw', async () => {
+    const sink = new MemoryAuditSink();
+    await expect(
+      dispatch(
+        'export_obj', // Tier 1 (default-on), declared in tiers.ts, no handler
+        {},
+        { engine: mockEngine(), auditSink: sink, versions: VERSIONS },
+      ),
+    ).rejects.toThrow();
+    await Promise.resolve();
+    expect(sink.entries, 'the throw must not be silent').toHaveLength(1);
+    const entry = sink.entries[0]!;
+    expect(entry.result).toBe('denied');
+    expect(entry.capability).toBe('export_obj');
+    // distinguishable from a genuine unknown: this one IS declared, at a tier
+    expect(entry.tier).toBe(1);
+    expect(entry.reason).toMatch(/declared but not implemented/);
+    expect(entry.engine_version).toBe('0.1.0');
+    expect(entry.request_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a genuine unknown is still reported as unknown, not as unimplemented', () => {
+    // guards the two reasons from collapsing into one
+    return dispatch('no_such_thing', {}, {
+      engine: mockEngine(), auditSink: new MemoryAuditSink(), versions: VERSIONS,
+    }).catch((e: Error) => {
+      expect(e.message).toMatch(/Unknown capability/);
+    });
+  });
+
   it('Tier blocked → denied entry with config detail', async () => {
     const sink = new MemoryAuditSink();
     await expect(
