@@ -23,6 +23,7 @@
 // Regression `capability_explorer_imports_only_capability_explorer_panel`
 // asserts no other web/src/ file references `@axia/action-catalog`.
 import { ALL_ACTIONS, CATALOG_SIZE, type ActionDef, type Tier } from '@axia/action-catalog';
+import { t } from '../i18n';
 
 const TIER_LABELS: Record<Tier, string> = {
   0: 'Tier 0 — Read',
@@ -123,7 +124,7 @@ export class CapabilityExplorerPanel {
         <span class="cep-meta" data-role="meta">${CATALOG_SIZE} actions</span>
       </div>
       <div class="cep-search">
-        <input class="cep-search-input" type="text" placeholder="검색 (id / label / description)" data-role="search" />
+        <input class="cep-search-input" type="text" placeholder="${t('검색 (id / label / description)')}" data-role="search" />
       </div>
       <div class="cep-toolbar" data-role="toolbar"></div>
       <div class="cep-body" data-role="body"></div>
@@ -220,6 +221,9 @@ export class CapabilityExplorerPanel {
     const q = query.toLowerCase();
     return ALL_ACTIONS.filter((a) =>
       a.id.toLowerCase().includes(q)
+      // both the translated label and the original: in English, a query of
+      // "fillet" must match, and in Korean "필렛" must still match (ADR-294)
+      || t(a.label).toLowerCase().includes(q)
       || a.label.toLowerCase().includes(q)
       || a.description.toLowerCase().includes(q)
     );
@@ -306,7 +310,7 @@ export class CapabilityExplorerPanel {
     head.className = 'cep-action-head';
     head.innerHTML = `
       <span class="cep-action-id">${this.escape(action.id)}</span>
-      <span class="cep-action-label">${this.escape(action.label)}</span>
+      <span class="cep-action-label">${this.escape(t(action.label))}</span>
     `;
     if (action.status && action.status !== 'ok') {
       const badge = document.createElement('span');
@@ -341,7 +345,7 @@ export class CapabilityExplorerPanel {
     const adrsText = (action.adrs ?? []).join(', ');
 
     details.innerHTML = `
-      <div class="cep-details-desc">${this.escape(action.description)}</div>
+      <div class="cep-details-desc">${this.escape(t(action.description))}</div>
       <div class="cep-details-row"><b>Surfaces:</b> ${this.escape(surfacesText)}</div>
       ${aliasParts.length > 0 ? `<div class="cep-details-row">${aliasParts.join(' · ')}</div>` : ''}
       ${adrsText ? `<div class="cep-details-row"><b>ADRs:</b> ${this.escape(adrsText)}</div>` : ''}
@@ -425,7 +429,8 @@ export class CapabilityExplorerPanel {
     if (action.tier >= 2) {
       const tierName = action.tier === 3 ? 'Tier 3 (DESTRUCTIVE)' : 'Tier 2 (modificative)';
       const ok = window.confirm(
-        `${tierName} 작업: ${action.label}\n\n${action.description}\n\n실행하시겠습니까?`,
+        `${t('{tier} 작업: {label}', { tier: tierName, label: t(action.label) })}`
+        + `\n\n${t(action.description)}\n\n${t('실행하시겠습니까?')}`,
       );
       if (!ok) return;
     }

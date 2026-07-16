@@ -897,6 +897,11 @@ export const EN: Record<string, string> = {
   'STEP 내보내기': 'Export STEP',
   'IGES 내보내기': 'Export IGES',
 
+  // ── Capability Explorer chrome ──
+  '{tier} 작업: {label}': '{tier} action: {label}',
+  '실행하시겠습니까?': 'Run it?',
+  '검색 (id / label / description)': 'Search (id / label / description)',
+
   // ── help ──
   '도움말': 'Help',
   '단축키 보기': 'Keyboard shortcuts',

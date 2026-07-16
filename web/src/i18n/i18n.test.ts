@@ -114,6 +114,10 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   // modal-chrome strings are literals. Its 75 SECTIONS strings are covered by
   // ShortcutHelpModal.test.ts, which renders the sheet and looks for Hangul.
   { file: 'src/ui/ShortcutHelpModal.ts', minLiteralKeys: 2 },        // batch 3
+  // Renders ActionCatalog at t(action.label) — its 210 catalog strings are
+  // covered by CapabilityExplorerPanel.test.ts, which renders the tree in
+  // English and looks for Hangul. Only its own chrome is literal.
+  { file: 'src/ui/CapabilityExplorerPanel.ts', minLiteralKeys: 3 },  // batch 4
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 

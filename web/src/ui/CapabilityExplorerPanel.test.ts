@@ -289,3 +289,65 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
     container.remove();
   });
 });
+
+/**
+ * ADR-294 batch 4 — the Explorer renders ActionCatalog's 210 Korean labels.
+ *
+ * This exists because the wiring silently did not land: a script asserted on a
+ * bad anchor and never wrote the file, and I read a grep of the file's EXISTING
+ * imports as confirmation. The commit claimed the Explorer was done; the app
+ * showed 210 Korean labels. Rendering it and looking for Hangul is the check
+ * that a grep cannot fake.
+ */
+describe('ADR-294 — Capability Explorer i18n', () => {
+  const openPanel = () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new CapabilityExplorerPanel(container, {});
+    panel.show();
+    return { panel, container, el: document.getElementById('capability-explorer')! };
+  };
+
+  it('renders Korean labels by default', async () => {
+    const { setLocale } = await import('../i18n');
+    setLocale('ko');
+    const { panel, container, el } = openPanel();
+    expect(el.textContent, 'Korean is the default').toMatch(/[가-힣]/);
+    panel.dispose(); container.remove();
+  });
+
+  it('renders NO Korean when the locale is English', async () => {
+    const { setLocale } = await import('../i18n');
+    setLocale('en');
+    const { panel, container, el } = openPanel();
+    const rows = el.querySelectorAll('.cep-action-label');
+    expect(rows.length, 'an empty tree would pass vacuously').toBeGreaterThan(100);
+    const ko = [...rows].map((r) => r.textContent ?? '').filter((s) => /[가-힣]/.test(s));
+    expect(ko, 'every catalog label must be translated').toEqual([]);
+    expect(el.querySelector('.cep-search-input')?.getAttribute('placeholder'))
+      .toBe('Search (id / label / description)');
+    panel.dispose(); container.remove(); setLocale('ko');
+  });
+
+  it('finds a command by its ENGLISH name when the locale is English', async () => {
+    // The half that is easy to forget: translating the render but not the
+    // haystack leaves search matching Korean only, so an English user types
+    // "fillet" and gets nothing.
+    const { setLocale } = await import('../i18n');
+    setLocale('en');
+    const { panel, container } = openPanel();
+    // The query has to be one the id cannot answer. 'fillet' was a bad choice:
+    // the ids ARE 'tool-fillet' / 'fillet-edge', so it matched with the label
+    // haystack removed — the test passed while proving nothing. Measured, 104
+    // of the catalog's 209 Korean labels are reachable ONLY through their
+    // translated label; 'linear array' (id 'array-linear') is one of them.
+    expect(panel.filterActions('linear array').map((a) => a.id),
+      'an English label the id and description cannot answer').toContain('array-linear');
+    expect(panel.filterActions('intersect with model').map((a) => a.id))
+      .toContain('intersect-with-model');
+    // …and the Korean must still reach it.
+    expect(panel.filterActions('선형 배열').map((a) => a.id)).toContain('array-linear');
+    panel.dispose(); container.remove(); setLocale('ko');
+  });
+});
+
