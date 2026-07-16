@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const MAX_DRAW_DISTANCE = 50000;
 
@@ -47,7 +48,7 @@ export class DrawPolygonTool implements ITool {
     const stored = parseInt(localStorage.getItem('axia:polygon:sides') ?? 'NaN', 10);
     const defaultN = Number.isFinite(stored) && stored >= 3 && stored <= 24 ? stored : 6;
     const input = prompt(
-      '다각형 변의 수 (3~24)\n\n6 = 육각형 (벌집/기하)\n5 = 오각형\n8 = 팔각형 (볼트 헤드)',
+      t('다각형 변의 수 (3~24)\n\n6 = 육각형 (벌집/기하)\n5 = 오각형\n8 = 팔각형 (볼트 헤드)'),
       String(defaultN),
     );
     if (input === null) {
@@ -58,7 +59,7 @@ export class DrawPolygonTool implements ITool {
     }
     const n = parseInt(input, 10);
     if (!Number.isFinite(n) || n < 3 || n > 24) {
-      alert('3에서 24 사이의 숫자를 입력해주세요.');
+      alert(t('3에서 24 사이의 숫자를 입력해주세요.'));
       this.sides = defaultN;
       return;
     }

@@ -17,7 +17,8 @@ import { debugLog } from '../utils/debug';
 import { tessellateCurve, nextCurveId, BezierCurve } from '../curves/Curve';
 import { getCurveRegistry } from '../curves/CurveRegistry';
 import { getDrawCurveMode } from './DrawCurveSettings';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+import { t } from '../i18n';
 
 /** ADR-089 A-ψ-β — closure detection threshold (mm). 1e-3 = ADR-026 P12
  *  cardinal snap range. P3 가 P0 와 이 이내 거리이면 closed Bezier 로 처리. */
@@ -255,7 +256,7 @@ export class DrawBezierTool implements ITool {
     // closed surface — see the `adr284_beta44_sim_cylinder_torus_not_open_
     // splittable` proof). Guide the user to a closed loop (S9).
     if ((this.curvedKind === 'cylinder' || this.curvedKind === 'torus') && this.curvedHostFace >= 0) {
-      Toast.info('원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.');
+      Toast.info(t('원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.'));
       return;
     }
 

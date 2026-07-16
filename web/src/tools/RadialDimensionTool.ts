@@ -13,7 +13,8 @@ import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
-import { pickClickedEdge } from './edgePick';
+import { pickClickedEdge } from './edgePick';
+import { t } from '../i18n';
 
 export class RadialDimensionTool implements ITool {
   readonly name = 'radial-dimension';
@@ -27,7 +28,7 @@ export class RadialDimensionTool implements ITool {
 
   onActivate(): void {
     debugLog('[RadialDimensionTool] Activated');
-    Toast.info('반지름 치수: 원 또는 호 엣지를 클릭하세요 (영구·편집)', 3500);
+    Toast.info(t('반지름 치수: 원 또는 호 엣지를 클릭하세요 (영구·편집)'), 3500);
   }
 
   onDeactivate(): void {
@@ -37,12 +38,12 @@ export class RadialDimensionTool implements ITool {
   onMouseDown(e: MouseEvent, _point: THREE.Vector3 | null): void {
     const picked = pickClickedEdge(this.ctx, e);
     if (!picked) {
-      Toast.warning('반지름을 잴 원/호 엣지를 클릭하세요', 2000);
+      Toast.warning(t('반지름을 잴 원/호 엣지를 클릭하세요'), 2000);
       return;
     }
     const radius = this.ctx.bridge.edgeCurveRadius(picked.edgeId);
     if (!(radius > 0)) {
-      Toast.warning('원 또는 호 엣지가 아닙니다', 2200);
+      Toast.warning(t('원 또는 호 엣지가 아닙니다'), 2200);
       return;
     }
     const verts = this.ctx.bridge.getEdgeEndpoints(picked.edgeId);
@@ -52,7 +53,7 @@ export class RadialDimensionTool implements ITool {
     const id = this.ctx.bridge.addRadiusConstraint(refVert, radius);
     if (id > 0) {
       this.ctx.syncMesh();
-      Toast.info(`반지름 치수 (R${this.ctx.units.format(radius)}) — 라벨 클릭으로 편집`, 2500);
+      Toast.info(t('반지름 치수 (R{radius}) — 라벨 클릭으로 편집', { radius: this.ctx.units.format(radius) }), 2500);
       debugLog(`[RadialDimension] constraint ${id}: R${radius}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '반지름 치수 생성 실패');

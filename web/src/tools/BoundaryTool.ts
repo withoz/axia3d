@@ -26,7 +26,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+import { t } from '../i18n';
 
 /**
  * Default search radius (ADR-148 §2.1 — 10×10×10m 작업 공간 표준).
@@ -49,12 +50,12 @@ export function humanizeBoundaryError(rawMessage: string): string {
   if (rawMessage.includes('PointNotOnPlane')) {
     const match = rawMessage.match(/distance ([\d.]+)mm/);
     const dist = match ? match[1] : '?';
-    return `클릭 위치가 평면 위가 아닙니다 (거리 ${dist}mm)`;
+    return t('클릭 위치가 평면 위가 아닙니다 (거리 {dist}mm)', { dist });
   }
   if (rawMessage.includes('NoOrphanEdgesInRadius')) {
     const match = rawMessage.match(/radius ([\d.]+)mm/);
     const r = match ? match[1] : '?';
-    return `주변에 boundary 후보가 없습니다 (반경 ${r}mm 확대 필요)`;
+    return t('주변에 boundary 후보가 없습니다 (반경 {r}mm 확대 필요)', { r });
   }
   if (rawMessage.includes('NoEnclosingCycle')) {
     return '이 영역을 둘러싼 boundary 가 없습니다';
@@ -82,7 +83,7 @@ export class BoundaryTool implements ITool {
 
   onActivate(): void {
     debugLog('[BoundaryTool] Activated (ADR-148 β-4, Ctrl+B)');
-    Toast.info('Boundary 도구: 영역 내부 클릭');
+    Toast.info(t('Boundary 도구: 영역 내부 클릭'));
   }
 
   onDeactivate(): void {
@@ -91,7 +92,7 @@ export class BoundaryTool implements ITool {
 
   onMouseDown(e: MouseEvent, point: THREE.Vector3 | null): void {
     if (!point) {
-      Toast.warning('Boundary: 유효한 평면 위 위치를 클릭하세요');
+      Toast.warning(t('Boundary: 유효한 평면 위 위치를 클릭하세요'));
       return;
     }
 
@@ -112,7 +113,7 @@ export class BoundaryTool implements ITool {
     const pt = normalized.point;
 
     if (normalized.skipReason === 'DegenerateBelowEpsilon') {
-      Toast.warning('Boundary: 입력 위치가 너무 작은 영역');
+      Toast.warning(t('Boundary: 입력 위치가 너무 작은 영역'));
       return;
     }
 
@@ -145,12 +146,12 @@ export class BoundaryTool implements ITool {
         DEFAULT_SEARCH_RADIUS_MM,
       );
       debugLog('[BoundaryTool] synthesized face_id', faceId);
-      Toast.success('Boundary 면이 생성되었습니다');
+      Toast.success(t('Boundary 면이 생성되었습니다'));
       this.ctx.syncMesh();
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       const userMsg = humanizeBoundaryError(raw);
-      Toast.error(`Boundary 생성 실패: ${userMsg}`);
+      Toast.error(t('Boundary 생성 실패: {userMsg}', { userMsg }));
       debugLog('[BoundaryTool] error:', raw);
     }
   }

@@ -11,7 +11,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const LS_KEY = 'axia:corner-fillet:radius';
 const PICK_TOL = 2.0; // mm — snapped point should sit on the corner vertex
@@ -28,7 +29,7 @@ export class CornerFilletTool implements ITool {
 
   onActivate(): void {
     debugLog('[CornerFilletTool] Activated — 둥글릴 코너(2-valence 꼭짓점)를 클릭하세요');
-    Toast.info('둥글릴 코너 꼭짓점을 클릭하세요', 2500);
+    Toast.info(t('둥글릴 코너 꼭짓점을 클릭하세요'), 2500);
   }
 
   onDeactivate(): void {
@@ -42,11 +43,11 @@ export class CornerFilletTool implements ITool {
       if (!pt) return;
       const vid = this.ctx.bridge.findVertexIdAt?.(pt.x, pt.y, pt.z, PICK_TOL) ?? -1;
       if (vid < 0) {
-        Toast.warning('둥글릴 코너 꼭짓점 위를 클릭하세요', 2000);
+        Toast.warning(t('둥글릴 코너 꼭짓점 위를 클릭하세요'), 2000);
         return;
       }
       this.vertId = vid;
-      Toast.info('반지름을 입력하세요 (또는 다시 클릭 = 마지막 값)', 2500);
+      Toast.info(t('반지름을 입력하세요 (또는 다시 클릭 = 마지막 값)'), 2500);
     } else {
       this.commit(this.lastRadius());
     }
@@ -84,7 +85,7 @@ export class CornerFilletTool implements ITool {
     if (e >= 0) {
       try { localStorage.setItem(LS_KEY, String(radius)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`코너 필렛 완료 (반지름 ${radius}mm)`, 2000);
+      Toast.info(t('코너 필렛 완료 (반지름 {radius}mm)', { radius }), 2000);
       debugLog(`[CornerFillet] vertex ${this.vertId} radius=${radius} → edge ${e}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '필렛 실패 (2-valence 코너만 가능 · 반지름 확인)');

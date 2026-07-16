@@ -11,7 +11,8 @@
  *   - LOCKED #44 (Complete Meaning per Merge)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { setLocale } from '../i18n';
 import * as THREE from 'three';
 import { BoundaryTool, humanizeBoundaryError } from './BoundaryTool';
 import type { ToolContext } from './ITool';
@@ -36,6 +37,9 @@ function mockCtx(): ToolContext {
 }
 
 describe('BoundaryTool (ADR-148 β-4)', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let ctx: ToolContext;
   let tool: BoundaryTool;
 

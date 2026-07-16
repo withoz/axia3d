@@ -8,7 +8,8 @@ import init, { AxiaEngine } from '../wasm/axia_wasm';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
 import type { LayeredChannels, TextureInfo } from '../materials/MaterialLibrary';
-import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
+import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
+import { t } from '../i18n';
 
 // ════════════════════════════════════════════════════════════════════════
 // ADR-026 P12 — Cardinal Plane SSOT (Single Source of Truth)
@@ -5942,11 +5943,11 @@ export class WasmBridge {
     if (!this.engine) return null;
     try {
       const result = this.engine.export_snapshot?.();
-      if (result) Toast.success('프로젝트 내보내기 성공');
+      if (result) Toast.success(t('프로젝트 내보내기 성공'));
       return result ?? null;
     } catch (e) {
       console.error('[WasmBridge] exportSnapshot failed:', e);
-      Toast.error('프로젝트 내보내기 실패');
+      Toast.error(t('프로젝트 내보내기 실패'));
       return null;
     }
   }
@@ -5958,14 +5959,14 @@ export class WasmBridge {
     try {
       const result = this.engine.import_snapshot?.(data) ?? false;
       if (result) {
-        Toast.success('프로젝트 불러오기 성공');
+        Toast.success(t('프로젝트 불러오기 성공'));
         // Imported snapshot has its own constraint set — invalidate cache.
         this._emitConstraintsChanged();
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] importSnapshot failed:', e);
-      Toast.error('프로젝트 불러오기 실패');
+      Toast.error(t('프로젝트 불러오기 실패'));
       return false;
     }
   }
@@ -5992,14 +5993,14 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as DxfImportResult;
       if (result.ok) {
-        Toast.success(`DXF 불러오기 성공: ${result.totalFaces ?? 0}개 면`);
+        Toast.success(t('DXF 불러오기 성공: {faces}개 면', { faces: result.totalFaces ?? 0 }));
       } else {
-        Toast.error(`DXF 불러오기 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('DXF 불러오기 실패: {error}', { error: result.error ?? t('알 수 없는 오류') }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] importDxf failed:', e);
-      Toast.error('DXF 파일 파싱 실패');
+      Toast.error(t('DXF 파일 파싱 실패'));
       return null;
     }
   }
@@ -6025,7 +6026,7 @@ export class WasmBridge {
       return this.engine.translate_faces?.(ids, dx, dy, dz) ?? false;
     } catch (e) {
       console.error('[WasmBridge] translateFaces failed:', e);
-      Toast.warning('이동 실행 실패');
+      Toast.warning(t('이동 실행 실패'));
       return false;
     }
   }
@@ -6045,7 +6046,7 @@ export class WasmBridge {
       return this.engine.rotate_faces?.(ids, cx, cy, cz, ax, ay, az, angleDeg) ?? false;
     } catch (e) {
       console.error('[WasmBridge] rotateFaces failed:', e);
-      Toast.warning('회전 실행 실패');
+      Toast.warning(t('회전 실행 실패'));
       return false;
     }
   }
@@ -6063,7 +6064,7 @@ export class WasmBridge {
       return this.engine.scale_faces?.(ids, cx, cy, cz, sx, sy, sz) ?? false;
     } catch (e) {
       console.error('[WasmBridge] scaleFaces failed:', e);
-      Toast.warning('스케일 실행 실패');
+      Toast.warning(t('스케일 실행 실패'));
       return false;
     }
   }
@@ -6096,12 +6097,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as OffsetResult;
       if (!result.ok) {
-        Toast.warning(`Offset 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Offset 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] offsetFace failed:', e);
-      Toast.warning('Offset 실행 실패');
+      Toast.warning(t('Offset 실행 실패'));
       return null;
     }
   }
@@ -6117,12 +6118,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as RecessResult;
       if (!result.ok) {
-        Toast.warning(`Recess 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Recess 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] createRecess failed:', e);
-      Toast.warning('Recess 실행 실패');
+      Toast.warning(t('Recess 실행 실패'));
       return null;
     }
   }
@@ -6150,12 +6151,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as OffsetEdgeResult;
       if (!result.ok) {
-        Toast.warning(`Edge Offset 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Edge Offset 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] offsetEdge failed:', e);
-      Toast.warning('Edge Offset 실행 실패');
+      Toast.warning(t('Edge Offset 실행 실패'));
       return null;
     }
   }
@@ -6885,14 +6886,14 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as BooleanResult;
       if (!result.ok) {
-        Toast.error(`Boolean ${op} 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('Boolean {op} 실패: {result}', { op, result: result.error ?? '알 수 없는 오류' }));
       } else {
-        Toast.success(`Boolean ${op} 성공`);
+        Toast.success(t('Boolean {op} 성공', { op }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] booleanOp failed:', e);
-      Toast.error(`Boolean 연산 실패: ${String(e)}`);
+      Toast.error(t('Boolean 연산 실패: {error}', { error: String(e) }));
       return null;
     }
   }
@@ -6925,14 +6926,14 @@ export class WasmBridge {
       const json = this.engine.sheetBoolean(a, b, op);
       const res = JSON.parse(json) as { ok: boolean; resultFace?: number; error?: string };
       if (!res.ok) {
-        Toast.error(`Sheet ${op} 실패: ${res.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('Sheet {op} 실패: {res}', { op, res: res.error ?? '알 수 없는 오류' }));
         return null;
       }
-      Toast.success(`Sheet ${op} 성공`);
+      Toast.success(t('Sheet {op} 성공', { op }));
       return res.resultFace ?? null;
     } catch (e) {
       console.error('[WasmBridge] sheetBoolean failed:', e);
-      Toast.error(`Sheet 연산 실패: ${String(e)}`);
+      Toast.error(t('Sheet 연산 실패: {error}', { error: String(e) }));
       return null;
     }
   }

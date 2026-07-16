@@ -252,7 +252,7 @@ export function mergeAsHole(ctx: MergeActionContext): void {
   const sel = ctx.selection.getSelectedFaces();
   if (sel.length !== 2) {
     Toast.warning(
-      '정확히 2개의 면을 선택하세요 (바깥쪽 + 안쪽) · 참고: 새로 그린 내부 RECT는 자동으로 구멍이 됩니다',
+      t('정확히 2개의 면을 선택하세요 (바깥쪽 + 안쪽) · 참고: 새로 그린 내부 RECT는 자동으로 구멍이 됩니다'),
       3500,
     );
     return;

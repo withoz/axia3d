@@ -19,7 +19,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const MAX_DRAW_DISTANCE = 50000;
 const WINDOW_COLOR = 0x4dabf7;
@@ -40,7 +41,7 @@ export class DrawWindowTool implements ITool {
 
   onActivate(): void {
     debugLog('[DrawWindowTool] Activated');
-    Toast.info('개구부(창/문)를 낼 면 위를 클릭 — 바닥까지 끌면 자동으로 문', 3000);
+    Toast.info(t('개구부(창/문)를 낼 면 위를 클릭 — 바닥까지 끌면 자동으로 문'), 3000);
   }
 
   onDeactivate(): void {
@@ -53,7 +54,7 @@ export class DrawWindowTool implements ITool {
       if (!point) return;
       const plane = this.ctx.getDrawPlane(e);
       if (!plane.onFace) {
-        Toast.warning('창은 기존 면 위에 내야 합니다 — 면을 클릭하세요');
+        Toast.warning(t('창은 기존 면 위에 내야 합니다 — 면을 클릭하세요'));
         return;
       }
       this.plane = plane;
@@ -141,7 +142,7 @@ export class DrawWindowTool implements ITool {
     if (!this.cornerA || !this.plane) return;
     const a = this.cornerA;
     if (!this.rectCorners(a, b)) {
-      Toast.warning('개구부가 너무 작습니다 — 더 크게 끌어 주세요');
+      Toast.warning(t('개구부가 너무 작습니다 — 더 크게 끌어 주세요'));
       return;
     }
     const n = this.plane.normal;
@@ -160,7 +161,7 @@ export class DrawWindowTool implements ITool {
     );
     if (jambs > 0) {
       debugLog(`[Window] Cut door notch → ${jambs} jambs`);
-      Toast.success('문(door)을 냈습니다');
+      Toast.success(t('문(door)을 냈습니다'));
       this.ctx.syncMesh();
       return;
     }
@@ -178,7 +179,7 @@ export class DrawWindowTool implements ITool {
     );
     if (tube > 0) {
       debugLog(`[Window] Drilled rect through → ${tube} tube quads`);
-      Toast.success('관통 창을 냈습니다');
+      Toast.success(t('관통 창을 냈습니다'));
       this.ctx.syncMesh();
       return;
     }
@@ -197,7 +198,7 @@ export class DrawWindowTool implements ITool {
       return;
     }
     debugLog(`[Window] Punched rect on face → ring face ${faceId}`);
-    Toast.success('창을 냈습니다');
+    Toast.success(t('창을 냈습니다'));
     this.ctx.syncMesh();
   }
 

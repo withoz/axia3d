@@ -4,7 +4,8 @@
  * ADR-097 TopologyRecoveryOrchestrator.test 1:1 mirror — material-layer variant.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import {
   attemptMaterialRecoveryWithDialog,
   humanizeOrphanReport,
@@ -39,6 +40,9 @@ const REPORT_AFFECTED: OrphanMaterialReport = {
 };
 
 describe('MaterialRemovalRecoveryOrchestrator (R-δ)', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   beforeEach(() => {
     document.body.innerHTML = '';
   });

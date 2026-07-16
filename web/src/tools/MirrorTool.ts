@@ -15,7 +15,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -32,7 +33,7 @@ export class MirrorTool implements ITool {
 
   onActivate(): void {
     this.updatePlaneVisual();
-    Toast.info('미러 평면 위 X/Y/Z 키로 축 선택 → 클릭(또는 Enter)으로 반사, Esc 종료', 3500);
+    Toast.info(t('미러 평면 위 X/Y/Z 키로 축 선택 → 클릭(또는 Enter)으로 반사, Esc 종료'), 3500);
     debugLog('[MirrorTool] Activated');
   }
 
@@ -71,7 +72,7 @@ export class MirrorTool implements ITool {
     const faces = this.ctx.getSelectedFaces();
     const edges = this.ctx.selection.getSelectedEdges();
     if (faces.length === 0 && edges.length === 0) {
-      Toast.warning('미러링할 면 또는 엣지를 먼저 선택하세요', 2000);
+      Toast.warning(t('미러링할 면 또는 엣지를 먼저 선택하세요'), 2000);
       return;
     }
     const [nx, ny, nz] = this.axis === 'x' ? [1, 0, 0] : this.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
@@ -84,7 +85,7 @@ export class MirrorTool implements ITool {
       this.ctx.syncMesh();
       const kind = faces.length > 0 ? '면' : '엣지';
       const n = faces.length > 0 ? faces.length : edges.length;
-      Toast.info(`${n}개 ${kind}를 ${plane} 평면 기준 미러링 (${out.length}개 생성)`, 2000);
+      Toast.info(t('{n}개 {kind}를 {plane} 평면 기준 미러링 ({out}개 생성)', { n, kind, plane, out: out.length }), 2000);
       debugLog(`[Mirror] ${out.length} mirrored ${faces.length > 0 ? 'faces' : 'edges'} across ${plane}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '미러링 실패');

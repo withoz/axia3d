@@ -46,7 +46,8 @@ import { debugLog } from './utils/debug';
 import { Toast } from './ui/Toast';
 import { getConsolePanel } from './ui/ConsolePanel';
 import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
-import './ui/DraggablePanels.css';
+import './ui/DraggablePanels.css';
+import { t } from './i18n';
 
 // Install in-UI console panel as early as possible so any errors during
 // app boot are captured and visible to the user without DevTools.
@@ -88,7 +89,7 @@ async function checkWasmFreshness(): Promise<void> {
     if (stored && stored !== lastMod) {
       debugLog(`[WASM] Binary updated: ${stored} → ${lastMod}`);
       Toast.info(
-        'AXiA 엔진이 업데이트됐습니다. 최신 기능이 적용됩니다.',
+        t('AXiA 엔진이 업데이트됐습니다. 최신 기능이 적용됩니다.'),
         4000,
       );
     }
@@ -995,7 +996,7 @@ async function main() {
             return { ok: true, result: 'Launched (menu dispatch).' };
           }
           if (!toolManager.executeAction(actionId)) {
-            const err = `알 수 없는 명령입니다: ${actionId}`;
+            const err = t('알 수 없는 명령입니다: {actionId}', { actionId });
             audit.record({ actionId, tier, result: 'error', error: err, args });
             return { ok: false, error: err };
           }

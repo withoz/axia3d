@@ -11,7 +11,8 @@ import { SnapVisual } from '../snap/SnapVisual';
 import { SelectionManager } from './SelectionManager';
 import { DimensionLabel } from '../ui/DimensionLabel';
 import { UnitSystem } from '../units/UnitSystem';
-import { PickBox } from '../ui/PickBox';
+import { PickBox } from '../ui/PickBox';
+import { t } from '../i18n';
 
 /**
  * Shared context available to all tools.
@@ -158,7 +159,7 @@ export interface ToolContext {
    *
    *   const pt = normalized?.point ?? raw;
    *   if (normalized?.skipReason === 'DegenerateBelowEpsilon') {
-   *     Toast.warning('너무 짧은 선 (10mm 미만)');
+   *     Toast.warning(t('너무 짧은 선 (10mm 미만)'));
    *     return;
    *   }
    *

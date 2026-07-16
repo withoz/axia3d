@@ -33,7 +33,8 @@ import { Toast } from '../ui/Toast';
 import {
   showMaterialRecoveryDialog,
   type MaterialRecoveryChoice,
-} from './MaterialRemovalRecoveryDialog';
+} from './MaterialRemovalRecoveryDialog';
+import { t } from '../i18n';
 
 export interface MaterialRecoveryOrchestratorResult {
   /** Final disposition of the run. */
@@ -76,7 +77,7 @@ export function humanizeOrphanReport(report: OrphanMaterialReport): string {
   const faceTotal = report.affectedXias.reduce(
     (sum, e) => sum + e.faceCount, 0,
   );
-  return `Xia ${xiaCount}개 / 면 ${faceTotal}개 재질 부재`;
+  return t('Xia {xiaCount}개 / 면 {faceTotal}개 재질 부재', { xiaCount, faceTotal });
 }
 
 /**
@@ -123,7 +124,7 @@ export async function attemptMaterialRecoveryWithDialog(
   if (outcome.kind === 'Recovered') {
     showToast(
       'success',
-      `재질 손상 ${outcome.affectedXias}개 자동 복구 완료 (강등 ${outcome.facesDemoted} / fallback ${outcome.facesFallback})`,
+      t('재질 손상 {affectedXias}개 자동 복구 완료 (강등 {facesDemoted} / fallback {facesFallback})', { affectedXias: outcome.affectedXias, facesDemoted: outcome.facesDemoted, facesFallback: outcome.facesFallback }),
     );
     return {
       status: 'recovered',
@@ -137,7 +138,7 @@ export async function attemptMaterialRecoveryWithDialog(
   const reason = humanizeOrphanReport(report);
   const enableDemote = !!options.demoteResolver;
   const choice: MaterialRecoveryChoice = await showMaterialRecoveryDialog({
-    reason: `자동 복구 후 잔존 ${outcome.remainingOrphans}건. (${reason})`,
+    reason: t('자동 복구 후 잔존 {remainingOrphans}건. ({reason})', { remainingOrphans: outcome.remainingOrphans, reason }),
     enableDemote,
     doc: options.doc,
   });
@@ -167,13 +168,13 @@ export async function attemptMaterialRecoveryWithDialog(
         };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        showToast('warning', `강등 실패: ${msg}`);
+        showToast('warning', t('강등 실패: {msg}', { msg }));
       }
     }
   }
 
   // Manual fallback (default for ESC/backdrop/no-resolver).
-  showToast('warning', `수동 수정 필요: ${reason}`);
+  showToast('warning', t('수동 수정 필요: {reason}', { reason }));
   return {
     status: 'manual',
     initialAffected: report.affectedXias.length,

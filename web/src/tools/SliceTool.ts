@@ -21,7 +21,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+import { t } from '../i18n';
 
 type Phase = 'idle' | 'awaiting_p2' | 'awaiting_p3';
 
@@ -71,7 +72,7 @@ export class SliceTool implements ITool {
     // Capture the volume from the current selection.
     const selected = this.ctx.selection.getSelectedFaces();
     if (selected.length === 0) {
-      Toast.warning('Slice: 자를 볼륨의 면을 먼저 선택하세요', 4000);
+      Toast.warning(t('Slice: 자를 볼륨의 면을 먼저 선택하세요'), 4000);
       this.phase = 'idle';
       return;
     }
@@ -83,12 +84,12 @@ export class SliceTool implements ITool {
       if (xid !== undefined && xid >= 0) xiaIds.add(xid);
     }
     if (xiaIds.size === 0) {
-      Toast.error('Slice: 선택된 면에 소속 볼륨(XIA)이 없습니다');
+      Toast.error(t('Slice: 선택된 면에 소속 볼륨(XIA)이 없습니다'));
       this.phase = 'idle';
       return;
     }
     if (xiaIds.size > 1) {
-      Toast.warning('Slice: 한 번에 하나의 볼륨만 자를 수 있습니다 — 단일 솔리드의 면을 선택하세요', 5000);
+      Toast.warning(t('Slice: 한 번에 하나의 볼륨만 자를 수 있습니다 — 단일 솔리드의 면을 선택하세요'), 5000);
       this.phase = 'idle';
       return;
     }
@@ -96,15 +97,15 @@ export class SliceTool implements ITool {
     // Fetch the XIA's face_ids via bridge.
     const xiaFaces = bridge.engine?.getXiaFaceIds?.(xiaId);
     if (!xiaFaces || xiaFaces.length === 0) {
-      Toast.error(`Slice: XIA ${xiaId}에 면이 없습니다`);
+      Toast.error(t('Slice: XIA {xiaId}에 면이 없습니다', { xiaId }));
       this.phase = 'idle';
       return;
     }
     this.volumeFaceIds = Array.from(xiaFaces);
     debugLog(`[SliceTool] target volume: XIA ${xiaId}, ${this.volumeFaceIds.length} faces`);
     Toast.info(
-      `Slice [${CUT_MODE_KO[this.cutMode]}]: 평면 3점 클릭 — 또는 한 점 클릭 후 H=수평 절단.\n` +
-      `M=모드 전환 (쪼개기/트림), Esc 취소`,
+      t('Slice [{mode}]: 평면 3점 클릭 — 또는 한 점 클릭 후 H=수평 절단.\n', { mode: t(CUT_MODE_KO[this.cutMode]) }) +
+      t('M=모드 전환 (쪼개기/트림), Esc 취소'),
       5000,
     );
   }
@@ -122,7 +123,7 @@ export class SliceTool implements ITool {
     } else if (this.phase === 'awaiting_p2') {
       if (!this.p1) return;
       if (this.p1.distanceTo(point) < 1.0) {
-        Toast.warning('두 번째 점은 첫 번째와 다른 위치여야 합니다');
+        Toast.warning(t('두 번째 점은 첫 번째와 다른 위치여야 합니다'));
         return;
       }
       this.p2 = point.clone();
@@ -136,7 +137,7 @@ export class SliceTool implements ITool {
       const d13 = new THREE.Vector3().subVectors(p3, this.p1);
       const cross = new THREE.Vector3().crossVectors(d12, d13);
       if (cross.lengthSq() < 1e-6) {
-        Toast.warning('세 점이 일직선 — 다른 위치를 클릭하세요');
+        Toast.warning(t('세 점이 일직선 — 다른 위치를 클릭하세요'));
         return;
       }
       this.commit(this.p1, this.p2, p3);
@@ -163,14 +164,14 @@ export class SliceTool implements ITool {
 
   onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
-      Toast.info('Slice 취소');
+      Toast.info(t('Slice 취소'));
       this.cleanup();
       return;
     }
     // M — cycle cut mode (쪼개기 → 위쪽 트림 → 아래쪽 트림). 곡면 솔리드 + 수평 절단에서만 트림 적용.
     if (e.key === 'm' || e.key === 'M') {
       this.cutMode = this.cutMode === 'slice' ? 'above' : this.cutMode === 'above' ? 'below' : 'slice';
-      Toast.info(`Slice 모드: ${CUT_MODE_KO[this.cutMode]}`, 2500);
+      Toast.info(t('Slice 모드: {mode}', { mode: t(CUT_MODE_KO[this.cutMode]) }), 2500);
       e.preventDefault();
       return;
     }
@@ -189,7 +190,7 @@ export class SliceTool implements ITool {
       const up = new THREE.Vector3(0, 1, 0);
       const normal = new THREE.Vector3().crossVectors(d12, up);
       if (normal.lengthSq() < 1e-6) {
-        Toast.warning('수직 평면 모드: p1-p2가 세로축과 평행 — 세 번째 점을 클릭하세요');
+        Toast.warning(t('수직 평면 모드: p1-p2가 세로축과 평행 — 세 번째 점을 클릭하세요'));
         return;
       }
       normal.normalize();
@@ -221,7 +222,7 @@ export class SliceTool implements ITool {
     // 도구 자동 비활성 → 다음 클릭 무시.
     if (this.volumeFaceIds.length === 0) {
       Toast.error(
-        '⚠️ Slice 불가 — 솔리드(volume) 가 선택되지 않았습니다.\n' +
+        t('⚠️ Slice 불가 — 솔리드(volume) 가 선택되지 않았습니다.\n') +
         '먼저 돌출/잘라내기(Extrude/Cut) 로 입체를 만들고, 그 면을 선택한 후 Slice 도구 사용',
         7000,
       );
@@ -246,11 +247,11 @@ export class SliceTool implements ITool {
         const n = cres.resultFaces?.length ?? 0;
         // ADR-197 #Track3 — slice splits into 2 volumes; the lower half gets a new XIA.
         const xiaNote = (this.cutMode === 'slice' && typeof cres.newXia === 'number' && cres.newXia >= 0)
-          ? ` — 아래쪽 새 볼륨 (XIA ${cres.newXia})`
+          ? t(' — 아래쪽 새 볼륨 (XIA {newXia})', { newXia: cres.newXia })
           : '';
         const msg = this.cutMode === 'slice'
-          ? `곡면 쪼개기 완료 — 2개 볼륨, 곡면 보존${xiaNote} (면 ${n}개)`
-          : `곡면 트림 완료 — ${this.cutMode === 'above' ? '위쪽' : '아래쪽'} 유지, 곡면 보존 (면 ${n}개)`;
+          ? t('곡면 쪼개기 완료 — 2개 볼륨, 곡면 보존{xiaNote} (면 {n}개)', { xiaNote, n })
+          : t('곡면 트림 완료 — {side} 유지, 곡면 보존 (면 {n}개)', { side: this.cutMode === 'above' ? '위쪽' : '아래쪽', n });
         Toast.success(msg, 3500);
         debugLog(`[Slice] curved cut (${this.cutMode}) → ${n} faces`);
         this.cleanup();
@@ -260,7 +261,7 @@ export class SliceTool implements ITool {
         debugLog('[Slice] not a curved primitive — falling back to polygonal slice');
         // fall through to the polygonal path below.
       } else if (!cres.ok) {
-        Toast.error(`곡면 절단 실패: ${this.translateEngineError(cres.error ?? '알 수 없는 오류')}`, 7000);
+        Toast.error(t('곡면 절단 실패: {error}', { error: this.translateEngineError(cres.error ?? '알 수 없는 오류') }), 7000);
         debugLog('[Slice] curved cut error:', cres.error);
         this.cleanup();
         return;
@@ -284,7 +285,7 @@ export class SliceTool implements ITool {
         bridge.markDirty();
         this.ctx.syncMesh();
         const n = tres.resultFaces?.length ?? 0;
-        Toast.success(`곡면 트림 완료 — 임의 평면, 곡면 보존 (면 ${n}개)`, 3500);
+        Toast.success(t('곡면 트림 완료 — 임의 평면, 곡면 보존 (면 {n}개)', { n }), 3500);
         debugLog(`[Slice] curved arbitrary-plane trim (${this.cutMode}) → ${n} faces`);
         this.cleanup();
         return;
@@ -293,7 +294,7 @@ export class SliceTool implements ITool {
         debugLog('[Slice] not a curved primitive — falling back to polygonal slice');
         // fall through to the polygonal path below.
       } else if (!tres.ok) {
-        Toast.error(`곡면 트림 실패: ${this.translateEngineError(tres.error ?? '알 수 없는 오류')}`, 7000);
+        Toast.error(t('곡면 트림 실패: {error}', { error: this.translateEngineError(tres.error ?? '알 수 없는 오류') }), 7000);
         debugLog('[Slice] curved trim error:', tres.error);
         this.cleanup();
         return;
@@ -303,7 +304,7 @@ export class SliceTool implements ITool {
     // ── Polygonal slice (non-curved volume, or non-horizontal plane). Only the
     // 'slice' (2-volume) semantics is supported here; trim is curved-only.
     if (!bridge.engine?.sliceVolumeByPlane) {
-      Toast.error('Slice: WASM 엔진에 sliceVolumeByPlane 함수가 없습니다 (rebuild 필요)');
+      Toast.error(t('Slice: WASM 엔진에 sliceVolumeByPlane 함수가 없습니다 (rebuild 필요)'));
       this.cleanup();
       return;
     }
@@ -323,13 +324,13 @@ export class SliceTool implements ITool {
         try {
           tres = JSON.parse(tjson);
         } catch {
-          Toast.error('Trim: 응답 파싱 실패');
+          Toast.error(t('Trim: 응답 파싱 실패'));
           this.cleanup();
           return;
         }
         if (tres.ok) {
           Toast.success(
-            `트림 완료 — ${keepAbove ? '위쪽(+법선)' : '아래쪽(−법선)'} 유지 (면 ${tres.totalFaces ?? '?'}개)`,
+            t('트림 완료 — {keepAbove} 유지 (면 {tres}개)', { keepAbove: keepAbove ? t('위쪽(+법선)') : t('아래쪽(−법선)'), tres: tres.totalFaces ?? '?' }),
             3000,
           );
           bridge.markDirty();
@@ -337,12 +338,12 @@ export class SliceTool implements ITool {
           this.cleanup();
           return;
         }
-        Toast.error(`트림 실패: ${this.translateEngineError(tres.error ?? '알 수 없는 오류')}`, 7000);
+        Toast.error(t('트림 실패: {error}', { error: this.translateEngineError(tres.error ?? '알 수 없는 오류') }), 7000);
         debugLog('[Slice] polygonal trim error:', tres.error);
         this.cleanup();
         return;
       }
-      Toast.warning('트림 미지원 빌드 — 쪼개기(2 볼륨)로 대체합니다.', 4000);
+      Toast.warning(t('트림 미지원 빌드 — 쪼개기(2 볼륨)로 대체합니다.'), 4000);
       // proceed as a normal 2-volume slice.
     }
     const json = bridge.engine.sliceVolumeByPlane(
@@ -354,7 +355,7 @@ export class SliceTool implements ITool {
     try {
       result = JSON.parse(json);
     } catch {
-      Toast.error('Slice: 응답 파싱 실패');
+      Toast.error(t('Slice: 응답 파싱 실패'));
       this.cleanup();
       return;
     }
@@ -362,12 +363,12 @@ export class SliceTool implements ITool {
       // Engine error 한국어 mapping (사용자 시연 evidence 2026-05-28).
       const engineErr = result.error ?? '알 수 없는 오류';
       const userMsg = this.translateEngineError(engineErr);
-      Toast.error(`Slice 실패: ${userMsg}`, 7000);
+      Toast.error(t('Slice 실패: {userMsg}', { userMsg }), 7000);
       debugLog('[Slice] error:', engineErr);
       this.cleanup();
       return;
     }
-    Toast.success(`Slice 완료 — 위쪽은 원본 볼륨에 유지, 아래쪽은 새 볼륨 (XIA ${result.newXia})`, 3000);
+    Toast.success(t('Slice 완료 — 위쪽은 원본 볼륨에 유지, 아래쪽은 새 볼륨 (XIA {newXia})', { newXia: result.newXia ?? '?' }), 3000);
     bridge.markDirty();
     this.ctx.syncMesh();
     this.cleanup();

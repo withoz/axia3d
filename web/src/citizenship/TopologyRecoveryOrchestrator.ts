@@ -27,7 +27,8 @@
 
 import type { WasmBridge, TopologyDamageReport, TopologyDamageKind, RecoveryOutcome } from '../bridge/WasmBridge';
 import { Toast } from '../ui/Toast';
-import { showTopologyRecoveryDialog, type TopologyRecoveryChoice } from './TopologyRecoveryDialog';
+import { showTopologyRecoveryDialog, type TopologyRecoveryChoice } from './TopologyRecoveryDialog';
+import { t } from '../i18n';
 
 export interface OrchestratorResult {
   /** Final disposition of the run. */
@@ -78,10 +79,10 @@ export function humanizeDamageReport(report: TopologyDamageReport): string {
     }
   }
   const parts: string[] = [];
-  if (counts.degenerate > 0) parts.push(`${counts.degenerate}개 면 degenerate`);
-  if (counts.nonManifold > 0) parts.push(`${counts.nonManifold}개 엣지 non-manifold`);
-  if (counts.boundary > 0) parts.push(`${counts.boundary}개 boundary edge`);
-  if (counts.orphan > 0) parts.push(`${counts.orphan}개 orphan face`);
+  if (counts.degenerate > 0) parts.push(t('{degenerate}개 면 degenerate', { degenerate: counts.degenerate }));
+  if (counts.nonManifold > 0) parts.push(t('{nonManifold}개 엣지 non-manifold', { nonManifold: counts.nonManifold }));
+  if (counts.boundary > 0) parts.push(t('{boundary}개 boundary edge', { boundary: counts.boundary }));
+  if (counts.orphan > 0) parts.push(t('{orphan}개 orphan face', { orphan: counts.orphan }));
   return parts.join(', ');
 }
 
@@ -127,7 +128,7 @@ export async function attemptRecoveryWithDialog(
   }
 
   if (outcome.kind === 'Recovered') {
-    showToast('success', `위상 손상 ${outcome.initialDamages}건 자동 복구 완료`);
+    showToast('success', t('위상 손상 {initialDamages}건 자동 복구 완료', { initialDamages: outcome.initialDamages }));
     return {
       status: 'recovered',
       initialDamages: outcome.initialDamages,
@@ -140,7 +141,7 @@ export async function attemptRecoveryWithDialog(
   const reason = humanizeDamageReport(report);
   const enableDemote = !!options.demoteResolver;
   const choice: TopologyRecoveryChoice = await showTopologyRecoveryDialog({
-    reason: `자동 복구 ${outcome.fixesApplied}건 적용 — 잔존 ${outcome.remainingCount}건. (${reason})`,
+    reason: t('자동 복구 {fixesApplied}건 적용 — 잔존 {remainingCount}건. ({reason})', { fixesApplied: outcome.fixesApplied, remainingCount: outcome.remainingCount, reason }),
     enableDemote,
     doc: options.doc,
   });
@@ -170,13 +171,13 @@ export async function attemptRecoveryWithDialog(
         };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        showToast('warning', `강등 실패: ${msg}`);
+        showToast('warning', t('강등 실패: {msg}', { msg }));
       }
     }
   }
 
   // Manual fallback (default for ESC/backdrop/no-resolver).
-  showToast('warning', `수동 수정 필요: ${reason}`);
+  showToast('warning', t('수동 수정 필요: {reason}', { reason }));
   return {
     status: 'manual',
     initialDamages: report.damages.length,

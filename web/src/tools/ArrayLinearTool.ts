@@ -13,7 +13,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const MIN_SPACING = 0.1; // mm
 
@@ -43,7 +44,7 @@ export class ArrayLinearTool implements ITool {
       const faces = this.ctx.getSelectedFaces();
       const edges = this.ctx.selection.getSelectedEdges();
       if (faces.length === 0 && edges.length === 0) {
-        Toast.info('배열할 면 또는 엣지를 먼저 선택하세요', 2000);
+        Toast.info(t('배열할 면 또는 엣지를 먼저 선택하세요'), 2000);
         return;
       }
       if (!point) return;
@@ -51,7 +52,7 @@ export class ArrayLinearTool implements ITool {
       if (faces.length > 0) this.faces = faces.slice();
       else this.edges = edges.slice();
       this.basePt = point.clone();
-      Toast.info(`방향/간격 점을 클릭하세요 (개수 ${this.count} · VCB로 변경 · Esc 취소)`, 2500);
+      Toast.info(t('방향/간격 점을 클릭하세요 (개수 {count} · VCB로 변경 · Esc 취소)', { count: this.count }), 2500);
     } else {
       if (!point || (!this.faces && !this.edges)) { this.cleanup(); return; }
       this.commit(point.clone().sub(this.basePt));
@@ -63,7 +64,7 @@ export class ArrayLinearTool implements ITool {
     const d = point.clone().sub(this.basePt);
     this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
       { from: this.basePt.clone(), to: point.clone(),
-        text: `간격 ${this.ctx.units.format(d.length())} × ${this.count}`, color: '#74c0fc' },
+        text: t('간격 {spacing} × {count}', { spacing: this.ctx.units.format(d.length()), count: this.count }), color: '#74c0fc' },
     ]);
   }
 
@@ -102,7 +103,7 @@ export class ArrayLinearTool implements ITool {
       : this.ctx.bridge.arrayLinearEdges(this.edges!, this.count, off);
     if (out.length > 0) {
       this.ctx.syncMesh();
-      Toast.info(`선형 배열 완료 (${this.count}개)`, 2000);
+      Toast.info(t('선형 배열 완료 ({count}개)', { count: this.count }), 2000);
       debugLog(`[ArrayLinear] ${hasFaces ? this.faces!.length + ' faces' : this.edges!.length + ' edges'} × ${this.count}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '선형 배열 실패');

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, globSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { t, setLocale, getLocale } from './index';
 import { EN } from './en';
@@ -181,6 +181,18 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   { file: 'src/import/StepIgesImporter.ts', minLiteralKeys: 16 },
   { file: 'src/import/FileImporter.ts', minLiteralKeys: 16 },
   { file: 'src/file/FileManager.ts', minLiteralKeys: 14 },
+  // batch 12 — the long tail. Slice, the bridge's own error surface, the
+  // citizenship recovery flows, and the dimension/array/boundary tools.
+  { file: 'src/tools/SliceTool.ts', minLiteralKeys: 16 },
+  { file: 'src/bridge/WasmBridge.ts', minLiteralKeys: 12 },
+  { file: 'src/citizenship/TopologyRecoveryOrchestrator.ts', minLiteralKeys: 8 },
+  { file: 'src/citizenship/MaterialRemovalRecoveryOrchestrator.ts', minLiteralKeys: 5 },
+  { file: 'src/tools/ReferenceDimensionTool.ts', minLiteralKeys: 4 },
+  { file: 'src/tools/ArrayLinearTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/BoundaryTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/DrawText3DTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/MeasureTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/NurbsEditTool.ts', minLiteralKeys: 3 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -368,7 +380,14 @@ describe('ADR-294 — en.ts hygiene', () => {
   it('no orphan: every entry is still referenced in the source', () => {
     // The honest cost of source-as-key (D2): editing the Korean orphans its
     // English silently. This finds the orphan.
-    const ts = [...MIGRATED_PATHS, ...TRANSLATION_SOURCES]
+    //
+    // Scans ALL source, not just the ledger. Scoping it to MIGRATED_PATHS made
+    // it report 94 orphans the moment a batch translated a file that was not
+    // in the ledger yet — the keys were fine, the search was too narrow.
+    const files = globSync('src/**/*.ts', { cwd: process.cwd() })
+      .map((f) => f.replace(/\\/g, '/'))
+      .filter((f) => !f.endsWith('.test.ts') && !f.includes('/i18n/'));
+    const ts = [...new Set([...files, ...TRANSLATION_SOURCES])]
       .map((f) => readFileSync(resolve(process.cwd(), f), 'utf8'));
     const src = [...ts, ...koreanTextNodes(), ...readIndexHtml().attrs].join('\n');
     const missing = Object.keys(EN)
@@ -386,14 +405,24 @@ describe('ADR-294 — en.ts hygiene', () => {
     '부피 무결성 위반으로 취소됨',    // a matcher for engine output, not output
     '한국어',                        // the language button: names stay in their own language
     '무결성',                        // a command ALIAS — what the user types, not what they read
+    // D10 — built-in material names are DATA, not copy. The user can add their
+    // own (addCustom) and they persist into the .axia file, so a name cannot
+    // be a key; MaterialLibrary already carries `nameEn` alongside each one.
+    '콘크리트', '철강', '목재', '유리', '벽돌', '알루미늄',
+    '석재', '석고보드', '단열재', '물', '토양', '타일',
   ]);
 
-  it.each(MIGRATED_FILES)('every Korean literal in $file has an English entry', ({ file }) => {
-    // Stronger than the t()-call guard below, and the reason it exists: that
-    // one only sees `t('literal')`, so it is blind to `t(vcbLabels[tool])`,
-    // `t(next ? A : B)` and every string in a data table. Measured when this
-    // landed: it immediately found 5 user-facing strings in the Capability
-    // Explorer that the t()-call guard had passed over.
+  /**
+   * Every Korean literal in a file that has no en.ts entry.
+   *
+   * Extracted so the guard and the survey run the SAME code. Keeping a second
+   * copy in a script cost more than it saved: mine disagreed with this one
+   * five separate times — it hid a traceback behind >/dev/null, read
+   * index.html raw and missed the &#9633; entities this decodes, counted
+   * `grep -c "t('"` per line instead of per call, and named three orphans
+   * that were not orphans at all. Set AXIA_I18N_REPORT=1 to print the survey.
+   */
+  function scanUntranslated(file: string): string[] {
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const missing: string[] = [];
     let debugDepth = 0;
@@ -435,7 +464,50 @@ describe('ADR-294 — en.ts hygiene', () => {
         missing.push(v);
       }
     }
-    expect(missing, `Korean in ${file} with no en.ts entry`).toEqual([]);
+    return missing;
+  }
+
+  it.each(MIGRATED_FILES)('every Korean literal in $file has an English entry', ({ file }) => {
+    // Stronger than the t()-call guard below, and the reason it exists: that
+    // one only sees `t('literal')`, so it is blind to `t(vcbLabels[tool])`,
+    // `t(next ? A : B)` and every string in a data table. Measured when this
+    // landed: it immediately found 5 user-facing strings in the Capability
+    // Explorer that the t()-call guard had passed over.
+    expect(scanUntranslated(file), `Korean in ${file} with no en.ts entry`).toEqual([]);
+  });
+
+  /**
+   * The survey. Same scanner as the guard above, pointed at every file rather
+   * than the ledger — so "what is left" and "what CI enforces" can never
+   * disagree. Opt-in, because it is a report and not an assertion:
+   *
+   *   AXIA_I18N_REPORT=1 npx vitest run src/i18n/i18n.test.ts
+   */
+  it('survey: what is left to migrate (AXIA_I18N_REPORT=1)', () => {
+    if (!process.env.AXIA_I18N_REPORT) return;
+    const files = globSync('src/**/*.ts', { cwd: process.cwd() })
+      .map((f) => f.replace(/\\/g, '/'))
+      .filter((f) => !f.endsWith('.test.ts') && !f.includes('/i18n/') && !f.includes('/wasm/'));
+    const rows = files
+      .map((f) => ({ file: f, strings: scanUntranslated(f) }))
+      .filter((r) => r.strings.length > 0)
+      .sort((a, b) => b.strings.length - a.strings.length);
+    const done = new Set(MIGRATED_PATHS);
+    const total = rows.reduce((s, r) => s + r.strings.length, 0);
+    // AXIA_I18N_REPORT=2 also lists the strings, as JSON, so a migration pass
+    // can consume exactly what the guard sees instead of re-deriving it.
+    const detail = process.env.AXIA_I18N_REPORT === '2';
+    // eslint-disable-next-line no-console
+    console.log(
+      `\n=== i18n survey: ${total} strings across ${rows.length} files ` +
+        `(ledger: ${MIGRATED_PATHS.length})\n` +
+        rows
+          .map((r) => {
+            const head = `${String(r.strings.length).padStart(4)}  ${r.file}${done.has(r.file) ? '  [ledger]' : ''}`;
+            return detail ? `${head}\n${JSON.stringify(r.strings)}` : head;
+          })
+          .join('\n'),
+    );
   });
 
   /**
@@ -475,6 +547,33 @@ describe('ADR-294 — en.ts hygiene', () => {
       expect(raw, `${file}: imported Korean table read without t()`).toEqual([]);
     },
   );
+
+  /**
+   * Korean handed straight to a user-facing call with no t() around it.
+   *
+   * The gap every guard above shares: they ask "does this Korean have an en.ts
+   * entry", which passes the moment the key exists — wrapped or not. So
+   * `Toast.info('Slice 취소')` had a key, had no t(), and rendered Korean under
+   * `en`. Measured when this landed: 114 such calls, most of them in files a
+   * batch had just added keys for.
+   *
+   * Scoped to the sinks that reach a user. Korean in a variable, a return
+   * value or a data table is somebody else's guard (see the table guards).
+   */
+  const SINKS =
+    '(?:Toast\\.(?:info|success|warning|error)|alert|confirm|prompt' +
+    '|printInfo|printSuccess|printError|window\\.alert|window\\.confirm|window\\.prompt)';
+
+  it.each(MIGRATED_FILES)('no raw Korean reaches a user-facing call in $file', ({ file }) => {
+    const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+    const raw: string[] = [];
+    const re = new RegExp(SINKS + String.raw`\s*\(\s*'((?:[^'\\]|\\.)*)'`, 'g');
+    for (const m of src.matchAll(re)) {
+      const v = asRuntimeString(m[1]);
+      if (/[가-힣]/.test(v) && !NOT_KEYS.has(v)) raw.push(v);
+    }
+    expect(raw, `${file}: Korean passed to a user-facing call without t()`).toEqual([]);
+  });
 
   it.each(MIGRATED_FILES)('every Korean data table in $file is read through t()', ({ file }) => {
     // The blind spot the two guards above share. A Korean-valued lookup table

@@ -603,7 +603,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
             if (result) toolManager.syncMesh();
           }).catch((err) => {
             console.error('[Texture] upload failed:', err);
-            alert('텍스처 업로드 실패: ' + err);
+            alert(t('텍스처 업로드 실패: ') + err);
           });
         });
         break;

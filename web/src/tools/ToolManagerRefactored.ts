@@ -891,7 +891,7 @@ export class ToolManager {
       }
       if (wallOnly.length === 0) {
         Toast.info(
-          'Sheet 면은 앞/뒷면 구분이 없어 반전할 필요가 없습니다 (ADR-007 Rev 2)',
+          t('Sheet 면은 앞/뒷면 구분이 없어 반전할 필요가 없습니다 (ADR-007 Rev 2)'),
           3500,
         );
         return;
@@ -959,7 +959,7 @@ export class ToolManager {
       const chain = extractEdgeChain(sel, this.bridge);
       if (!chain) {
         Toast.warning(
-          '선택된 엣지가 단순 체인이 아닙니다 (분기/단절). ' +
+          t('선택된 엣지가 단순 체인이 아닙니다 (분기/단절). ') +
           '연결된 폴리라인만 revolve 가능합니다.',
           3500,
         );
@@ -1046,7 +1046,7 @@ export class ToolManager {
       }
 
       if (action === 'bend-selection') {
-        const input = window.prompt('구부리기 각도 (도, +/-):', '30');
+        const input = window.prompt(t('구부리기 각도 (도, +/-):'), '30');
         if (input == null) return;
         const deg = parseFloat(input);
         if (!Number.isFinite(deg)) { Toast.warning(t('유효한 숫자를 입력하세요')); return; }
@@ -1068,7 +1068,7 @@ export class ToolManager {
         return;
       }
       if (action === 'twist-selection') {
-        const input = window.prompt('비틀기 각도 (축 전체에 대해 총 도수):', '45');
+        const input = window.prompt(t('비틀기 각도 (축 전체에 대해 총 도수):'), '45');
         if (input == null) return;
         const totalDeg = parseFloat(input);
         if (!Number.isFinite(totalDeg)) { Toast.warning(t('유효한 숫자를 입력하세요')); return; }
@@ -1083,7 +1083,7 @@ export class ToolManager {
         return;
       }
       // taper-selection
-      const input = window.prompt('끝 스케일 (0보다 큰 실수, 1.0 = 원래 크기):', '0.5');
+      const input = window.prompt(t('끝 스케일 (0보다 큰 실수, 1.0 = 원래 크기):'), '0.5');
       if (input == null) return;
       const endScale = parseFloat(input);
       if (!Number.isFinite(endScale) || endScale <= 0) {
@@ -1158,7 +1158,7 @@ export class ToolManager {
       }
       const last = localStorage.getItem('axia:array:params') ?? '5, 2000, 0, 0';
       const input = window.prompt(
-        '배열 파라미터 "N, dx, dy, dz" (개수, X 오프셋, Y 오프셋, Z 오프셋):',
+        t('배열 파라미터 "N, dx, dy, dz" (개수, X 오프셋, Y 오프셋, Z 오프셋):'),
         last,
       );
       if (input == null) return;
@@ -1286,14 +1286,14 @@ export class ToolManager {
         Toast.warning(t('회전체는 프로파일 면 1개를 선택하세요 (현재 {n}개)', { n: rev.length }), 3000);
         return;
       }
-      const angStr = window.prompt('회전 각도 (도, 1~360):', localStorage.getItem('axia:revolve:angle') ?? '90');
+      const angStr = window.prompt(t('회전 각도 (도, 1~360):'), localStorage.getItem('axia:revolve:angle') ?? '90');
       if (angStr == null) return;
       const deg = parseFloat(angStr);
       if (!Number.isFinite(deg) || deg <= 0 || deg > 360) {
         Toast.warning(t('1~360 사이 각도를 입력하세요'), 2500);
         return;
       }
-      const axStr = (window.prompt('회전축 (X / Y / Z, 면 평면이 축을 포함해야 함):', localStorage.getItem('axia:revolve:axis') ?? 'Z') ?? '').trim().toUpperCase();
+      const axStr = (window.prompt(t('회전축 (X / Y / Z, 면 평면이 축을 포함해야 함):'), localStorage.getItem('axia:revolve:axis') ?? 'Z') ?? '').trim().toUpperCase();
       const axis: [number, number, number] | null =
         axStr === 'X' ? [1, 0, 0] : axStr === 'Y' ? [0, 1, 0] : axStr === 'Z' ? [0, 0, 1] : null;
       if (!axis) {
@@ -1657,7 +1657,7 @@ export class ToolManager {
       }
       const last = localStorage.getItem('axia:array-radial:params') ?? '6, y, 360';
       const input = window.prompt(
-        '원형 배열 파라미터 "N, axis(x|y|z), 총각도°" (예: 6, y, 360):',
+        t('원형 배열 파라미터 "N, axis(x|y|z), 총각도°" (예: 6, y, 360):'),
         last,
       );
       if (input == null) return;
@@ -1765,7 +1765,7 @@ export class ToolManager {
         return;
       }
       const lastDist = Number(localStorage.getItem('axia:chamfer:distance') ?? '50');
-      const input = window.prompt('챔퍼 거리 (mm):', String(lastDist));
+      const input = window.prompt(t('챔퍼 거리 (mm):'), String(lastDist));
       if (input == null) return;
       const distance = parseFloat(input);
       if (!Number.isFinite(distance) || distance <= 0) {

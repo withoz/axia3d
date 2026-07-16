@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import * as THREE from 'three';
+import * as THREE from 'three';
+import { setLocale } from '../i18n';
 import { DrawWindowTool } from './DrawWindowTool';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
@@ -54,6 +55,9 @@ function drawOpening(tool: DrawWindowTool): void {
 }
 
 describe('DrawWindowTool — ADR-262 β-3 door/window routing', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let ctx: ReturnType<typeof mockToolContext>;
   let tool: DrawWindowTool;
 

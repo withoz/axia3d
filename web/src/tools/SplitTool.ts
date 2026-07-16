@@ -12,7 +12,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+import { t } from '../i18n';
 
 const HOVER_COLOR = 0x3498db;
 const MARKER_COLOR = 0x2ecc71;
@@ -89,7 +90,7 @@ export class SplitTool implements ITool {
 
   onMouseDown(_e: MouseEvent, _point: THREE.Vector3 | null): void {
     if (this.hoverEdgeId === null || !this.splitPoint) {
-      Toast.warning('엣지 위에서 클릭하세요');
+      Toast.warning(t('엣지 위에서 클릭하세요'));
       return;
     }
     const p = this.splitPoint;
@@ -97,7 +98,7 @@ export class SplitTool implements ITool {
     if (newVid >= 0) {
       this.ctx.selection.clearSelection();
       this.ctx.syncMesh();
-      Toast.info(`엣지 분할 → 새 vertex ${newVid}`, 1500);
+      Toast.info(t('엣지 분할 → 새 vertex {newVid}', { newVid }), 1500);
       debugLog(`[SplitTool] split edge=${this.hoverEdgeId} at (${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}) → vert ${newVid}`);
     } else {
       const err = this.ctx.bridge.lastError();

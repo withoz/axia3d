@@ -16,7 +16,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 export class MeasureTool implements ITool {
   readonly name = 'measure';
@@ -33,7 +34,7 @@ export class MeasureTool implements ITool {
 
   onActivate(): void {
     debugLog('[MeasureTool] Activated');
-    Toast.info('📏 측정: 시작점 클릭 → 끝점 클릭 (→ 3번째 점으로 각도)', 3500);
+    Toast.info(t('📏 측정: 시작점 클릭 → 끝점 클릭 (→ 3번째 점으로 각도)'), 3500);
   }
 
   onDeactivate(): void { this.cleanup(); }
@@ -53,9 +54,9 @@ export class MeasureTool implements ITool {
       const dz = Math.abs(this.p2.z - this.p1.z);
       const fmt = (v: number) => this.ctx.units.format(v);
       Toast.info(
-        `📏 거리: ${fmt(dist)}\n` +
+        t('📏 거리: {fmt}\n', { fmt: fmt(dist) }) +
         `  ΔX ${fmt(dx)} · ΔY ${fmt(dy)} · ΔZ ${fmt(dz)}\n` +
-        `  (세 번째 점을 클릭하면 각도, Esc 취소)`,
+        t('  (세 번째 점을 클릭하면 각도, Esc 취소)'),
         5000,
       );
       return;
@@ -65,7 +66,7 @@ export class MeasureTool implements ITool {
     const v1 = new THREE.Vector3().subVectors(this.p1, this.p2);
     const v2 = new THREE.Vector3().subVectors(p3, this.p2);
     if (v1.lengthSq() < 1e-12 || v2.lengthSq() < 1e-12) {
-      Toast.warning('각도 계산 불가: 각 변이 0 길이', 2500);
+      Toast.warning(t('각도 계산 불가: 각 변이 0 길이'), 2500);
       this.reset();
       return;
     }
@@ -74,7 +75,7 @@ export class MeasureTool implements ITool {
     const rad = Math.acos(clamped);
     const deg = (rad * 180) / Math.PI;
     Toast.info(
-      `📐 각도 (p2 기준): ${deg.toFixed(3)}°\n` +
+      t('📐 각도 (p2 기준): {deg}°\n', { deg: deg.toFixed(3) }) +
       `  |p1-p2| = ${this.ctx.units.format(this.p1.distanceTo(this.p2))}\n` +
       `  |p3-p2| = ${this.ctx.units.format(p3.distanceTo(this.p2))}`,
       6000,

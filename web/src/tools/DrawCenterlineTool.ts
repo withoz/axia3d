@@ -17,7 +17,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 export class DrawCenterlineTool implements ITool {
   readonly name = 'centerline';
@@ -31,7 +32,7 @@ export class DrawCenterlineTool implements ITool {
 
   onActivate(): void {
     debugLog('[CenterlineTool] Activated');
-    Toast.info('📐 중심선 — 두 점 클릭 (교차해도 분절되지 않음, face 합성 제외). Esc 취소.', 4500);
+    Toast.info(t('📐 중심선 — 두 점 클릭 (교차해도 분절되지 않음, face 합성 제외). Esc 취소.'), 4500);
   }
 
   onDeactivate(): void { this.cleanup(); }
@@ -47,7 +48,7 @@ export class DrawCenterlineTool implements ITool {
     const start = this.startPt;
     const end = point.clone();
     if (start.distanceTo(end) < 0.1) {
-      Toast.warning('시작점과 끝점이 같음 — 다시 클릭하세요', 2500);
+      Toast.warning(t('시작점과 끝점이 같음 — 다시 클릭하세요'), 2500);
       return;
     }
     const eid = this.ctx.bridge.drawCenterline(
@@ -58,7 +59,7 @@ export class DrawCenterlineTool implements ITool {
       this.ctx.syncMesh();
       debugLog(`[CenterlineTool] committed edge ${eid}`);
     } else {
-      Toast.error('중심선 생성 실패 — ' + this.ctx.bridge.lastError(), 3000);
+      Toast.error(t('중심선 생성 실패 — ') + this.ctx.bridge.lastError(), 3000);
     }
     this.reset();
   }
