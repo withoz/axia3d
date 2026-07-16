@@ -13,6 +13,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -60,12 +61,12 @@ export class RotateTool implements ITool {
     return { kind: 'verts', ids: Array.from(vertSet), edgeCount: edges.length };
   }
 
-  private rotate(t: Target, cx: number, cy: number, cz: number,
+  private rotate(target: Target, cx: number, cy: number, cz: number,
                  ax: number, ay: number, az: number, deg: number): void {
-    const ok = t.kind === 'faces'
-      ? this.ctx.bridge.rotateFaces(t.ids, cx, cy, cz, ax, ay, az, deg)
-      : this.ctx.bridge.rotateVerts(t.ids, cx, cy, cz, ax, ay, az, deg);
-    this.reportGateResult(ok, '회전이 자기교차/무효 형상을 만들어 취소되었습니다');
+    const ok = target.kind === 'faces'
+      ? this.ctx.bridge.rotateFaces(target.ids, cx, cy, cz, ax, ay, az, deg)
+      : this.ctx.bridge.rotateVerts(target.ids, cx, cy, cz, ax, ay, az, deg);
+    this.reportGateResult(ok, t('회전이 자기교차/무효 형상을 만들어 취소되었습니다'));
   }
 
   /**
@@ -100,12 +101,12 @@ export class RotateTool implements ITool {
   }
 
   onActivate(): void {
-    const t = this.resolveTarget();
-    if (!t) {
-      Toast.info('회전할 면 또는 에지를 먼저 선택하세요', 2500);
+    const target = this.resolveTarget();
+    if (!target) {
+      Toast.info(t('회전할 면 또는 에지를 먼저 선택하세요'), 2500);
       return;
     }
-    this.target = t;
+    this.target = target;
     this.phase = 'pick-base';
     // 시작 시 축 기본값 해결 — axisLock 있으면 그것, 없으면 Y
     this.applyAxisFromLabel(this.inferInitialAxis());
@@ -167,7 +168,7 @@ export class RotateTool implements ITool {
       // ② 참조 방향 확정
       if (!this.basePoint) return;
       if (point.distanceTo(this.basePoint) < 1) {
-        Toast.warning('참조점이 기준점과 너무 가까움', 2000);
+        Toast.warning(t('참조점이 기준점과 너무 가까움'), 2000);
         return;
       }
       this.referencePoint = point.clone();
@@ -175,7 +176,7 @@ export class RotateTool implements ITool {
       this.phase = 'pick-target';
       this.appliedAngleDeg = 0;
       this.previewAngleDeg = 0;
-      Toast.info('③ 목표 방향 클릭 또는 각도 입력', 3000);
+      Toast.info(t('③ 목표 방향 클릭 또는 각도 입력'), 3000);
       debugLog('[Rotate] Reference set:', point);
       return;
     }
@@ -214,7 +215,7 @@ export class RotateTool implements ITool {
       const axLabel = ax.x === 1 ? 'X' : ax.z === 1 ? 'Z' : 'Y';
       this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
         { from: this.basePoint.clone(), to: this.referencePoint.clone(),
-          text: '참조', color: '#868e96' },
+          text: t('참조'), color: '#868e96' },
         { from: this.basePoint.clone(), to: point.clone(),
           text: `${targetDeg.toFixed(1)}° · ${axLabel}축`, color: '#da77f2' },
       ]);
@@ -235,7 +236,7 @@ export class RotateTool implements ITool {
         this.ctx.syncMesh();
       }
       this.cleanup();
-      Toast.info('회전 취소됨', 1500);
+      Toast.info(t('회전 취소됨'), 1500);
       return;
     }
 
@@ -276,19 +277,19 @@ export class RotateTool implements ITool {
     // VCB는 각도 값 직접 입력 — 어느 phase든 base 확정 후면 작동.
     if (this.phase === 'idle') {
       // 선택 없이 VCB만 호출 — 기본 centroid 사용 (레거시 호환)
-      const t = this.resolveTarget();
-      if (!t) {
-        Toast.info('회전할 면 또는 에지를 먼저 선택하세요', 2000);
+      const target = this.resolveTarget();
+      if (!target) {
+        Toast.info(t('회전할 면 또는 에지를 먼저 선택하세요'), 2000);
         return;
       }
-      const centroid = this.targetCentroid(t);
+      const centroid = this.targetCentroid(target);
       if (!centroid) return;
       const ax = this.resolveRotationAxis();
-      this.rotate(t,
+      this.rotate(target,
         centroid.x, centroid.y, centroid.z,
         ax.x, ax.y, ax.z, value);
       this.ctx.syncMesh();
-      debugLog(`[VCB/Rotate] legacy centroid ${value}° → ${t.kind}`);
+      debugLog(`[VCB/Rotate] legacy centroid ${value}° → ${target.kind}`);
       return;
     }
 
@@ -308,7 +309,7 @@ export class RotateTool implements ITool {
     }
 
     if (this.phase === 'pick-base' || this.phase === 'pick-reference') {
-      Toast.warning('기준점·참조점을 먼저 클릭한 뒤 각도를 입력하세요', 3000);
+      Toast.warning(t('기준점·참조점을 먼저 클릭한 뒤 각도를 입력하세요'), 3000);
     }
   }
 

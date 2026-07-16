@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -226,7 +227,7 @@ export class EraseTool implements ITool {
         if (synthesizedCount > 0) parts.push(`${synthesizedCount}개 면 자동 생성`);
         if (cascadedFaces > 0) parts.push(`${cascadedFaces}개 면 삭제`);
         if (cascadedEdges > 0) parts.push(`${cascadedEdges}개 엣지 삭제`);
-        if (cascadeOnly) parts.push('(Shift: 강제 삭제)');
+        if (cascadeOnly) parts.push(t('(Shift: 강제 삭제)'));
         Toast.info(parts.join(', '), 2500);
       }
 
@@ -236,7 +237,7 @@ export class EraseTool implements ITool {
       // from the numeric per-entity summary above.
       if (desolidifiedCount > 0) {
         const label = desolidifiedCount === 1
-          ? '솔리드 1개가 서피스로 전환됨 (닫힌 볼륨 해체)'
+          ? t('솔리드 1개가 서피스로 전환됨 (닫힌 볼륨 해체)')
           : `솔리드 ${desolidifiedCount}개가 서피스로 전환됨 (닫힌 볼륨 해체)`;
         Toast.warning(label, 3500);
       }
@@ -246,7 +247,7 @@ export class EraseTool implements ITool {
       //   상태가 발생하지 않음. softened > 0 은 explicit Soften Edges
       //   명령 경로에서만 발생하므로 Erase 도구는 별도 안내 없음.
     } else {
-      Toast.error('삭제에 실패했습니다');
+      Toast.error(t('삭제에 실패했습니다'));
     }
 
     this.accumulatedFaces.clear();

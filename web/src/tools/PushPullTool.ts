@@ -3,6 +3,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -120,7 +121,7 @@ export class PushPullTool implements ITool {
         if (!normalArr ||
             (normalArr[0] === 0 && normalArr[1] === 0 && normalArr[2] === 0)) {
           debugWarn('[PP] Invalid face normal for faceId=', rustFaceId);
-          Toast.error('이 면의 법선을 계산할 수 없습니다 (degenerate)');
+          Toast.error(t('이 면의 법선을 계산할 수 없습니다 (degenerate)'));
           return;
         }
         this.ppNormal = new THREE.Vector3(normalArr[0], normalArr[1], normalArr[2]);
@@ -253,14 +254,14 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carveCurvedPocket?.(this.ppFaceId, -dist) ?? -1;
         if (walls > 0) {
           debugLog(`[PP] Curved pocket carved → ${walls} side walls (depth ${(-dist).toFixed(1)})`);
-          Toast.success('곡면 포켓을 파냈습니다');
+          Toast.success(t('곡면 포켓을 파냈습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
         }
         const why = this.engineWhy();
         debugWarn('[PP] carveCurvedPocket declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요'));
         this.cleanup();
         return;
       }
@@ -279,14 +280,14 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carveCurvedBoss?.(this.ppFaceId, dist) ?? -1;
         if (walls > 0) {
           debugLog(`[PP] Curved boss raised → ${walls} side walls (height ${dist.toFixed(1)})`);
-          Toast.success('곡면 보스를 세웠습니다');
+          Toast.success(t('곡면 보스를 세웠습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
         }
         const why = this.engineWhy();
         debugWarn('[PP] carveCurvedBoss declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요'));
         this.cleanup();
         return;
       }
@@ -306,7 +307,7 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carvePocketFromSourceFace(this.ppFaceId, -dist);
         if (walls > 0) {
           debugLog(`[PP] Pocket carved → ${walls} side walls (depth ${(-dist).toFixed(1)})`);
-          Toast.success('포켓(pocket)을 파냈습니다');
+          Toast.success(t('포켓(pocket)을 파냈습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
@@ -317,7 +318,7 @@ export class PushPullTool implements ITool {
         // inward "boss" extrude, which produces confusing garbage geometry.
         const why = this.engineWhy();
         debugWarn('[PP] carvePocket declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요'));
         this.cleanup();
         return;
       }
@@ -554,10 +555,10 @@ export class PushPullTool implements ITool {
       let labelColor = isAligned ? '#66ff99' : '#ffd43b';
       let cutTag = '';
       if (this.isSheetSource && dist < 0) {
-        const t = this.sheetThickness;
-        const through = t > 0 && absDist >= t - 0.001;
+        const thickness = this.sheetThickness;
+        const through = thickness > 0 && absDist >= thickness - 0.001;
         labelColor = through ? '#ff3b30' : '#ff9f0a';
-        cutTag = through ? ' 관통' : '';
+        cutTag = through ? t(' 관통') : '';
       }
       const text = alignPrefix + sign + this.ctx.units.format(absDist) + cutTag;
       const offset = this.ppNormal.clone().multiplyScalar(dist);
@@ -783,7 +784,7 @@ export class PushPullTool implements ITool {
    */
   private commitTaper(dist: number, taperDeg: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('테이퍼(draft) 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('테이퍼(draft) 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -807,7 +808,7 @@ export class PushPullTool implements ITool {
    */
   private commitCone(dist: number, topScale: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('콘(cone) 돌출은 단일 평면 원 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('콘(cone) 돌출은 단일 평면 원 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -832,7 +833,7 @@ export class PushPullTool implements ITool {
    */
   private commitBidirectional(dist: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('양방향 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('양방향 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];

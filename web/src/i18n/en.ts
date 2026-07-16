@@ -962,6 +962,176 @@ export const EN: Record<string, string> = {
   'onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).':
     'No onActionInvoke callback is registered (main.ts needs to wire it).',
 
+  // ══════════════════════════════════════════════════════════════════════
+  // batch 5 — what the tools say back. These are the strings a user reads
+  // most: one lands after almost every action. They are instructions and
+  // outcomes, so they read as sentences, not labels.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── Draw ──
+  '유효한 길이를 입력하세요': 'Enter a valid length',
+  '비평면 루프 — 면이 자동 생성되지 않을 수 있습니다':
+    'The loop is not flat — a face may not be created',
+  '루프 닫기 실행 (면 분할이 아닌 새 경계 생성)':
+    'Closing the loop (this makes a new boundary, it does not split a face)',
+  '루프 닫힘 — 면 생성됨': 'Loop closed — face created',
+  '면 분할됨 — 계속 그리기 (Esc 종료)': 'Face split — keep drawing (Esc to finish)',
+  '루프 닫힘 — 면 생성 실패 (비평면 또는 자체교차)':
+    'Loop closed, but no face — it is not flat, or it crosses itself',
+  '곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.':
+    'A straight line on a curved surface is only a flat guide. To split one, use a freehand or Bezier curve (sphere, cone) or a closed circle (cylinder, torus).',
+  '⚠ 닫힘 세그먼트가 기존 체인과 교차합니다': '⚠ The closing segment crosses the chain',
+  '이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요':
+    'A circle of that radius does not fit on this surface — draw it with the mouse instead',
+
+  // ── Push/Pull ──
+  '이 면의 법선을 계산할 수 없습니다 (degenerate)':
+    'This face has no usable normal — it is degenerate',
+  '곡면 포켓을 파냈습니다': 'Pocket carved into the curved surface',
+  '곡면 보스를 세웠습니다': 'Boss raised on the curved surface',
+  '포켓(pocket)을 파냈습니다': 'Pocket carved',
+  '테이퍼(draft) 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)':
+    'Draft extrude works on a single flat profile only (not curved surfaces or groups)',
+  '콘(cone) 돌출은 단일 평면 원 프로파일만 지원합니다 (곡면/그룹 미지원)':
+    'Cone extrude works on a single flat circle only (not curved surfaces or groups)',
+  '양방향 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)':
+    'Two-way extrude works on a single flat profile only (not curved surfaces or groups)',
+
+  // ── Move / Rotate / Scale / Copy ──
+  '이동할 면/에지를 선택하거나 정점을 클릭하세요':
+    'Select a face or edge to move, or click a vertex',
+  '도착점을 클릭하세요 (Esc: 취소)': 'Click where it should go (Esc to cancel)',
+  '복제/붙여넣기 취소': 'Duplicate / paste cancelled',
+  '이동할 면 또는 에지를 먼저 선택하세요': 'Select a face or edge to move first',
+  '회전할 면 또는 에지를 먼저 선택하세요': 'Select a face or edge to rotate first',
+  '참조점이 기준점과 너무 가까움': 'The reference point is too close to the base point',
+  '③ 목표 방향 클릭 또는 각도 입력': '③ Click the target direction, or type an angle',
+  '회전 취소됨': 'Rotate cancelled',
+  '기준점·참조점을 먼저 클릭한 뒤 각도를 입력하세요':
+    'Click the base and reference points first, then type an angle',
+  '크기 조정할 면 또는 에지를 먼저 선택하세요': 'Select a face or edge to scale first',
+  '스케일 값이 0이면 면이 퇴화됩니다 (거부)':
+    'A scale of 0 would collapse the face — refused',
+  '복제할 면 또는 엣지를 먼저 선택하세요': 'Select a face or edge to duplicate first',
+
+  // ── Erase / Offset ──
+  '삭제에 실패했습니다': 'Could not delete that',
+  '엣지 offset: 거리(VCB)를 입력하세요. ESC 로 취소.':
+    'Edge offset: type a distance. Esc to cancel.',
+  'Offset 적용할 엣지가 없습니다.': 'There are no edges to offset.',
+
+  // ── Group ──
+  '그룹에 포함할 면들을 선택하세요': 'Select the faces to put in the group',
+  '그룹 편집 모드 종료': 'Left group edit mode',
+  '그룹을 만들려면 2개 이상의 면을 선택하세요': 'Select at least 2 faces to make a group',
+  '그룹 생성 실패': 'Could not create the group',
+  '해제할 그룹을 선택하세요': 'Select a group to ungroup',
+  '그룹 해제됨': 'Ungrouped',
+
+  // ── Fillet / Chamfer / Join / Trim / Extend ──
+  '둥글릴 엣지를 선택하고 반지름을 입력하세요 (또는 클릭 = 마지막 값), Esc 종료':
+    'Select an edge and type a radius (or just click to reuse the last one). Esc to finish.',
+  '둥글릴 엣지를 먼저 선택하세요': 'Select an edge to fillet first',
+  '챔퍼할 꼭짓점 위를 클릭하세요': 'Click a vertex to chamfer',
+  '반지름을 입력하세요 (또는 다시 클릭 = 마지막 값)':
+    'Type a radius (or click again to reuse the last one)',
+  '병합할 일직선 꼭짓점을 클릭하세요 (두 직선 → 하나)':
+    'Click a collinear vertex to join (two straight lines → one)',
+  '병합할 꼭짓점 위를 클릭하세요': 'Click a vertex to join',
+  '조인 완료': 'Joined',
+  '잘라낼 선 구간을 클릭하세요 (교차점 사이가 한 구간 · Esc 종료)':
+    'Click the segment to trim (a segment runs between intersections). Esc to finish.',
+  '잘라낼 선 구간을 클릭하세요': 'Click the segment to trim',
+  '선 구간 자르기 완료': 'Trimmed',
+  '늘일 기준(경계) 엣지를 먼저 선택한 뒤, 늘일 엣지를 클릭하세요 (Esc 종료)':
+    'Select the boundary edge to extend to, then click the edge to extend. Esc to finish.',
+  '늘일 기준이 될 경계 엣지를 먼저 선택하세요': 'Select the boundary edge to extend to first',
+  '늘일 엣지를 클릭하세요': 'Click the edge to extend',
+  '경계 엣지 자신은 늘일 수 없습니다': 'The boundary edge cannot extend to itself',
+  '엣지 늘이기 완료': 'Extended',
+
+  // ── Box / Recess ──
+  '박스의 가로/세로 코너를 다른 위치에 클릭하세요': 'Click the opposite corner of the base',
+  '높이가 0 입니다 — 위/아래로 이동 후 다시 클릭':
+    'The height is 0 — move up or down, then click again',
+  '박스 도구 취소': 'Box cancelled',
+  '박스 생성 실패: ': 'Could not create the box: ',
+  '포켓: 면을 클릭하세요.': 'Pocket: click a face.',
+  '포켓 취소됨': 'Pocket cancelled',
+  '먼저 면을 클릭하세요.': 'Click a face first.',
+  '포켓은 두 값이 필요합니다 — "여유 깊이" (예: 20 100).':
+    'A pocket needs two values — "inset depth" (e.g. 20 100).',
+  '여유(inset)와 깊이(depth)는 0보다 커야 합니다.':
+    'The inset and the depth must both be greater than 0.',
+  '포켓: VCB에 "여유 깊이" 입력 (예: 20 100). ESC 로 취소.':
+    'Pocket: type "inset depth" (e.g. 20 100). Esc to cancel.',
+
+  // ── batch 5, part 2 — what the mechanical wrap could not see ──
+  // The Toast.x('…') sweep missed these: engine-error humanisers that return a
+  // string, ternaries, fragments concatenated into a label, and a data table.
+  // The Korean-literal guard found every one.
+
+  // DrawLineTool.friendlyErrorMessage — same job as humanizeEngineError:
+  // turn an engine error into what to do instead.
+  '분할선이 너무 짧습니다 (시작점과 끝점을 더 떨어뜨리세요)':
+    'The split line is too short — move the start and end further apart',
+  '이미 이어진 모서리 위의 두 점은 분할에 사용할 수 없습니다 — 반대쪽 모서리나 면 안쪽을 끝점으로 하세요':
+    'Two points on an edge that already joins them cannot split a face — end on the opposite edge, or inside the face',
+  '분할 좌표가 유효하지 않습니다 (NaN/Infinity) — 스냅을 확인하세요':
+    'The split coordinates are not valid (NaN/Infinity) — check the snap',
+  '대상 면을 찾을 수 없습니다 (이미 삭제되었거나 선택 해제됨)':
+    'That face is gone — it was deleted or deselected',
+  '시작점과 끝점이 같은 정점입니다': 'The start and end are the same vertex',
+  '분할선 위치를 경계에서 찾지 못했습니다 — 면 가장자리 근처에서 다시 시도하세요':
+    'The split line does not meet the boundary — try again nearer the face edge',
+  '면 경계 위에 분할 끝점을 놓아주세요': 'Put the split endpoints on the face boundary',
+
+  // Dimension-label fragments. Short by design — they sit next to a number.
+  'X축': 'X axis',
+  'Y축(높이)': 'Y axis (height)',
+  'Z축': 'Z axis',
+  '참조': 'ref',
+  ' 관통': ' through',
+  '복제 {d}': 'copy {d}',
+
+  '이 곡면에는 원을 그릴 수 없습니다': 'A circle cannot be drawn on this surface',
+  '이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요':
+    'A pocket cannot be made in this surface — draw a circle on it, then push inwards',
+  '이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요':
+    'A boss cannot be raised on this surface — draw a circle on it, then push outwards',
+  '이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요':
+    'A hole or pocket will not fit here — try another spot',
+  '돌출/잘라내기가 실행되지 않았습니다': 'Nothing was extruded or cut',
+
+  '이동이 자기교차/무효 형상을 만들어 취소되었습니다':
+    'That move would have made the shape cross itself, so it was cancelled',
+  '회전이 자기교차/무효 형상을 만들어 취소되었습니다':
+    'That rotation would have made the shape cross itself, so it was cancelled',
+  '스케일이 자기교차/무효 형상을 만들어 취소되었습니다':
+    'That scale would have made the shape cross itself, so it was cancelled',
+  '📐 복제본의 corner가 커서에 붙어 이동 → 클릭해 고정, Esc 취소':
+    '📐 The copy\'s corner follows the cursor — click to place, Esc to cancel',
+  '마우스로 위치 조정 → 클릭해 고정, Esc 취소':
+    'Move it with the mouse — click to place, Esc to cancel',
+  '복제 실패': 'Could not duplicate that',
+  '엣지': 'edges',
+
+  '(Shift: 강제 삭제)': '(Shift: force delete)',
+  '솔리드 1개가 서피스로 전환됨 (닫힌 볼륨 해체)':
+    '1 solid became a surface — the closed volume was opened',
+  '선과 면을 동시에 선택했습니다. Offset 명령은 한 차원만 사용합니다 (선 또는 면).':
+    'Lines and faces are both selected. Offset works on one at a time — lines or faces.',
+  '필렛 실패 (3-way corner 등은 미지원)':
+    'Could not fillet that (3-way corners are not supported)',
+  '챔퍼 실패 (3-valence 꼭짓점만 가능)':
+    'Could not chamfer that (only 3-valence vertices work)',
+  '병합 실패 (일직선 2-valence 꼭짓점만 가능)':
+    'Could not join that (only collinear 2-valence vertices work)',
+  '자르기 실패 (자유 와이어 구간이 아님)':
+    'Could not trim that (it is not a free wire segment)',
+  '늘이기 실패 (경계에 닿지 않거나 자유 와이어 엣지가 아님)':
+    'Could not extend that (it does not reach the boundary, or is not a free wire edge)',
+
   // ── help ──
   '도움말': 'Help',
   '단축키 보기': 'Keyboard shortcuts',

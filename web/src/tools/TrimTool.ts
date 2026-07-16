@@ -12,6 +12,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -28,7 +29,7 @@ export class TrimTool implements ITool {
   }
 
   onActivate(): void {
-    Toast.info('잘라낼 선 구간을 클릭하세요 (교차점 사이가 한 구간 · Esc 종료)', 3500);
+    Toast.info(t('잘라낼 선 구간을 클릭하세요 (교차점 사이가 한 구간 · Esc 종료)'), 3500);
     debugLog('[TrimTool] Activated');
   }
 
@@ -39,16 +40,16 @@ export class TrimTool implements ITool {
   onMouseDown(e: MouseEvent, _point: THREE.Vector3 | null): void {
     const picked = pickClickedEdge(this.ctx, e);
     if (!picked) {
-      Toast.warning('잘라낼 선 구간을 클릭하세요', 1800);
+      Toast.warning(t('잘라낼 선 구간을 클릭하세요'), 1800);
       return;
     }
     const r = this.ctx.bridge.deleteEdgeCascade(picked.edgeId);
     if (r >= 0) {
       this.ctx.syncMesh();
-      Toast.info('선 구간 자르기 완료', 1500);
+      Toast.info(t('선 구간 자르기 완료'), 1500);
       debugLog(`[Trim] deleted segment edge=${picked.edgeId}`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '자르기 실패 (자유 와이어 구간이 아님)');
+      Toast.fromBridgeError(this.ctx.bridge, t('자르기 실패 (자유 와이어 구간이 아님)'));
     }
   }
 

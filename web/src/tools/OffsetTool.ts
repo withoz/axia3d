@@ -15,6 +15,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -129,7 +130,7 @@ export class OffsetTool implements ITool {
     if (dim === 'mixed') {
       // L5 — Mixed selection rejected, force user to disambiguate.
       Toast.warning(
-        '선과 면을 동시에 선택했습니다. Offset 명령은 한 차원만 사용합니다 (선 또는 면).',
+        t('선과 면을 동시에 선택했습니다. Offset 명령은 한 차원만 사용합니다 (선 또는 면).'),
         3500,
       );
       this.ctx.selection.clearSelection();
@@ -166,7 +167,7 @@ export class OffsetTool implements ITool {
     // pick). Click on canvas does nothing in edge mode; user enters
     // distance via VCB to apply, ESC to cancel.
     if (this.dimMode === 'edge') {
-      Toast.info('엣지 offset: 거리(VCB)를 입력하세요. ESC 로 취소.', 2000);
+      Toast.info(t('엣지 offset: 거리(VCB)를 입력하세요. ESC 로 취소.'), 2000);
       return;
     }
 
@@ -308,7 +309,7 @@ export class OffsetTool implements ITool {
   private applyEdgeOffset(dist: number): void {
     const edges = this.ctx.selection.getSelectedEdges();
     if (edges.length === 0) {
-      Toast.info('Offset 적용할 엣지가 없습니다.', 2500);
+      Toast.info(t('Offset 적용할 엣지가 없습니다.'), 2500);
       return;
     }
 

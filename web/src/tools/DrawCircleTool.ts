@@ -13,6 +13,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { getDrawCurveMode } from './DrawCurveSettings';
@@ -351,7 +352,7 @@ export class DrawCircleTool implements ITool {
         curvedHost, [c.x, c.y, c.z], value,
       ) ?? null;
       if (!rp) {
-        Toast.warning('이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요', 3500);
+        Toast.warning(t('이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요'), 3500);
         this.cleanup();
         return;
       }
@@ -363,7 +364,7 @@ export class DrawCircleTool implements ITool {
       if (!res || res.includes('"error"')) {
         Toast.warning(
           humanizeEngineError(this.ctx.bridge.lastError())
-            || '이 곡면에는 원을 그릴 수 없습니다',
+            || t('이 곡면에는 원을 그릴 수 없습니다'),
           3500,
         );
       } else {

@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -26,7 +27,7 @@ export class FilletTool implements ITool {
   }
 
   onActivate(): void {
-    Toast.info('둥글릴 엣지를 선택하고 반지름을 입력하세요 (또는 클릭 = 마지막 값), Esc 종료', 3500);
+    Toast.info(t('둥글릴 엣지를 선택하고 반지름을 입력하세요 (또는 클릭 = 마지막 값), Esc 종료'), 3500);
     debugLog('[FilletTool] Activated');
   }
 
@@ -66,7 +67,7 @@ export class FilletTool implements ITool {
   private commit(radius: number): void {
     const edges = this.ctx.selection.getSelectedEdges();
     if (edges.length === 0) {
-      Toast.warning('둥글릴 엣지를 먼저 선택하세요', 2000);
+      Toast.warning(t('둥글릴 엣지를 먼저 선택하세요'), 2000);
       return;
     }
     let ok = 0;
@@ -81,7 +82,7 @@ export class FilletTool implements ITool {
       Toast.info(`엣지 필렛 완료 (${ok}개 · 반지름 ${radius}mm)`, 2000);
       debugLog(`[Fillet] ${ok}/${edges.length} edges, radius=${radius}`);
     } else if (firstErr) {
-      Toast.fromBridgeError(this.ctx.bridge, '필렛 실패 (3-way corner 등은 미지원)');
+      Toast.fromBridgeError(this.ctx.bridge, t('필렛 실패 (3-way corner 등은 미지원)'));
     }
   }
 }

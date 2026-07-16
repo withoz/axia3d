@@ -3,6 +3,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -63,12 +64,12 @@ export class ScaleTool implements ITool {
    * 대상에 비균일 스케일 적용. Faces는 scaleFaces, Verts는 scaleVerts —
    * 양쪽 모두 단일 WASM 호출 + 단일 undo 트랜잭션.
    */
-  private scale(t: Target, cx: number, cy: number, cz: number,
+  private scale(target: Target, cx: number, cy: number, cz: number,
                 sx: number, sy: number, sz: number): void {
-    const ok = t.kind === 'faces'
-      ? this.ctx.bridge.scaleFaces(t.ids, cx, cy, cz, sx, sy, sz)
-      : this.ctx.bridge.scaleVerts(t.ids, cx, cy, cz, sx, sy, sz);
-    this.reportGateResult(ok, '스케일이 자기교차/무효 형상을 만들어 취소되었습니다');
+    const ok = target.kind === 'faces'
+      ? this.ctx.bridge.scaleFaces(target.ids, cx, cy, cz, sx, sy, sz)
+      : this.ctx.bridge.scaleVerts(target.ids, cx, cy, cz, sx, sy, sz);
+    this.reportGateResult(ok, t('스케일이 자기교차/무효 형상을 만들어 취소되었습니다'));
   }
 
   /**
@@ -90,20 +91,20 @@ export class ScaleTool implements ITool {
   onMouseDown(_e: MouseEvent, point: THREE.Vector3 | null): void {
     if (this.transformActive) return;
 
-    const t = this.resolveTarget();
-    if (!t) {
+    const target = this.resolveTarget();
+    if (!target) {
       // #13: 빈 선택 Toast
-      Toast.info('크기 조정할 면 또는 에지를 먼저 선택하세요', 2000);
+      Toast.info(t('크기 조정할 면 또는 에지를 먼저 선택하세요'), 2000);
       return;
     }
-    const centroid = this.targetCentroid(t);
+    const centroid = this.targetCentroid(target);
     if (centroid && point) {
-      this.target = t;
+      this.target = target;
       this.transformCentroid = centroid;
       this.transformStartPt = point.clone();
       this.transformActive = true;
       this.lastAppliedRatio = 1.0;
-      const label = t.kind === 'faces' ? `${t.ids.length} faces` : `${t.edgeCount} edges`;
+      const label = target.kind === 'faces' ? `${target.ids.length} faces` : `${target.edgeCount} edges`;
       debugLog(`[Scale] Start drag, ${label}`);
     }
   }
@@ -156,22 +157,22 @@ export class ScaleTool implements ITool {
 
   applyVCBValue(value: number, value2?: number, value3?: number): void {
     // Phase 3 #5+#12: 비균일 + 음수 scale 지원
-    const t = this.resolveTarget();
-    if (!t) {
-      Toast.info('크기 조정할 면 또는 에지를 먼저 선택하세요', 2000);
+    const target = this.resolveTarget();
+    if (!target) {
+      Toast.info(t('크기 조정할 면 또는 에지를 먼저 선택하세요'), 2000);
       return;
     }
-    const centroid = this.targetCentroid(t);
+    const centroid = this.targetCentroid(target);
     if (!centroid) return;
     const sx = value;
     const sy = value2 !== undefined ? value2 : value;
     const sz = value3 !== undefined ? value3 : value;
     if (sx === 0 || sy === 0 || sz === 0) {
-      Toast.warning('스케일 값이 0이면 면이 퇴화됩니다 (거부)', 3000);
+      Toast.warning(t('스케일 값이 0이면 면이 퇴화됩니다 (거부)'), 3000);
       return;
     }
-    this.scale(t, centroid.x, centroid.y, centroid.z, sx, sy, sz);
-    debugLog(`[VCB/Scale] Applied: (${sx}, ${sy}, ${sz}) → ${t.kind}`);
+    this.scale(target, centroid.x, centroid.y, centroid.z, sx, sy, sz);
+    debugLog(`[VCB/Scale] Applied: (${sx}, ${sy}, ${sz}) → ${target.kind}`);
     this.ctx.syncMesh();
   }
 

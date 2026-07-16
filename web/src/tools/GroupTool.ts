@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -28,7 +29,7 @@ export class GroupTool implements ITool {
     if (selected.length > 0) {
       Toast.info(`${selected.length}개 면 선택됨 — Enter로 그룹 생성`);
     } else {
-      Toast.info('그룹에 포함할 면들을 선택하세요');
+      Toast.info(t('그룹에 포함할 면들을 선택하세요'));
     }
   }
 
@@ -45,7 +46,7 @@ export class GroupTool implements ITool {
         const handled = this.ctx.selection.handleGroupEditClick(fid, e.shiftKey, e.ctrlKey);
         if (!handled) {
           // 그룹 외부 클릭 → 편집 모드 종료됨
-          Toast.info('그룹 편집 모드 종료');
+          Toast.info(t('그룹 편집 모드 종료'));
         }
       } else {
         // 빈 공간 클릭
@@ -88,7 +89,7 @@ export class GroupTool implements ITool {
     if (e.key === 'Escape') {
       if (this.ctx.selection.isInGroupEditMode()) {
         this.ctx.selection.exitGroupEdit();
-        Toast.info('그룹 편집 모드 종료');
+        Toast.info(t('그룹 편집 모드 종료'));
       } else {
         this.ctx.selection.clearSelection();
       }
@@ -123,7 +124,7 @@ export class GroupTool implements ITool {
   createGroupFromSelection(): number | null {
     const selected = this.ctx.selection.getSelectedFaces();
     if (selected.length < 2) {
-      Toast.warning('그룹을 만들려면 2개 이상의 면을 선택하세요');
+      Toast.warning(t('그룹을 만들려면 2개 이상의 면을 선택하세요'));
       return null;
     }
 
@@ -142,7 +143,7 @@ export class GroupTool implements ITool {
         Toast.success(`Group-${localGid} 생성 (${selected.length}개 면)`);
         return localGid;
       }
-      Toast.error('그룹 생성 실패');
+      Toast.error(t('그룹 생성 실패'));
       return null;
     }
   }
@@ -151,7 +152,7 @@ export class GroupTool implements ITool {
   ungroupSelection(): boolean {
     const selected = this.ctx.selection.getSelectedFaces();
     if (selected.length === 0) {
-      Toast.warning('해제할 그룹을 선택하세요');
+      Toast.warning(t('해제할 그룹을 선택하세요'));
       return false;
     }
 
@@ -164,7 +165,7 @@ export class GroupTool implements ITool {
     // 로컬 해제
     const result = this.ctx.selection.ungroupSelected();
     if (result) {
-      Toast.info('그룹 해제됨');
+      Toast.info(t('그룹 해제됨'));
     }
     return result;
   }

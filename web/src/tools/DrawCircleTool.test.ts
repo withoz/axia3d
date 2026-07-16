@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import { DrawCircleTool } from './DrawCircleTool';
 import { Toast } from '../ui/Toast';
+import { setLocale } from '../i18n';
+
+// ADR-294 — this file asserts Korean copy, and jsdom reports
+// navigator.language = 'en-US', so without pinning the locale the tool renders
+// the English table and the assertion tests the wrong string.
+beforeEach(() => setLocale('ko'));
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 

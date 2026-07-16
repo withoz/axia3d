@@ -3,6 +3,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -89,11 +90,11 @@ export class MoveTool implements ITool {
     return { kind: 'verts', ids: [vid], edgeCount: 0 };
   }
 
-  private translate(t: Target, dx: number, dy: number, dz: number): void {
-    const ok = t.kind === 'faces'
-      ? this.ctx.bridge.translateFaces(t.ids, dx, dy, dz)
-      : this.ctx.bridge.translateVerts(t.ids, dx, dy, dz);
-    this.reportGateResult(ok, '이동이 자기교차/무효 형상을 만들어 취소되었습니다');
+  private translate(target: Target, dx: number, dy: number, dz: number): void {
+    const ok = target.kind === 'faces'
+      ? this.ctx.bridge.translateFaces(target.ids, dx, dy, dz)
+      : this.ctx.bridge.translateVerts(target.ids, dx, dy, dz);
+    this.reportGateResult(ok, t('이동이 자기교차/무효 형상을 만들어 취소되었습니다'));
   }
 
   /**
@@ -138,8 +139,8 @@ export class MoveTool implements ITool {
     this.placementRefPoint = refPoint ? refPoint.clone() : null;
     Toast.info(
       refPoint
-        ? '📐 복제본의 corner가 커서에 붙어 이동 → 클릭해 고정, Esc 취소'
-        : '마우스로 위치 조정 → 클릭해 고정, Esc 취소',
+        ? t('📐 복제본의 corner가 커서에 붙어 이동 → 클릭해 고정, Esc 취소')
+        : t('마우스로 위치 조정 → 클릭해 고정, Esc 취소'),
       3500,
     );
     debugLog(`[Move] startPlacement: ${faceIds.length} faces, refPt=${refPoint?.toArray()}`);
@@ -195,19 +196,19 @@ export class MoveTool implements ITool {
     if (!point) return;
 
     // 선택이 있으면 그것, 없으면 cursor 위치의 정점을 target 으로 (vertex pick).
-    const t = this.resolveTargetWithPoint(point);
-    if (!t) {
-      Toast.info('이동할 면/에지를 선택하거나 정점을 클릭하세요', 2000);
+    const target = this.resolveTargetWithPoint(point);
+    if (!target) {
+      Toast.info(t('이동할 면/에지를 선택하거나 정점을 클릭하세요'), 2000);
       return;
     }
 
-    this.target = t;
+    this.target = target;
     this.transformStartPt = point.clone();  // 기준점 (base point)
     this.transformActive = true;
     this.transformLastDelta.set(0, 0, 0);
-    const label = t.kind === 'faces' ? `${t.ids.length} faces` : `${t.edgeCount} edges (${t.ids.length} verts)`;
+    const label = target.kind === 'faces' ? `${target.ids.length} faces` : `${target.edgeCount} edges (${target.ids.length} verts)`;
     debugLog(`[Move] Base point captured, ${label} — move cursor + click to commit`);
-    Toast.info('도착점을 클릭하세요 (Esc: 취소)', 2500);
+    Toast.info(t('도착점을 클릭하세요 (Esc: 취소)'), 2500);
   }
 
   onMouseMove(_e: MouseEvent, point: THREE.Vector3 | null): void {
@@ -265,7 +266,7 @@ export class MoveTool implements ITool {
       if (this.placementMode) {
         this.ctx.bridge.undo();
         this.ctx.syncMesh();
-        Toast.info('복제/붙여넣기 취소', 2000);
+        Toast.info(t('복제/붙여넣기 취소'), 2000);
         debugLog('[Move] Placement cancelled via Esc');
       }
       this.cleanup();
@@ -273,9 +274,9 @@ export class MoveTool implements ITool {
   }
 
   applyVCBValue(value: number): void {
-    const t = this.resolveTarget();
-    if (!t) {
-      Toast.info('이동할 면 또는 에지를 먼저 선택하세요', 2000);
+    const target = this.resolveTarget();
+    if (!target) {
+      Toast.info(t('이동할 면 또는 에지를 먼저 선택하세요'), 2000);
       return;
     }
     let dx = 0, dy = 0, dz = 0;
@@ -284,8 +285,8 @@ export class MoveTool implements ITool {
     else if (axis === 'y') dy = value;
     else if (axis === 'z') dz = value;
     else dx = value;
-    this.translate(t, dx, dy, dz);
-    debugLog(`[VCB/Move] Applied: (${dx},${dy},${dz}) → ${t.kind}`);
+    this.translate(target, dx, dy, dz);
+    debugLog(`[VCB/Move] Applied: (${dx},${dy},${dz}) → ${target.kind}`);
     this.ctx.syncMesh();
   }
 

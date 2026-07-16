@@ -10,6 +10,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -27,7 +28,7 @@ export class JoinTool implements ITool {
 
   onActivate(): void {
     debugLog('[JoinTool] Activated — 병합할 일직선 꼭짓점(2-valence)을 클릭하세요');
-    Toast.info('병합할 일직선 꼭짓점을 클릭하세요 (두 직선 → 하나)', 2800);
+    Toast.info(t('병합할 일직선 꼭짓점을 클릭하세요 (두 직선 → 하나)'), 2800);
   }
 
   onDeactivate(): void {
@@ -40,16 +41,16 @@ export class JoinTool implements ITool {
     if (!pt) return;
     const vid = this.ctx.bridge.findVertexIdAt?.(pt.x, pt.y, pt.z, PICK_TOL) ?? -1;
     if (vid < 0) {
-      Toast.warning('병합할 꼭짓점 위를 클릭하세요', 2000);
+      Toast.warning(t('병합할 꼭짓점 위를 클릭하세요'), 2000);
       return;
     }
     const merged = this.ctx.bridge.joinCollinearAt?.(vid) ?? -1;
     if (merged >= 0) {
       this.ctx.syncMesh();
-      Toast.info('조인 완료', 1500);
+      Toast.info(t('조인 완료'), 1500);
       debugLog(`[Join] vertex ${vid} → merged edge ${merged}`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '병합 실패 (일직선 2-valence 꼭짓점만 가능)');
+      Toast.fromBridgeError(this.ctx.bridge, t('병합 실패 (일직선 2-valence 꼭짓점만 가능)'));
     }
   }
 

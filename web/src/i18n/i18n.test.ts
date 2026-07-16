@@ -122,6 +122,26 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   { file: 'src/ui/VCB.ts', minLiteralKeys: 3 },
   { file: 'src/ui/StatusBar.ts', minLiteralKeys: 5 },
   { file: 'src/ui/XiaInspector.ts', minLiteralKeys: 12 },
+  // batch 5 — what the tools say back. Every Korean literal in these is
+  // checked, not just the t('literal') calls, so a Toast wrapped but not
+  // translated (or not wrapped at all) fails.
+  { file: 'src/tools/DrawLineTool.ts', minLiteralKeys: 8 },
+  { file: 'src/tools/PushPullTool.ts', minLiteralKeys: 7 },
+  { file: 'src/tools/MoveTool.ts', minLiteralKeys: 4 },
+  { file: 'src/tools/RotateTool.ts', minLiteralKeys: 6 },
+  { file: 'src/tools/ScaleTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/CopyTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/GroupTool.ts', minLiteralKeys: 7 },
+  { file: 'src/tools/FilletTool.ts', minLiteralKeys: 2 },
+  { file: 'src/tools/ChamferTool.ts', minLiteralKeys: 2 },
+  { file: 'src/tools/JoinTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/TrimTool.ts', minLiteralKeys: 3 },
+  { file: 'src/tools/ExtendTool.ts', minLiteralKeys: 5 },
+  { file: 'src/tools/BoxTool.ts', minLiteralKeys: 4 },
+  { file: 'src/tools/RecessTool.ts', minLiteralKeys: 6 },
+  { file: 'src/tools/OffsetTool.ts', minLiteralKeys: 2 },
+  { file: 'src/tools/EraseTool.ts', minLiteralKeys: 1 },
+  { file: 'src/tools/DrawCircleTool.ts', minLiteralKeys: 1 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -281,6 +301,9 @@ describe('ADR-294 — en.ts hygiene', () => {
     for (const line of src.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
+      // Debug output is not copy — it goes to the console, behind a flag, and
+      // is written for whoever is reading the code, not for a user.
+      if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
       for (const m of line.matchAll(/'([^']*)'/g)) {
         const v = m[1];
         if (/[가-힣]/.test(v) && !(v in EN) && !NOT_KEYS.has(v)) missing.push(v);

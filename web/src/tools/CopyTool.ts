@@ -12,6 +12,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -44,14 +45,14 @@ export class CopyTool implements ITool {
       const faces = this.ctx.getSelectedFaces();
       const edges = this.ctx.selection.getSelectedEdges();
       if (faces.length === 0 && edges.length === 0) {
-        Toast.info('복제할 면 또는 엣지를 먼저 선택하세요', 2000);
+        Toast.info(t('복제할 면 또는 엣지를 먼저 선택하세요'), 2000);
         return;
       }
       if (!point) return;
       if (faces.length > 0) this.faces = faces.slice();
       else this.edges = edges.slice();
       this.basePt = point.clone();
-      Toast.info('도착점을 클릭하세요 (Esc: 취소)', 2500);
+      Toast.info(t('도착점을 클릭하세요 (Esc: 취소)'), 2500);
     } else {
       // ═══ Click 2: offset = target − base → 1 translated copy ═══
       if (!point || (!this.faces && !this.edges)) { this.cleanup(); return; }
@@ -65,7 +66,7 @@ export class CopyTool implements ITool {
     const d = point.clone().sub(this.basePt);
     this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
       { from: this.basePt.clone(), to: point.clone(),
-        text: '복제 ' + this.ctx.units.format(d.length()), color: '#63e6be' },
+        text: t('복제 {d}', { d: this.ctx.units.format(d.length()) }), color: '#63e6be' },
     ]);
   }
 
@@ -79,7 +80,7 @@ export class CopyTool implements ITool {
     const faces = this.faces ?? this.ctx.getSelectedFaces();
     const edges = this.edges ?? this.ctx.selection.getSelectedEdges();
     if ((!faces || faces.length === 0) && (!edges || edges.length === 0)) {
-      Toast.info('복제할 면 또는 엣지를 먼저 선택하세요', 2000);
+      Toast.info(t('복제할 면 또는 엣지를 먼저 선택하세요'), 2000);
       return;
     }
     if (faces && faces.length > 0) this.faces = faces.slice();
@@ -120,7 +121,7 @@ export class CopyTool implements ITool {
       Toast.info(`복제 완료 (${n}개 ${kind})`, 2000);
       debugLog(`[Copy] ${n} ${hasFaces ? 'faces' : 'edges'} duplicated by (${offset.x.toFixed(1)},${offset.y.toFixed(1)},${offset.z.toFixed(1)})`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '복제 실패');
+      Toast.fromBridgeError(this.ctx.bridge, t('복제 실패'));
     }
     this.cleanup();
   }

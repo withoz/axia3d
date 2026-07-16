@@ -24,6 +24,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -242,7 +243,7 @@ export class DrawLineTool implements ITool {
 
     // ── Bug 2 fix: NaN/Infinity/0 가드 ──
     if (!Number.isFinite(value) || value === 0) {
-      Toast.warning('유효한 길이를 입력하세요', 2000);
+      Toast.warning(t('유효한 길이를 입력하세요'), 2000);
       return;
     }
 
@@ -465,11 +466,11 @@ export class DrawLineTool implements ITool {
       const allPts = [...this.chainPoints, this.previewEnd];
       const planar = this.isChainPlanar(allPts);
       if (!planar) {
-        Toast.warning('비평면 루프 — 면이 자동 생성되지 않을 수 있습니다', 2500);
+        Toast.warning(t('비평면 루프 — 면이 자동 생성되지 않을 수 있습니다'), 2500);
       }
       if (this.startFaceId >= 0 && this.startFaceId === this.endFaceId) {
         debugLog('[Line] Both loop-close and same-face conditions met — loop-close wins');
-        Toast.info('루프 닫기 실행 (면 분할이 아닌 새 경계 생성)', 1800);
+        Toast.info(t('루프 닫기 실행 (면 분할이 아닌 새 경계 생성)'), 1800);
       }
       // Fall through to regular drawLine path — WASM's closed-loop detection
       // will auto-create the face when applicable.
@@ -506,12 +507,12 @@ export class DrawLineTool implements ITool {
     if (faceCreated) {
       if (isLoopClose) {
         debugLog(`[Line] Loop closed → face created! (${len.toFixed(2)} mm, kind=${this.lastCloseKind})`);
-        Toast.info('루프 닫힘 — 면 생성됨', 1800);
+        Toast.info(t('루프 닫힘 — 면 생성됨'), 1800);
       } else {
         // Mid-segment closed a region (edge-to-edge on a face) → face derived
         // by rederive (ADR-186). Continue the continuous chain (user 결재 a).
         debugLog(`[Line] Region closed mid-chain → face derived, continuing (${len.toFixed(2)} mm)`);
-        Toast.info('면 분할됨 — 계속 그리기 (Esc 종료)', 1500);
+        Toast.info(t('면 분할됨 — 계속 그리기 (Esc 종료)'), 1500);
       }
       // ADR-164 β-2 — Sticky last drawn plane on face synthesis success.
       // THREE.Plane has no `up` field, so we derive an orthogonal up from the
@@ -531,7 +532,7 @@ export class DrawLineTool implements ITool {
       }
     } else if (isLoopClose) {
       // Loop close fired but face wasn't created (likely non-planar or self-intersect)
-      Toast.warning('루프 닫힘 — 면 생성 실패 (비평면 또는 자체교차)', 2500);
+      Toast.warning(t('루프 닫힘 — 면 생성 실패 (비평면 또는 자체교차)'), 2500);
       debugLog(`[Line] Loop close attempted but no face created (kind=${this.lastCloseKind})`);
     } else {
       debugLog(`[Line] Created: ${len.toFixed(2)} mm`);
@@ -705,31 +706,31 @@ export class DrawLineTool implements ITool {
   private friendlyErrorMessage(err: string): string {
     // 길이 관련
     if (err.includes('degenerate') || err.includes('EPSILON')) {
-      return '분할선이 너무 짧습니다 (시작점과 끝점을 더 떨어뜨리세요)';
+      return t('분할선이 너무 짧습니다 (시작점과 끝점을 더 떨어뜨리세요)');
     }
     // 인접 정점 — 사용자 관점에서 왜/어떻게
     if (err.includes('adjacent')) {
-      return '이미 이어진 모서리 위의 두 점은 분할에 사용할 수 없습니다 — 반대쪽 모서리나 면 안쪽을 끝점으로 하세요';
+      return t('이미 이어진 모서리 위의 두 점은 분할에 사용할 수 없습니다 — 반대쪽 모서리나 면 안쪽을 끝점으로 하세요');
     }
     // 수치 이상
     if (err.includes('finite')) {
-      return '분할 좌표가 유효하지 않습니다 (NaN/Infinity) — 스냅을 확인하세요';
+      return t('분할 좌표가 유효하지 않습니다 (NaN/Infinity) — 스냅을 확인하세요');
     }
     // 대상 면 사라짐
     if (err.includes('not found')) {
-      return '대상 면을 찾을 수 없습니다 (이미 삭제되었거나 선택 해제됨)';
+      return t('대상 면을 찾을 수 없습니다 (이미 삭제되었거나 선택 해제됨)');
     }
     // 같은 정점 중복
     if (err.includes('same vertex')) {
-      return '시작점과 끝점이 같은 정점입니다';
+      return t('시작점과 끝점이 같은 정점입니다');
     }
     // 내부 점 해석 실패
     if (err.includes('Could not resolve')) {
-      return '분할선 위치를 경계에서 찾지 못했습니다 — 면 가장자리 근처에서 다시 시도하세요';
+      return t('분할선 위치를 경계에서 찾지 못했습니다 — 면 가장자리 근처에서 다시 시도하세요');
     }
     // 경계 정점 없음
     if (err.includes('boundary')) {
-      return '면 경계 위에 분할 끝점을 놓아주세요';
+      return t('면 경계 위에 분할 끝점을 놓아주세요');
     }
     return err; // 원본 유지 (예상 못 한 에러)
   }
@@ -839,7 +840,7 @@ export class DrawLineTool implements ITool {
       // face: freehand/bezier (sphere/cone) or a closed circle (cylinder/torus).
       if (dp.onFace && (dp.surfaceKind ?? 0) >= 2 && !this.curvedHintShown) {
         this.curvedHintShown = true;
-        Toast.info('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.', 3000);
+        Toast.info(t('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.'), 3000);
       }
     } else {
       // Fall back to view-based workplane through the computed click point.
@@ -1075,7 +1076,7 @@ export class DrawLineTool implements ITool {
     if (wouldIntersect) {
       // 단순 경고 toast (렌더 프레임마다 spam 방지 — 같은 상태면 재출력 안 함)
       if (this._lastIntersectionWarn !== 'shown') {
-        Toast.warning('⚠ 닫힘 세그먼트가 기존 체인과 교차합니다', 1500);
+        Toast.warning(t('⚠ 닫힘 세그먼트가 기존 체인과 교차합니다'), 1500);
         this._lastIntersectionWarn = 'shown';
       }
     } else {
@@ -1152,7 +1153,7 @@ export class DrawLineTool implements ITool {
       x: '#ff3333', y: '#3388ff', z: '#33cc33', free: '#74c0fc',
     };
     const axisNames: Record<string, string> = {
-      x: 'X축', y: 'Y축(높이)', z: 'Z축', free: '',
+      x: t('X축'), y: t('Y축(높이)'), z: t('Z축'), free: '',
     };
 
     // ──── 분할 예정 감지 ────────────────────────────────────────

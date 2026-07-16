@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -25,7 +26,7 @@ export class ExtendTool implements ITool {
   }
 
   onActivate(): void {
-    Toast.info('늘일 기준(경계) 엣지를 먼저 선택한 뒤, 늘일 엣지를 클릭하세요 (Esc 종료)', 3500);
+    Toast.info(t('늘일 기준(경계) 엣지를 먼저 선택한 뒤, 늘일 엣지를 클릭하세요 (Esc 종료)'), 3500);
     debugLog('[ExtendTool] Activated');
   }
 
@@ -36,18 +37,18 @@ export class ExtendTool implements ITool {
   onMouseDown(e: MouseEvent, _point: THREE.Vector3 | null): void {
     const boundaries = this.ctx.selection.getSelectedEdges();
     if (boundaries.length === 0) {
-      Toast.warning('늘일 기준이 될 경계 엣지를 먼저 선택하세요', 2200);
+      Toast.warning(t('늘일 기준이 될 경계 엣지를 먼저 선택하세요'), 2200);
       return;
     }
 
     const picked = pickClickedEdge(this.ctx, e);
     if (!picked) {
-      Toast.warning('늘일 엣지를 클릭하세요', 1800);
+      Toast.warning(t('늘일 엣지를 클릭하세요'), 1800);
       return;
     }
     const { edgeId: target } = picked;
     if (boundaries.includes(target)) {
-      Toast.warning('경계 엣지 자신은 늘일 수 없습니다', 2000);
+      Toast.warning(t('경계 엣지 자신은 늘일 수 없습니다'), 2000);
       return;
     }
 
@@ -56,12 +57,12 @@ export class ExtendTool implements ITool {
       const r = this.ctx.bridge.extendEdge(target, boundary);
       if (r >= 0) {
         this.ctx.syncMesh();
-        Toast.info('엣지 늘이기 완료', 1600);
+        Toast.info(t('엣지 늘이기 완료'), 1600);
         debugLog(`[Extend] target=${target} boundary=${boundary}`);
         return;
       }
     }
-    Toast.fromBridgeError(this.ctx.bridge, '늘이기 실패 (경계에 닿지 않거나 자유 와이어 엣지가 아님)');
+    Toast.fromBridgeError(this.ctx.bridge, t('늘이기 실패 (경계에 닿지 않거나 자유 와이어 엣지가 아님)'));
   }
 
   onKeyDown(_e: KeyboardEvent): void {
