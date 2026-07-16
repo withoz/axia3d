@@ -284,7 +284,8 @@ export const EN: Record<string, string> = {
   '속성': 'Properties',
   '치수': 'Dimensions',
   '치수 정보': 'Dimensions',
-  '치수:': 'Dimensions:',
+  // '치수:' lives in batch 3b — index.html's #cmd-label initial value and the
+  // VCB's fallback label are the same string in the same element.
   '길이 L': 'Length L',
   '너비 W': 'Width W',
   '높이 H': 'Height H',
@@ -897,10 +898,69 @@ export const EN: Record<string, string> = {
   'STEP 내보내기': 'Export STEP',
   'IGES 내보내기': 'Export IGES',
 
+  // ══════════════════════════════════════════════════════════════════════
+  // batch 3b — the surfaces you touch while modelling: the VCB (every draw),
+  // the status bar (always), the inspector (every selection) and the right-
+  // click menu. The hidden panels can wait; these cannot.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── VCB (value control box) ──
+  // The label is a prompt for what to type, so it keeps its colon.
+  '오프셋 거리:': 'Offset distance:',
+  '포켓 — 여유(inset), 깊이:': 'Pocket — inset, depth:',
+  '돌출 거리 (,각도° = 테이퍼 / ,비율% = 콘):':
+    'Extrude distance (,angle° = taper / ,ratio% = cone):',
+  '길이:': 'Length:',
+  '가로, 세로:': 'Width, height:',
+  '반지름:': 'Radius:',
+  '이동 거리:': 'Move distance:',
+  '각도(°):': 'Angle (°):',
+  '배율:': 'Scale:',
+  '치수:': 'Dimension:',
+  '가로, 세로 ({unit})': 'Width, height ({unit})',
+  '여유, 깊이 ({unit})': 'Inset, depth ({unit})',
+  '숫자 입력 후 Enter ({unit})': 'Type a number, then Enter ({unit})',
+
+  // ── Status bar ──
+  // Split into whole sentences rather than 그리드 {state}: word order differs
+  // per language, so a slot-filled fragment does not survive translation.
+  'XIA가 선택되지 않았습니다': 'No XIA is selected',
+  '그리드 숨김': 'Grid hidden',
+  '엣지 숨김': 'Edges hidden',
+  '축 숨김': 'Axes hidden',
+  '뷰 원점 복귀': 'View reset',
+  '전체화면을 지원하지 않습니다': 'Fullscreen is not supported here',
+  '정밀도 (소수점)': 'Precision (decimals)',
+
+  // ── XIA Inspector ──
+  '곡면 파라미터 (직접 편집)': 'Surface parameters (edit directly)',
+  '반지름 (mm)': 'Radius (mm)',
+  '높이 (mm)': 'Height (mm)',
+  '밑면 반지름 (mm)': 'Base radius (mm)',
+  '주 반지름 (mm)': 'Major radius (mm)',
+  '부 반지름 (mm)': 'Minor radius (mm)',
+  '재질 제거됨 — 형태로 강등': 'Material removed — demoted to a Shape',
+  '{n}개 객체 재질 제거됨 — 형태로 강등':
+    'Material removed from {n} objects — demoted to Shapes',
+  '재질 제거 시 {n}건 강등 실패 (나머지는 적용됨)':
+    '{n} could not be demoted when the material was removed (the rest were)',
+  '되돌리기': 'Undo',
+  '{n}개 선분': '{n} segments',
+  '□ 선': '□ Line',
+  '{label} {n}개': '{label} × {n}',
+  '객체': 'object',
+
   // ── Capability Explorer chrome ──
   '{tier} 작업: {label}': '{tier} action: {label}',
   '실행하시겠습니까?': 'Run it?',
   '검색 (id / label / description)': 'Search (id / label / description)',
+  '검색 결과가 없습니다.': 'No matches.',
+  '기존 UI 도구로 실행 (Launch 버튼 사용).': 'Run it with the existing UI tool (use the Launch button).',
+  '복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)':
+    'This needs composite arguments — call it from code or over MCP. (Outside the Capability Explorer pilot.)',
+  ' (변경)': ' (modifies)',
+  'onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).':
+    'No onActionInvoke callback is registered (main.ts needs to wire it).',
 
   // ── help ──
   '도움말': 'Help',

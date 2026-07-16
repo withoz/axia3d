@@ -8,13 +8,20 @@
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { UnitSystem } from '../units/UnitSystem';
 import { debugLog, debugWarn } from '../utils/debug';
+import { t } from '../i18n';
 
 export interface VCBDeps {
   toolManager: ToolManager;
   units: UnitSystem;
 }
 
-/** 도구별 VCB 라벨 */
+/**
+ * 도구별 VCB 라벨.
+ *
+ * Pure data — t() is applied where it is read (ADR-294). Module-scope would
+ * work too (D6), but reading is where the locale matters and it keeps the
+ * table a table.
+ */
 const vcbLabels: Record<string, string> = {
   offset: '오프셋 거리:',
   recess: '포켓 — 여유(inset), 깊이:',
@@ -40,6 +47,30 @@ export function initVCB(deps: VCBDeps): void {
   const cmdLabel = document.getElementById('cmd-label') as HTMLSpanElement;
   const commandBar = document.getElementById('commandbar') as HTMLDivElement;
 
+  /**
+   * Per-tool placeholder.
+   *
+   * Found while verifying the translation: this used to run only at init and on
+   * a unit change, never on a tool switch — so the rect and recess branches
+   * were unreachable in practice and the box always read "숫자 입력 후 Enter".
+   * Activation is the right moment: the placeholder is only visible then, and
+   * it is where the label is already refreshed.
+   */
+  const updatePlaceholder = () => {
+    if (!cmdInput) return;
+    const tool = toolManager.currentTool;
+    // {unit} rather than ${}: the unit is a runtime value, so the key would
+    // otherwise vary with it and never match (ADR-294 D3).
+    const unit = units.config.label;
+    if (tool === 'rect') {
+      cmdInput.placeholder = t('가로, 세로 ({unit})', { unit });
+    } else if (tool === 'recess') {
+      cmdInput.placeholder = t('여유, 깊이 ({unit})', { unit });
+    } else {
+      cmdInput.placeholder = t('숫자 입력 후 Enter ({unit})', { unit });
+    }
+  };
+
   /** VCB 활성화 */
   const activateVCB = (initialChar?: string) => {
     if (!cmdInput) return;
@@ -51,8 +82,9 @@ export function initVCB(deps: VCBDeps): void {
     // 라벨 업데이트
     const tool = toolManager.currentTool;
     if (cmdLabel) {
-      cmdLabel.textContent = vcbLabels[tool] || '치수:';
+      cmdLabel.textContent = t(vcbLabels[tool] || '치수:');
     }
+    updatePlaceholder();
   };
 
   /** VCB 비활성화 */
@@ -185,18 +217,6 @@ export function initVCB(deps: VCBDeps): void {
       }
     });
 
-    // placeholder
-    const updatePlaceholder = () => {
-      if (!cmdInput) return;
-      const tool = toolManager.currentTool;
-      if (tool === 'rect') {
-        cmdInput.placeholder = `가로, 세로 (${units.config.label})`;
-      } else if (tool === 'recess') {
-        cmdInput.placeholder = `여유, 깊이 (${units.config.label})`;
-      } else {
-        cmdInput.placeholder = `숫자 입력 후 Enter (${units.config.label})`;
-      }
-    };
     units.onChange(updatePlaceholder);
     updatePlaceholder();
   }

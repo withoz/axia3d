@@ -9,8 +9,14 @@
  *        the catalog package in the web/ tree.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { CapabilityExplorerPanel } from './CapabilityExplorerPanel';
+import { setLocale } from '../i18n';
+
+// ADR-294 — the panel now renders through t(), and jsdom reports
+// navigator.language = 'en-US', so without pinning this every test that
+// expects Korean copy would silently assert against the English table.
+beforeEach(() => setLocale('ko'));
 
 // Vite's import.meta.glob — source-level scan without node:fs deps.
 // Captures all .ts files in web/src/ as raw strings for grep.

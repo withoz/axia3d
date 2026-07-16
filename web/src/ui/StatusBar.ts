@@ -16,6 +16,7 @@ import { Viewport } from '../viewport/Viewport';
 import { UnitSystem } from '../units/UnitSystem';
 import { toggleShortcutHelp } from './ShortcutHelpModal';
 import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface StatusBarDeps {
   viewport: Viewport;
@@ -157,7 +158,7 @@ export class StatusBar {
           input.focus();
           input.select();
         } else {
-          Toast.info('XIA가 선택되지 않았습니다');
+          Toast.info(t('XIA가 선택되지 않았습니다'));
         }
         break;
       }
@@ -172,19 +173,19 @@ export class StatusBar {
         const next = !s.gridVisible;
         this.deps.viewport.setGridVisible(next);
         this.setToggle('sb-fkey-grid', next);
-        Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+        Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
         break;
       }
       case 'home':
         this.deps.viewport.resetCamera();
-        Toast.info('뷰 원점 복귀');
+        Toast.info(t('뷰 원점 복귀'));
         break;
       case 'edge': {
         const s = this.deps.viewport.getStyleSettings();
         const next = !s.edgeVisible;
         this.deps.viewport.setEdgeStyle({ visible: next });
         this.setToggle('sb-fkey-edge', next);
-        Toast.info(`엣지 ${next ? '표시' : '숨김'}`);
+        Toast.info(t(next ? '엣지 표시' : '엣지 숨김'));
         break;
       }
       case 'axis': {
@@ -192,7 +193,7 @@ export class StatusBar {
         const next = !s.axisVisible;
         this.deps.viewport.setAxisVisible(next);
         this.setToggle('sb-fkey-axis', next);
-        Toast.info(`축 ${next ? '표시' : '숨김'}`);
+        Toast.info(t(next ? '축 표시' : '축 숨김'));
         break;
       }
     }
@@ -244,7 +245,7 @@ export class StatusBar {
     fsBtn?.addEventListener('click', () => {
       if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen?.().catch(() => {
-          Toast.warning('전체화면을 지원하지 않습니다');
+          Toast.warning(t('전체화면을 지원하지 않습니다'));
         });
       } else {
         document.exitFullscreen?.();
@@ -312,7 +313,7 @@ export class StatusBar {
       return h;
     };
 
-    menu.appendChild(header('단위'));
+    menu.appendChild(header(t('단위')));
     for (const u of UnitSystem.allUnits) {
       const active = u.type === units.unit;
       const b = document.createElement('button');
@@ -335,7 +336,7 @@ export class StatusBar {
       menu.appendChild(b);
     }
 
-    menu.appendChild(header('정밀도 (소수점)'));
+    menu.appendChild(header(t('정밀도 (소수점)')));
     const prow = document.createElement('div');
     prow.style.cssText = 'display:flex; align-items:center; gap:6px; padding:4px 8px 2px;';
     const sel = document.createElement('select');

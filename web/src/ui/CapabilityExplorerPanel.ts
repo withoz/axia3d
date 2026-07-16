@@ -245,7 +245,7 @@ export class CapabilityExplorerPanel {
     if (filtered.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'cep-empty';
-      empty.textContent = '검색 결과가 없습니다.';
+      empty.textContent = t('검색 결과가 없습니다.');
       this.bodyEl.appendChild(empty);
       return;
     }
@@ -398,8 +398,8 @@ export class CapabilityExplorerPanel {
       note.className = 'cep-form-note';
       note.textContent =
         action.tier >= 1 && action.aliases.bridge
-          ? '기존 UI 도구로 실행 (Launch 버튼 사용).'
-          : '복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)';
+          ? t('기존 UI 도구로 실행 (Launch 버튼 사용).')
+          : t('복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)');
       form.appendChild(note);
     }
 
@@ -408,7 +408,7 @@ export class CapabilityExplorerPanel {
     btn.className = 'cep-form-btn';
     btn.dataset.tier = String(action.tier);
     btn.textContent = action.tier === 0 ? 'Run' : 'Launch';
-    if (action.tier >= 2) btn.textContent += ' (변경)';
+    if (action.tier >= 2) btn.textContent += t(' (변경)');
     if (action.tier === 3) btn.textContent = 'Launch (advanced)';
     btn.addEventListener('click', () => this.handleInvoke(action, inputs));
     form.appendChild(btn);
@@ -467,7 +467,7 @@ export class CapabilityExplorerPanel {
     if (!this.callbacks.onActionInvoke) {
       this.showResult(action.id, {
         ok: false,
-        error: 'onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).',
+        error: t('onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).'),
       });
       return;
     }

@@ -118,6 +118,10 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   // covered by CapabilityExplorerPanel.test.ts, which renders the tree in
   // English and looks for Hangul. Only its own chrome is literal.
   { file: 'src/ui/CapabilityExplorerPanel.ts', minLiteralKeys: 3 },  // batch 4
+  // batch 3b — the surfaces you touch while modelling
+  { file: 'src/ui/VCB.ts', minLiteralKeys: 3 },
+  { file: 'src/ui/StatusBar.ts', minLiteralKeys: 5 },
+  { file: 'src/ui/XiaInspector.ts', minLiteralKeys: 12 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -229,6 +233,35 @@ describe('ADR-294 — en.ts hygiene', () => {
     const missing = Object.keys(EN).filter((k) => !src.includes(k));
     expect(missing, 'en.ts entries whose Korean no longer exists in the source')
       .toEqual([]);
+  });
+
+  /**
+   * Korean that is deliberately NOT a translation key, with the reason. Any
+   * other Korean literal in a migrated file must have an entry — see below.
+   */
+  const NOT_KEYS = new Set([
+    '면 #$1',                        // a regex REPLACEMENT template, not a string
+    '부피 무결성 위반으로 취소됨',    // a matcher for engine output, not output
+    '한국어',                        // the language button: names stay in their own language
+  ]);
+
+  it.each(MIGRATED_FILES)('every Korean literal in $file has an English entry', ({ file }) => {
+    // Stronger than the t()-call guard below, and the reason it exists: that
+    // one only sees `t('literal')`, so it is blind to `t(vcbLabels[tool])`,
+    // `t(next ? A : B)` and every string in a data table. Measured when this
+    // landed: it immediately found 5 user-facing strings in the Capability
+    // Explorer that the t()-call guard had passed over.
+    const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+    const missing: string[] = [];
+    for (const line of src.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
+      for (const m of line.matchAll(/'([^']*)'/g)) {
+        const v = m[1];
+        if (/[가-힣]/.test(v) && !(v in EN) && !NOT_KEYS.has(v)) missing.push(v);
+      }
+    }
+    expect(missing, `Korean in ${file} with no en.ts entry`).toEqual([]);
   });
 
   it.each(MIGRATED_FILES)('every t() call in $file has an English entry', ({ file, minLiteralKeys }) => {
