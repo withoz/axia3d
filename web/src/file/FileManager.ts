@@ -8,7 +8,8 @@
 import { WasmBridge } from '../bridge/WasmBridge';
 import { Toast } from '../ui/Toast';
 import { Material } from '../materials/MaterialLibrary';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const AXIA_MAGIC = 0x41584941;  // 'AXIA' in ASCII
 const AXIA_VERSION = 2;  // Bumped version to support materials
@@ -67,7 +68,7 @@ export class FileManager {
     if (c1 === 0 && c2 === 0) {
       if (c3 > 0) {
         Toast.warning(
-          `모호한 Orphan ${c3}건 발견. '정리 → Orphan 수동 복구' 메뉴 참고`,
+          t('모호한 Orphan {c3}건 발견. \'정리 → Orphan 수동 복구\' 메뉴 참고', { c3 }),
           4000,
         );
       }
@@ -81,7 +82,7 @@ export class FileManager {
     );
     if (!result || result.error) {
       Toast.warning(
-        `Orphan 자동 복구 실패: ${result?.error ?? '알 수 없음'} (원본 유지)`,
+        t('Orphan 자동 복구 실패: {result} (원본 유지)', { result: result?.error ?? t('알 수 없음') }),
         4000,
       );
       return;
@@ -89,9 +90,9 @@ export class FileManager {
 
     const autoFaces = result.faces_absorbed + result.faces_in_new_xias;
     const newXias = result.xias_created.length;
-    let msg = `레거시 파일: ${autoFaces}개 face를 ${newXias}개 XIA로 자동 복구됨 · Ctrl+Z로 취소`;
+    let msg = t('레거시 파일: {autoFaces}개 face를 {newXias}개 XIA로 자동 복구됨 · Ctrl+Z로 취소', { autoFaces, newXias });
     if (c3 > 0) {
-      msg += `\n(모호한 Orphan ${c3}건은 '정리 → Orphan 수동 복구' 메뉴로 처리)`;
+      msg += t('\n(모호한 Orphan {c3}건은 \'정리 → Orphan 수동 복구\' 메뉴로 처리)', { c3 });
     }
     Toast.info(msg, 5000);
     debugLog('[FileManager] auto-recovered orphans:', result);
@@ -114,7 +115,7 @@ export class FileManager {
       // Get binary snapshot from engine
       const snapshotData = this.bridge.exportSnapshot();
       if (!snapshotData) {
-        Toast.error('스냅샷 생성 실패');
+        Toast.error(t('스냅샷 생성 실패'));
         return false;
       }
 
@@ -152,12 +153,12 @@ export class FileManager {
 
       // Trigger download
       this.downloadFile(fileData, this.currentFileName);
-      Toast.success(`저장 완료: ${this.currentFileName}`);
+      Toast.success(t('저장 완료: {currentFileName}', { currentFileName: this.currentFileName }));
       this.notifyFileChange();
       return true;
     } catch (err) {
       console.error('[FileManager] 저장 실패:', err);
-      Toast.error(`저장 실패: ${(err as Error).message}`);
+      Toast.error(t('저장 실패: {error}', { error: (err as Error).message }));
       return false;
     }
   }
@@ -166,7 +167,7 @@ export class FileManager {
   async saveAsProject(): Promise<boolean> {
     return new Promise((resolve) => {
       try {
-        const fileName = prompt('프로젝트 이름을 입력하세요:', this.currentFileName.replace('.xia', ''));
+        const fileName = prompt(t('프로젝트 이름을 입력하세요:'), this.currentFileName.replace('.xia', ''));
         if (!fileName) {
           resolve(false);
           return;
@@ -241,17 +242,17 @@ export class FileManager {
 
             const success = this.bridge.importSnapshot(snapshot);
             if (success) {
-              Toast.success(`로드 완료: ${this.currentFileName}`);
+              Toast.success(t('로드 완료: {currentFileName}', { currentFileName: this.currentFileName }));
               this.autoRecoverOrphansIfAny();
               this.notifyFileChange();
               resolve(true);
             } else {
-              Toast.error('프로젝트 로드 실패');
+              Toast.error(t('프로젝트 로드 실패'));
               resolve(false);
             }
           } catch (err) {
             console.error('[FileManager] 파일 읽기 실패:', err);
-            Toast.error(`파일 읽기 실패: ${(err as Error).message}`);
+            Toast.error(t('파일 읽기 실패: {error}', { error: (err as Error).message }));
             resolve(false);
           }
         };
@@ -389,7 +390,7 @@ export class FileManager {
   /** Parse AXIA file format and extract metadata + snapshot */
   private parseAxiaFile(fileData: Uint8Array): { metadata: AxiaFileMetadata; snapshot: Uint8Array } {
     if (fileData.length < 12) {
-      throw new Error('파일 크기가 너무 작습니다');
+      throw new Error(t('파일 크기가 너무 작습니다'));
     }
 
     let offset = 0;
@@ -400,7 +401,7 @@ export class FileManager {
     offset += 4;
 
     if (magic !== AXIA_MAGIC) {
-      throw new Error('유효하지 않은 AXIA 파일입니다');
+      throw new Error(t('유효하지 않은 AXIA 파일입니다'));
     }
 
     // Read version
@@ -410,7 +411,7 @@ export class FileManager {
 
     // Support versions 1 (legacy) and 2+ (with materials)
     if (version < 1 || version > AXIA_VERSION) {
-      throw new Error(`지원하지 않는 버전입니다 (v${version}). 현재 지원: v1~v${AXIA_VERSION}`);
+      throw new Error(t('지원하지 않는 버전입니다 (v{version}). 현재 지원: v1~v{AXIA_VERSION}', { version, AXIA_VERSION }));
     }
 
     // Read metadata length
@@ -419,7 +420,7 @@ export class FileManager {
     offset += 4;
 
     if (offset + metadataLen > fileData.length) {
-      throw new Error('파일이 손상되었습니다');
+      throw new Error(t('파일이 손상되었습니다'));
     }
 
     // Read metadata JSON

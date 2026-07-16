@@ -417,7 +417,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       // 이름: "선분 N개"처럼 자동 표시 (수동 편집 안 된 경우)
       const nameEl = document.getElementById('xi-name') as HTMLInputElement | null;
       if (nameEl && !nameEl.dataset.edited) {
-        nameEl.value = t('{label} {n}개', { label: edgeState.label, n: edgeIds.length });
+        nameEl.value = t('{label} {n}개', { label: t(edgeState.label), n: edgeIds.length });
       }
       return;
     }
@@ -461,7 +461,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       // - Closed solid: "L×W×H (3D solid)"
       // - Has boundary: "Open: N boundary edges"
       // - Non-manifold: "Defect: N non-manifold edges"
-      let subText = stateInfo.description;
+      let subText = t(stateInfo.description);
       if (info.isSolid) {
         subText = `✓ Closed solid (${info.interiorEdges ?? 0} manifold edges)`;
       } else if ((info.boundaryEdges ?? 0) > 0) {
@@ -535,7 +535,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
         if (commonMat && commonMat.id) {
           nameEl.value = `${commonMat.name} ${info.shapeType || t('객체')}`;
         } else {
-          nameEl.value = `${stateInfo.label} ${info.shapeType || ''}`.trim();
+          nameEl.value = `${t(stateInfo.label)} ${info.shapeType || ''}`.trim();
         }
       }
     } else {

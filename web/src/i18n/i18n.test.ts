@@ -175,6 +175,12 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   // reachable copy and has to be translated.
   { file: 'src/ui/CommandRegistry.ts', minLiteralKeys: 67 },
   { file: 'src/ui/CommandInput.ts', minLiteralKeys: 5 },
+  // batch 11 — file I/O. What you see when a save, an import or the STEP
+  // engine goes wrong.
+  { file: 'src/ui/DxfImportHandler.ts', minLiteralKeys: 19 },
+  { file: 'src/import/StepIgesImporter.ts', minLiteralKeys: 16 },
+  { file: 'src/import/FileImporter.ts', minLiteralKeys: 16 },
+  { file: 'src/file/FileManager.ts', minLiteralKeys: 14 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -195,7 +201,14 @@ function asRuntimeString(sourceLiteral: string): string {
 
 /** The inverse — for searching source text for a key that holds real newlines. */
 function asSourceLiteral(runtime: string): string {
-  return runtime.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+  // The ' -> \' leg mirrors asRuntimeString. Without it, a key holding a
+  // quote ("… \'정리 → Orphan 수동 복구\' …") is never found in the source and
+  // reads as orphaned.
+  return runtime
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t')
+    .replace(/'/g, "\\'");
 }
 
 const count = (s: string, ch: string) => s.split(ch).length - 1;
@@ -236,6 +249,10 @@ function stripInterpolations(v: string): string {
 const TRANSLATION_SOURCES = [
   '../packages/axia-action-catalog/src/catalog.ts',
   'src/commands/AxiaCommands.ts',
+  // GEOMETRY_STATES — same shape: Korean labels/descriptions that XiaInspector
+  // translates at render (see CROSS_FILE_TABLES). Without this the orphan
+  // guard cannot see 체적 / 위치만 존재… and calls them orphaned.
+  'src/materials/MaterialLibrary.ts',
 ];
 
 /**
@@ -397,7 +414,10 @@ describe('ADR-294 — en.ts hygiene', () => {
         debugDepth = Math.max(0, debugDepth + count(line, '(') - count(line, ')'));
         continue;
       }
-      for (const m of line.matchAll(/'([^']*)'/g)) {
+      // Escape-aware: a naive /'([^']*)'/ stops dead at the \' inside
+      // `'… \'정리 → Orphan 수동 복구\' …'` and reports the truncated half as
+      // an untranslated string.
+      for (const m of line.matchAll(/'((?:[^'\\]|\\.)*)'/g)) {
         const v = asRuntimeString(m[1]);
         if (/[가-힣]/.test(v) && !(v in EN) && !NOT_KEYS.has(v)) missing.push(v);
       }
@@ -417,6 +437,44 @@ describe('ADR-294 — en.ts hygiene', () => {
     }
     expect(missing, `Korean in ${file} with no en.ts entry`).toEqual([]);
   });
+
+  /**
+   * Korean-valued tables that live in one file and are read in another.
+   *
+   * The table guard below only sees declarations in the file it is checking,
+   * so an imported table is invisible to it. Measured: GEOMETRY_STATES lives
+   * in MaterialLibrary and XiaInspector renders `stateInfo.label` /
+   * `.description` straight out of it — under `en` the browser showed
+   * 점 / 선 / 면 / 체적. Three guards, none of them could see it.
+   *
+   * Listing the fields is deliberate: `.label` alone would flag every
+   * unrelated `.label` in the file.
+   */
+  const CROSS_FILE_TABLES: { readers: string[]; fields: string[] }[] = [
+    { readers: ['src/ui/XiaInspector.ts'], fields: ['stateInfo.label', 'stateInfo.description', 'edgeState.label'] },
+  ];
+
+  it.each(CROSS_FILE_TABLES.flatMap((c) => c.readers.map((r) => ({ file: r, fields: c.fields }))))(
+    'imported Korean table fields in $file are read through t()',
+    ({ file, fields }) => {
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+      const raw: string[] = [];
+      for (const field of fields) {
+        for (const use of src.matchAll(new RegExp(String.raw`\b${field.replace('.', String.raw`\s*\.\s*`)}\b`, 'g'))) {
+          const from = src.lastIndexOf('\n', use.index!) + 1;
+          const to = src.indexOf('\n', use.index!);
+          const line = src.slice(from, to < 0 ? src.length : to);
+          if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
+          let k = use.index!;
+          while (k > 0 && /[\w$.]/.test(src[k - 1])) k--;
+          while (k > 0 && /\s/.test(src[k - 1])) k--;
+          if (src.slice(k - 2, k) === 't(') continue;
+          raw.push(`${field} @ ${line.trim().slice(0, 70)}`);
+        }
+      }
+      expect(raw, `${file}: imported Korean table read without t()`).toEqual([]);
+    },
+  );
 
   it.each(MIGRATED_FILES)('every Korean data table in $file is read through t()', ({ file }) => {
     // The blind spot the two guards above share. A Korean-valued lookup table

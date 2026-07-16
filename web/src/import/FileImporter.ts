@@ -21,7 +21,8 @@ import { parseString as parseDxf } from 'dxf';
 import { convertDwgToDxf, init as initDwgDxf } from 'dwgdxf';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
-import type { BRepTraversalResult } from './occtBrepTraversal';
+import type { BRepTraversalResult } from './occtBrepTraversal';
+import { t } from '../i18n';
 
 export type ImportFormat = 'obj' | 'stl' | 'gltf' | 'dae' | 'ply' | '3ds' | 'dxf' | 'dwg' | 'skp' | '3dm' | 'step' | 'iges';
 
@@ -155,7 +156,7 @@ export class FileImporter {
             resolve(result);
           } catch (err) {
             console.error('[FileImporter] 가져오기 실패:', err);
-            alert(`파일 가져오기 실패: ${(err as Error).message}`);
+            alert(t('파일 가져오기 실패: {error}', { error: (err as Error).message }));
             resolve(null);
           }
         };
@@ -181,7 +182,7 @@ export class FileImporter {
 
       } catch (err) {
         console.error('[FileImporter] 파일 선택 대화 생성 실패:', err);
-        alert(`파일 선택 대화 실패: ${(err as Error).message}`);
+        alert(t('파일 선택 대화 실패: {error}', { error: (err as Error).message }));
         resolve(null);
       }
     });
@@ -274,29 +275,29 @@ export class FileImporter {
                 injectWarnings.push(`auto-reference: ${refResult.reason}`);
               }
             } catch (e) {
-              injectWarnings.push(`auto-reference 모듈 로드 실패: ${String(e)}`);
+              injectWarnings.push(t('auto-reference 모듈 로드 실패: {error}', { error: String(e) }));
             }
           }
         }
       } catch (e) {
-        injectWarnings.push(`axia inject 실패 (graceful): ${String(e)}`);
+        injectWarnings.push(t('axia inject 실패 (graceful): {error}', { error: String(e) }));
       }
 
       // W-η — warnings / success surface
       const allWarnings = [...(result.warnings ?? []), ...injectWarnings];
       if (allWarnings.length > 0) {
         Toast.warning(
-          `${result.format.toUpperCase()} import: ${allWarnings.length}개 경고 (콘솔 참조)`,
+          t('{result} import: {allWarnings}개 경고 (콘솔 참조)', { result: result.format.toUpperCase(), allWarnings: allWarnings.length }),
           6000,
         );
         console.warn('[FileImporter] STEP/IGES warnings:', allWarnings);
       } else {
         // ADR-096 M-β — Reference 자동 등록 안내 (Settings ON + 성공 시).
         const refSuffix = autoRegisterRefName
-          ? ` · "${autoRegisterRefName}" Reference 등록 (${autoRegisterFaceCount} 면)`
+          ? t(' · "{autoRegisterRefName}" Reference 등록 ({autoRegisterFaceCount} 면)', { autoRegisterRefName, autoRegisterFaceCount })
           : '';
         Toast.success(
-          `${result.format.toUpperCase()} import 완료: ${result.faceCount}면 ${result.edgeCount}엣지${refSuffix}`,
+          t('{result} import 완료: {faceCount}면 {edgeCount}엣지{refSuffix}', { result: result.format.toUpperCase(), faceCount: result.faceCount, edgeCount: result.edgeCount, refSuffix }),
           4000,
         );
       }
@@ -316,7 +317,7 @@ export class FileImporter {
     const format = formatHint || this.detectFormat(ext);
 
     if (!format) {
-      throw new Error(`지원하지 않는 파일 형식입니다: .${ext}`);
+      throw new Error(t('지원하지 않는 파일 형식입니다: .{ext}', { ext }));
     }
 
     debugLog(`[FileImporter] ${FORMAT_LABEL[format]} 가져오기: ${file.name}`);
@@ -335,7 +336,7 @@ export class FileImporter {
       case 'dwg':   group = await this.loadDWG(arrayBuffer, file.name); break;
       case 'skp':   group = await this.loadSKP(arrayBuffer, file.name); break;
       case '3dm':   group = await this.load3DM(arrayBuffer, file.name); break;
-      default:      throw new Error(`지원하지 않는 포맷: ${format}`);
+      default:      throw new Error(t('지원하지 않는 포맷: {format}', { format }));
     }
 
     // 통계 수집
@@ -539,7 +540,7 @@ export class FileImporter {
       debugLog('[FileImporter] DXF 파싱 완료');
     } catch (err) {
       console.error('[FileImporter] DXF 파싱 실패:', err);
-      throw new Error(`DXF 파일 파싱 실패: ${(err as Error).message}`);
+      throw new Error(t('DXF 파일 파싱 실패: {error}', { error: (err as Error).message }));
     }
 
     return this.buildDxfScene(dxfData, file.name);
@@ -731,9 +732,9 @@ export class FileImporter {
   private async loadSKP(_buffer: ArrayBuffer, name: string): Promise<THREE.Group> {
     debugLog(`[FileImporter] SKP 직접 import 차단: ${name}`);
     throw new Error(
-      `.skp 직접 import는 지원하지 않습니다.\n\n` +
-      `SketchUp에서 File → Export → 3D Model → COLLADA(.dae) 또는 OBJ로\n` +
-      `내보낸 뒤 해당 파일을 import해 주세요. (geometry · material · hierarchy 보존)`
+      t('.skp 직접 import는 지원하지 않습니다.\n\n') +
+      t('SketchUp에서 File → Export → 3D Model → COLLADA(.dae) 또는 OBJ로\n') +
+      t('내보낸 뒤 해당 파일을 import해 주세요. (geometry · material · hierarchy 보존)')
     );
   }
 
@@ -767,7 +768,7 @@ export class FileImporter {
       return group;
     } catch (err) {
       console.error('[FileImporter] DWG 변환 실패:', err);
-      throw new Error(`DWG 파일 처리 실패: ${(err as Error).message}`);
+      throw new Error(t('DWG 파일 처리 실패: {error}', { error: (err as Error).message }));
     }
   }
 
@@ -820,7 +821,7 @@ export class FileImporter {
       debugLog('[FileImporter] DXF 텍스트 파싱 완료');
     } catch (err) {
       console.error('[FileImporter] DXF 텍스트 파싱 실패:', err);
-      throw new Error(`DXF 파싱 실패: ${(err as Error).message}`);
+      throw new Error(t('DXF 파싱 실패: {error}', { error: (err as Error).message }));
     }
     return this.buildDxfScene(dxfData, sourceFile);
   }
@@ -891,7 +892,7 @@ export class FileImporter {
       );
     } catch (err) {
       console.error('[FileImporter] 3DM 로드 실패:', err);
-      throw new Error(`Rhino 3DM 파일 처리 실패: ${(err as Error).message}`);
+      throw new Error(t('Rhino 3DM 파일 처리 실패: {error}', { error: (err as Error).message }));
     } finally {
       // Worker 정리 (메모리 누수 방지)
       loader.dispose();

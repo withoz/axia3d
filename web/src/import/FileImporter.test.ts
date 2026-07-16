@@ -16,7 +16,8 @@ vi.mock('jszip', () => {
   return { default: class { async loadAsync() { return { files: {} }; } } };
 });
 
-import * as THREE from 'three';
+import * as THREE from 'three';
+import { setLocale } from '../i18n';
 import { FileImporter } from './FileImporter';
 import { StepIgesImporter } from './StepIgesImporter';
 import { Toast } from '../ui/Toast';
@@ -34,6 +35,9 @@ if (!(THREE.BufferGeometry.prototype as any).getIndex) {
 }
 
 describe('FileImporter', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let scene: THREE.Scene;
   let importer: FileImporter;
 

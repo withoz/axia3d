@@ -9,6 +9,7 @@ import { WasmBridge } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface DxfImportDeps {
   bridge: WasmBridge;
@@ -47,12 +48,12 @@ export function importDxfFile(deps: DxfImportDeps): void {
       // 비-mm이면 import 후 전체 scale 적용 (아래 post-import).
 
       if (!result) {
-        alert('DXF 가져오기 실패: WASM 엔진이 준비되지 않았습니다.\n로컬에서 wasm-pack 빌드 후 다시 시도해 주세요.');
+        alert(t('DXF 가져오기 실패: WASM 엔진이 준비되지 않았습니다.\n로컬에서 wasm-pack 빌드 후 다시 시도해 주세요.'));
         return;
       }
 
       if (!result.ok) {
-        alert(`DXF 파싱 실패: ${result.error || '알 수 없는 오류'}`);
+        alert(t('DXF 파싱 실패: {result}', { result: result.error || t('알 수 없는 오류') }));
         return;
       }
 
@@ -71,14 +72,14 @@ export function importDxfFile(deps: DxfImportDeps): void {
       toolManager.syncMesh();
 
       const summary = [
-        result.lines && `선 ${result.lines}`,
-        result.polylines && `폴리선 ${result.polylines}`,
-        result.circles && `원 ${result.circles}`,
-        result.arcs && `호 ${result.arcs}`,
-        result.faces3d && `3D면 ${result.faces3d}`,
-        result.solids && `솔리드 ${result.solids}`,
-        result.ellipses && `타원 ${result.ellipses}`,
-        result.splines && `스플라인 ${result.splines}`,
+        result.lines && t('선 {lines}', { lines: result.lines }),
+        result.polylines && t('폴리선 {polylines}', { polylines: result.polylines }),
+        result.circles && t('원 {circles}', { circles: result.circles }),
+        result.arcs && t('호 {arcs}', { arcs: result.arcs }),
+        result.faces3d && t('3D면 {faces3d}', { faces3d: result.faces3d }),
+        result.solids && t('솔리드 {solids}', { solids: result.solids }),
+        result.ellipses && t('타원 {ellipses}', { ellipses: result.ellipses }),
+        result.splines && t('스플라인 {splines}', { splines: result.splines }),
       ].filter(Boolean).join(', ');
 
       debugLog(`[DXF Import] 완료: ${summary}`);
@@ -87,8 +88,9 @@ export function importDxfFile(deps: DxfImportDeps): void {
       // Phase H4 — 비-mm 단위 경고 (자동 스케일 미구현, 사용자 수동 대응)
       if (unitScale !== 1.0) {
         Toast.warning(
-          `단위: 비-mm (계수 ${unitScale}×) — 현재 자동 스케일 미지원. ` +
-          `필요 시 모두 선택 후 스케일 도구로 ${unitScale}× 적용하세요.`,
+          // One sentence, one key — the clause runs across the join, and
+          // English moves it.
+          t('단위: 비-mm (계수 {unitScale}×) — 현재 자동 스케일 미지원. 필요 시 모두 선택 후 스케일 도구로 {unitScale}× 적용하세요.', { unitScale }),
           6000,
         );
       }
@@ -98,14 +100,14 @@ export function importDxfFile(deps: DxfImportDeps): void {
       const freeEdges = bridge.countFreeEdges();
       if (freeEdges > 0) {
         Toast.info(
-          `자유 엣지 ${freeEdges}개 발견. 메뉴 → 수정 → '자유 엣지 → 면 합성' 으로 면 생성 가능.`,
+          t('자유 엣지 {freeEdges}개 발견. 메뉴 → 수정 → \'자유 엣지 → 면 합성\' 으로 면 생성 가능.', { freeEdges }),
           5000,
         );
       }
 
     } catch (err) {
       console.error('[DXF Import] 오류:', err);
-      alert(`DXF 가져오기 중 오류: ${(err as Error).message}`);
+      alert(t('DXF 가져오기 중 오류: {error}', { error: (err as Error).message }));
     }
   };
 
@@ -126,13 +128,13 @@ function promptUnitScale(fileName: string): number | null {
     'ft': 304.8,
   };
   const msg =
-    `"${fileName}" 의 단위를 선택하세요.\n\n` +
-    `mm (밀리미터, 기본)\n` +
-    `cm (센티미터)\n` +
-    `m (미터)\n` +
-    `in (인치)\n` +
-    `ft (피트)\n\n` +
-    `단위명 입력 (기본 mm):`;
+    t('"{fileName}" 의 단위를 선택하세요.\n\n', { fileName }) +
+    t('mm (밀리미터, 기본)\n') +
+    t('cm (센티미터)\n') +
+    t('m (미터)\n') +
+    t('in (인치)\n') +
+    t('ft (피트)\n\n') +
+    t('단위명 입력 (기본 mm):');
   const input = window.prompt(msg, 'mm');
   if (input === null) return null;
   const key = input.trim().toLowerCase();

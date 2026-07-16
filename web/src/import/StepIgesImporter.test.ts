@@ -9,11 +9,15 @@
  * 5. Cached instance reused across multiple importFile calls
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { setLocale } from '../i18n';
 import * as THREE from 'three';
 import { StepIgesImporter } from './StepIgesImporter';
 
 describe('StepIgesImporter (ADR-035 P20.7)', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   beforeEach(() => {
     StepIgesImporter.resetInstance();
   });
