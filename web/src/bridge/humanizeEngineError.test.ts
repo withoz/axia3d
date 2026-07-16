@@ -17,6 +17,10 @@ const RAW = {
     'create_solid: not yet supported — cone extrude: top_scale ≥ 1 is a cylinder — use straight Extrude (ADR-260 D2 [0,1)) (Q3 fallback to legacy push_pull)',
   staleFace: 'create_solid: face FaceId(3) not found or inactive',
   curvedPocketOnPlane: 'curved pocket: cap must be a Cylinder/Sphere/Cone/Torus-surface face',
+  // ADR-267 gate on the curved sketch-split — truncated; the real one lists
+  // every damaged edge (~3000 chars for a 55-violation cylinder).
+  integrityGateCurved:
+    '부피 무결성 위반으로 취소됨 (curved sketch): ✗ volume integrity violations:   invariants: 55 violation(s)     - edge EdgeId(25): shared by 3 active faces (non-manifold)     - edge EdgeId(50): shared by 3 active faces (non-manifold)',
 } as const;
 
 describe('humanizeEngineError', () => {
@@ -61,6 +65,15 @@ describe('humanizeEngineError', () => {
     const out = humanizeEngineError(RAW.curvedPocketOnPlane);
     expect(out).not.toContain('cap');
     expect(out).toContain('곡면');
+  });
+
+  it('collapses the integrity gate wall-of-EdgeIds into one actionable line', () => {
+    const out = humanizeEngineError(RAW.integrityGateCurved);
+    expect(out).not.toContain('EdgeId');
+    expect(out).not.toContain('non-manifold');
+    expect(out.length, 'a Toast is not a console dump').toBeLessThan(80);
+    expect(out).toContain('겹칩니다');            // why it was refused
+    expect(out).toContain('모델은 그대로');        // the gate rolled back — say so
   });
 
   it('passes UNKNOWN messages through — noise stripped, meaning kept', () => {

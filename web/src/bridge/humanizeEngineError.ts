@@ -74,6 +74,17 @@ export function humanizeEngineError(raw: string): string {
     return '그 면을 찾을 수 없습니다 — 다시 선택해 주세요';
   }
 
+  // ADR-267 integrity gate. Its summary lists EVERY damaged edge — measured, a
+  // curved sketch landing on an existing pocket's rim produced ~3000 chars of
+  // "edge EdgeId(N): shared by 3 active faces". Useful in the console, useless
+  // in a Toast. The gate already rolled the mesh back, so say what to do.
+  if (msg.includes('부피 무결성 위반으로 취소됨')) {
+    if (msg.includes('curved sketch') || msg.includes('curved seam')) {
+      return '이 위치에는 스케치할 수 없습니다 — 기존 구멍/포켓 경계와 겹칩니다 (모델은 그대로입니다)';
+    }
+    return '이 작업은 모델을 깨뜨려서 취소했습니다 — 모델은 그대로입니다';
+  }
+
   // The curved ops already name the surfaces; drop the "cap"/"surface face"
   // jargon and say what to draw.
   if (msg.includes('cap must be a Cylinder/Sphere/Cone/Torus-surface face')) {

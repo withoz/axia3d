@@ -4914,8 +4914,20 @@ impl AxiaEngine {
         let fid = FaceId::new(face_id_raw);
         let center_pt = DVec3::new(cx, cy, cz);
         let radius_pt = DVec3::new(rx, ry, rz);
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_circle_on_sphere(fid, center_pt, radius_pt) {
             Some((cap, annulus)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), annulus.raw())
@@ -4946,8 +4958,20 @@ impl AxiaEngine {
         let fid = FaceId::new(face_id_raw);
         let center_pt = DVec3::new(cx, cy, cz);
         let radius_pt = DVec3::new(rx, ry, rz);
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_circle_on_cylinder(fid, center_pt, radius_pt) {
             Some((cap, annulus)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), annulus.raw())
@@ -4974,8 +4998,20 @@ impl AxiaEngine {
         let fid = FaceId::new(face_id_raw);
         let center_pt = DVec3::new(cx, cy, cz);
         let radius_pt = DVec3::new(rx, ry, rz);
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_circle_on_cone(fid, center_pt, radius_pt) {
             Some((cap, annulus)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), annulus.raw())
@@ -5001,8 +5037,20 @@ impl AxiaEngine {
         let fid = FaceId::new(face_id_raw);
         let center_pt = DVec3::new(cx, cy, cz);
         let radius_pt = DVec3::new(rx, ry, rz);
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_circle_on_torus(fid, center_pt, radius_pt) {
             Some((cap, annulus)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), annulus.raw())
@@ -5022,8 +5070,20 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "drawPolylineOnCylinder")]
     pub fn draw_polyline_on_cylinder(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_polyline_on_cylinder(FaceId::new(face_id_raw), pts, closed) {
             Some((cap, ann)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
@@ -5039,8 +5099,20 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "drawPolylineOnCone")]
     pub fn draw_polyline_on_cone(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_polyline_on_cone(FaceId::new(face_id_raw), pts, closed) {
             Some((cap, ann)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
@@ -5056,8 +5128,20 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "drawPolylineOnTorus")]
     pub fn draw_polyline_on_torus(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_polyline_on_torus(FaceId::new(face_id_raw), pts, closed) {
             Some((cap, ann)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
@@ -5073,8 +5157,20 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "drawPolylineOnSphere")]
     pub fn draw_polyline_on_sphere(&mut self, face_id_raw: u32, flat: &[f64], closed: bool) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_polyline_on_sphere(FaceId::new(face_id_raw), pts, closed) {
             Some((cap, ann)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved sketch", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"cap\":{},\"annulus\":{}}}", cap.raw(), ann.raw())
@@ -5096,8 +5192,20 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "drawOpenSeamOnCurved")]
     pub fn draw_open_seam_on_curved(&mut self, face_id_raw: u32, flat: &[f64]) -> String {
         let pts: Vec<DVec3> = flat.chunks_exact(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+        // ADR-267 γ — the curved sketch-split had NO integrity gate: measured,
+        // a second circle landing exactly on an existing pocket's rim left 55
+        // invariant violations and still returned SUCCESS. Baseline first.
+        let (integrity_before, integrity_snapshot) = self.integrity_baseline();
         match self.scene.draw_open_seam_on_curved(FaceId::new(face_id_raw), pts) {
             Some((a, b)) => {
+                if !self.integrity_gate_passed(
+                    integrity_before, &integrity_snapshot, "curved seam", false,
+                ) {
+                    return format!(
+                        "{{\"error\":\"{}\"}}",
+                        self.last_error.replace('"', "'").replace('\n', " ")
+                    );
+                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 format!("{{\"a\":{},\"b\":{}}}", a.raw(), b.raw())
@@ -8251,6 +8359,19 @@ impl AxiaEngine {
     /// `manual_txn` — cleanup 모드: true = op 가 begin/commit/cancel 로 txn 을 직접
     /// 관리하고 게이트가 commit 前 Ok arm 에서 호출됨(→ `cancel()`); false = Scene
     /// 메서드가 txn 을 내부에서 이미 commit 함(→ `discard_last_undo()` 로 프레임 제거).
+    /// Damage count + rollback snapshot to hand `integrity_gate_passed`, read
+    /// BEFORE an op mutates anything. The gate is baseline-relative, so a mesh
+    /// that was already damaged does not make every later op fail.
+    fn integrity_baseline(&self) -> (usize, Vec<u8>) {
+        (
+            self.scene
+                .mesh
+                .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+                .damage_count(),
+            self.scene.scene_snapshot(),
+        )
+    }
+
     fn integrity_gate_passed(
         &mut self,
         baseline: usize,

@@ -1511,12 +1511,31 @@ fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
         "ADR-267 γ: shared gate helper must exist"
     );
     // γ (4) + γ-2 (punch_rect/polygon, drill_rect/polygon, door, split = 6) = 10
-    // + ADR-291 (trim, cut curved, trim curved = 3) = 13 call sites + 1 def.
-    // Guards against a cut op silently losing its gate.
+    // + ADR-291 (trim, cut curved, trim curved = 3) = 13
+    // + curved sketch-split (4 circle + 4 polyline + 1 open seam = 9) = 22 call
+    // sites + 1 def. Guards against a cut op silently losing its gate.
     assert!(
-        l.matches("integrity_gate_passed(").count() >= 13,
-        "ADR-267 γ/γ-2 + ADR-291: gate helper must be called by ≥13 cut ops \
-         (all punch/drill/carve/slice/door/split/trim/curved)"
+        l.matches("integrity_gate_passed(").count() >= 22,
+        "ADR-267 γ/γ-2 + ADR-291 + curved sketch-split: gate helper must be \
+         called by ≥22 ops (punch/drill/carve/slice/door/split/trim/curved/sketch)"
+    );
+    // The curved sketch-split path had NO gate: measured, a circle landing
+    // exactly on an existing pocket's rim left 55 invariant violations and
+    // still returned SUCCESS. All 9 curved entry points must stay gated.
+    assert!(
+        l.matches(r#""curved sketch""#).count() >= 8,
+        "curved sketch-split: all 8 circle+polyline entry points must be gated"
+    );
+    assert!(
+        l.contains(r#""curved seam""#),
+        "curved sketch-split: the open-seam entry point must be gated"
+    );
+    // The gate is baseline-relative, so the baseline MUST be read before the
+    // op mutates — afterwards the damage is already in the mesh and the gate
+    // compares damage against itself.
+    assert!(
+        l.contains("fn integrity_baseline"),
+        "curved sketch-split: pre-op baseline helper must exist"
     );
     // ADR-291 — the plane-cut siblings of `slice` must carry the SAME integrity
     // gate (trim shares slice's core; the curved knives are the Path B siblings).
