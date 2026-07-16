@@ -200,6 +200,31 @@ describe('ADR-294 D8 — the static chrome is fully translated', () => {
   });
 });
 
+describe('ADR-294 D10 — material names are data, not keys', () => {
+  // 사용자 결재: "재질은 사용자가 직접 임의 입력도 가능하기때문에 재질은
+  // 사용자 입력에 맞춥니다."
+  //
+  // These sit right next to panel chrome and look exactly like something a
+  // batch should sweep up, so the decision is enforced rather than documented.
+  // Measured reasons: MaterialLibrary.addCustom takes any name a user types
+  // (Quick Color mints one per use), and FileManager persists getCustom() into
+  // metadata.materials and restores by name. A name that round-trips through a
+  // file is data — translating it would make a material's name depend on the
+  // language it was saved in.
+  it('no built-in material name is an en.ts key', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'src/materials/MaterialLibrary.ts'), 'utf8',
+    );
+    const names = [...src.matchAll(/^\s*name:\s*'([^']*)',/gm)]
+      .map((m) => m[1])
+      .filter((n) => /[가-힣]/.test(n));
+    expect(names.length, 'the built-in materials must actually be there')
+      .toBeGreaterThan(10);
+    expect(names.filter((n) => n in EN), 'a material name leaked into en.ts')
+      .toEqual([]);
+  });
+});
+
 describe('ADR-294 — en.ts hygiene', () => {
   it('every key is Korean — an English key means someone invented a name', () => {
     // D2: the key is the Korean SOURCE TEXT. A key without Hangul is either a

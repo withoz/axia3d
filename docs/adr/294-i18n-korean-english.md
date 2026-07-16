@@ -264,6 +264,35 @@ A label rename is a muscle-memory change, so it needs a decision on the record:
 this is it. Positions, ids, shortcuts and toolbar order are untouched — only the
 words change.
 
+### D10 — Material names are data, not keys (사용자 결재 2026-07-16)
+
+> 사용자: "재질은 사용자가 직접 임의 입력도 가능하기때문에 재질은 사용자 입력에
+> 맞춥니다."
+
+The 12 built-in materials render as `콘크리트 (Concrete)`, `철강 (Steel)`,
+`유리 (Glass)`. They are **not** translated, and this is the reason to write it
+down rather than leave it to whoever runs the next batch — the strings sit right
+next to panel chrome and look exactly like something a batch should sweep up.
+
+Measured, and it turns out there is a stronger reason than the one given:
+
+- **Users author them.** `MaterialLibrary.addCustom` takes any name; Quick Color
+  mints one per use. A translated built-in list next to a user's own names is a
+  list in two voices.
+- **They are persisted.** `FileManager` saves `getCustom()` into
+  `metadata.materials` and restores by the same object on load. Translating them
+  would mean a material's name depends on the language it was saved in, and a
+  file saved in English would restore English names into a Korean session. A
+  name that round-trips through a file is data, whatever it looks like on screen.
+
+Guarded, not just documented: `i18n.test.ts` asserts no built-in material name
+is an `en.ts` key. The next batch cannot translate them by reflex.
+
+**Open, deliberately not done:** Quick Color mints `색상 #ff0000`. It is a
+generated default rather than user input, so arguably it should be born in the
+locale of whoever creates it — and then stay data forever after. That is a
+different decision from this one and is left alone.
+
 ## 4. Lock-ins
 
 - **L-294-1** No i18n dependency. ADR-035 P20.C #2.
@@ -285,6 +314,9 @@ words change.
   rather than swept (D8).
 - **L-294-13** Hard CAD terms are transliterated in Korean (D9). "Hard" = a
   coined literal or a descriptive phrase; everyday Korean stays Korean.
+- **L-294-15** Material names are data, not keys (D10) — user-authored and
+  persisted to the .axia file. Guarded: no built-in material name may be an
+  `en.ts` key.
 - **L-294-14** Renames are full-label. `연장선`/`연장(X)` (snap) and
   `평면으로 자르기` (Slice) are homographs a substring pass would destroy.
 - **L-294-12** Keys are what the DOM holds, not what the markup spells
