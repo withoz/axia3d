@@ -118,7 +118,7 @@ export class CopyTool implements ITool {
       this.ctx.syncMesh();
       const kind = hasFaces ? '면' : '엣지';
       const n = hasFaces ? this.faces!.length : this.edges!.length;
-      Toast.info(`복제 완료 (${n}개 ${kind})`, 2000);
+      Toast.info(t('복제 완료 ({n}개 {kind})', { n, kind }), 2000);
       debugLog(`[Copy] ${n} ${hasFaces ? 'faces' : 'edges'} duplicated by (${offset.x.toFixed(1)},${offset.y.toFixed(1)},${offset.z.toFixed(1)})`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, t('복제 실패'));

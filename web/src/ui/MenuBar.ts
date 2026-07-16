@@ -167,7 +167,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
     // is a placeholder rather than a broken click.
     if (!toolManager.hasTool(tool)) {
       Toast.warning(
-        `"${toolDisplayName(tool)}" 도구는 아직 준비 중입니다. ` +
+        t('"{tool}" 도구는 아직 준비 중입니다. ', { tool: toolDisplayName(tool) }) +
           `(menu surfaces tool-id but tool unregistered)`,
         4000,
       );
@@ -266,9 +266,9 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'export-iges': {
         const fmt = act === 'export-step' ? 'STEP' : 'IGES';
         Toast.info(
-          `${fmt} 내보내기는 준비중입니다 (ADR-035 Stage 5).\n` +
-          `현재 가능: OBJ / DXF / glTF / STL.\n` +
-          `대안: FreeCAD / Fusion 360 / Rhino 의 STEP→OBJ/STL 변환.`
+          t('{fmt} 내보내기는 준비중입니다 (ADR-035 Stage 5).\n', { fmt }) +
+          t('현재 가능: OBJ / DXF / glTF / STL.\n') +
+          t('대안: FreeCAD / Fusion 360 / Rhino 의 STEP→OBJ/STL 변환.')
         );
         break;
       }
@@ -581,7 +581,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
           } else {
             const totalVol = results.reduce((s, r) => s + r.volume_mm3, 0);
             Toast.info(
-              `⚠️ ${results.length}개 간섭 발견 (총 ${(totalVol / 1e9).toFixed(2)}m³). 빨간 박스 확인.`,
+              t('⚠️ {count}개 간섭 발견 (총 {volume}m³). 빨간 박스 확인.', { count: results.length, volume: (totalVol / 1e9).toFixed(2) }),
               5000,
             );
           }
@@ -623,7 +623,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
           break;
         }
         const posStr = prompt(
-          `섹션 ${axis.toUpperCase()}축 위치 (mm, 기본 0)`,
+          t('섹션 {axis}축 위치 (mm, 기본 0)', { axis: axis.toUpperCase() }),
           '0',
         );
         if (posStr === null) break;
@@ -631,7 +631,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
         if (!Number.isFinite(pos)) { alert(t('유효한 숫자를 입력해주세요.')); break; }
         sp.setAxis(axis);
         sp.setPosition(pos);
-        Toast.info(`섹션 ${axis.toUpperCase()}축 @ ${pos}mm 활성`, 2500);
+        Toast.info(t('섹션 {axis}축 @ {pos}mm 활성', { axis: axis.toUpperCase(), pos }), 2500);
         break;
       }
       case 'solidify': toolManager.executeAction('solidify'); break;

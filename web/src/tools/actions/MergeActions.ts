@@ -49,13 +49,13 @@ export function mergeFaces(ctx: MergeActionContext): void {
       ctx.syncMesh();
       ctx.selection.clearSelection();
       const tolNote = tol !== 0.5 ? ` (tol ${tol}°)` : '';
-      Toast.info(`엣지 양옆 면 머지 완료${tolNote}`, 2000);
+      Toast.info(t('엣지 양옆 면 머지 완료{tolNote}', { tolNote }), 2000);
       debugLog('[Action] merge-faces (edge):', result, 'tol=', tol);
     } else {
       const err = ctx.bridge.lastError();
       Toast.warning(
         err ||
-        `해당 엣지 양옆의 두 면이 같은 평면이 아니거나 (현재 tol ${tol}°), 경계가 모호합니다 (공유 엣지 1개 필요)`,
+        t('해당 엣지 양옆의 두 면이 같은 평면이 아니거나 (현재 tol {tol}°), 경계가 모호합니다 (공유 엣지 1개 필요)', { tol }),
         3500,
       );
     }
@@ -98,7 +98,7 @@ export function mergeFaces(ctx: MergeActionContext): void {
       if (result >= 0) {
         ctx.syncMesh();
         ctx.selection.clearSelection();
-        Toast.info(`기하 머지으로 통합 완료 (snap 드리프트 보정 · tol ${geoTol}°/mm)`, 2800);
+        Toast.info(t('기하 머지로 통합 완료 (snap 드리프트 보정 · tol {geoTol}°/mm)', { geoTol }), 2800);
         debugLog('[Action] merge-faces → geometric fallback: success', result);
         return;
       }
@@ -113,11 +113,11 @@ export function mergeFaces(ctx: MergeActionContext): void {
     }
     if (analysis.nonCoplanar > 0) {
       const tolHint = tol === 0.5 ? ' (mergetol 2 명령으로 허용치 확장 가능)' : '';
-      lines.push(`• ${analysis.nonCoplanar}쌍이 평면 불일치${tolHint}`);
+      lines.push(t('• {nonCoplanar}쌍이 평면 불일치{tolHint}', { nonCoplanar: analysis.nonCoplanar, tolHint }));
       lines.push('  → "강제 머지"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능');
     }
     if (analysis.ambiguous > 0) {
-      lines.push(`• ${analysis.ambiguous}쌍이 C-slit 형태 (hole 필요 — 미지원)`);
+      lines.push(t('• {ambiguous}쌍이 C-slit 형태 (hole 필요 — 미지원)', { ambiguous: analysis.ambiguous }));
     }
     const err = ctx.bridge.lastError();
     Toast.warning(err || lines.join('\n'), 4500);
@@ -129,11 +129,11 @@ export function mergeFaces(ctx: MergeActionContext): void {
     ctx.syncMesh();
     ctx.selection.clearSelection();
     const skipped = analysis.nonCoplanar + analysis.ambiguous;
-    const skipNote = skipped > 0 ? ` (${skipped}쌍 건너뜀)` : '';
+    const skipNote = skipped > 0 ? t(' ({skipped}쌍 건너뜀)', { skipped }) : '';
     const tolNote = tol !== 0.5 ? ` · tol ${tol}°` : '';
     const matNote = getRespectMaterial() ? ' · 재질별' : '';
     Toast.info(
-      `${merged}회 통합 — ${workingFaces.length}개 면이 ${workingFaces.length - merged}개로 합쳐짐${skipNote}${tolNote}${matNote}`,
+      t('{merged}회 통합 — {workingFaces}개 면이 {workingFaces2}개로 합쳐짐{skipNote}{tolNote}{matNote}', { merged, workingFaces: workingFaces.length, workingFaces2: workingFaces.length - merged, skipNote, tolNote, matNote }),
       2800,
     );
     debugLog('[Action] merge-faces (faces):', merged, 'tol=', tol);
@@ -182,7 +182,7 @@ export function mergeFacesGeometric(ctx: MergeActionContext): void {
   if (mergedCount > 0) {
     ctx.syncMesh();
     ctx.selection.clearSelection();
-    Toast.info(`기하 머지 ${mergedCount}회 완료`, 2500);
+    Toast.info(t('기하 머지 {mergedCount}회 완료', { mergedCount }), 2500);
     debugLog('[Action] merge-faces-geometric: success', mergedCount);
   } else {
     Toast.warning(
@@ -202,7 +202,7 @@ export function mergeFacesForce(ctx: MergeActionContext): void {
   const softened = ctx.bridge.softenInternalEdges(faces);
   if (softened > 0) {
     ctx.syncMesh();
-    Toast.info(`${faces.length}개 면을 하나의 폴리곤 서피스로 결합 (${softened}개 내부 엣지 숨김)`, 3000);
+    Toast.info(t('{faces}개 면을 하나의 폴리곤 서피스로 결합 ({softened}개 내부 엣지 숨김)', { faces: faces.length, softened }), 3000);
     debugLog('[Action] merge-faces-force:', softened);
   } else {
     Toast.warning(t('강제 머지 실패 — 선택된 면들이 엣지를 공유하지 않습니다. 인접한 면을 함께 선택해주세요.'), 3500);
@@ -229,8 +229,8 @@ export function mergeXiaCoplanar(ctx: MergeActionContext): void {
   debugLog('[Action] merge-xia-coplanar pre-analysis:', analysis, 'xia=', xiaId, 'tol=', tol);
   if (analysis.mergeable === 0) {
     Toast.info(
-      `XIA ${xiaId} — 병합 가능한 인접 coplanar 면이 없습니다` +
-      (analysis.nonCoplanar > 0 ? ` (평면 불일치 ${analysis.nonCoplanar}쌍)` : ''),
+      t('XIA {xiaId} — 병합 가능한 인접 coplanar 면이 없습니다', { xiaId }) +
+      (analysis.nonCoplanar > 0 ? t(' (평면 불일치 {nonCoplanar}쌍)', { nonCoplanar: analysis.nonCoplanar }) : ''),
       3000,
     );
     return;
@@ -240,7 +240,7 @@ export function mergeXiaCoplanar(ctx: MergeActionContext): void {
     ctx.syncMesh();
     ctx.selection.clearSelection();
     Toast.info(
-      `XIA ${xiaId} — ${merged}회 통합, ${xiaFaceIds.length}개 면 → ${xiaFaceIds.length - merged}개`,
+      t('XIA {xiaId} — {merged}회 통합, {xiaFaceIds}개 면 → {xiaFaceIds2}개', { xiaId, merged, xiaFaceIds: xiaFaceIds.length, xiaFaceIds2: xiaFaceIds.length - merged }),
       3000,
     );
   } else {

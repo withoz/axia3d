@@ -174,6 +174,32 @@ function asSourceLiteral(runtime: string): string {
   return runtime.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 
+const count = (s: string, ch: string) => s.split(ch).length - 1;
+
+/**
+ * Drop every `${…}` from a template body, counting braces so a nested object
+ * literal doesn't end the match early. A flat /\$\{[^}]*\}/ stops at the first
+ * `}`, which cut `${t('{tier} 작업: {label}', { … })}` after `{tier}` and left
+ * the Korean looking un-wrapped — a false positive on already-correct code.
+ */
+function stripInterpolations(v: string): string {
+  let out = '';
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] === '$' && v[i + 1] === '{') {
+      let depth = 1;
+      i += 2;
+      for (; i < v.length && depth > 0; i++) {
+        if (v[i] === '{') depth++;
+        else if (v[i] === '}') depth--;
+      }
+      i--;
+      continue;
+    }
+    out += v[i];
+  }
+  return out;
+}
+
 /**
  * Files whose Korean IS a key but which never call t() — the panels translate
  * them at render (batch 4). They are translation sources all the same, so the
@@ -328,15 +354,40 @@ describe('ADR-294 — en.ts hygiene', () => {
     // Explorer that the t()-call guard had passed over.
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const missing: string[] = [];
+    let debugDepth = 0;
     for (const line of src.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
       // Debug output is not copy — it goes to the console, behind a flag, and
-      // is written for whoever is reading the code, not for a user.
-      if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
+      // is written for whoever is reading the code, not for a user. The call
+      // can open on one line and hold its string on the next, so follow the
+      // paren depth rather than testing each line in isolation.
+      const dbg = /\b(debugLog|debugWarn|console)\s*[.(]/.exec(line);
+      if (dbg) {
+        const tail = line.slice(dbg.index);
+        debugDepth = Math.max(0, count(tail, '(') - count(tail, ')'));
+        continue;
+      }
+      if (debugDepth > 0) {
+        debugDepth = Math.max(0, debugDepth + count(line, '(') - count(line, ')'));
+        continue;
+      }
       for (const m of line.matchAll(/'([^']*)'/g)) {
         const v = asRuntimeString(m[1]);
         if (/[가-힣]/.test(v) && !(v in EN) && !NOT_KEYS.has(v)) missing.push(v);
+      }
+      // Backticks too. This was a real hole, and an expensive one: the guard
+      // saw only single quotes, so `${n}개 면 …` templates sailed straight
+      // through — 187 of them, sitting in files this ledger called done. A
+      // template holding Korean is either already t(`…`) or it still needs
+      // converting to t('…{n}…', { n }).
+      for (const m of line.matchAll(/`([^`]*)`/g)) {
+        const v = m[1];
+        if (!/[가-힣]/.test(v)) continue;
+        if (/\bt\(\s*`/.test(line.slice(0, (m.index ?? 0) + 1))) continue;
+        // Korean only inside ${…} is a nested t() call, not this template's copy
+        if (!/[가-힣]/.test(stripInterpolations(v))) continue;
+        missing.push(v);
       }
     }
     expect(missing, `Korean in ${file} with no en.ts entry`).toEqual([]);

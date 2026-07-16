@@ -27,7 +27,7 @@ export class GroupTool implements ITool {
     // 그룹 도구 활성화 시 선택 상태 유지
     const selected = this.ctx.selection.getSelectedFaces();
     if (selected.length > 0) {
-      Toast.info(`${selected.length}개 면 선택됨 — Enter로 그룹 생성`);
+      Toast.info(t('{selected}개 면 선택됨 — Enter로 그룹 생성', { selected: selected.length }));
     } else {
       Toast.info(t('그룹에 포함할 면들을 선택하세요'));
     }
@@ -64,7 +64,7 @@ export class GroupTool implements ITool {
         const groupId = this.ctx.selection.getGroupId(fid);
         if (groupId !== undefined && !e.shiftKey && !e.ctrlKey && !e.altKey) {
           this.ctx.selection.selectGroup(groupId);
-          Toast.info(`Group-${groupId} 선택됨 — 더블클릭으로 편집`);
+          Toast.info(t('Group-{groupId} 선택됨 — 더블클릭으로 편집', { groupId }));
         } else {
           this.ctx.selection.handleClick(fid, e.shiftKey, e.ctrlKey, !!e.altKey);
         }
@@ -133,14 +133,14 @@ export class GroupTool implements ITool {
     if (groupId > 0) {
       // 로컬 SelectionManager도 동기화
       this.ctx.selection.groupSelected();
-      Toast.success(`Group-${groupId} 생성 (${selected.length}개 면)`);
+      Toast.success(t('Group-{groupId} 생성 ({selected}개 면)', { groupId, selected: selected.length }));
       debugLog(`[GroupTool] Group-${groupId} created with faces:`, selected);
       return groupId;
     } else {
       // Fallback: WASM 미지원 시 로컬에서만 그룹 생성
       const localGid = this.ctx.selection.groupSelected();
       if (localGid != null) {
-        Toast.success(`Group-${localGid} 생성 (${selected.length}개 면)`);
+        Toast.success(t('Group-{localGid} 생성 ({selected}개 면)', { localGid, selected: selected.length }));
         return localGid;
       }
       Toast.error(t('그룹 생성 실패'));
@@ -177,7 +177,7 @@ export class GroupTool implements ITool {
 
     const entered = this.ctx.selection.enterGroupEdit(groupId);
     if (entered) {
-      Toast.info(`Group-${groupId} 편집 모드 — ESC로 종료`);
+      Toast.info(t('Group-{groupId} 편집 모드 — ESC로 종료', { groupId }));
     }
     return entered;
   }

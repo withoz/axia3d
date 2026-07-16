@@ -653,7 +653,7 @@ export class DrawLineTool implements ITool {
         debugLog(`[FaceSplit] Engine error: ${result.error} — falling back to drawLine`);
         // 친절 메시지는 원인+해결책을 한 줄에 담기에 조금 더 긴 표시 시간 허용
         Toast.warning(
-          `면 분할 실패: ${this.friendlyErrorMessage(result.error)} — 일반 선으로 그립니다`,
+          t('면 분할 실패: {error} — 일반 선으로 그립니다', { error: this.friendlyErrorMessage(result.error) }),
           4500,
         );
         return this.fallbackDrawLine(start, end, len);
@@ -689,12 +689,12 @@ export class DrawLineTool implements ITool {
         debugLog(`[FaceSplit] Auto-selected sub-face ${pickedFace} (closest to end)`);
       }
 
-      Toast.info(`면이 ${newFaces.length}개로 분할됨`, 1800);
+      Toast.info(t('면이 {count}개로 분할됨', { count: newFaces.length }), 1800);
       return true; // Face was split → stop continuous and return to Armed
 
     } catch (err) {
       debugLog(`[FaceSplit] Exception: ${err} — falling back to drawLine`);
-      Toast.error(`면 분할 중 오류: ${err}`, 3000);
+      Toast.error(t('면 분할 중 오류: {err}', { err: String(err) }), 3000);
       return this.fallbackDrawLine(start, end, len);
     }
   }

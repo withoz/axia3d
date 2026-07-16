@@ -817,8 +817,11 @@ export class ToolManager {
       const newFaces = this.bridge.arrayLinearFaces(sourceFaces, 1, [TINY, 0, TINY]);
       if (newFaces.length === 0) {
         Toast.error(
-          `${action === 'duplicate' ? '복제' : '붙여넣기'} 실패 — ` +
-          `원본 면이 삭제되었거나 유효하지 않음`,
+          // One key, not two halves concatenated: English reorders the clause,
+          // and a sentence split across t() calls can't be reordered at all.
+          action === 'duplicate'
+            ? t('복제 실패 — 원본 면이 삭제되었거나 유효하지 않음')
+            : t('붙여넣기 실패 — 원본 면이 삭제되었거나 유효하지 않음'),
           4000,
         );
         return;
@@ -1107,9 +1110,9 @@ export class ToolManager {
           if (L > max) max = L;
         }
         const lines = [
-          `📏 엣지 ${edges.length}개`,
-          `합계: ${fmt(total)}`,
-          edges.length > 1 ? `최단 ${fmt(min)} · 최장 ${fmt(max)}` : '',
+          t('📏 엣지 {edges}개', { edges: edges.length }),
+          t('합계: {total}', { total: fmt(total) }),
+          edges.length > 1 ? t('최단 {min} · 최장 {max}', { min: fmt(min), max: fmt(max) }) : '',
         ].filter(Boolean);
         Toast.info(lines.join('\n'), 5000);
         debugLog(`[Measure] edges: total=${total}, min=${min}, max=${max}`);
@@ -1124,9 +1127,9 @@ export class ToolManager {
         // unit label appended with '²' — users can parse that intuitively.
         const unitLbl = this.units.config.label;
         Toast.info(
-          `📐 면 ${faces.length}개\n` +
-          `면적 합: ${total.toFixed(2)} ${unitLbl}²` +
-          (faces.length > 1 ? `\n최대 면: ${maxA.toFixed(2)} ${unitLbl}²` : ''),
+          t('📐 면 {faces}개\n', { faces: faces.length }) +
+          t('면적 합: {total} {unit}²', { total: total.toFixed(2), unit: unitLbl }) +
+          (faces.length > 1 ? t('\n최대 면: {max} {unit}²', { max: maxA.toFixed(2), unit: unitLbl }) : ''),
           5000,
         );
         debugLog(`[Measure] faces: total=${total}, max=${maxA}`);
@@ -1135,9 +1138,9 @@ export class ToolManager {
         const vol = this.bridge.meshVolume();
         const unitLbl = this.units.config.label;
         Toast.info(
-          `🧊 전체 메시 부피\n` +
+          t('🧊 전체 메시 부피\n') +
           `${vol.toFixed(2)} ${unitLbl}³\n` +
-          `(닫힌 솔리드 기준, 열린 쉘은 근사치)`,
+          t('(닫힌 솔리드 기준, 열린 쉘은 근사치)'),
           5000,
         );
         debugLog(`[Measure] mesh volume: ${vol}`);
@@ -1177,7 +1180,7 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record(
           'array-linear',
-          `선형 배열 ${count}회, (${dx},${dy},${dz})`,
+          t('선형 배열 {count}회, ({dx},{dy},{dz})', { count, dx, dy, dz }),
           input,
           { inputs: sel, outputs: newFaces },
         );
@@ -1202,7 +1205,7 @@ export class ToolManager {
       }
       const last = localStorage.getItem('axia:thicken:distance') ?? '200';
       const input = window.prompt(
-        `두께 (mm, 양수=노멀 방향 / 음수=반대 방향) — 선택 ${selFaces.length}개 면:`,
+        t('두께 (mm, 양수=노멀 방향 / 음수=반대 방향) — 선택 {selFaces}개 면:', { selFaces: selFaces.length }),
         last,
       );
       if (input == null) return;
@@ -1229,7 +1232,7 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record(
           'thicken-faces',
-          `두께 ${distance}mm × ${success}개 면`,
+          t('두께 {distance}mm × {success}개 면', { distance, success }),
           String(distance),
           { inputs: selFaces.slice() },
         );
@@ -1237,7 +1240,7 @@ export class ToolManager {
           Toast.info(t('{n}개 면에 두께 {mm}mm 부여', { n: success, mm: distance }), 2500);
         } else {
           Toast.warning(
-            `${success}/${selFaces.length}개 면 성공 — 실패: ${firstFailure || '알 수 없는 오류'}`,
+            t('{success}/{selFaces}개 면 성공 — 실패: {firstFailure}', { success, selFaces: selFaces.length, firstFailure: firstFailure || t('알 수 없는 오류') }),
             4000,
           );
         }
@@ -1253,7 +1256,7 @@ export class ToolManager {
       const lofts = this.selection.getSelectedFaces();
       if (lofts.length !== 2) {
         Toast.warning(
-          `로프트는 정확히 2개의 프로파일 면을 선택하세요 (현재 ${lofts.length}개)`,
+          t('로프트는 정확히 2개의 프로파일 면을 선택하세요 (현재 {lofts}개)', { lofts: lofts.length }),
           3000,
         );
         return;
@@ -1266,7 +1269,7 @@ export class ToolManager {
         debugLog(`[Action] loft-selected-faces: ${lofts[0]} ↔ ${lofts[1]} OK`);
       } else {
         Toast.error(
-          `로프트 실패: ${this.bridge.lastError() || '프로파일이 평면 폴리곤(≥3 verts)인지 확인하세요'}`,
+          t('로프트 실패: {error}', { error: this.bridge.lastError() || t('프로파일이 평면 폴리곤(≥3 verts)인지 확인하세요') }),
           4000,
         );
       }
@@ -1307,7 +1310,7 @@ export class ToolManager {
         debugLog(`[Action] revolve-face-solid: face ${rev[0]} ${deg}° ${axStr} OK`);
       } else {
         Toast.error(
-          `회전체 실패: ${this.bridge.lastError() || '면 평면이 축(원점 통과)을 포함하고 축에서 떨어져 있는지 확인하세요'}`,
+          t('회전체 실패: {error}', { error: this.bridge.lastError() || t('면 평면이 축(원점 통과)을 포함하고 축에서 떨어져 있는지 확인하세요') }),
           4500,
         );
       }
@@ -1319,7 +1322,7 @@ export class ToolManager {
         normal: new THREE.Vector3(0, 1, 0),
         up: new THREE.Vector3(0, 0, -1),
       });
-      Toast.info(`✏️ 스케치 시작 — XZ 바닥 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.`, 4000);
+      Toast.info(t('✏️ 스케치 시작 — XZ 바닥 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-xy') {
       // XY 정면 — Z=0, 입면도.
       this.enterSketch({
@@ -1328,7 +1331,7 @@ export class ToolManager {
         normal: new THREE.Vector3(0, 0, 1),
         up: new THREE.Vector3(0, 1, 0),
       });
-      Toast.info(`✏️ 스케치 시작 — XY 정면 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.`, 4000);
+      Toast.info(t('✏️ 스케치 시작 — XY 정면 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-yz') {
       // YZ 측면 — X=0.
       this.enterSketch({
@@ -1337,7 +1340,7 @@ export class ToolManager {
         normal: new THREE.Vector3(1, 0, 0),
         up: new THREE.Vector3(0, 1, 0),
       });
-      Toast.info(`✏️ 스케치 시작 — YZ 측면 (X=0). 모든 드로잉이 이 평면에 고정됩니다.`, 4000);
+      Toast.info(t('✏️ 스케치 시작 — YZ 측면 (X=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-face') {
       // 선택된 단일 면의 평면에서 스케치 시작.
       const faces = this.selection.getSelectedFaces();
@@ -1367,7 +1370,7 @@ export class ToolManager {
       if (up.lengthSq() < 1e-6) up = edgeA.normalize();
       else up.normalize();
       this.enterSketch({
-        label: `면 #${faces[0]}`,
+        label: t('면 #{faceId}', { faceId: faces[0] }),
         origin: p0.clone(),
         normal,
         up,
@@ -1389,7 +1392,7 @@ export class ToolManager {
           label: string; origin: number[]; normal: number[]; up: number[];
         };
         this.enterSketch({
-          label: `${data.label} (재개)`,
+          label: t('{label} (재개)', { label: data.label }),
           origin: new THREE.Vector3().fromArray(data.origin),
           normal: new THREE.Vector3().fromArray(data.normal),
           up: new THREE.Vector3().fromArray(data.up),
@@ -1420,7 +1423,7 @@ export class ToolManager {
           Toast.info(t('{n}개 엣지 → {label} 변환 완료', { n: ok, label }), 2500);
         } else {
           Toast.warning(
-            `${ok}/${edges.length}개 변환 — 나머지 거부: ${firstErr || '원인 불명'}`,
+            t('{ok}/{edges}개 변환 — 나머지 거부: {firstErr}', { ok, edges: edges.length, firstErr: firstErr || t('원인 불명') }),
             4500,
           );
         }
@@ -1446,7 +1449,7 @@ export class ToolManager {
       const freeBefore = this.bridge.countFreeEdges();
       if (freeBefore === 0) {
         Toast.info(
-          `스케치 종료 (${info?.label ?? ''}) — 자유 엣지 없음 (닫힌 프로필 미작성)`,
+          t('스케치 종료 ({label}) — 자유 엣지 없음 (닫힌 프로필 미작성)', { label: info?.label ?? '' }),
           3500,
         );
         return;
@@ -1455,8 +1458,7 @@ export class ToolManager {
       if (created === 0) {
         this.syncMesh();
         Toast.info(
-          `스케치 종료 (${info?.label ?? ''}) — 자유 엣지 ${freeBefore}개 있으나 ` +
-          `닫힌 polygon 미감지. 선이 끝점에서 정확히 만났는지 확인하세요.`,
+          t('스케치 종료 ({label}) — 자유 엣지 {freeBefore}개 있으나 닫힌 polygon 미감지. 선이 끝점에서 정확히 만났는지 확인하세요.', { label: info?.label ?? '', freeBefore }),
           4500,
         );
         return;
@@ -1466,14 +1468,14 @@ export class ToolManager {
       // 높이 입력 prompt — 취소 시 면만 남기고 종료.
       const lastH = localStorage.getItem('axia:sketch:extrude:height') ?? '2400';
       const heightInput = window.prompt(
-        `✅ 스케치에서 ${created}개 닫힌 프로필을 감지했습니다.\n` +
-        `높이(mm)를 입력하면 즉시 Push/Pull로 3D 변환합니다.\n` +
-        `(취소 = 면만 남기고 종료)`,
+        t('✅ 스케치에서 {created}개 닫힌 프로필을 감지했습니다.\n', { created }) +
+        t('높이(mm)를 입력하면 즉시 Push/Pull로 3D 변환합니다.\n') +
+        t('(취소 = 면만 남기고 종료)'),
         lastH,
       );
       if (heightInput == null) {
         Toast.info(
-          `스케치 종료 (${info?.label ?? ''}) — ${created}개 면 생성, 3D 변환 건너뜀`,
+          t('스케치 종료 ({label}) — {created}개 면 생성, 3D 변환 건너뜀', { label: info?.label ?? '', created }),
           3500,
         );
         return;
@@ -1510,17 +1512,17 @@ export class ToolManager {
         this.syncMesh();
         getOperationLog().record(
           'thicken-faces',
-          `스케치 Extrude ${height}mm × ${ok}개 프로필`,
+          t('스케치 Extrude {height}mm × {ok}개 프로필', { height, ok }),
           String(height),
           { inputs: Array.from(targets) },
         );
         Toast.info(
-          `✅ 스케치 완료 — ${created}개 프로필 → ${ok}개 3D 매스 (높이 ${height}mm)`,
+          t('✅ 스케치 완료 — {created}개 프로필 → {ok}개 3D 매스 (높이 {height}mm)', { created, ok, height }),
           4000,
         );
       } else {
         Toast.warning(
-          `${created}개 면은 생성되었으나 Push/Pull 실패. 수동으로 면 선택 후 P 키로 시도.`,
+          t('{created}개 면은 생성되었으나 Push/Pull 실패. 수동으로 면 선택 후 P 키로 시도.', { created }),
           4500,
         );
       }
@@ -1540,18 +1542,18 @@ export class ToolManager {
                     report.normalsRecomputed + report.isolatedVertsRemoved;
       if (total === 0 && report.remainingViolations === 0) {
         Toast.info(
-          `✅ 메시 상태 양호 — 정리할 항목 없음 (면 ${after.faceCount}개)`,
+          t('✅ 메시 상태 양호 — 정리할 항목 없음 (면 {faceCount}개)', { faceCount: after.faceCount }),
           3500,
         );
       } else {
         const parts: string[] = [];
-        if (report.degenerateRemoved > 0) parts.push(`퇴화면 ${report.degenerateRemoved}개 제거`);
-        if (report.windingFlipped > 0) parts.push(`winding ${report.windingFlipped}개 뒤집음`);
-        if (report.normalsRecomputed > 0) parts.push(`normal ${report.normalsRecomputed}개 재계산`);
-        if (report.isolatedVertsRemoved > 0) parts.push(`고립 vertex ${report.isolatedVertsRemoved}개 제거`);
+        if (report.degenerateRemoved > 0) parts.push(t('퇴화면 {degenerateRemoved}개 제거', { degenerateRemoved: report.degenerateRemoved }));
+        if (report.windingFlipped > 0) parts.push(t('winding {windingFlipped}개 뒤집음', { windingFlipped: report.windingFlipped }));
+        if (report.normalsRecomputed > 0) parts.push(t('normal {normalsRecomputed}개 재계산', { normalsRecomputed: report.normalsRecomputed }));
+        if (report.isolatedVertsRemoved > 0) parts.push(t('고립 vertex {isolatedVertsRemoved}개 제거', { isolatedVertsRemoved: report.isolatedVertsRemoved }));
         const summary = parts.length > 0 ? parts.join(', ') : '변경 없음';
         const remain = report.remainingViolations > 0
-          ? `\n⚠️ 잔여 invariant 위반 ${report.remainingViolations}개 — 수동 점검 필요`
+          ? t('\n⚠️ 잔여 invariant 위반 {remainingViolations}개 — 수동 점검 필요', { remainingViolations: report.remainingViolations })
           : '';
         Toast.info(`🩹 Mesh Repair — ${summary}${remain}`, 6000);
       }
@@ -1568,13 +1570,12 @@ export class ToolManager {
         this.syncMesh();
         if (r.abortedByTimeBudget) {
           Toast.warning(
-            `🔄 면 재합성 — 새 면 ${r.created}개 생성 (${r.elapsedMs.toFixed(0)}ms 시간 한도 도달, ` +
-            `남은 cycle 처리하려면 다시 실행)`,
+            t('🔄 면 재합성 — 새 면 {created}개 생성 ({ms}ms 시간 한도 도달, 남은 cycle 처리하려면 다시 실행)', { created: r.created, ms: r.elapsedMs.toFixed(0) }),
             6000,
           );
         } else {
           Toast.info(
-            `🔄 면 재합성 — 새 면 ${r.created}개 생성 (${r.elapsedMs.toFixed(0)}ms)`,
+            t('🔄 면 재합성 — 새 면 {created}개 생성 ({ms}ms)', { created: r.created, ms: r.elapsedMs.toFixed(0) }),
             3500,
           );
         }
@@ -1596,16 +1597,15 @@ export class ToolManager {
       debugLog(`[Solidify] before: ${JSON.stringify(before)}`);
       if (before.isClosedSolid) {
         Toast.info(
-          `이미 닫힌 솔리드입니다 (면 ${before.faceCount}개, 내부 엣지 ${before.interiorEdgeCount}개)`,
+          t('이미 닫힌 솔리드입니다 (면 {faceCount}개, 내부 엣지 {interiorEdgeCount}개)', { faceCount: before.faceCount, interiorEdgeCount: before.interiorEdgeCount }),
           3500,
         );
         return;
       }
       if (before.nonManifoldEdgeCount > 0) {
         Toast.warning(
-          `Non-manifold 엣지 ${before.nonManifoldEdgeCount}개 발견 — ` +
-          `3개 이상 면이 공유하는 엣지는 Solidify가 자동 수정할 수 없습니다.\n` +
-          `먼저 Mesh Repair로 non-manifold를 해결한 뒤 다시 시도하세요.`,
+          t('Non-manifold 엣지 {count}개 발견 — 3개 이상 면이 공유하는 엣지는 Solidify가 자동 수정할 수 없습니다.\n', { count: before.nonManifoldEdgeCount }) +
+          t('먼저 Mesh Repair로 non-manifold를 해결한 뒤 다시 시도하세요.'),
           6000,
         );
         return;
@@ -1617,8 +1617,7 @@ export class ToolManager {
       if (before.boundaryEdgeCount === 0) {
         // 면은 있는데 boundary는 0이고 is_closed_solid도 아님 → face 수가 4 미만
         Toast.info(
-          `경계 엣지가 없지만 닫힌 솔리드 판정 미충족(면 ${before.faceCount}개 — ` +
-          `최소 4면 필요)`,
+          t('경계 엣지가 없지만 닫힌 솔리드 판정 미충족(면 {faceCount}개 — 최소 4면 필요)', { faceCount: before.faceCount }),
           4000,
         );
         return;
@@ -1630,21 +1629,18 @@ export class ToolManager {
       debugLog(`[Solidify] after: created=${created}, ${JSON.stringify(after)}`);
       if (after.isClosedSolid) {
         Toast.info(
-          `✅ Solidify 성공 — ${created}개 면 cap 생성, ` +
-          `총 ${after.faceCount}면 닫힌 솔리드`,
+          t('✅ Solidify 성공 — {created}개 면 cap 생성, 총 {faceCount}면 닫힌 솔리드', { created, faceCount: after.faceCount }),
           4000,
         );
       } else if (created > 0) {
         Toast.warning(
-          `일부 cap 생성(${created}개) but 아직 열린 상태: ` +
-          `boundary ${after.boundaryEdgeCount}개, non-manifold ${after.nonManifoldEdgeCount}개 남음.\n` +
-          `복잡한 비평면 boundary는 수동 보정이 필요할 수 있음.`,
+          t('일부 cap 생성({created}개) but 아직 열린 상태: boundary {boundary}개, non-manifold {nonManifold}개 남음.\n', { created, boundary: after.boundaryEdgeCount, nonManifold: after.nonManifoldEdgeCount }) +
+          t('복잡한 비평면 boundary는 수동 보정이 필요할 수 있음.'),
           6000,
         );
       } else {
         Toast.error(
-          `Solidify 실패 — boundary ${before.boundaryEdgeCount}개가 닫힌 polygon을 ` +
-          `이루지 않거나 비평면 루프일 수 있습니다.`,
+          t('Solidify 실패 — boundary {count}개가 닫힌 polygon을 이루지 않거나 비평면 루프일 수 있습니다.', { count: before.boundaryEdgeCount }),
           5000,
         );
       }
@@ -1690,7 +1686,7 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record(
           'array-radial',
-          `원형 배열 ${count}회 · ${axisChar}축 · ${totalDeg}°`,
+          t('원형 배열 {count}회 · {axisChar}축 · {totalDeg}°', { count, axisChar, totalDeg }),
           input,
           { inputs: sel, outputs: newFaces },
         );
@@ -1733,7 +1729,7 @@ export class ToolManager {
         lib.addCustom({
           id,
           rustId,
-          name: `색상 ${hex}`,
+          name: t('색상 {hex}', { hex }),
           nameEn: `Color ${hex}`,
           category: 'custom',
           physical: {
@@ -1778,7 +1774,7 @@ export class ToolManager {
       if (n >= 0) {
         this.syncMesh();
         this.selection.clearSelection();
-        getOperationLog().record('chamfer-edge', `챔퍼 ${distance}mm`, String(distance),
+        getOperationLog().record('chamfer-edge', t('챔퍼 {distance}mm', { distance }), String(distance),
           { inputs: edges.slice(0, 1) });
         Toast.info(t('챔퍼 완료 — 거리 {mm}mm', { mm: distance }), 2500);
         debugLog(`[Action] chamfer-edge: distance=${distance}, n=${n}`);
@@ -1802,7 +1798,7 @@ export class ToolManager {
       }
       const lastRadius = Number(localStorage.getItem('axia:fillet:radius') ?? '50');
       const input = window.prompt(
-        `필렛 반경 (mm) — 선택 ${edges.length}개 엣지:`,
+        t('필렛 반경 (mm) — 선택 {edges}개 엣지:', { edges: edges.length }),
         String(lastRadius),
       );
       if (input == null) return;
@@ -1830,26 +1826,25 @@ export class ToolManager {
         this.selection.clearSelection();
         getOperationLog().record(
           'fillet-edge',
-          `필렛 ${radius}mm × ${successEdges}개 엣지`,
+          t('필렛 {radius}mm × {successEdges}개 엣지', { radius, successEdges }),
           String(radius),
           { inputs: edges.slice() },
         );
         if (successEdges === edges.length) {
           Toast.info(
-            `필렛 완료 — ${successEdges}개 엣지, ${totalFaces}개 fillet face 생성`,
+            t('필렛 완료 — {successEdges}개 엣지, {totalFaces}개 fillet face 생성', { successEdges, totalFaces }),
             2500,
           );
         } else {
           const failed = edges.length - successEdges;
           Toast.warning(
-            `${successEdges}/${edges.length}개 성공 — ${failed}개 실패 ` +
-            `(공유 vertex 충돌 가능성: 첫 실패 "${firstError || '원인 불명'}")`,
+            t('{successEdges}/{edges}개 성공 — {failed}개 실패 (공유 vertex 충돌 가능성: 첫 실패 "{firstError}")', { successEdges, edges: edges.length, failed, firstError: firstError || t('원인 불명') }),
             5000,
           );
         }
         debugLog(`[Action] fillet-edge: ${successEdges}/${edges.length} edges, ${totalFaces} faces`);
       } else {
-        Toast.fromBridgeError(this.bridge, `${edges.length}개 엣지 모두 필렛 실패`);
+        Toast.fromBridgeError(this.bridge, t('{edges}개 엣지 모두 필렛 실패', { edges: edges.length }));
       }
     } else if (action === 'subdivide') {
       // 전체 메시에 Catmull-Clark subdivision 1회 적용.
@@ -1858,7 +1853,7 @@ export class ToolManager {
       if (count >= 0) {
         this.syncMesh();
         this.selection.clearSelection();
-        getOperationLog().record('subdivide', `Catmull-Clark 분할 (${count}개 quad)`, '');
+        getOperationLog().record('subdivide', t('Catmull-Clark 분할 ({count}개 quad)', { count }), '');
         Toast.info(t('Catmull-Clark 분할 완료 — {n}개 quad 생성', { n: count }), 2500);
         debugLog(`[Action] subdivide: ${count} quads`);
       } else {
@@ -1879,7 +1874,7 @@ export class ToolManager {
         Toast.info(t('{n}개 면 합성 완료 (자유 엣지 {total}개 중)', { n: created, total: freeEdgeCount }), 3000);
       } else {
         Toast.warning(
-          `자유 엣지 ${freeEdgeCount}개 발견했으나 닫힌 polygon 미감지.\n` +
+          t('자유 엣지 {freeEdgeCount}개 발견했으나 닫힌 polygon 미감지.\n', { freeEdgeCount }) +
           '엣지가 실제로 닫혀 있는지 확인해 주세요.',
           3500,
         );
@@ -1929,7 +1924,7 @@ export class ToolManager {
       const current = Math.sqrt(
         (p1[0]-p0[0])**2 + (p1[1]-p0[1])**2 + (p1[2]-p0[2])**2
       );
-      const promptText = `엣지 길이 (현재 ${current.toFixed(2)} mm):`;
+      const promptText = t('엣지 길이 (현재 {current} mm):', { current: current.toFixed(2) });
       const input = window.prompt(promptText, current.toFixed(2));
       if (input == null) return;
       const target = parseFloat(input);
@@ -1997,7 +1992,7 @@ export class ToolManager {
       const current = Math.sqrt((pA[0]-pB[0])**2 + (pA[1]-pB[1])**2 + (pA[2]-pB[2])**2);
 
       const input = window.prompt(
-        `정점 v${vA} ↔ v${vB} 거리 (현재 ${current.toFixed(2)} mm):`,
+        t('정점 v{vA} ↔ v{vB} 거리 (현재 {current} mm):', { vA, vB, current: current.toFixed(2) }),
         current.toFixed(2),
       );
       if (input == null) return;
@@ -2042,7 +2037,7 @@ export class ToolManager {
         cp?.refresh();
       } else {
         const err = this.bridge.lastError();
-        Toast.error(err || `${label} 제약 생성 실패`, 3000);
+        Toast.error(err || t('{label} 제약 생성 실패', { label }), 3000);
       }
     } else if (action === 'select-all') {
       this.selection.selectEverything(this.faceMap, this.edgeMap);
@@ -2447,7 +2442,7 @@ export class ToolManager {
         if (ok > 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('fillet-edge', `필렛 ${r}mm × ${ok}개 엣지 (재실행)`, String(r));
+          getOperationLog().record('fillet-edge', t('필렛 {r}mm × {ok}개 엣지 (재실행)', { r, ok }), String(r));
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');
@@ -2463,7 +2458,7 @@ export class ToolManager {
         if (n >= 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('chamfer-edge', `챔퍼 ${d}mm (재실행)`, String(d));
+          getOperationLog().record('chamfer-edge', t('챔퍼 {d}mm (재실행)', { d }), String(d));
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');
@@ -2501,7 +2496,7 @@ export class ToolManager {
         if (newFaces.length > 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('array-linear', `선형 배열 ${count}회 (재실행)`, params);
+          getOperationLog().record('array-linear', t('선형 배열 {count}회 (재실행)', { count }), params);
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');
@@ -2528,7 +2523,7 @@ export class ToolManager {
         if (newFaces.length > 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('array-radial', `원형 배열 ${count}회 · ${axisChar}축 · ${totalDeg}° (재실행)`, params);
+          getOperationLog().record('array-radial', t('원형 배열 {count}회 · {axisChar}축 · {totalDeg}° (재실행)', { count, axisChar, totalDeg }), params);
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');
@@ -2539,7 +2534,7 @@ export class ToolManager {
         if (n >= 0) {
           this.syncMesh();
           this.selection.clearSelection();
-          getOperationLog().record('subdivide', `Catmull-Clark 분할 (재실행, ${n}개 quad)`, '');
+          getOperationLog().record('subdivide', t('Catmull-Clark 분할 (재실행, {n}개 quad)', { n }), '');
           return true;
         }
         Toast.fromBridgeError(this.bridge, '재실행 실패');

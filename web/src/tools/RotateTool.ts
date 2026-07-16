@@ -110,7 +110,7 @@ export class RotateTool implements ITool {
     this.phase = 'pick-base';
     // 시작 시 축 기본값 해결 — axisLock 있으면 그것, 없으면 Y
     this.applyAxisFromLabel(this.inferInitialAxis());
-    Toast.info(`① 기준점(회전 중심)을 클릭하세요 · 축: ${this.axisLabel} (X/Y/Z로 변경)`, 3500);
+    Toast.info(t('① 기준점(회전 중심)을 클릭하세요 · 축: {axisLabel} (X/Y/Z로 변경)', { axisLabel: this.axisLabel }), 3500);
     debugLog('[RotateTool] Activated — awaiting base point, axis=', this.axisLabel);
   }
 
@@ -159,7 +159,7 @@ export class RotateTool implements ITool {
       this.phase = 'pick-reference';
       const axLabel = this.rotationAxis.x === 1 ? 'X'
         : this.rotationAxis.z === 1 ? 'Z' : 'Y';
-      Toast.info(`② 참조 방향을 클릭하세요 (${axLabel}축 회전)`, 2500);
+      Toast.info(t('② 참조 방향을 클릭하세요 ({axLabel}축 회전)', { axLabel }), 2500);
       debugLog('[Rotate] Base point set:', point);
       return;
     }
@@ -217,7 +217,7 @@ export class RotateTool implements ITool {
         { from: this.basePoint.clone(), to: this.referencePoint.clone(),
           text: t('참조'), color: '#868e96' },
         { from: this.basePoint.clone(), to: point.clone(),
-          text: `${targetDeg.toFixed(1)}° · ${axLabel}축`, color: '#da77f2' },
+          text: t('{targetDeg}° · {axLabel}축', { targetDeg: targetDeg.toFixed(1), axLabel }), color: '#da77f2' },
       ]);
     }
   }
@@ -269,7 +269,7 @@ export class RotateTool implements ITool {
     }
 
     this.applyAxisFromLabel(label);
-    Toast.info(`축 전환 → ${label}축 회전`, 1500);
+    Toast.info(t('축 전환 → {label}축 회전', { label }), 1500);
     debugLog('[Rotate] Axis switched to', label);
   }
 

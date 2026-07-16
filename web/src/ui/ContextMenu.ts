@@ -217,7 +217,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           err = tryPromote(faceB, faceA);
         }
         if (err) {
-          Toast.error(`Annulus 만들기 실패: ${err}`);
+          Toast.error(t('Annulus 만들기 실패: {err}', { err }));
         } else {
           Toast.success(t('Annulus 생성 완료'));
           toolManager.selection.clearSelection();
@@ -241,7 +241,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           reports = bridge.detectTJunctions();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`T-junction 검출 실패: ${msg}`);
+          Toast.error(t('T-junction 검출 실패: {msg}', { msg }));
           break;
         }
         if (reports.length === 0) {
@@ -273,11 +273,11 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         toolManager.syncMesh();
 
         if (healed > 0 && skipped === 0) {
-          Toast.success(`T-junction ${healed}개 정리 완료`);
+          Toast.success(t('T-junction {healed}개 정리 완료', { healed }));
         } else if (healed > 0 && skipped > 0) {
-          Toast.info(`T-junction ${healed}개 정리, ${skipped}개 skip (재시도 가능)`);
+          Toast.info(t('T-junction {healed}개 정리, {skipped}개 skip (재시도 가능)', { healed, skipped }));
         } else {
-          Toast.error(`T-junction 정리 실패 (${skipped}개 skip)`);
+          Toast.error(t('T-junction 정리 실패 ({skipped}개 skip)', { skipped }));
         }
         break;
       }
@@ -298,7 +298,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           pairs = bridge.sweepCoplanarPairs();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Coplanar 검출 실패: ${msg}`);
+          Toast.error(t('Coplanar 검출 실패: {msg}', { msg }));
           break;
         }
         if (pairs.length === 0) {
@@ -312,15 +312,15 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           toolManager.syncMesh();
 
           if (report.mergedCount > 0 && report.skippedCount === 0) {
-            Toast.success(`Coplanar ${report.mergedCount}쌍 정리 완료`);
+            Toast.success(t('Coplanar {mergedCount}쌍 정리 완료', { mergedCount: report.mergedCount }));
           } else if (report.mergedCount > 0 && report.skippedCount > 0) {
-            Toast.info(`Coplanar ${report.mergedCount}쌍 정리, ${report.skippedCount}쌍 skip`);
+            Toast.info(t('Coplanar {mergedCount}쌍 정리, {skippedCount}쌍 skip', { mergedCount: report.mergedCount, skippedCount: report.skippedCount }));
           } else {
-            Toast.error(`Coplanar 정리 실패 (${report.skippedCount}쌍 skip)`);
+            Toast.error(t('Coplanar 정리 실패 ({skippedCount}쌍 skip)', { skippedCount: report.skippedCount }));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Coplanar 정리 실패: ${msg}`);
+          Toast.error(t('Coplanar 정리 실패: {msg}', { msg }));
         }
         break;
       }
@@ -376,14 +376,14 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           toolManager.syncMesh();
 
           if (result.isValid) {
-            Toast.success(`P7 canonical 정합: ${result.componentCount}개 component → ring-with-hole`);
+            Toast.success(t('P7 canonical 정합: {componentCount}개 component → ring-with-hole', { componentCount: result.componentCount }));
           } else {
             // ADR-051 §2.5 deferred boundary — ≤1 violation 정상.
-            Toast.info(`P7 canonical (${result.componentCount}개 component, ${result.violationCount}개 violation — ADR-051 §2.5 deferred boundary 가능)`);
+            Toast.info(t('P7 canonical ({componentCount}개 component, {violationCount}개 violation — ADR-051 §2.5 deferred boundary 가능)', { componentCount: result.componentCount, violationCount: result.violationCount }));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Connected Inner Merge 실패: ${msg}`);
+          Toast.error(t('Connected Inner Merge 실패: {msg}', { msg }));
         }
         break;
       }

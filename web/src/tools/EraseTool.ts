@@ -223,10 +223,10 @@ export class EraseTool implements ITool {
       }
       if (total > 1 || mergedCount > 0 || synthesizedCount > 0) {
         const parts: string[] = [];
-        if (mergedCount > 0) parts.push(`${mergedCount}개 면 머지`);
-        if (synthesizedCount > 0) parts.push(`${synthesizedCount}개 면 자동 생성`);
-        if (cascadedFaces > 0) parts.push(`${cascadedFaces}개 면 삭제`);
-        if (cascadedEdges > 0) parts.push(`${cascadedEdges}개 엣지 삭제`);
+        if (mergedCount > 0) parts.push(t('{mergedCount}개 면 머지', { mergedCount }));
+        if (synthesizedCount > 0) parts.push(t('{synthesizedCount}개 면 자동 생성', { synthesizedCount }));
+        if (cascadedFaces > 0) parts.push(t('{cascadedFaces}개 면 삭제', { cascadedFaces }));
+        if (cascadedEdges > 0) parts.push(t('{cascadedEdges}개 엣지 삭제', { cascadedEdges }));
         if (cascadeOnly) parts.push(t('(Shift: 강제 삭제)'));
         Toast.info(parts.join(', '), 2500);
       }
@@ -238,7 +238,7 @@ export class EraseTool implements ITool {
       if (desolidifiedCount > 0) {
         const label = desolidifiedCount === 1
           ? t('솔리드 1개가 서피스로 전환됨 (닫힌 볼륨 해체)')
-          : `솔리드 ${desolidifiedCount}개가 서피스로 전환됨 (닫힌 볼륨 해체)`;
+          : t('솔리드 {desolidifiedCount}개가 서피스로 전환됨 (닫힌 볼륨 해체)', { desolidifiedCount });
         Toast.warning(label, 3500);
       }
 

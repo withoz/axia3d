@@ -235,7 +235,7 @@ export class PushPullTool implements ITool {
       if (e.detail >= 2 && this.lastPPDist !== 0 && this.currentDragDist === 0) {
         dist = this.lastPPDist;
         debugLog('[PP] Phase 2: REPEAT LAST dist=', dist.toFixed(2));
-        Toast.info(`직전 거리 반복: ${dist.toFixed(1)} mm`, 1800);
+        Toast.info(t('직전 거리 반복: {dist} mm', { dist: dist.toFixed(1) }), 1800);
       }
 
       debugLog('[PP] Phase 2: confirm dist=', dist.toFixed(2));
@@ -351,7 +351,7 @@ export class PushPullTool implements ITool {
           this.warnIfInwardClamped(clampLimit, dist);
         } else {
           const err = this.engineWhy();
-          Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+          Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
         }
         this.ctx.syncMesh();
         this.liveActive = false;
@@ -367,7 +367,7 @@ export class PushPullTool implements ITool {
         this.warnIfInwardClamped(clampLimit, dist);
       } else if (Math.abs(dist) > 0.001) {
         // Bug C fix: 0 < |dist| < 0.5mm 일 때 조용히 실패하지 않고 피드백
-        Toast.warning(`돌출/잘라내기 거리가 너무 짧습니다 (최소 ${PushPullTool.MIN_COMMIT_DIST}mm)`, 2500);
+        Toast.warning(t('돌출/잘라내기 거리가 너무 짧습니다 (최소 {MIN_COMMIT_DIST}mm)', { MIN_COMMIT_DIST: PushPullTool.MIN_COMMIT_DIST }), 2500);
       }
       this.cleanup();
     }
@@ -415,7 +415,7 @@ export class PushPullTool implements ITool {
     if (clampLimit <= 0 || dist >= 0) return;
     if (-dist <= clampLimit) return; // stayed within the solid → nothing clamped
     Toast.warning(
-      `두께 ${clampLimit.toFixed(1)}mm 에서 멈췄습니다 — 관통하려면 면에 형상을 그린 뒤 미세요`,
+      t('두께 {clampLimit}mm 에서 멈췄습니다 — 관통하려면 면에 형상을 그린 뒤 미세요', { clampLimit: clampLimit.toFixed(1) }),
       4000,
     );
   }
@@ -622,7 +622,7 @@ export class PushPullTool implements ITool {
         const dist = this.currentDragDist !== 0 ? this.currentDragDist : 0;
         this.updatePPGhost(dist);
       }
-      Toast.info(`방향 반전 (Tab) — normal=(${this.ppNormal.x.toFixed(2)}, ${this.ppNormal.y.toFixed(2)}, ${this.ppNormal.z.toFixed(2)})`, 1500);
+      Toast.info(t('방향 반전 (Tab) — normal=({x}, {y}, {z})', { x: this.ppNormal.x.toFixed(2), y: this.ppNormal.y.toFixed(2), z: this.ppNormal.z.toFixed(2) }), 1500);
       debugLog('[PP] Tab pressed — normal flipped, new=', this.ppNormal.toArray());
     }
   }
@@ -663,7 +663,7 @@ export class PushPullTool implements ITool {
         this.warnIfInwardClamped(clampLimit, value);
       } else {
         const err = this.engineWhy();
-        Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
       this.ctx.syncMesh();
       this.liveActive = false;
@@ -754,7 +754,7 @@ export class PushPullTool implements ITool {
         this.ctx.syncMesh();
       } else {
         const err = this.engineWhy();
-        Toast.error(err ? `곡면 돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        Toast.error(err ? t('곡면 돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     } else {
       const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -769,7 +769,7 @@ export class PushPullTool implements ITool {
         this.ctx.syncMesh();
       } else {
         const err = this.engineWhy();
-        Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     }
   }

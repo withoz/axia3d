@@ -157,7 +157,7 @@ export class MoveTool implements ITool {
     const r = this.ctx.bridge.collapseFlushExtrusion(0);
     if (r.ok && r.collapsed > 0) {
       this.ctx.syncMesh();
-      Toast.success(`납작해진 면을 정리했습니다 (벽 ${r.collapsed}개 제거)`);
+      Toast.success(t('납작해진 면을 정리했습니다 (벽 {collapsed}개 제거)', { collapsed: r.collapsed }));
     }
   }
 
@@ -247,7 +247,7 @@ export class MoveTool implements ITool {
       const dist = totalDelta.length();
       this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
         { from: this.transformStartPt.clone(), to: point.clone(),
-          text: this.ctx.units.format(dist) + (axis ? ` · ${axis.toUpperCase()}축` : ''),
+          text: this.ctx.units.format(dist) + (axis ? t(' · {axis}축', { axis: axis.toUpperCase() }) : ''),
           color: '#ffd43b' },
       ]);
     }

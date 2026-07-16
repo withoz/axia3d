@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as THREE from 'three';
 import { PushPullTool } from './PushPullTool';
+import { setLocale } from '../i18n';
 import { Toast } from '../ui/Toast';
 import { setExtrudeMode, setExtrudeDistNeg } from './ExtrudeModeSettings';
 
@@ -62,6 +63,9 @@ function mockToolContext() {
 }
 
 describe('PushPullTool', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let ctx: ReturnType<typeof mockToolContext>;
   let tool: PushPullTool;
 

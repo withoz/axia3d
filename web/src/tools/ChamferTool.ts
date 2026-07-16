@@ -88,7 +88,7 @@ export class ChamferTool implements ITool {
     if (n >= 0) {
       try { localStorage.setItem(LS_KEY, String(radius)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`꼭짓점 챔퍼 완료 (반지름 ${radius}mm)`, 2000);
+      Toast.info(t('꼭짓점 챔퍼 완료 (반지름 {radius}mm)', { radius }), 2000);
       debugLog(`[Chamfer] vertex ${this.vertId} radius=${radius} → ${n} faces`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, t('챔퍼 실패 (3-valence 꼭짓점만 가능)'));
