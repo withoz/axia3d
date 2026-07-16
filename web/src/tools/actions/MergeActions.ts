@@ -105,16 +105,16 @@ export function mergeFaces(ctx: MergeActionContext): void {
       debugLog('[Action] geometric fallback also failed:', ctx.bridge.lastError());
     }
 
-    const lines: string[] = ['통합할 수 있는 면이 없습니다.'];
+    const lines: string[] = [t('통합할 수 있는 면이 없습니다.')];
     if (analysis.total === 0) {
-      lines.push('• 선택한 면들이 엣지를 공유하지 않습니다');
-      lines.push('  (엣지가 공유되려면 snap으로 정확히 정점 매칭 필요)');
-      lines.push('  → "🧲 기하 머지" 컨텍스트 메뉴로 폴리곤 재구성 시도 가능');
+      lines.push(t('• 선택한 면들이 엣지를 공유하지 않습니다'));
+      lines.push(t('  (엣지가 공유되려면 snap으로 정확히 정점 매칭 필요)'));
+      lines.push(t('  → "🧲 기하 머지" 컨텍스트 메뉴로 폴리곤 재구성 시도 가능'));
     }
     if (analysis.nonCoplanar > 0) {
-      const tolHint = tol === 0.5 ? ' (mergetol 2 명령으로 허용치 확장 가능)' : '';
+      const tolHint = tol === 0.5 ? t(' (mergetol 2 명령으로 허용치 확장 가능)') : '';
       lines.push(t('• {nonCoplanar}쌍이 평면 불일치{tolHint}', { nonCoplanar: analysis.nonCoplanar, tolHint }));
-      lines.push('  → "강제 머지"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능');
+      lines.push(t('  → "강제 머지"(ADR-008 Axiom 9) 컨텍스트 메뉴로 내부 엣지만 숨기고 비평면 상태로 결합 가능'));
     }
     if (analysis.ambiguous > 0) {
       lines.push(t('• {ambiguous}쌍이 C-slit 형태 (hole 필요 — 미지원)', { ambiguous: analysis.ambiguous }));

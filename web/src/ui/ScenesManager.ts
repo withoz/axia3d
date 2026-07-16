@@ -14,7 +14,8 @@
 
 import * as THREE from 'three';
 import type { Viewport } from '../viewport/Viewport';
-import type { SectionPlane, SectionAxis } from '../viewport/SectionPlane';
+import type { SectionPlane, SectionAxis } from '../viewport/SectionPlane';
+import { t } from '../i18n';
 
 export interface SceneSnapshot {
   id: string;
@@ -126,19 +127,19 @@ export class ScenesManager {
       <div class="sc-header">
         <span>🎬 Scenes (${this.scenes.length})</span>
         <div>
-          <button class="sc-add" title="현재 뷰 저장">+ 추가</button>
-          <button class="sc-close" title="닫기">×</button>
+          <button class="sc-add" title="${t('현재 뷰 저장')}">+ ${t('추가')}</button>
+          <button class="sc-close" title="${t('닫기')}">×</button>
         </div>
       </div>
       <div class="sc-list">
         ${this.scenes.length === 0
-          ? '<div class="sc-empty">저장된 Scene 없음. "+ 추가"로 현재 뷰 캡처.</div>'
+          ? `<div class="sc-empty">${t('저장된 Scene 없음. "+ 추가"로 현재 뷰 캡처.')}</div>`
           : this.scenes.map(s => `
               <div class="sc-item" data-id="${s.id}">
-                <span class="sc-name" title="클릭하여 복원">${escape(s.name)}</span>
+                <span class="sc-name" title="${t('클릭하여 복원')}">${escape(s.name)}</span>
                 <div class="sc-item-act">
-                  <button class="sc-rename" title="이름 변경">✎</button>
-                  <button class="sc-del" title="삭제">×</button>
+                  <button class="sc-rename" title="${t('이름 변경')}">✎</button>
+                  <button class="sc-del" title="${t('삭제')}">×</button>
                 </div>
               </div>
             `).join('')}
@@ -150,7 +151,7 @@ export class ScenesManager {
   private bindEvents(): void {
     this.panelEl.querySelector('.sc-close')?.addEventListener('click', () => this.hide());
     this.panelEl.querySelector('.sc-add')?.addEventListener('click', () => {
-      const name = prompt('Scene 이름', `Scene ${this.scenes.length + 1}`);
+      const name = prompt(t('Scene 이름'), `Scene ${this.scenes.length + 1}`);
       if (!name) return;
       this.captureCurrent(name);
     });
@@ -161,12 +162,12 @@ export class ScenesManager {
         e.stopPropagation();
         const cur = this.scenes.find(s => s.id === id);
         if (!cur) return;
-        const newName = prompt('새 이름', cur.name);
+        const newName = prompt(t('새 이름'), cur.name);
         if (newName) this.rename(id, newName);
       });
       el.querySelector('.sc-del')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (confirm('이 Scene을 삭제할까요?')) this.remove(id);
+        if (confirm(t('이 Scene을 삭제할까요?'))) this.remove(id);
       });
     });
   }

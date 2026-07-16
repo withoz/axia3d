@@ -13,7 +13,8 @@
  * @see docs/adr/069-adr-046-phase-1-path-y-audit-log-viewer-pilot.md
  */
 
-import { getAuditLog, type AuditEntry } from '../core/AuditLog';
+import { getAuditLog, type AuditEntry } from '../core/AuditLog';
+import { t } from '../i18n';
 
 const TIER_COLORS: Record<number, string> = {
   0: '#7ec8e3', // blue (read)
@@ -52,7 +53,7 @@ export class AuditLogViewerPanel {
         <button class="alv-btn alv-btn-clear" data-role="clear">✕ Clear</button>
         <button class="alv-btn alv-btn-refresh" data-role="refresh">↻ Refresh</button>
         <span class="alv-hint">
-          Capability Explorer + UI 도구 invocations 자동 기록 (P26.7 정책).
+          ${t('Capability Explorer + UI 도구 invocations 자동 기록 (P26.7 정책).')}
         </span>
       </div>
       <div class="alv-body" data-role="body"></div>
@@ -65,7 +66,7 @@ export class AuditLogViewerPanel {
 
     const clearBtn = this.panelEl.querySelector('[data-role="clear"]') as HTMLButtonElement;
     clearBtn.addEventListener('click', () => {
-      if (window.confirm('Audit log 을 모두 삭제하시겠습니까?')) {
+      if (window.confirm(t('Audit log 을 모두 삭제하시겠습니까?'))) {
         getAuditLog().clear();
       }
     });
@@ -112,7 +113,7 @@ export class AuditLogViewerPanel {
     if (entries.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'alv-empty';
-      empty.textContent = '기록된 audit 항목이 없습니다.';
+      empty.textContent = t('기록된 audit 항목이 없습니다.');
       this.bodyEl.appendChild(empty);
       return;
     }
@@ -131,8 +132,8 @@ export class AuditLogViewerPanel {
     row.dataset.tier = String(entry.tier);
     row.dataset.result = entry.result;
 
-    const t = new Date(entry.timestamp);
-    const timeStr = t.toLocaleTimeString();
+    const time = new Date(entry.timestamp);
+    const timeStr = time.toLocaleTimeString();
 
     row.innerHTML = `
       <span class="alv-tier-dot" style="background:${TIER_COLORS[entry.tier]}"></span>

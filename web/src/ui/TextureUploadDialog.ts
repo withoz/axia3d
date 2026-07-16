@@ -15,7 +15,8 @@
  */
 
 import { getMaterialLibrary, type Material } from '../materials/MaterialLibrary';
-import { Toast } from './Toast';
+import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface TextureUploadResult {
   material: Material;
@@ -34,10 +35,10 @@ export async function openTextureUploadDialog(
 
   // Step 3 — 설정 입력.
   const projection = prompt(
-    'UV 투영 방식\n' +
-    '  1 = planar (평면 — 바닥/벽)\n' +
-    '  2 = box (박스 — 큐브 자동)\n' +
-    '  3 = cylindrical (원통 — 실린더)',
+    t('UV 투영 방식\n') +
+    t('  1 = planar (평면 — 바닥/벽)\n') +
+    t('  2 = box (박스 — 큐브 자동)\n') +
+    t('  3 = cylindrical (원통 — 실린더)'),
     '1',
   );
   if (projection === null) return null;
@@ -46,19 +47,19 @@ export async function openTextureUploadDialog(
     projection === '3' ? 'cylindrical' : 'planar';
 
   const scaleStr = prompt(
-    '타일 크기 (mm 당 반복 횟수, 기본 0.001 = 1m당 1타일)\n' +
-    '  0.001 = 1m 타일\n' +
-    '  0.01  = 100mm 타일 (작은 패턴)',
+    t('타일 크기 (mm 당 반복 횟수, 기본 0.001 = 1m당 1타일)\n') +
+    t('  0.001 = 1m 타일\n') +
+    t('  0.01  = 100mm 타일 (작은 패턴)'),
     '0.001',
   );
   if (scaleStr === null) return null;
   const scale = parseFloat(scaleStr);
   if (!Number.isFinite(scale) || scale <= 0) {
-    alert('유효한 scale 값을 입력해주세요.');
+    alert(t('유효한 scale 값을 입력해주세요.'));
     return null;
   }
 
-  const name = prompt('새 재질 이름', file.name.replace(/\.(png|jpe?g|webp)$/i, ''));
+  const name = prompt(t('새 재질 이름'), file.name.replace(/\.(png|jpe?g|webp)$/i, ''));
   if (!name) return null;
 
   // Step 4 — Material 생성.
@@ -95,9 +96,9 @@ export async function openTextureUploadDialog(
   // Step 5 — 선택된 face에 할당.
   if (selectedFaceIds.length > 0) {
     lib.assignToFaces(selectedFaceIds, material.id);
-    Toast.info(`재질 "${name}" 생성 + ${selectedFaceIds.length}개 면에 적용`, 3000);
+    Toast.info(t('재질 "{name}" 생성 + {count}개 면에 적용', { name, count: selectedFaceIds.length }), 3000);
   } else {
-    Toast.info(`재질 "${name}" 생성됨. 면 선택 후 Inspector에서 할당하세요.`, 3500);
+    Toast.info(t('재질 "{name}" 생성됨. 면 선택 후 Inspector에서 할당하세요.', { name }), 3500);
   }
 
   return { material, appliedToFaces: [...selectedFaceIds] };

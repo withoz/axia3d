@@ -21,6 +21,7 @@
 
 import type { WasmBridge, ScopedMaterialInfo, MaterialTier } from '../bridge/WasmBridge';
 import { Toast } from './Toast';
+import { t } from '../i18n';
 import { openLayeredChannelDialog } from './LayeredMaterialDialog';
 import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
 
@@ -86,11 +87,11 @@ export class AssetLibraryPanel {
     this.panelEl.className = 'al-panel';
     this.panelEl.innerHTML = `
       <div class="al-header">
-        <span class="al-title">자산 라이브러리</span>
+        <span class="al-title">${t('자산 라이브러리')}</span>
         <div class="al-actions">
-          <button class="al-btn al-btn-add-project" title="프로젝트 재질 추가">+ 프로젝트</button>
-          <button class="al-btn al-btn-add-user" title="사용자 재질 추가">+ 사용자</button>
-          <button class="al-btn al-btn-refresh" title="새로고침">⟳</button>
+          <button class="al-btn al-btn-add-project" title="${t('프로젝트 재질 추가')}">+ ${t('프로젝트')}</button>
+          <button class="al-btn al-btn-add-user" title="${t('사용자 재질 추가')}">+ ${t('사용자')}</button>
+          <button class="al-btn al-btn-refresh" title="${t('새로고침')}">⟳</button>
         </div>
       </div>
       <div class="al-list"></div>
@@ -148,13 +149,13 @@ export class AssetLibraryPanel {
 
       const heading = document.createElement('div');
       heading.className = 'al-section-heading';
-      heading.textContent = `${TIER_LABEL[tier]} (${mats.length})`;
+      heading.textContent = t('{tier} ({count})', { tier: t(TIER_LABEL[tier]), count: mats.length });
       section.appendChild(heading);
 
       if (mats.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'al-empty';
-        empty.textContent = '비어 있음';
+        empty.textContent = t('비어 있음');
         section.appendChild(empty);
       } else {
         for (const mat of mats) {
@@ -193,7 +194,7 @@ export class AssetLibraryPanel {
       const layerBtn = document.createElement('button');
       layerBtn.className = 'al-btn al-btn-layered';
       layerBtn.textContent = '⊞';
-      layerBtn.title = 'Layered material 채널 추가 (Albedo/Normal/Roughness/Metallic)';
+      layerBtn.title = t('Layered material 채널 추가 (Albedo/Normal/Roughness/Metallic)');
       layerBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         void this.handleLayeredUpload(info);
@@ -206,7 +207,7 @@ export class AssetLibraryPanel {
       const btn = document.createElement('button');
       btn.className = 'al-btn al-btn-remove';
       btn.textContent = '✕';
-      btn.title = '사용자 재질 제거';
+      btn.title = t('사용자 재질 제거');
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         this.handleRemove(info);
@@ -263,11 +264,11 @@ export class AssetLibraryPanel {
    */
   private async handleLayeredUpload(info: ScopedMaterialInfo): Promise<void> {
     const raw = window.prompt(
-      `"${info.name}" 에 추가할 채널 선택\n` +
-      '  1 = Albedo (베이스 컬러)\n' +
-      '  2 = Normal (노멀맵)\n' +
-      '  3 = Roughness (러프니스)\n' +
-      '  4 = Metallic (메탈릭)',
+      t('"{name}" 에 추가할 채널 선택\n', { name: info.name }) +
+      t('  1 = Albedo (베이스 컬러)\n') +
+      t('  2 = Normal (노멀맵)\n') +
+      t('  3 = Roughness (러프니스)\n') +
+      t('  4 = Metallic (메탈릭)'),
       '1',
     );
     const channel: LayeredChannelName | null =
@@ -288,47 +289,47 @@ export class AssetLibraryPanel {
       info.id, channel, result.info,
     );
     if (!ok) {
-      Toast.error(`${channel} 채널 추가 실패`);
+      Toast.error(t('{channel} 채널 추가 실패', { channel }));
       return;
     }
-    Toast.success(`재질 "${info.name}" 의 ${channel} 채널 추가됨`);
+    Toast.success(t('재질 "{name}" 의 {channel} 채널 추가됨', { name: info.name, channel }));
     this.refresh();
     this.callbacks.onChange?.();
   }
 
   private handleAdd(tier: 'Project' | 'User'): void {
     const name = window.prompt(
-      `${TIER_LABEL[tier]} 재질 이름`,
-      tier === 'Project' ? '프로젝트 재질' : '사용자 재질',
+      t('{tier} 재질 이름', { tier: t(TIER_LABEL[tier]) }),
+      tier === 'Project' ? t('프로젝트 재질') : t('사용자 재질'),
     );
     if (!name) return;
-    const colorHex = window.prompt('색상 (hex, 예: #b08040)', '#888888');
+    const colorHex = window.prompt(t('색상 (hex, 예: #b08040)'), '#888888');
     if (!colorHex) return;
     const color = parseHexColor(colorHex);
     if (color === null) {
-      Toast.error('잘못된 색상 형식입니다.');
+      Toast.error(t('잘못된 색상 형식입니다.'));
       return;
     }
     const id = tier === 'Project'
       ? this.bridge.addProjectMaterial(name, name, color)
       : this.bridge.addUserMaterial(name, name, color);
     if (id === null) {
-      Toast.error('재질 추가 실패 — bridge 미준비');
+      Toast.error(t('재질 추가 실패 — bridge 미준비'));
       return;
     }
-    Toast.success(`${TIER_LABEL[tier]} 재질 "${name}" 추가됨`);
+    Toast.success(t('{tier} 재질 "{name}" 추가됨', { tier: t(TIER_LABEL[tier]), name }));
     this.refresh();
     this.callbacks.onChange?.();
   }
 
   private handleRemove(info: ScopedMaterialInfo): void {
-    if (!window.confirm(`사용자 재질 "${info.name}" 을 제거하시겠습니까?`)) return;
+    if (!window.confirm(t('사용자 재질 "{name}" 을 제거하시겠습니까?', { name: info.name }))) return;
     const ok = this.bridge.removeUserMaterial(info.id);
     if (!ok) {
-      Toast.error('재질 제거 실패 (사용 중이거나 다른 tier).');
+      Toast.error(t('재질 제거 실패 (사용 중이거나 다른 tier).'));
       return;
     }
-    Toast.success(`재질 "${info.name}" 제거됨`);
+    Toast.success(t('재질 "{name}" 제거됨', { name: info.name }));
     this.refresh();
     this.callbacks.onChange?.();
   }

@@ -30,7 +30,8 @@
 
 import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
 import type { TextureInfo } from '../materials/MaterialLibrary';
-import { Toast } from './Toast';
+import { Toast } from './Toast';
+import { t } from '../i18n';
 
 const CHANNEL_LABELS: Record<LayeredChannelName, string> = {
   albedo: '베이스 컬러 (Albedo)',
@@ -57,17 +58,17 @@ export interface LayeredChannelUploadResult {
 export async function openLayeredChannelDialog(
   channel: LayeredChannelName,
 ): Promise<LayeredChannelUploadResult | null> {
-  const label = CHANNEL_LABELS[channel];
+  const label = t(CHANNEL_LABELS[channel]);
   const file = await pickImageFile();
   if (!file) return null;
 
   const dataUrl = await fileToDataUrl(file);
   const projection = parseProjectionInput(
     window.prompt(
-      `${label}\n\nUV 투영 방식\n` +
-      '  1 = planar (평면 — 바닥/벽)\n' +
-      '  2 = box (박스 — 큐브 자동)\n' +
-      '  3 = cylindrical (원통 — 실린더)',
+      t('{label}\n\nUV 투영 방식\n', { label }) +
+      t('  1 = planar (평면 — 바닥/벽)\n') +
+      t('  2 = box (박스 — 큐브 자동)\n') +
+      t('  3 = cylindrical (원통 — 실린더)'),
       '1',
     ),
   );
@@ -75,14 +76,14 @@ export async function openLayeredChannelDialog(
 
   const scale = parseScaleInput(
     window.prompt(
-      `${label}\n\n타일 크기 (월드 단위 당 반복 횟수)\n` +
-      '  0.001 = 1m 타일\n' +
-      '  0.01  = 100mm 타일 (작은 패턴)',
+      t('{label}\n\n타일 크기 (월드 단위 당 반복 횟수)\n', { label }) +
+      t('  0.001 = 1m 타일\n') +
+      t('  0.01  = 100mm 타일 (작은 패턴)'),
       '0.001',
     ),
   );
   if (scale === null) {
-    Toast.warning('유효한 scale 값을 입력해주세요.');
+    Toast.warning(t('유효한 scale 값을 입력해주세요.'));
     return null;
   }
 

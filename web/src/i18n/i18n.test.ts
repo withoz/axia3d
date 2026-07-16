@@ -151,6 +151,24 @@ const MIGRATED_FILES: { file: string; minLiteralKeys: number }[] = [
   // batch 7 — the action dispatcher. Biggest single file: most of what a menu
   // item or a command-palette entry actually runs ends up reporting here.
   { file: 'src/tools/ToolManagerRefactored.ts', minLiteralKeys: 70 },
+  // batch 9 — the panels you have to open to find. Four of them held the same
+  // raw-table bug the dispatcher did (TIER_LABEL, KIND_LABEL, CHANNEL_LABELS,
+  // STYLE_PRESETS), which is why the table guard above exists.
+  { file: 'src/ui/AssetLibraryPanel.ts', minLiteralKeys: 27 },
+  { file: 'src/ui/HistoryPanel.ts', minLiteralKeys: 18 },
+  { file: 'src/ui/ConstraintPanel.ts', minLiteralKeys: 13 },
+  { file: 'src/ui/ConsolePanel.ts', minLiteralKeys: 11 },
+  { file: 'src/ui/TextureUploadDialog.ts', minLiteralKeys: 11 },
+  { file: 'src/ui/ScenesManager.ts', minLiteralKeys: 10 },
+  { file: 'src/ui/InvariantVerifierPanel.ts', minLiteralKeys: 9 },
+  { file: 'src/ui/LayeredMaterialDialog.ts', minLiteralKeys: 8 },
+  { file: 'src/ui/ComponentPanel.ts', minLiteralKeys: 6 },
+  { file: 'src/ui/NurbsPatchPanel.ts', minLiteralKeys: 4 },
+  { file: 'src/ui/AuditLogViewerPanel.ts', minLiteralKeys: 3 },
+  // Pure render-time translation: t(p.name) over STYLE_PRESETS and nothing
+  // else, so there is no literal to count. The 11 preset names are still
+  // held to account — as en.ts keys, by the Korean-literal guard.
+  { file: 'src/ui/StylePanel.ts', minLiteralKeys: 0 },
 ];
 const MIGRATED_PATHS = MIGRATED_FILES.map((m) => m.file);
 
@@ -402,7 +420,10 @@ describe('ADR-294 — en.ts hygiene', () => {
     // The Korean is the key; t() belongs at the read site.
     const src = readFileSync(resolve(process.cwd(), file), 'utf8');
     const raw: string[] = [];
-    for (const m of src.matchAll(/(?:const|readonly)\s+([A-Z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*[{[]/g)) {
+    // Not just SHOUTY_CASE: HistoryPanel's `const map: Record<…>` is lower
+    // case and held exactly this bug. Restricting to [A-Z_] let the mutation
+    // through. The "Korean in a value" test below is what keeps this precise.
+    for (const m of src.matchAll(/(?:const|readonly)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*[{[]/g)) {
       const open = m.index! + m[0].length - 1;
       let depth = 0;
       let end = open;
@@ -413,13 +434,15 @@ describe('ADR-294 — en.ts hygiene', () => {
           if (depth === 0) break;
         }
       }
-      // Korean must sit in a VALUE, not just a comment in the body — else
-      // LOD_THRESHOLDS and friends (Korean comments, numeric values) trip it.
+      // Korean must sit in a RAW value — not in a comment (LOD_THRESHOLDS and
+      // friends hold Korean comments over numeric values), and not already
+      // wrapped. `{ x: t('X축') }` translates in the table itself, so a t()
+      // at the read site would be a second lookup on English text.
       const body = src.slice(open, end);
-      const hasKoreanValue = [...body.matchAll(/'((?:[^'\\]|\\.)*)'/g)].some((v) =>
-        /[가-힣]/.test(v[1]),
+      const hasRawKorean = [...body.matchAll(/(t\(\s*)?'((?:[^'\\]|\\.)*)'/g)].some(
+        (v) => !v[1] && /[가-힣]/.test(v[2]),
       );
-      if (!hasKoreanValue) continue;
+      if (!hasRawKorean) continue;
 
       const name = m[1];
       for (const use of src.matchAll(new RegExp(String.raw`\b${name}\s*[[.]`, 'g'))) {
@@ -428,8 +451,16 @@ describe('ADR-294 — en.ts hygiene', () => {
         const line = src.slice(from, to < 0 ? src.length : to);
         if (new RegExp(String.raw`\b(?:const|readonly)\s+${name}\b`).test(line)) continue;
         if (/\b(debugLog|debugWarn|console)\s*[.(]/.test(line)) continue;
-        // .map/.forEach hand each entry to a callback that can call t() itself
-        if (new RegExp(String.raw`\b${name}\s*\.\s*(map|forEach|filter|find|some|every|length)\b`).test(line)) continue;
+        // .map/.forEach hand each entry to a callback that can call t() itself;
+        // .push/.join and the rest are array plumbing, not a table lookup.
+        //
+        // Known blind spot, measured: STYLE_PRESETS.forEach((p) => … p.name)
+        // renames the entry, so a missing t() on `p.name` is invisible here —
+        // tracking a callback parameter is past what a regex can do, and
+        // guessing would flag every `.name` in the file. Those preset names
+        // are still held as en.ts keys by the Korean-literal guard; only the
+        // wrapping is unguarded.
+        if (new RegExp(String.raw`\b${name}\s*\.\s*(map|forEach|filter|find|some|every|length|push|join|pop|shift|unshift|splice|concat|includes|indexOf|slice|sort|reverse)\b`).test(line)) continue;
         // Is THIS read wrapped — not merely "is there a t( somewhere on the
         // line". `t('…{op}', { op: OP_NAME_KO[o] })` has a t( and is still a
         // raw read; testing the line let that mutation through. Walk back over
@@ -462,8 +493,10 @@ describe('ADR-294 — en.ts hygiene', () => {
     for (const { file } of MIGRATED_FILES) {
       const src = readFileSync(resolve(process.cwd(), file), 'utf8');
       for (const m of src.matchAll(/(innerHTML|textContent)\s*=\s*`([\s\S]*?)`/g)) {
-        // strip every ${...} — a wrapped string lives inside one
-        const bare = m[2].replace(/\$\{[\s\S]*?\}/g, '');
+        // strip every ${...} — a wrapped string lives inside one. Braces must
+        // be counted: a non-greedy /\$\{[\s\S]*?\}/ stops at the first `}`, so
+        // `${t('{count}개', { count })}` kept its `개` and read as un-wrapped.
+        const bare = stripInterpolations(m[2]);
         expect(/[가-힣]/.test(bare) ? `${file}: ${bare.match(/[^\n]*[가-힣][^\n]*/)?.[0]?.trim()}` : '',
           'unwrapped Korean in a template the batch claims to have done').toBe('');
       }
