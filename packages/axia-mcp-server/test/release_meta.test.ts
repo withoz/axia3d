@@ -232,6 +232,49 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
   // The P29.7 six read package.json only — nothing locked the workflow, so
   // nothing stopped the clause being re-added. This closes that gap.
   // ────────────────────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────
+  // P29 follow-up — wasm-pack must be pinned EVERYWHERE, not just at release.
+  //
+  // Measured 2026-07-16: release.yml + mcp.yml pinned `--version 0.14.0`, but
+  // build.yml (x2), ci.yml, deploy.yml and update-visual-baselines.yml ran a
+  // bare `cargo install wasm-pack`. `--locked` does NOT pin the version — it
+  // pins the crate's own lockfile — so CI could build the WASM that ships with
+  // a different wasm-pack than the one release is verified against.
+  // ────────────────────────────────────────────────────────────
+  describe('wasm-pack is pinned in every workflow', () => {
+    const WORKFLOWS = [
+      'build.yml', 'ci.yml', 'deploy.yml', 'mcp.yml',
+      'release.yml', 'update-visual-baselines.yml',
+    ];
+
+    it('no workflow installs wasm-pack without --version', () => {
+      const unpinned: string[] = [];
+      for (const f of WORKFLOWS) {
+        const p = resolve(repoRoot, '.github/workflows', f);
+        if (!existsSync(p)) continue;
+        for (const line of readFileSync(p, 'utf8').split('\n')) {
+          if (line.includes('cargo install wasm-pack') && !line.includes('--version')) {
+            unpinned.push(`${f}: ${line.trim()}`);
+          }
+        }
+      }
+      expect(unpinned, 'an unpinned install can ship WASM built by a different toolchain')
+        .toEqual([]);
+    });
+
+    it('every workflow pins the SAME version', () => {
+      const versions = new Set<string>();
+      for (const f of WORKFLOWS) {
+        const p = resolve(repoRoot, '.github/workflows', f);
+        if (!existsSync(p)) continue;
+        for (const m of readFileSync(p, 'utf8').matchAll(/cargo install wasm-pack --version (\S+)/g)) {
+          versions.add(m[1]!);
+        }
+      }
+      expect(versions.size, `workflows disagree on wasm-pack: ${[...versions].join(', ')}`).toBe(1);
+    });
+  });
+
   describe('P29.6 — release.yml publish gate (fail-safe)', () => {
     const releaseYml = () =>
       readFileSync(resolve(repoRoot, '.github/workflows/release.yml'), 'utf8');
