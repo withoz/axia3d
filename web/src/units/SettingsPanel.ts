@@ -10,6 +10,7 @@
 
 import { UnitSystem, UnitType } from './UnitSystem';
 import { getLocale, setLocale, t } from '../i18n';
+import { stashSceneForLocaleSwitch } from '../i18n/localeSwitchScene';
 import {
   getMergeTolerance, setMergeTolerance,
   getRespectMaterial, setRespectMaterial,
@@ -49,11 +50,15 @@ import {
  */
 export interface SettingsPanelDeps {
   /**
-   * Read-only stats — used to ask "is there work to lose?" before the language
-   * switch reloads the page. Structural rather than the WasmBridge type: the
-   * panel needs one number, not the engine.
+   * What the language switch needs from the engine: whether there is a drawing
+   * (`getStats`) and its bytes (`exportSnapshotSilent`), so the D7 reload can
+   * carry it across. Structural rather than the WasmBridge type — the panel
+   * needs two calls, not the engine.
    */
-  bridge?: { getStats?: () => { verts: number } };
+  bridge?: {
+    getStats?: () => { verts: number };
+    exportSnapshotSilent?: () => Uint8Array | null;
+  };
 }
 
 export class SettingsPanel {
@@ -116,6 +121,26 @@ export class SettingsPanel {
     }
   }
 
+  /**
+   * Park the scene so the language switch survives its own reload.
+   *
+   * Returns false only when the user cancels — i.e. when the scene genuinely
+   * cannot be carried (too large for sessionStorage, storage disabled, or no
+   * snapshot API) AND they would rather keep their work than change language.
+   * An empty canvas, or a scene that stashes cleanly, never asks anything.
+   */
+  private preserveSceneAcrossReload(): boolean {
+    if (!this.hasUnsavedWork()) return true;
+
+    const snapshot = this.deps.bridge?.exportSnapshotSilent?.() ?? null;
+    if (stashSceneForLocaleSwitch(snapshot)) return true;
+
+    // Could not carry it. Now — and only now — is the old warning honest.
+    return confirm(
+      t('언어를 바꾸면 화면을 다시 불러옵니다.\n작업이 너무 커서 유지할 수 없습니다. 계속할까요?'),
+    );
+  }
+
   private createPanel(): HTMLElement {
     const panel = document.createElement('div');
     panel.id = 'settings-panel';
@@ -125,7 +150,7 @@ export class SettingsPanel {
       <div class="sp-section">
         <label class="sp-label">${t('언어 / Language')}</label>
         <div class="sp-unit-btns" id="sp-locale-btns"></div>
-        <div class="sp-hint">${t('바꾸면 화면을 다시 불러옵니다 — 저장하지 않은 작업은 사라집니다')}</div>
+        <div class="sp-hint">${t('바꾸면 화면을 다시 불러옵니다 — 작업은 유지됩니다 (실행취소 기록은 초기화)')}</div>
       </div>
 
       <div class="sp-divider"></div>
@@ -281,16 +306,11 @@ export class SettingsPanel {
       btn.classList.toggle('active', getLocale() === cfg.id);
       btn.addEventListener('click', () => {
         if (getLocale() === cfg.id) return;   // 같은 언어 클릭에 reload 하지 않는다
-        // D7 reloads, and the scene lives in memory only — no autosave, and
-        // beforeunload just disposes the viewport. So the reload throws the
-        // drawing away. D7 cited VS Code, which reloads too; the difference is
-        // that VS Code's files are on disk and ours are not. Ask first when
-        // there is something to lose.
-        if (this.hasUnsavedWork() && !confirm(
-          t('언어를 바꾸면 화면을 다시 불러옵니다.\n저장하지 않은 작업은 사라집니다. 계속할까요?'),
-        )) {
-          return;
-        }
+        // D7 reloads (the catalogs are init-once), and the scene lives in
+        // memory only — so the reload used to take the drawing with it. Park
+        // it in sessionStorage and main.ts puts it back on boot; the user sees
+        // a repaint, not a reset.
+        if (!this.preserveSceneAcrossReload()) return;   // cancelled
         setLocale(cfg.id);
         location.reload();
       });

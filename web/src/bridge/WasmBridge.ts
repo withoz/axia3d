@@ -5996,6 +5996,47 @@ export class WasmBridge {
   // Project Save/Load (.axia)
   // ════════════════════════════════════════════════
 
+  /**
+   * The same snapshot bytes as `exportSnapshot`, without the toast.
+   *
+   * `exportSnapshot` announces "프로젝트 내보내기 성공" because the user asked
+   * to save a file. The language switch (ADR-294 D7) round-trips the scene
+   * through a reload — the user never asked to export anything, and saying so
+   * would be a lie about what just happened.
+   *
+   * Returns null when there is no engine or the call throws; callers treat
+   * that as "cannot preserve" rather than an error worth showing.
+   */
+  exportSnapshotSilent(): Uint8Array | null {
+    if (!this.engine) return null;
+    try {
+      return this.engine.export_snapshot?.() ?? null;
+    } catch (e) {
+      console.error('[WasmBridge] exportSnapshotSilent failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * The restore half of `exportSnapshotSilent` — no toast.
+   *
+   * Same reason: after a language switch the scene reappearing is the expected
+   * outcome, not news. `_emitConstraintsChanged` still fires: the restored
+   * snapshot carries its own constraints and the cache must not survive it.
+   */
+  importSnapshotSilent(data: Uint8Array): boolean {
+    if (!this.engine) return false;
+    this.markDirty();
+    try {
+      const ok = this.engine.import_snapshot?.(data) ?? false;
+      if (ok) this._emitConstraintsChanged();
+      return ok;
+    } catch (e) {
+      console.error('[WasmBridge] importSnapshotSilent failed:', e);
+      return false;
+    }
+  }
+
   /** 메시 데이터를 바이너리 스냅샷으로 내보내기 */
   exportSnapshot(): Uint8Array | null {
     if (!this.engine) return null;
