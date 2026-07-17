@@ -94,9 +94,17 @@ LOCKED #43 priority track 100% closure 도달 (2026-05-17, ADR-128 β implementa
 >    dispatcher, so those did nothing while being logged as successes. Fixed
 >    2026-07-16 (commit "stop writing fabricated successes to the audit trail");
 >    the Explorer now routes menu-backed ids the same way the palette does.
-> 3. **i18n: genuinely not started.** ~3,271 Hangul literals across 182 files,
->    no framework, strings built inline in `innerHTML` — a multi-week arc, not
->    a task.
+> 3. ~~**i18n: genuinely not started.** ~3,271 Hangul literals across 182
+>    files, no framework, strings built inline in `innerHTML` — a multi-week
+>    arc, not a task.~~
+>
+>    → **2026-07-17 closed by ADR-294** (13 batches, survey 0). Two claims
+>    here were wrong, and ADR-294 §1 records both: the 3,271 counted
+>    **comments** — strings only is **1,731 across 98 files** — and that
+>    count was TS-only, so it missed index.html's 344 static text nodes,
+>    which are the actual chrome. `innerHTML` needed no rework either
+>    (D5): source-as-key means a template interpolating `t('…')` works
+>    as-is. "multi-week arc" was right about the shape, not the blocker.
 > 4. **ActionCatalog Tier 3 = 0 entries**, which makes the Explorer's "Show
 >    advanced (Tier 3)" toggle a dead control: `renderTree` loops the tier,
 >    finds an empty bucket and continues. The engine ops exist.
@@ -264,7 +272,7 @@ ADR-129 §3.1 Priority #1 (Pillar 1 Discoverability) 의 실제 진행 매트릭
 | **CapabilityExplorerPanel** | Step 4 invoke 60% → 100% | ⚠ Step 4 dispatch 60% (UNCHANGED, ADR-130 §2.1 audit) | (future ADR — γ-3 sub-step) |
 | **MenuBar / KeyboardShortcuts ActionCatalog binding** | Phase 2 prep | ❌ Not started (ADR-130 §2.3 binding gap) | (future ADR-134/135 가칭, γ-5/γ-6 sub-step) |
 | **Fuzzy search library** | fuzzysort 권장 | ✅ Native (CommandPalette 자체 `score_match` + `containsAll`) | ADR-131 §2.4 finding |
-| **i18n infrastructure** | Phase 2 explicit gate | ❌ Not started (ADR-130 §2.5 #3) | (future Phase 2 ADR) |
+| **i18n infrastructure** | Phase 2 explicit gate | ✅ **Closed 2026-07-17** — ko + en, 13 batches, survey 0 | ADR-294 (LOCKED #98) |
 | **Tier 3 destructive content** | ADR-045 D3 reserved | ❌ 0 entries (ADR-130 §2.5 #4) | (future ADR) |
 
 ### A1.2 Priority #1 status redefinition

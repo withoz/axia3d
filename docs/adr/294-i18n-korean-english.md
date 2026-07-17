@@ -1,7 +1,7 @@
 # ADR-294 — i18n: Korean + English (α design + infrastructure)
 
-- **Status**: Accepted (α design + infrastructure + first slice; bulk migration batched)
-- **Date**: 2026-07-16
+- **Status**: Accepted (13 batches closed, survey 0 — §3.1 Acceptance)
+- **Date**: 2026-07-16 (α) / 2026-07-17 (rollout closure — §3.1)
 - **결재**: 사용자 "다국어를 지금 할까 : 진행합니다"
 - **Cross-link**: ADR-046 Q7 (한국어 + 영어, Phase 2) · ADR-035 P20.C #2 (initial
   bundle 0MB) · ADR-129 §3.1 (i18n listed as not started) · ADR-095 §E L3 /
@@ -208,11 +208,81 @@ Not one pass. In batches, each its own commit, each independently green:
    define, **only 87 (45%) carry the same label** ('선형 배열' vs
    '선형 배열 (Array Linear)…'). LOCKED #61 guards the ids, not the fields;
    field-level drift is ADR-134's problem, not i18n's.
-5. `tools/` Toasts.
+5. `tools/` Toasts. `891fc24`.
 
 English translation of each batch is a separate concern from wrapping it: a
 wrapped-but-untranslated string renders Korean, which is exactly today's
 behaviour, so batches can land before their translations do.
+
+### 3.1 What actually landed (2026-07-16/17)
+
+Thirteen batches, survey to 0. The plan above stopped at 5; the rest is what
+the measurements led to rather than what I predicted.
+
+| # | scope | commit |
+|---|---|---|
+| 1 | infrastructure + `humanizeEngineError` + drift guards | `c6dda5f` |
+| 1b | locale switch (D7) + the D6 correction | `b3cdcde` |
+| 2 | index.html static chrome (D8) + `translateDom` | landed |
+| 3 | SettingsPanel (where the language switch lives) | `dfdd78b` |
+| 3 | F1 shortcut sheet | `5f00c37` |
+| 3b | VCB, status bar, XiaInspector — what you touch while modelling | `24fef03` |
+| 4 | both catalogs + D9 transliteration | `6f6e498` |
+| — | D10: material names are data, not keys — guarded | `0366392` |
+| 5 | everyday tool Toasts | `891fc24` |
+| 6 | menu + right-click feedback (deleted a help screen that was lying) | `f3bd419` |
+| 7 | ToolManagerRefactored — the biggest single file | `5f31326` |
+| 9 | the panels you have to open to find | `20b5fae` |
+| 10 | command line | `50eebc0` |
+| 11 | file I/O | `caf89a0` |
+| 12 | the long tail — **and the guard becomes the only survey** | `91083b3` |
+| 13 | the status bar (see below) | `8289b1e` |
+
+Three corrections along the way, each because a guard or a browser disagreed
+with what I had written:
+
+- **`2261e75`** — the Capability Explorer was never wired; the previous commit
+  claimed it was.
+- **`7c90fcd`** — the guard only read single quotes, so 185 backtick templates
+  sat in files the ledger called done.
+- **`1671d33`** — a Korean lookup table (`GEOMETRY_STATES`) read without `t()`
+  renders Korean in every locale. It lives in one file and is rendered by
+  another, so three guards could not see it.
+
+### 3.2 Two ways "survey: 0" lied
+
+The number means "no raw Korean **of the shapes the scanner knows**". Twice
+that was not the same as done:
+
+- **batch 13 (`8289b1e`)** — `TOOL_DISPLAY_NAMES` was hard-coded *English*. A
+  scanner hunting Korean finds nothing in an English string, so 54 tool names +
+  7 view names scanned clean while a Korean user clicked 「사각형」 and the
+  status bar answered "Rectangle". Found by clicking, not by scanning. 52 of
+  the 64 keys already existed in en.ts — a tool name is the same word the menu
+  uses, which is also why reusing the key is what keeps them in sync.
+- **`63df586`** — 16 `return '한글'` inside `humanize*()`. The survey passes
+  anything that HAS an en.ts key and all 16 did; the sink guard reads
+  `Toast.error('한글')`, but here the Korean is assembled one call further out
+  (`Toast.error(humanizeBoundaryError(e))`). Invisible to every guard.
+
+Both now have guards: `DISPLAY_MAPS` names the maps whose values reach the
+screen and requires `t()`, and the sink list reads `return '한글';`.
+
+### 3.3 The locale trap, twice
+
+`detect()` falls back to `navigator.language`. jsdom reports en-US, so 19
+vitest files asserting Korean copy were reading raw literals and passing by
+accident; they are pinned with `setLocale('ko')`.
+
+The same trap caught Playwright, but only on CI (`348b8ce`). A dev machine
+carries an `axia:locale` from clicking around; a clean runner does not — so
+the two were running different apps, and specs asserting Korean passed locally
+and failed on CI. `playwright.config` now pins `ko-KR`.
+
+`tool-label-in-statusbar` is the sharp version: it asserted `#tool-label` reads
+"Select" / "Rectangle" / "Work Plane" — the exact strings batch 13 changed —
+and passed through that commit without noticing, because en-US made the old
+values true.
 
 ### D9 — Hard CAD terms use the transliteration in Korean too (사용자 결재 2026-07-16)
 

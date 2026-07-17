@@ -7384,6 +7384,113 @@ localStorage 영속 / guide dashed line polish.
 - 메타-원칙 #4(SSOT) #5(UX) #6(measure-first) / ADR-046 P31 #4(additive) /
   ADR-087 K-ζ(시연 게이트) / LOCKED #44 / #66(STATUS-POLICY)
 
+### 98. ADR-294 — i18n (한국어 + 영어) + 배선 감사 (2026-07-16/17) ✅
+
+**Canonical anchor (사용자 결재, 2026-07-16)**: "다국어를 지금 할까 : 진행합니다".
+ADR-046 Q7 / ADR-129 §3.1 이 "Phase 2 / not started" 로 남겨둔 항목. PR #1
+(`e4fe115`, 47 commits, CI 16/16) 로 병합.
+
+#### 핵심 결정 (ADR-294 D1~D10)
+
+- **D2 — 한국어 원문이 키** (canonical): `ko` = identity, 로케일 파일 없음.
+  마이그레이션이 rewrite 아닌 **wrap**. 키 누락 시 `ui.menu.file.save` 가 아니라
+  **한국어가 그대로** 렌더 (graceful).
+- **D1** 자체 `t()` (프레임워크 0, 번들 증가 0 — ADR-035 P20.C #2 정합) ·
+  **D3** `{param}` 보간 · **D4** `navigator.language` + persist ·
+  **D6** 모듈 스코프 안전 (ES 모듈 depth-first 평가 — α 초안이 틀렸고 측정이 정정) ·
+  **D7** 로케일 전환 = page reload · **D8** `translateDom()` 이 부팅 시 index.html
+  정적 마크업 번역 (텍스트 노드 + title/placeholder/aria-label 만, **`data-action`
+  절대 미접촉**) · **D9** 어려운 CAD 용어는 한국어에서도 음역 ·
+  **D10** 재질 이름은 데이터지 키가 아님.
+- **L-294-12 (canonical)**: **키는 소스가 적은 것이 아니라 런타임이 쥔 것** —
+  index.html 이 `&#9633;` 를 쓰면 키는 디코드된 `□`, `
+` 은 실제 개행.
+
+#### 회귀 자산 — 가드가 유일한 survey
+
+한 스캐너, 중복 0 (`scanUntranslated`). 별도 스크립트를 두지 않는 이유는 측정된
+것: 내 python 도구가 가드와 **5번 불일치** (traceback 을 `>/dev/null` 이 숨김 ·
+index.html 을 raw 로 읽어 `&#9633;` 누락 · `grep -c` 가 호출이 아닌 줄을 셈).
+`AXIA_I18N_REPORT=2` 로 마이그레이션 대상 그대로 출력.
+
+6 가드 클래스: strong (literal ⊆ en.ts) · table (Korean 값 lookup) ·
+cross-file (imported table) · **sink** (Toast/alert/print/screen-prop/
+setAttribute/**`return '한글'`**) · **display-map** (영어 하드코딩 맵) · orphan.
+
+#### 정책 lock-in
+
+- **L-98-1** D2 source-as-key — 새 문자열은 한국어 원문이 키. en.ts 는 번역만.
+- **L-98-2** `data-action` / `data-tool` / id 는 **번역 금지** — translateDom 이
+  텍스트 노드 + title/placeholder/aria-label 만 건드림 (배선 불변).
+- **L-98-3** ActionCatalog 는 `t()` import 금지 — MCP 서버(Node)가 그 패키지를
+  읽으므로 `web/src/i18n` 을 끌어들이면 layering 역전. 렌더 시점에 패널이
+  `t(action.label)` 호출.
+- **L-98-4** jsdom / Playwright **로케일 고정 필수** — `detect()` 가
+  `navigator.language` 로 fallback 하므로, 한국어를 단언하는 suite 는
+  `setLocale('ko')` (vitest 19 파일) / `playwright.config` `locale: 'ko-KR'`.
+- **L-98-5** **"survey 0" ≠ 완료** — 0 은 "스캐너가 아는 모양 기준 0". 두 번
+  거짓말했다 (§3.2): 영어 하드코딩 display map, humanize\* 안의 `return '한글'`.
+  새 UI 문자열 도입 시 **가드가 그 모양을 보는지** 먼저 확인.
+- **L-98-6** 절대 #[ignore] 금지.
+
+#### 배선 감사 (i18n 의 부산물 — 모든 문자열을 읽으려면 모든 호출부를 읽어야)
+
+i18n 이 배선을 망가뜨리지 않음을 실측: `data-action` 260→260, `data-tool` 39→39,
+한국어를 식별자로 쓰는 코드 0. 그러나 **원래 깨져 있던 것**이 드러남:
+
+- **죽은 메뉴 3개가 감사 로그에 성공으로 기록** — `dispatchMenuAction` 이
+  *엘리먼트 존재* 만으로 `true` 반환 → main.ts 가 `audit.record({result:'ok'})`.
+  ADR-069 의 target 을 한 layer 아래에서 재현. CatalogConsistency 는 통과했다 —
+  "id 가 알려져 있나" 와 "클릭하면 뭔가 일어나나" 는 다른 질문.
+- **Ctrl+Shift+S 가 메뉴에 인쇄돼 있고 바인딩 없음** — Ctrl+S 에 `!shiftKey`
+  가드가 없어 조용히 일반 저장 실행. Ctrl+N 도 동일.
+- **유령 팔레트 명령 3개** (handler 는 2026-05-16 삭제) — 두 달간 검색되고
+  실행하면 "unknown command".
+- **키 4개가 두 가지를 동시에** — Shift+F(자유선+Front뷰) / I(부채꼴+인스펙터) /
+  Alt+I / 백틱 / Ctrl+K. `Shift+F switches to freehand` 테스트는 **절반만 봐서**
+  몇 년간 통과.
+- **리스너 11개가 각자 "타이핑 중"을 판단** — 완전한 건 1개. ToolManager 의
+  화살표 리스너는 검사 0 + `preventDefault()` → VCB 입력 중 ArrowLeft 가 축 잠금
+  + 커서 차단. → `utils/isTypingInInput` SSOT + drift 가드.
+- **BoundaryTool: 엔진 op·WASM·브리지·Ctrl+B·테스트 전부 있고 메뉴/툴바/카탈로그/
+  도움말 0** — 작동하지만 이미 아는 사람만 사용 가능.
+
+**신설 가드 3면** (같은 모양의 세 얼굴):
+1. 카탈로그에 있는데 handler 없음 (유령)
+2. handler 있는데 아무도 못 부름 (도달 불가)
+3. 팔레트가 목록에 넣는데 실행 못 함 (stranded)
+
+#### 키 배분 (사용자 결재 2026-07-16)
+
+`I` = **인스펙터** (부채꼴은 메뉴/팔레트) · `` ` `` = **그리드** ·
+**Ctrl+K** = 팔레트 · **Ctrl+`** = 명령 입력줄 · **Shift+K** = Back 뷰 (보존) ·
+**Shift+F** = 자유선 (AxiaCommands ⇧F canonical).
+
+`SHIFT_TOOL_MAP` 이 두 리스너의 SSOT — 뷰 리스너가 이 맵을 참조해 비켜섬.
+`stopImmediatePropagation` 은 **쓰지 않음** (테스트가 리스너를 정리하지 않고
+init 을 재호출 → 첫 세트가 이후 전부를 침묵시킴, 실측).
+
+#### 검증
+
+vitest **2915 | 1 skipped** (170 files) · Playwright **247 | 1 skipped** ·
+axia-geo **2264** · axia-core **440** · axia-wasm **75** · tsc 0 ·
+ADR catalog CI (내 i18n 커밋이 ADR-294 를 README 에 안 넣어 EXIT 1 이던 것 → 0).
+모든 신규 가드 뮤테이션 검증 (내 가드 3개가 vacuous 였고 뮤테이션이 밝힘).
+양 로케일 실브라우저 구동.
+
+#### Cross-link
+
+ADR-294 (본문 · §3.1 Acceptance · §3.2 survey 0 이 거짓말한 두 번 · §3.3 로케일
+트랩) · ADR-046 Q7 (i18n Phase 2 — 본 세션으로 closure) · ADR-129 §3.1
+("i18n: genuinely not started" — 해소) · ADR-133 (AC ⊇ CC — 새 항목 즉시 포착) ·
+ADR-069 (audit 성공 오기록 — 한 layer 아래 재현) · ADR-148 §5 (4 항목 전부
+closure: multi-loop / 3D BOUNDARY / ContextMenu / auto plane inference) ·
+ADR-035 P20.C #2 (초기 번들 0MB) · ADR-046 P31 #4 (additive) ·
+메타-원칙 #4 (SSOT) #5 (UX) #6 (measure-first) #16 (자동화 antipattern) ·
+LOCKED #44 (Complete Meaning per Merge) · #61 (identity vs dispatch) ·
+#63 (z=0) · #66 (STATUS-POLICY) · #88 (doc-lag — 본 세션이 ADR-148 / LOCKED #64
+에서 재확인)
+
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
