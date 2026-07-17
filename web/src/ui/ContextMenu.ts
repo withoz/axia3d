@@ -495,6 +495,20 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         toolManager.synthesizeBoundaryAt(lastContextPos.x, lastContextPos.y);
         break;
       }
+      // ADR-148 §5 — 3D BOUNDARY. Its 2D sibling above makes a face; this
+      // selects the faces of the solid under the cursor.
+      case 'select-shell-here': {
+        if (!lastContextPos) break;
+        const shell = toolManager.selectShellAt(lastContextPos.x, lastContextPos.y);
+        if (shell.length === 0) {
+          Toast.info(t('닫힌 솔리드 안이 아닙니다'));
+          break;
+        }
+        toolManager.selection.clearSelection();
+        toolManager.selection.selectFaces(shell);
+        Toast.info(t('솔리드 선택: {n}개 면', { n: String(shell.length) }));
+        break;
+      }
       case 'group-edit': {
         const gid = resolveSelectedGroupId();
         if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);

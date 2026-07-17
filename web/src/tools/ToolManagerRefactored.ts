@@ -517,6 +517,35 @@ export class ToolManager {
     tool.onMouseDown(synthetic, this.get3DPoint(synthetic));
   }
 
+  /**
+   * Select the closed shell enclosing a screen position (ADR-148 §5 — 3D
+   * BOUNDARY).
+   *
+   * Its 2D sibling above makes a face; this one makes a selection. A shell
+   * being closed is already true, and Volume is a computed state rather than
+   * an entity (CLAUDE.md Geometry Layer) — so the useful answer is "these are
+   * the faces of the solid you clicked into", which is what you then Push/Pull
+   * or give a material to.
+   *
+   * The click point comes from `pick`, not get3DPoint: we want the surface the
+   * ray actually hit, then a step INTO the solid along the view direction, so
+   * that "inside" means what the user sees. Clicking a face and asking for its
+   * solid is the whole gesture.
+   */
+  selectShellAt(clientX: number, clientY: number): number[] {
+    const hit = this.viewport.pick(clientX, clientY);
+    if (!hit || !hit.point) return [];
+    // Nudge inward along the view ray so the sample is inside the solid rather
+    // than exactly on its boundary, where a ray test is ambiguous.
+    const dir = this.viewport.activeCamera.getWorldDirection(new THREE.Vector3());
+    const inside = hit.point.clone().addScaledVector(dir, 0.01);
+    try {
+      return this.bridge.shellFromPoint(inside.x, inside.y, inside.z);
+    } catch {
+      return [];
+    }
+  }
+
   setTool(name: string): void {
     const keepSelection = new Set(['pushpull', 'offset', 'recess', 'move', 'rotate', 'scale', 'nurbs-edit']);
     const selectedBefore = keepSelection.has(name) ? this.selection.getSelectedFaces() : [];

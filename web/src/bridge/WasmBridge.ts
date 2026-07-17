@@ -8,7 +8,7 @@ import init, { AxiaEngine } from '../wasm/axia_wasm';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
 import type { LayeredChannels, TextureInfo } from '../materials/MaterialLibrary';
-import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
+import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
 import { t } from '../i18n';
 
 // ════════════════════════════════════════════════════════════════════════
@@ -668,6 +668,8 @@ type AxiaEngineExtended = AxiaEngine & {
     planeDist: number,
     searchRadiusMm: number,
   ): number;
+  // ADR-148 §5 — 3D BOUNDARY (read-only: selects, does not create)
+  shellFromPoint?(px: number, py: number, pz: number): Uint32Array;
   // ADR-149 β-3 — T-junction Sweep 명시 도구
   /** Detect all mesh-level T-junctions (read-only). Returns JSON array. */
   detectTJunctions?(tolMm: number): string;
@@ -1649,6 +1651,29 @@ export class WasmBridge {
     return this.engine.boundaryFromPoint(
       px, py, pz, nx, ny, nz, planeDist, searchRadiusMm,
     );
+  }
+
+  /**
+   * ADR-148 §5 — 3D BOUNDARY: the faces of the closed shell enclosing a point.
+   *
+   * The 3D sibling of boundaryFromPoint. 2D synthesizes the face an edge loop
+   * implies; 3D has nothing to synthesize — a shell being closed is already
+   * true, and Volume is a computed state, not an entity. So this answers
+   * "which faces bound the solid I clicked inside", and the caller selects
+   * them.
+   *
+   * No markDirty: nothing changed. Nested solids resolve smallest-first, the
+   * same rule the 2D tool uses.
+   *
+   * Throws on:
+   *   - "shellFromPoint: NoClosedShell"
+   *   - "shellFromPoint: PointNotInsideAnyShell"
+   */
+  shellFromPoint(px: number, py: number, pz: number): number[] {
+    if (!this.engine || !this.engine.shellFromPoint) {
+      throw new Error('shellFromPoint: WASM endpoint missing (rebuild required)');
+    }
+    return Array.from(this.engine.shellFromPoint(px, py, pz));
   }
 
   // ==========================================================================

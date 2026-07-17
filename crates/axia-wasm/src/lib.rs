@@ -11820,6 +11820,36 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-148 §5 — 3D BOUNDARY: the faces of the closed shell enclosing a
+    /// point.
+    ///
+    /// The 3D sibling of `boundaryFromPoint`. 2D synthesizes the face an edge
+    /// loop implies; 3D has nothing to synthesize — a shell being closed is
+    /// already true, and Volume is a computed state rather than an entity. So
+    /// this reports which faces bound the solid you clicked inside, and the
+    /// caller selects them.
+    ///
+    /// Read-only: no transaction, no Undo entry, nothing created — which is
+    /// why it needs no citizenship or ADR-016 Q2 policy change.
+    ///
+    /// Nested solids resolve smallest-first, like the 2D tool: the innermost
+    /// one is the one you pointed at.
+    ///
+    /// Engine API: `axia_geo::operations::boundary::shell_from_point`.
+    ///
+    /// # Returns
+    /// - `Ok(Uint32Array)`: face ids of the enclosing shell
+    /// - `Err(JsValue)`: NoClosedShell / PointNotInsideAnyShell
+    #[wasm_bindgen(js_name = "shellFromPoint")]
+    pub fn shell_from_point(&self, px: f64, py: f64, pz: f64) -> Result<Vec<u32>, JsValue> {
+        use axia_geo::operations::boundary;
+        use glam::DVec3;
+
+        boundary::shell_from_point(&self.scene.mesh, DVec3::new(px, py, pz))
+            .map(|faces| faces.into_iter().map(|f| f.raw()).collect())
+            .map_err(|err| JsValue::from_str(&format!("shellFromPoint: {}", err)))
+    }
+
     // ========================================================================
     // ADR-149 — T-junction Sweep 명시 도구 (β-3 WASM bridge)
     // ========================================================================

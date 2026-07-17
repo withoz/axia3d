@@ -328,6 +328,138 @@ fn polygon_inside_polygon(inner: &[(f64, f64)], outer: &[(f64, f64)]) -> bool {
     !inner.is_empty() && inner.iter().all(|&p| point_in_polygon_2d(p, outer))
 }
 
+/// ADR-148 §5 — 3D BOUNDARY errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShellError {
+    /// No closed shell in the mesh at all.
+    NoClosedShell,
+    /// Closed shells exist, but none of them contains the point.
+    PointNotInsideAnyShell,
+}
+
+impl std::fmt::Display for ShellError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShellError::NoClosedShell => write!(f, "NoClosedShell"),
+            ShellError::PointNotInsideAnyShell => write!(f, "PointNotInsideAnyShell"),
+        }
+    }
+}
+
+/// ADR-148 §5 — the 3D sibling of `boundary_from_point`: find the closed
+/// shell enclosing a point and return its faces.
+///
+/// 2D asks "which edge loop encloses this point" and synthesizes the face it
+/// implies. 3D has nothing to synthesize — a shell being closed is already
+/// true, and `Volume` is a computed state, not an entity (CLAUDE.md Geometry
+/// Layer). So this reports: **these are the faces of the solid you clicked
+/// inside.** Selecting them is what the user does next (Push/Pull, material,
+/// grouping), and the caller decides that.
+///
+/// Read-only (`&Mesh`) — nothing is created, which is why it needs no policy
+/// change (LOCKED #26 citizenship, ADR-016 Q2 both untouched).
+///
+/// Smallest-first, like 2D: nested solids mean the innermost one wins, which
+/// is the one you pointed at.
+///
+/// # Errors
+/// - `NoClosedShell` — no watertight component anywhere
+/// - `PointNotInsideAnyShell` — closed shells exist, none contains the point
+pub fn shell_from_point(mesh: &Mesh, point: DVec3) -> Result<Vec<FaceId>, ShellError> {
+    let active: Vec<FaceId> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(id, _)| id)
+        .collect();
+    if active.is_empty() {
+        return Err(ShellError::NoClosedShell);
+    }
+
+    // Existing assets, all of them: edge-connected grouping and the watertight
+    // test are already what Solidify and Boolean use.
+    let components = mesh.face_connected_components(&active);
+    let closed: Vec<Vec<FaceId>> = components
+        .into_iter()
+        .filter(|c| mesh.is_face_set_closed_solid(c))
+        .collect();
+    if closed.is_empty() {
+        return Err(ShellError::NoClosedShell);
+    }
+
+    let mut best: Option<(Vec<FaceId>, f64)> = None;
+    for comp in closed {
+        let tris = shell_triangles(mesh, &comp);
+        if tris.is_empty() {
+            continue;
+        }
+        if !crate::operations::boolean_geo::point_in_solid(&tris, point) {
+            continue;
+        }
+        // Rank by bounding-box volume: cheap, and only the ordering matters —
+        // a shell nested inside another has the smaller box.
+        let extent = shell_bbox_volume(mesh, &comp);
+        match &best {
+            None => best = Some((comp, extent)),
+            Some((_, cur)) => {
+                if extent < *cur {
+                    best = Some((comp, extent));
+                }
+            }
+        }
+    }
+
+    best.map(|(faces, _)| faces)
+        .ok_or(ShellError::PointNotInsideAnyShell)
+}
+
+/// Fan-triangulate every face of a shell for `point_in_solid`.
+///
+/// A fan is correct for the convex faces DCEL produces here and is what the
+/// ray test needs; the loops are already planar (ADR-007).
+fn shell_triangles(mesh: &Mesh, faces: &[FaceId]) -> Vec<(DVec3, DVec3, DVec3)> {
+    let mut tris = Vec::new();
+    for &fid in faces {
+        let Some(face) = mesh.faces.get(fid) else { continue };
+        let Ok(verts) = mesh.collect_loop_verts(face.outer().start) else { continue };
+        if verts.len() < 3 {
+            continue;
+        }
+        let p: Vec<DVec3> = verts
+            .iter()
+            .filter_map(|&v| mesh.verts.get(v).map(|x| x.pos()))
+            .collect();
+        if p.len() != verts.len() {
+            continue;
+        }
+        for i in 1..p.len() - 1 {
+            tris.push((p[0], p[i], p[i + 1]));
+        }
+    }
+    tris
+}
+
+/// Bounding-box volume of a shell — the nesting rank.
+fn shell_bbox_volume(mesh: &Mesh, faces: &[FaceId]) -> f64 {
+    let mut lo = DVec3::splat(f64::INFINITY);
+    let mut hi = DVec3::splat(f64::NEG_INFINITY);
+    for &fid in faces {
+        let Some(face) = mesh.faces.get(fid) else { continue };
+        let Ok(verts) = mesh.collect_loop_verts(face.outer().start) else { continue };
+        for v in verts {
+            if let Some(vert) = mesh.verts.get(v) {
+                lo = lo.min(vert.pos());
+                hi = hi.max(vert.pos());
+            }
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return f64::INFINITY;
+    }
+    let d = hi - lo;
+    d.x.max(0.0) * d.y.max(0.0) * d.z.max(0.0)
+}
+
 /// β-2 helper — collect (edge_id, v_small, v_large) for orphan edges
 /// whose any endpoint is within `radius_mm` of `point`.
 ///
@@ -829,6 +961,108 @@ mod tests {
             .expect("plain square still faces");
         assert_eq!(mesh.faces[face_id].inners().len(), 0);
         assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    /// Box helper — 6 faces, watertight, outward winding via add_face's
+    /// normal handling. Returns its face ids.
+    fn add_box(mesh: &mut Mesh, lo: DVec3, hi: DVec3) -> Vec<FaceId> {
+        let v = [
+            mesh.add_vertex(DVec3::new(lo.x, lo.y, lo.z)),
+            mesh.add_vertex(DVec3::new(hi.x, lo.y, lo.z)),
+            mesh.add_vertex(DVec3::new(hi.x, hi.y, lo.z)),
+            mesh.add_vertex(DVec3::new(lo.x, hi.y, lo.z)),
+            mesh.add_vertex(DVec3::new(lo.x, lo.y, hi.z)),
+            mesh.add_vertex(DVec3::new(hi.x, lo.y, hi.z)),
+            mesh.add_vertex(DVec3::new(hi.x, hi.y, hi.z)),
+            mesh.add_vertex(DVec3::new(lo.x, hi.y, hi.z)),
+        ];
+        let quads = [
+            [v[0], v[3], v[2], v[1]], // bottom (-Z)
+            [v[4], v[5], v[6], v[7]], // top (+Z)
+            [v[0], v[1], v[5], v[4]], // -Y
+            [v[2], v[3], v[7], v[6]], // +Y
+            [v[1], v[2], v[6], v[5]], // +X
+            [v[0], v[4], v[7], v[3]], // -X
+        ];
+        quads
+            .iter()
+            .filter_map(|q| mesh.add_face(q, MaterialId::new(0)).ok())
+            .collect()
+    }
+
+    #[test]
+    fn adr148_shell_from_point_selects_the_enclosing_box() {
+        let mut mesh = Mesh::new();
+        let faces = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 10.0));
+        assert_eq!(faces.len(), 6, "box should have 6 faces");
+        assert!(mesh.is_face_set_closed_solid(&faces), "box must be watertight");
+
+        let inside = shell_from_point(&mesh, DVec3::new(5.0, 5.0, 5.0))
+            .expect("point inside the box");
+        assert_eq!(inside.len(), 6, "all six faces of the box");
+        let mut got = inside.clone();
+        let mut want = faces.clone();
+        got.sort_by_key(|f| f.raw());
+        want.sort_by_key(|f| f.raw());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn adr148_shell_from_point_outside_returns_not_inside() {
+        let mut mesh = Mesh::new();
+        let _ = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 10.0));
+        let result = shell_from_point(&mesh, DVec3::new(50.0, 50.0, 50.0));
+        assert_eq!(result, Err(ShellError::PointNotInsideAnyShell));
+    }
+
+    #[test]
+    fn adr148_shell_from_point_open_shell_is_not_a_solid() {
+        // A single square is a face, not a solid. Nothing to select.
+        let mut mesh = Mesh::new();
+        let a = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let b = mesh.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let c = mesh.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let d = mesh.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        let _ = mesh.add_face(&[a, b, c, d], MaterialId::new(0));
+        let result = shell_from_point(&mesh, DVec3::new(5.0, 5.0, 0.0));
+        assert_eq!(result, Err(ShellError::NoClosedShell));
+    }
+
+    #[test]
+    fn adr148_shell_from_point_nested_picks_the_inner_solid() {
+        // Box inside a box, click inside the inner one. Both contain the
+        // point; the inner is the one you pointed at — same smallest-first
+        // rule as 2D.
+        let mut mesh = Mesh::new();
+        let outer = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(30.0, 30.0, 30.0));
+        let inner = add_box(&mut mesh, DVec3::new(10.0, 10.0, 10.0), DVec3::new(20.0, 20.0, 20.0));
+        assert_eq!(outer.len(), 6);
+        assert_eq!(inner.len(), 6);
+
+        let picked = shell_from_point(&mesh, DVec3::new(15.0, 15.0, 15.0))
+            .expect("inside both boxes");
+        let mut got = picked.clone();
+        let mut want = inner.clone();
+        got.sort_by_key(|f| f.raw());
+        want.sort_by_key(|f| f.raw());
+        assert_eq!(got, want, "the inner box wins — it is the one clicked into");
+
+        // And a point in the gap belongs to the outer box only.
+        let gap = shell_from_point(&mesh, DVec3::new(3.0, 3.0, 3.0)).expect("inside outer only");
+        let mut got_gap = gap.clone();
+        let mut want_outer = outer.clone();
+        got_gap.sort_by_key(|f| f.raw());
+        want_outer.sort_by_key(|f| f.raw());
+        assert_eq!(got_gap, want_outer);
+    }
+
+    #[test]
+    fn adr148_shell_from_point_empty_mesh_has_no_shell() {
+        let mesh = Mesh::new();
+        assert_eq!(
+            shell_from_point(&mesh, DVec3::ZERO),
+            Err(ShellError::NoClosedShell),
+        );
     }
 
     #[test]

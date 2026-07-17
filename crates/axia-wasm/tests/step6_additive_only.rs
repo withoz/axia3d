@@ -1314,6 +1314,38 @@ fn adr148_beta3_boundary_uses_transaction_with_cancel_on_error() {
          for caller-side identification");
 }
 
+/// ADR-148 §5 — `shellFromPoint` (3D BOUNDARY) is wired, and is read-only.
+///
+/// Its 2D sibling above wraps a transaction because it CREATES a face. This
+/// one selects: it reports which faces bound the solid you clicked inside and
+/// changes nothing. A transaction here would put an empty entry on the undo
+/// stack, so the absence of one is the contract, not an omission.
+#[test]
+fn adr148_shell_from_point_endpoint_wired_and_read_only() {
+    let l = lib_src();
+    assert!(l.contains("pub fn shell_from_point"),
+        "ADR-148 §5: missing Rust function shell_from_point");
+    assert!(l.contains("js_name = \"shellFromPoint\""),
+        "ADR-148 §5: missing js_name = \"shellFromPoint\"");
+    let idx = l.find("pub fn shell_from_point").expect("shell_from_point");
+    let body = char_safe_slice(&l, idx, 1200);
+    assert!(body.contains("-> Result<Vec<u32>, JsValue>"),
+        "ADR-148 §5: shellFromPoint must return the shell's face ids");
+    for param in ["px: f64", "py: f64", "pz: f64"] {
+        assert!(body.contains(param),
+            "ADR-148 §5: signature must include {}", param);
+    }
+    assert!(body.contains("&self"),
+        "ADR-148 §5: shellFromPoint must take &self — it selects, it does not mutate");
+    assert!(!body.contains("transactions.begin"),
+        "ADR-148 §5: read-only endpoint must NOT open a transaction (an empty \
+         undo entry for a selection is worse than none)");
+    assert!(body.contains("boundary::shell_from_point"),
+        "ADR-148 §5: body must delegate to axia_geo::operations::boundary");
+    assert!(body.contains("shellFromPoint:"),
+        "ADR-148 §5: error message must carry the 'shellFromPoint:' prefix");
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // ADR-050 P-5c — As-Shape Draw command WASM bridge invariants.
 //

@@ -2151,6 +2151,19 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     aliases: { bridge: 'boundaryFromPoint', wasm: 'boundaryFromPoint' },
     adrs: ['ADR-148'],
   },
+  {
+    // ADR-148 §5 — the 3D sibling of boundary-here. That one creates a face;
+    // this one only selects, so it is tier 0: a shell being closed is already
+    // true, and Volume is a computed state rather than an entity. Needs the
+    // right-click position, hence context-only.
+    id: 'select-shell-here',
+    label: '이 솔리드 전체 선택',
+    description: 'Select every face of the closed shell around the clicked point.',
+    tier: 0,
+    surfaces: ['context-only'],
+    aliases: { bridge: 'shellFromPoint', wasm: 'shellFromPoint' },
+    adrs: ['ADR-148'],
+  },
 ] as const;
 
 // ─── Lookup indices (built once at module load) ────────────────────

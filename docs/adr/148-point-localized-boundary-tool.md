@@ -224,8 +224,8 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   아래 §8 참조. ADR-016 Q2 는 multi-loop face 를 *쓰는 도구* (Boolean /
   Offset) 의 제약이지 *만드는 것* 의 금지가 아니다 — `merge-as-hole` 이 이미
   만든다. 새 정책 결정이 없으므로 새 ADR 이 아닌 본 로그로 기록.
-- **3D BOUNDARY** (closed shell from orphan faces) — ADR-139 §14 B-μ,
-  별도 ADR
+- ~~**3D BOUNDARY** (closed shell from orphan faces) — ADR-139 §14 B-μ,
+  별도 ADR~~ → **2026-07-17 landed** (선택 semantic), 아래 §8 참조.
 - **Auto plane inference** (사용자 점만 클릭, plane 자동 추론) —
   ADR-141 §3 reserve 외부, future ADR
 - **ContextMenu integration** — Q2=(a) BoundaryTool 우선, ContextMenu
@@ -365,11 +365,42 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   trigger 는 STEP/IGES import 나 erase 로 face 만 사라진 mesh 처럼 orphan 이
   실재하는 경우. 엔진 회귀가 authoritative.
 
+- **2026-07-17 — 3D BOUNDARY** (사용자 결재: "닫힌 껍질의 면들을 선택").
+
+  ADR-139 §14 의 B-μ 는 비용이 "future" 한 단어뿐, **무엇을 만드는지 적혀
+  있지 않았다**. audit 결과 만들 것이 없다는 게 답이었다 — `Volume` 은
+  계산되는 *상태* 지 엔티티가 아니고 (CLAUDE.md Geometry Layer),
+  `entities/shell.rs` (84줄) 는 `add_shell` 호출자 0 · 스냅샷 미포함의 dead
+  code 다. 껍질이 닫혔다는 건 **이미 참인 사실**이다. 그래서 4 옵션 (선택 /
+  Shell 활성 / XIA 승격 / 보류) 중 **선택** 결재.
+
+  `shell_from_point(&Mesh, point) -> Result<Vec<FaceId>, ShellError>` —
+  **read-only**. 새 엔티티 0 이므로 LOCKED #26 시민권도 ADR-016 Q2 도
+  건드리지 않는다. 자산 재사용: `face_connected_components` (edge-연결
+  그룹) + `is_face_set_closed_solid` (watertight) + `boolean_geo::
+  point_in_solid` (3-ray 다수결) — 셋 다 이미 있었고 새 알고리즘은 0.
+  중첩 솔리드는 2D 와 같은 smallest-first (bbox 부피 랭크).
+
+  배선: WASM `shellFromPoint` (transaction 없음 — 선택에 undo 항목을 남기면
+  안 된다) → bridge (markDirty 없음) → `ToolManager.selectShellAt` (pick 후
+  view ray 방향으로 0.01mm 안쪽 샘플 — 경계 위는 ray 판정이 모호하다) →
+  ContextMenu `select-shell-here`. ActionCatalog tier 0 / context-only
+  (우클릭 위치가 필요하므로 팔레트 불가).
+
+  회귀 axia-geo +5 (박스 안 6면 / 밖 / open shell 은 solid 아님 / nested 는
+  inner 선택 + gap 은 outer / empty mesh) · axia-wasm +1 (read-only 계약:
+  `&self` + transaction 없음) · vitest ContextMenu +3. 뮤테이션 4/4 —
+  closed 필터 제거 / smallest→largest / clearSelection 제거 / 빈 shell 가드
+  제거 모두 FAIL 확인.
+
+  **실제 앱 검증** (2D 와 달리 여기서는 가능했다 — 자동 면 합성과 무관):
+  box 안 → 6면 선택 + "솔리드 선택: 6개 면", 빈 공간 → 0 선택 +
+  "닫힌 솔리드 안이 아닙니다", en 로케일 한글 누출 0.
+
 ---
 
 ~~**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
 옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
 Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
 
-**남은 것** (본 ADR §5 Out of scope 유지): 3D BOUNDARY (B-μ),
-auto plane inference.
+**남은 것** (본 ADR §5 Out of scope 유지): auto plane inference.

@@ -2250,4 +2250,10 @@ export const EN: Record<string, string> = {
   // label, and its guard caught the missing one immediately.
   '📍 이 영역에 면 만들기': '📍 Make a face here',
   '이 영역에 면 만들기': 'Make a face here',
+
+  // ── batch 13g — 3D BOUNDARY (ADR-148 §5): selects, does not create ──
+  '🧊 이 솔리드 전체 선택': '🧊 Select this whole solid',
+  '이 솔리드 전체 선택': 'Select this whole solid',
+  '닫힌 솔리드 안이 아닙니다': 'Not inside a closed solid',
+  '솔리드 선택: {n}개 면': 'Solid selected: {n} faces',
 };
