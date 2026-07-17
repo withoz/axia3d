@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
 import { UnitSystem } from './UnitSystem';
 import { getLocale, setLocale } from '../i18n';
+import { takeStashedScene, MAX_SNAPSHOT_BYTES } from '../i18n/localeSwitchScene';
 
 describe('SettingsPanel', () => {
   let units: UnitSystem;
@@ -232,6 +233,78 @@ describe('SettingsPanel', () => {
       btn('ko').click();
       expect(reloads).toBe(0);
       expect(getLocale()).toBe('ko');
+    });
+
+    // The comment above says the reload is destructive, and for a while that
+    // was all it was: a comment. There is no autosave, and beforeunload only
+    // disposes the viewport, so switching language mid-drawing lost the
+    // drawing. It is now carried across in sessionStorage
+    // (i18n/localeSwitchScene) and restored on boot by main.ts — so the switch
+    // is a repaint, and the confirm is only for the case where the scene
+    // genuinely cannot travel.
+    describe('the drawing survives the switch', () => {
+      const SNAP = new Uint8Array([1, 2, 3, 4]);
+
+      /** Panel whose bridge reports `verts` and returns `snapshot` bytes. */
+      const withScene = (verts: number, snapshot: Uint8Array | null = SNAP) => {
+        document.body.innerHTML = '';
+        setLocale('ko');
+        return new SettingsPanel(units, {
+          bridge: { getStats: () => ({ verts }), exportSnapshotSilent: () => snapshot },
+        });
+      };
+
+      beforeEach(() => sessionStorage.clear());
+      afterEach(() => { vi.restoreAllMocks(); sessionStorage.clear(); });
+
+      it('stashes the scene and switches without asking anything', () => {
+        const ask = vi.spyOn(window, 'confirm');
+        withScene(12);
+        btn('en').click();
+        // The whole point: a drawing on screen is no longer a reason to warn.
+        expect(ask).not.toHaveBeenCalled();
+        expect(takeStashedScene()).toEqual(SNAP);
+        expect(getLocale()).toBe('en');
+        expect(reloads).toBe(1);
+      });
+
+      it('stashes nothing for an empty canvas', () => {
+        withScene(0);
+        btn('en').click();
+        expect(takeStashedScene()).toBeNull();
+        expect(reloads).toBe(1);
+      });
+
+      it('asks only when the scene cannot be carried', () => {
+        // Past MAX_SNAPSHOT_BYTES: sessionStorage would throw, so the work
+        // really would be lost — which is when the old warning becomes true.
+        const ask = vi.spyOn(window, 'confirm').mockReturnValue(true);
+        withScene(12, new Uint8Array(MAX_SNAPSHOT_BYTES + 1));
+        btn('en').click();
+        expect(ask).toHaveBeenCalledOnce();
+        expect(reloads).toBe(1);
+      });
+
+      it('changes nothing when that warning is declined', () => {
+        const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        withScene(12, new Uint8Array(MAX_SNAPSHOT_BYTES + 1));
+        btn('en').click();
+        expect(ask).toHaveBeenCalledOnce();
+        // Both matter: a locale set without the reload leaves the mixed state
+        // D7 exists to avoid, and the next reload would switch on its own.
+        expect(getLocale()).toBe('ko');
+        expect(reloads).toBe(0);
+      });
+
+      it('legacy callers without a bridge still switch', () => {
+        const ask = vi.spyOn(window, 'confirm');
+        document.body.innerHTML = '';
+        setLocale('ko');
+        new SettingsPanel(units);
+        btn('en').click();
+        expect(ask).not.toHaveBeenCalled();
+        expect(reloads).toBe(1);
+      });
     });
   });
 });

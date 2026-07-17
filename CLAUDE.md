@@ -7402,6 +7402,17 @@ ADR-046 Q7 / ADR-129 §3.1 이 "Phase 2 / not started" 로 남겨둔 항목. PR 
   정적 마크업 번역 (텍스트 노드 + title/placeholder/aria-label 만, **`data-action`
   절대 미접촉**) · **D9** 어려운 CAD 용어는 한국어에서도 음역 ·
   **D10** 재질 이름은 데이터지 키가 아님.
+- **D7 amendment (2026-07-17, 사용자 "언어전환시 화면이 재설정되지 않게 할수
+  있나?" → 결재 (b))**: reload 는 유지하되 **견딜 수 있게** — 씬이
+  `sessionStorage` 로 건너가고 (`i18n/localeSwitchScene.ts`) `main.ts` 가 부팅
+  때 복원. `.axia` 가 쓰는 `export_snapshot`/`import_snapshot` 그대로 → 새
+  직렬화 0. 이유: 씬은 메모리에만 살고 (autosave 0, `beforeunload` 는 viewport
+  dispose 만) reload 가 그림을 가져갔음. **`sessionStorage` (localStorage 아님 —
+  탭보다 오래 살면 안 됨)** · **take 는 소비** (두 번째 복원 = 옛 씬 덮어씀) ·
+  **base64 청크** (`fromCharCode(...bytes)` 는 실제 스냅샷에서 스택 터짐) ·
+  **실행취소 기록은 미복원** (스냅샷 = 씬, 트랜잭션 히스토리 아님 → 토스트로 명시).
+  `exportSnapshotSilent`/`importSnapshotSilent` 는 공개 API 의 토스트 회피용.
+  confirm 은 씬이 정말 못 건너갈 때만 (≈5MB 초과 / 저장소 비활성).
 - **L-294-12 (canonical)**: **키는 소스가 적은 것이 아니라 런타임이 쥔 것** —
   index.html 이 `&#9633;` 를 쓰면 키는 디코드된 `□`, `
 ` 은 실제 개행.

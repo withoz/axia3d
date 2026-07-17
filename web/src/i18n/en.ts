@@ -456,8 +456,18 @@ export const EN: Record<string, string> = {
   // ══════════════════════════════════════════════════════════════════════
   '언어 / Language': 'Language',
   '단위': 'Units',
-  '바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)':
-    'Changing this reloads the page (ADR-294)',
+  // The hint used to say 'reloads the page' and stop there, which was true and
+  // not the part that mattered. The scene is now carried across the reload
+  // (i18n/localeSwitchScene), so what it has to say is that the repaint is not
+  // a reset — and that the undo stack is the one thing that does not survive.
+  '바꾸면 화면을 다시 불러옵니다 — 작업은 유지됩니다 (실행취소 기록은 초기화)':
+    'Changing this reloads the page — your work is kept (undo history resets)',
+  '언어를 바꿨습니다 — 작업은 그대로입니다 (실행취소 기록은 초기화)':
+    'Language changed — your work is intact (undo history reset)',
+  // Only when the scene genuinely cannot be carried: past the sessionStorage
+  // ceiling, or storage disabled. The common path never asks.
+  '언어를 바꾸면 화면을 다시 불러옵니다.\n작업이 너무 커서 유지할 수 없습니다. 계속할까요?':
+    'Changing the language reloads the page.\nYour work is too large to carry across. Continue?',
   '소수점 자릿수': 'Decimal places',
   '그리드 스냅': 'Grid snap',
   '스냅 간격': 'Snap spacing',

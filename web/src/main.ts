@@ -49,6 +49,7 @@ import { getConsolePanel } from './ui/ConsolePanel';
 import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
 import './ui/DraggablePanels.css';
 import { t } from './i18n';
+import { takeStashedScene } from './i18n/localeSwitchScene';
 
 // Install in-UI console panel as early as possible so any errors during
 // app boot are captured and visible to the user without DevTools.
@@ -291,7 +292,9 @@ async function main() {
 
   // 3. Initialize unit system & settings
   const units = new UnitSystem();
-  const settingsPanel = new SettingsPanel(units);
+  // bridge: switching the language reloads (ADR-294 D7) and the scene lives in
+  // memory only, so the panel asks before discarding a drawing.
+  const settingsPanel = new SettingsPanel(units, { bridge });
 
   // Settings button
   const settingsBtn = document.getElementById('settings-btn');
@@ -526,6 +529,21 @@ async function main() {
 
   // ═══ 4-0. 초기 씬 로드 — see ui/InitialScene.ts ═══
   loadInitialScene({ bridge, fileManager, toolManager, updateFileStatus });
+
+  // ADR-294 D7 — put back the drawing the language switch parked.
+  //
+  // D7 reloads because the catalogs are init-once; the scene is memory-only,
+  // so the reload used to take the drawing with it. SettingsPanel stashes a
+  // snapshot on the way out and this restores it, after loadInitialScene so
+  // the empty-scene sync does not overwrite it.
+  //
+  // The undo stack does not come back — a snapshot is the scene, not the
+  // transaction history. Say so, rather than let it be found with Ctrl+Z.
+  const stashedScene = takeStashedScene();
+  if (stashedScene && bridge.importSnapshotSilent(stashedScene)) {
+    toolManager.syncMesh();
+    Toast.info(t('언어를 바꿨습니다 — 작업은 그대로입니다 (실행취소 기록은 초기화)'), 4000);
+  }
 
   // ═══ Selection status bar update ═══
   // Phase H 이후 status bar는 coords + F-keys에 집중.
