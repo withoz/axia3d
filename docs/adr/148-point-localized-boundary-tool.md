@@ -303,11 +303,36 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   가 LOCKED #64 B-γ 로 「경계 도구」를 이미 쓰고 있어 팔레트 검색에서
   충돌한다. 두 연산은 다르다 (전체 mesh sweep ↔ 클릭한 영역 하나).
 
+- **2026-07-17 — ContextMenu 진입점** (사용자 결재: "ContextMenu 진입점
+  진행"). §5 가 "follow-up ADR" 로 남긴 항목 — §2.3 에서 이미 옵션 (b) 로
+  검토·비용 산정된 것을 (c) Both 로 채우는 확장이라 새 결정이 아니므로 본
+  로그로 기록한다 (STATUS-POLICY §3.3 additive).
+
+  `ctx-item[data-action="boundary-here"]` → `ToolManager.synthesizeBoundaryAt
+  (x, y)` → **BoundaryTool.onMouseDown 재사용**. plane 해소 (getDrawPlane →
+  face-hit / lock / sticky / Z=0), normalizeDrawInput chokepoint,
+  BoundaryError → 한국어 매핑이 전부 거기 있으므로 두 번째 사본을 만들지
+  않았다 (메타-원칙 #4).
+
+  두 진입점의 의미 차이: **Ctrl+B** 는 도구에 들어가 클릭을 기다리고,
+  **우클릭 → 면 만들기** 는 이미 우클릭한 지점에 즉시 합성한다 (도구 전환
+  없음). 위치는 `viewport.onContextMenu(x, y)` 가 주는 것을 저장해 쓴다 —
+  메뉴 항목의 클릭 좌표는 화면의 다른 곳이라 쓸 수 없다.
+
+  `boundary-here` 는 ActionCatalog `surfaces: ['context-only']` 로만 등재
+  하고 CommandCatalog 에는 넣지 않았다: 팔레트 호출에는 우클릭 위치가 없다.
+
+  검증 — vitest ContextMenu +3 (위치 전달 / 최신 우클릭 / 메뉴 미개방 시
+  no-op), 뮤테이션 2/2 (위치 저장 제거 · 메뉴 항목 좌표 오용). 실제 앱:
+  우클릭 → 항목 클릭 → 엔진 응답 Toast, 도구는 select 유지. 성공 합성
+  자체는 γ E2E (2/2) 가 이미 덮는다 — 브라우저에서는 자동 면 합성
+  (LOCKED #76) 이 닫힌 loop 를 즉시 면으로 만들어 orphan edge 가 남지 않는다.
+
 ---
 
 ~~**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
 옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
 Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
 
-**남은 것** (본 ADR §5 Out of scope 유지): ContextMenu 진입점
-(Q2=(c) Both 의 나머지 절반), multi-loop (ADR-016 Q2 정책 정합).
+**남은 것** (본 ADR §5 Out of scope 유지): multi-loop (ADR-016 Q2 정책
+정합), 3D BOUNDARY (B-μ), auto plane inference.

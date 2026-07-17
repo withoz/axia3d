@@ -2243,4 +2243,11 @@ export const EN: Record<string, string> = {
   // saying nothing was survivable there. The palette shows every command.
   '그룹 안의 면을 먼저 선택하세요': 'Select a face inside a group first',
   '선택한 면은 그룹에 속해 있지 않습니다': 'The selected face is not in a group',
+
+  // ── batch 13f — the right-click half of Boundary (ADR-148 §2.3 b) ──
+  // Two keys, because they are two strings: index.html carries the emoji, the
+  // ActionCatalog label does not. The Capability Explorer renders the catalog
+  // label, and its guard caught the missing one immediately.
+  '📍 이 영역에 면 만들기': '📍 Make a face here',
+  '이 영역에 면 만들기': 'Make a face here',
 };

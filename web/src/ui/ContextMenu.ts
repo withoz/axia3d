@@ -31,8 +31,18 @@ export function initContextMenu(deps: ContextMenuDeps): void {
   const ctxMenu = document.getElementById('context-menu');
   if (!ctxMenu) return;
 
+  /**
+   * Where the menu was opened, in client coordinates.
+   *
+   * The click handler fires later and on the menu item, so `e.clientX` there
+   * is the item, not the spot in the model you right-clicked. boundary-here
+   * needs the spot (ADR-148 §2.3 b).
+   */
+  let lastContextPos: { x: number; y: number } | null = null;
+
   // 컨텍스트 메뉴 표시
   viewport.onContextMenu((x, y) => {
+    lastContextPos = { x, y };
     // 라인 그리기 중 우클릭 → 라인 종료 + 메뉴도 표시
     if (toolManager.currentTool === 'line' && toolManager.isToolBusy()) {
       toolManager.cancelCurrentTool();
@@ -176,7 +186,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
    * menu, which hides those items unless the selection is in a group — but the
    * Command Palette shows every command, so from there they looked broken.
    */
-  const selectedGroupId = (): number | undefined => {
+  const resolveSelectedGroupId = (): number | undefined => {
     const faces = toolManager.selection.getSelectedFaces();
     if (faces.length === 0) {
       Toast.info(t('그룹 안의 면을 먼저 선택하세요'));
@@ -477,19 +487,27 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       // 그룹 / 컴포넌트
       case 'group': toolManager.executeAction('group'); break;
       case 'ungroup': toolManager.executeAction('ungroup'); break;
+      // ADR-148 §2.3 (b) — the right-click half of Q2=(c) Both. Ctrl+B enters
+      // the tool and waits for a click; this synthesizes the face at the spot
+      // already right-clicked, in one act. Same handler underneath.
+      case 'boundary-here': {
+        if (!lastContextPos) break;
+        toolManager.synthesizeBoundaryAt(lastContextPos.x, lastContextPos.y);
+        break;
+      }
       case 'group-edit': {
-        const gid = selectedGroupId();
+        const gid = resolveSelectedGroupId();
         if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);
         break;
       }
       case 'make-component': toolManager.executeAction('make-component'); break;
       case 'group-lock': {
-        const gid = selectedGroupId();
+        const gid = resolveSelectedGroupId();
         if (gid !== undefined) bridge.toggleGroupLock(gid);
         break;
       }
       case 'group-hide': {
-        const gid = selectedGroupId();
+        const gid = resolveSelectedGroupId();
         if (gid !== undefined) {
           bridge.toggleGroupVisibility(gid);
           toolManager.syncMesh();

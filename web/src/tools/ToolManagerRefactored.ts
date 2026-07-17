@@ -492,6 +492,31 @@ export class ToolManager {
     return tool ? tool.isBusy() : false;
   }
 
+  /**
+   * Synthesize the boundary at a screen position, without switching tools.
+   *
+   * ADR-148 §2.3 option (b) — the right-click path that §5 left as a
+   * follow-up. It runs BoundaryTool's own onMouseDown rather than
+   * re-implementing it: the plane resolution (getDrawPlane → face-hit /
+   * plane-lock / sticky / Z=0), the normalizeDrawInput chokepoint and the
+   * BoundaryError → Korean mapping all live there, and a second copy would
+   * drift from the first (메타-원칙 #4).
+   *
+   * Takes coordinates because that is what the caller has: Viewport's
+   * onContextMenu hands the menu `(x, y)` from `e.clientX / e.clientY`, not
+   * the event. get3DPoint and getDrawPlane read exactly those two fields, so
+   * a synthetic MouseEvent carries everything they need.
+   *
+   * The tool is never activated — no mode change, no "click inside an area"
+   * toast. You right-clicked a spot and asked for its face; that is one act.
+   */
+  synthesizeBoundaryAt(clientX: number, clientY: number): void {
+    const tool = this.tools.get('boundary');
+    if (!tool?.onMouseDown) return;
+    const synthetic = new MouseEvent('mousedown', { clientX, clientY, button: 0 });
+    tool.onMouseDown(synthetic, this.get3DPoint(synthetic));
+  }
+
   setTool(name: string): void {
     const keepSelection = new Set(['pushpull', 'offset', 'recess', 'move', 'rotate', 'scale', 'nurbs-edit']);
     const selectedBefore = keepSelection.has(name) ? this.selection.getSelectedFaces() : [];

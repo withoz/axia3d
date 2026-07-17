@@ -2137,6 +2137,20 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     aliases: { bridge: 'boundaryFromPoint', wasm: 'boundaryFromPoint' },
     adrs: ['ADR-148', 'ADR-139'],
   },
+  {
+    // The right-click half of ADR-148 Q2=(c). tool-boundary above enters the
+    // tool and waits for a click; this one acts on the spot already
+    // right-clicked. Context-menu only: it needs that position, which a
+    // palette invocation does not have — so it is deliberately absent from
+    // CommandCatalog (dispatch), while keeping its identity here.
+    id: 'boundary-here',
+    label: '이 영역에 면 만들기',
+    description: 'Synthesize the face enclosing the right-clicked point.',
+    tier: 2,
+    surfaces: ['context-only'],
+    aliases: { bridge: 'boundaryFromPoint', wasm: 'boundaryFromPoint' },
+    adrs: ['ADR-148'],
+  },
 ] as const;
 
 // ─── Lookup indices (built once at module load) ────────────────────

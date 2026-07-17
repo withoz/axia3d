@@ -22,6 +22,7 @@ function createDOM(): void {
     <div id="context-menu">
       <div class="ctx-item" data-action="undo">Undo</div>
       <div class="ctx-item" data-action="redo">Redo</div>
+      <div class="ctx-item" data-action="boundary-here">Make a face here</div>
       <div class="ctx-item" data-action="delete">Delete</div>
       <div class="ctx-item" data-action="select-all">Select All</div>
       <div class="ctx-item" data-action="deselect">Deselect</div>
@@ -102,6 +103,8 @@ function mockDeps(): ContextMenuDeps {
       cancelCurrentTool: vi.fn(),
       executeAction: vi.fn(),
       syncMesh: vi.fn(),
+      // ADR-148 §2.3 (b) — right-click boundary entry.
+      synthesizeBoundaryAt: vi.fn(),
       snap: {
         setOverride: vi.fn(),
       },
@@ -145,6 +148,38 @@ describe('ContextMenu', () => {
 
     it('registers onContextMenu callback', () => {
       expect(deps.viewport.onContextMenu).toHaveBeenCalled();
+    });
+  });
+
+  describe('boundary-here (ADR-148 §2.3 b — right-click entry)', () => {
+    /** Run the callback Viewport would call, i.e. actually right-click. */
+    const rightClickAt = (x: number, y: number) => {
+      const cb = (deps.viewport.onContextMenu as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      cb(x, y);
+    };
+
+    it('synthesizes at the position that was right-clicked', () => {
+      // Not the click position of the menu item — the spot in the model. The
+      // menu item is somewhere else on screen by definition.
+      rightClickAt(150, 220);
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledWith(150, 220);
+    });
+
+    it('uses the most recent right-click', () => {
+      rightClickAt(10, 20);
+      rightClickAt(300, 400);
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledWith(300, 400);
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when the menu was never opened', () => {
+      // Reachable via the palette allowlist or a synthetic click; there is no
+      // position to act on, and guessing one would put a face somewhere the
+      // user never pointed at.
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).not.toHaveBeenCalled();
     });
   });
 
