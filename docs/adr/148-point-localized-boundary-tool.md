@@ -228,8 +228,8 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   별도 ADR~~ → **2026-07-17 landed** (선택 semantic), 아래 §8 참조.
 - ~~**Auto plane inference** (사용자 점만 클릭, plane 자동 추론) —
   ADR-141 §3 reserve 외부, future ADR~~ → **2026-07-17 landed**, 아래 §8 참조.
-- **ContextMenu integration** — Q2=(a) BoundaryTool 우선, ContextMenu
-  는 follow-up ADR
+- ~~**ContextMenu integration** — Q2=(a) BoundaryTool 우선, ContextMenu
+  는 follow-up ADR~~ → **2026-07-17 landed** (Q2=(c) Both 완성), 아래 §8 참조.
 
 ## 6. Cross-link
 
@@ -442,6 +442,9 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
 옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
 Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
 
-**남은 것**: 없음. §5 의 4 항목 (multi-loop / 3D BOUNDARY / ContextMenu /
-auto plane inference) 모두 closure — multi-loop 은 ADR-016 Q2 정책 정합이
-선행이라 그 자리에 남는다 (§8 2026-07-17 multi-loop 항목).
+**남은 것**: 없음 — §5 의 4 항목 (multi-loop / 3D BOUNDARY / ContextMenu /
+auto plane inference) 모두 2026-07-17 closure. 각 항목의 근거는 §8 참조.
+
+> 앞선 판(auto plane 시점)은 "모두 closure" 라 써놓고 같은 문장에서
+> "multi-loop 은 남는다" 고 했다. multi-loop 은 그때 이미 들어와 있었고
+> (`6dbb76a`, 같은 날), 그 문장이 stale 이었다.
