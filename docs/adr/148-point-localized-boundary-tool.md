@@ -1,7 +1,7 @@
 # ADR-148 — B-γ' Point-Localized BoundaryTool (ADR-139 자연 후속)
 
-**Status**: Proposed (α spec — β implementation 별도 사용자 결재 후 진행)
-**Date**: 2026-05-26
+**Status**: Accepted (α + β-1~β-4 + γ closure — §8 Acceptance Log 참조)
+**Date**: 2026-05-26 (α) / 2026-07-17 (Status 정정 — 아래 §8 참조)
 **Author**: WYKO + Claude
 **Trigger**: LOCKED #65 (ADR-141 Master Roadmap) Sprint 2 마지막 ADR.
 ADR-141 §3 reserve:
@@ -265,9 +265,49 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
 - **2026-05-26 α** (본 commit) — α spec + Q1/Q2 결재 anchor + sub-step
   plan + lock-ins.
 - **(β-1 ~ γ, ~4-5일)** — 별도 사용자 결재 후 진행 (Q1 결정 + Q2 결정).
+  - > ✅ 진행됐다. 아래 2026-07-17 항목 참조 — 이 줄은 α 시점의 기록으로
+    > 보존한다.
+
+- **β-1 ~ γ** — landed. 개별 commit hash 는 `155e127` (clean baseline,
+  squashed from adr-186 @ 195755d) 에 흡수되어 남아 있지 않다. 코드가
+  증거이므로, 2026-07-17 에 실물을 세어 기록한다:
+
+  | sub-step | 산출물 | 실측 |
+  |---|---|---|
+  | β-1/β-2 | `crates/axia-geo/src/operations/boundary.rs` — `boundary_from_point` + BoundaryError 4 variants | 회귀 6 |
+  | β-3 | WASM `boundaryFromPoint` export + `WasmBridge.boundaryFromPoint` | vitest (WasmBridge) |
+  | β-4 | `web/src/tools/BoundaryTool.ts` + Ctrl+B (L-148-9 canonical) | `BoundaryTool.test.ts` 16 tests |
+  | γ | `web/e2e/adr-148-boundary-demo.spec.ts` | **2/2 PASS** (real Chromium, 2026-07-17 재실행) |
+
+  Q1 = (c) Hybrid, Q2 = (a) BoundaryTool — 두 권장안 모두 코드에 반영된
+  상태로 landed.
+
+- **2026-07-17 — Status 정정 + UI 노출** (사용자 결재: "문서 정리 진행").
+
+  Status 가 α 시점 `Proposed` 에 멈춰 있었다. STATUS-POLICY §3.1 의
+  `Draft → Accepted` 요건 (β closure + 사용자 시연 게이트 PASS + §D
+  Acceptance Log) 은 이미 충족돼 있었고, 문서만 따라오지 못했다
+  (LOCKED #88 doc-lag 패턴). 본문은 수정하지 않았다 — Status line 과 본
+  로그만 갱신 (§3.2 retroactive 수정 금지 / §3.3 additive 허용).
+
+  같은 날 배선 감사에서 드러난 것: 도구는 Ctrl+B 로 계속 작동하고
+  있었으나 **메뉴 · 툴바 · 카탈로그 · 도움말 어디에도 없었다.** 즉
+  이미 알고 있는 사람만 쓸 수 있는 상태. β-4 가 "UI BoundaryTool" 로
+  계획됐지만 실제로 landed 한 것은 키 바인딩까지였고, 발견 경로는
+  빠져 있었다. 2026-07-17 commit `553aedb` 가 메뉴 항목 +
+  ActionCatalog/CommandCatalog 등재 + 도움말 행 + 상태바 라벨 갱신을
+  추가하고, "등록된 도구는 어디선가 도달 가능해야 한다" 회귀 가드를
+  세웠다.
+
+  이름은 「영역 클릭 → 면 (Boundary · BPOLY)」 — `resynthesize-faces`
+  가 LOCKED #64 B-γ 로 「경계 도구」를 이미 쓰고 있어 팔레트 검색에서
+  충돌한다. 두 연산은 다르다 (전체 mesh sweep ↔ 클릭한 영역 하나).
 
 ---
 
-**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
-옵션 (a) BoundaryTool 권장)
-또는 Sprint 2 잔존 ADR-147 (Step 2 Scenario B1) 진입.
+~~**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
+옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
+Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
+
+**남은 것** (본 ADR §5 Out of scope 유지): ContextMenu 진입점
+(Q2=(c) Both 의 나머지 절반), multi-loop (ADR-016 Q2 정책 정합).
