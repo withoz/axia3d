@@ -133,6 +133,36 @@ So `SettingsPanel` sets the locale and calls `location.reload()`, and says so in
 the hint. This is what VS Code does for the same reason, and it is what makes D6
 safe: after a reload, module scope re-reads the persisted choice.
 
+**Amendment (2026-07-17) — the reload had to be made survivable.** The user
+asked the question this decision never answered: *"메뉴가 영어로 바뀌면 그리던
+것이 없어지나?"* It did. The scene lives in memory only — no autosave, and
+`beforeunload` merely disposes the viewport — so the reload took the drawing
+with it, and a hint that said "reloads the page" did not tell anyone that.
+
+The answer is not to drop the reload; the reasoning above still holds. It is
+`i18n/localeSwitchScene.ts`: the scene goes into `sessionStorage` on the way out
+and `main.ts` restores it on boot, through the same `export_snapshot` /
+`import_snapshot` the `.axia` format already uses. No new serialization.
+
+Four things decide that implementation:
+
+- **`sessionStorage`, not `localStorage`.** This is a handoff between two loads
+  of one tab and must not outlive it. A stale scene reappearing in a fresh
+  session would be a worse bug than the one being fixed.
+- **`takeStashedScene` consumes.** A second restore would re-apply a stale scene
+  over whatever has been drawn since.
+- **Base64 is chunked.** `String.fromCharCode(...bytes)` blows the stack on a
+  real snapshot; it only looks correct at the small size a test reaches for.
+- **The undo stack does not survive.** A snapshot is the scene, not the
+  transaction history. Announced in the toast rather than discovered by pressing
+  Ctrl+Z.
+
+`exportSnapshotSilent` / `importSnapshotSilent` exist because the public pair
+toasts — without them the switch would flash "프로젝트 내보내기 성공" at someone
+who never asked to export. The confirm survives, but now only fires where the
+old warning was ever true: when the scene genuinely cannot travel (past the
+~5MB ceiling, or storage disabled).
+
 **Auto-detection made this urgent.** `detect()` honours `navigator.language`, so
 the moment the first slice landed, a user on an English browser saw English
 engine errors inside an otherwise-Korean UI. A switch the user controls is not a
@@ -375,7 +405,10 @@ different decision from this one and is left alone.
   safe to wrap in place — measured, not assumed (D6). The α draft's "must become
   getters" is superseded.
 - **L-294-9** Switching the locale reloads the page (D7). A live switch would
-  leave every init-once catalog stale.
+  leave every init-once catalog stale. The reload is survivable, not destructive:
+  the scene rides across in `sessionStorage` and `main.ts` restores it on boot
+  (D7 amendment). The undo stack is the one thing that does not come back, and
+  the toast says so.
 - **L-294-10** An empty translation is honoured, not treated as missing — a
   sentence split across DOM nodes reorders in English and its trailing fragment
   has no counterpart (D8).
