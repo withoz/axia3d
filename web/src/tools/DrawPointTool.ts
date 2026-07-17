@@ -14,7 +14,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 export class DrawPointTool implements ITool {
   readonly name = 'point';
@@ -28,7 +29,7 @@ export class DrawPointTool implements ITool {
 
   onActivate(): void {
     debugLog('[DrawPointTool] Activated');
-    Toast.info('점: 클릭하여 작도 점 배치 (연속, Esc 종료)', 3500);
+    Toast.info(t('점: 클릭하여 작도 점 배치 (연속, Esc 종료)'), 3500);
   }
 
   onDeactivate(): void {
@@ -39,7 +40,7 @@ export class DrawPointTool implements ITool {
     const raw = this.ctx.get3DPoint(e);
     const pt = this.ctx.getSnappedPoint(e, raw) ?? raw ?? point;
     if (!pt) {
-      Toast.warning('점을 배치할 위치를 클릭하세요', 1800);
+      Toast.warning(t('점을 배치할 위치를 클릭하세요'), 1800);
       return;
     }
     const id = this.ctx.bridge.drawPointAsShape(pt.x, pt.y, pt.z);

@@ -6,12 +6,14 @@
  */
 
 import { Viewport, ViewMode } from '../viewport/Viewport';
+import { t } from '../i18n';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { vcbTools } from './VCB';
 import { Toast } from './Toast';
 import { toggleShortcutHelp, closeShortcutHelpIfOpen } from './ShortcutHelpModal';
 import { makeFloatingDraggable } from './makeFloatingDraggable';
 import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface KeyboardShortcutsDeps {
   toolManager: ToolManager;
@@ -20,12 +22,44 @@ export interface KeyboardShortcutsDeps {
   viewModeBar: HTMLElement | null;
   saveProject: () => void;
   openProject: () => void;
+  /** Ctrl+Shift+S — the File menu advertises it. Optional so existing callers
+   *  and tests keep working without it. */
+  saveAsProject?: () => void;
+  /** Ctrl+N — likewise advertised in the File menu. */
+  newProject?: () => void;
 }
 
 // Tool/view display names live in the shared SSOT (./toolDisplayNames).
 
+/**
+ * Shift+<key> tool bindings — the SSOT for BOTH listeners in this file.
+ *
+ * It lived inside the main listener, so the view-mode listener could not see
+ * it and guarded only `!ctrlKey && !altKey`. Shift+F therefore matched both:
+ * freehand here, Front view there. One keystroke picked a tool AND moved the
+ * camera, with the status bar naming the view while the tool was what changed.
+ * The view listener now consults this map and steps aside.
+ *
+ * Shift+K is deliberately absent: it is Back view, which the help sheet
+ * advertises as 'F / Shift+K'. Absence from this map is what keeps it working.
+ *
+ * Matches AxiaCommands (the identity SSOT): ⇧L / ⇧F / ⇧C.
+ */
+const SHIFT_TOOL_MAP: Record<string, string> = {
+  'L': 'polyline',
+  'F': 'freehand',
+  'C': 'centerline',
+};
+
+/** Does Shift+<key> belong to a tool? Case-insensitive; the view listener
+ *  lowercases before comparing, this map is keyed by the shifted character. */
+function isShiftToolKey(key: string): boolean {
+  return SHIFT_TOOL_MAP[key.toUpperCase()] !== undefined;
+}
+
 export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
-  const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject } = deps;
+  const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject,
+          saveAsProject, newProject } = deps;
 
   // ── View switch helper ──
   const switchView = (mode: ViewMode) => {
@@ -52,17 +86,9 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
   };
 
   // ── 입력 요소 포커스 가드 (텍스트 입력 중 단축키 차단) ──
-  const isTypingInInput = (target: EventTarget | null): boolean => {
-    const el = target as HTMLElement | null;
-    if (!el) return false;
-    const tag = el.tagName;
-    return (
-      tag === 'INPUT' ||
-      tag === 'TEXTAREA' ||
-      tag === 'SELECT' ||
-      (el as HTMLElement).isContentEditable === true
-    );
-  };
+  // Moved to utils/isTypingInInput — this was the only complete version of a
+  // check six other listeners were each doing worse, and being local is why
+  // they could not share it.
 
   // ── Main keyboard shortcuts (Section 5) ──
   window.addEventListener('keydown', (e) => {
@@ -111,7 +137,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         nameInput.focus();
         nameInput.select();
       } else {
-        Toast.info('XIA가 선택되지 않았습니다');
+        Toast.info(t('XIA가 선택되지 않았습니다'));
       }
       return;
     }
@@ -123,7 +149,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.gridVisible;
       viewport.setGridVisible(next);
       document.getElementById('sb-fkey-grid')?.classList.toggle('on', next);
-      Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
       return;
     }
 
@@ -146,7 +172,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.edgeVisible;
       viewport.setEdgeStyle({ visible: next });
       document.getElementById('sb-fkey-edge')?.classList.toggle('on', next);
-      Toast.info(`엣지 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '엣지 표시' : '엣지 숨김'));
       return;
     }
 
@@ -157,7 +183,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const next = !s.axisVisible;
       viewport.setAxisVisible(next);
       document.getElementById('sb-fkey-axis')?.classList.toggle('on', next);
-      Toast.info(`축 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '축 표시' : '축 숨김'));
       return;
     }
 
@@ -189,7 +215,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       const s = viewport.getStyleSettings();
       const next = !s.gridVisible;
       viewport.setGridVisible(next);
-      Toast.info(`그리드 ${next ? '표시' : '숨김'}`);
+      Toast.info(t(next ? '그리드 표시' : '그리드 숨김'));
       return;
     }
 
@@ -219,7 +245,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       }
       // Visible feedback (previously written to the hidden legacy #stat-osnap
       // node → invisible; the K inference-lock had no visible feedback).
-      Toast.info(toolManager.snap.hasLockedInference() ? '🔒 추론 잠금' : '추론 잠금 해제');
+      Toast.info(t(toolManager.snap.hasLockedInference() ? '🔒 추론 잠금' : '추론 잠금 해제'));
       return;
     }
 
@@ -294,10 +320,27 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       return;
     }
 
+    // Ctrl+Shift+S: 다른 이름으로 저장.
+    // The File menu prints "Ctrl+Shift+S" next to it (index.html:1800) and
+    // AxiaCommands advertises the same, but nothing was bound — and Ctrl+S
+    // below had no !shiftKey guard, so Ctrl+Shift+S quietly ran a plain save
+    // instead. The menu promised one thing and the app did another.
+    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      saveAsProject?.();
+      return;
+    }
     // Ctrl+S: 저장
-    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+    if (e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       saveProject();
+      return;
+    }
+    // Ctrl+N: 새 파일 — advertised in the File menu (index.html:1796) and in
+    // AxiaCommands, never bound.
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'n' || e.key === 'N')) {
+      e.preventDefault();
+      newProject?.();
       return;
     }
     // Ctrl+O: 열기
@@ -321,9 +364,9 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       e.preventDefault();
       if (toolManager.hasPinnedPlane()) {
         toolManager.resetDrawingPlane();
-        Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
+        Toast.info(t('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면'), 2500);
       } else {
-        Toast.info('이미 기본 평면 (빈 공간 = 바닥)', 1500);
+        Toast.info(t('이미 기본 평면 (빈 공간 = 바닥)'), 1500);
       }
       return;
     }
@@ -353,6 +396,11 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
       toolManager.setTool('boundary');
+      // It set the tool and stopped there, so the status bar kept naming
+      // whatever came before — press Ctrl+B after a view change and it still
+      // read "평면도 (XY)". Every other tool key does all three.
+      syncToolbarHighlight('boundary');
+      updateToolLabel('boundary');
       return;
     }
 
@@ -418,13 +466,8 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         syncToolbarHighlight('select');
       }
     } else if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-      // Shift 조합 단축키
-      const shiftMap: Record<string, string> = {
-        'L': 'polyline',
-        'F': 'freehand',
-        'C': 'centerline',
-      };
-      const shiftTool = shiftMap[e.key];
+      // Shift 조합 단축키 — SHIFT_TOOL_MAP 이 SSOT (뷰 리스너도 이걸 본다)
+      const shiftTool = SHIFT_TOOL_MAP[e.key];
       if (shiftTool) {
         toolManager.setTool(shiftTool);
         toolbar.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
@@ -447,8 +490,12 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         'g': 'polygon', 'G': 'polygon',
         'c': 'circle', 'C': 'circle',
         'a': 'arc', 'A': 'arc',
-        // Toolbar Phase 4 — Pie/Sector (I = free key, matches screenshot).
-        'i': 'pie', 'I': 'pie',
+        // I is NOT here: it was claimed as "a free key" for Pie/Sector, but
+        // XiaInspector had bound it to the Inspector years earlier, so pressing
+        // I picked the Pie tool AND opened the Inspector. Both SSOTs said Pie
+        // (catalog + the menu printing `I` next to 부채꼴) and the help sheet
+        // said Inspector; the user's call (2026-07-16) is Inspector. Pie keeps
+        // its menu entry and the palette.
         'v': 'pushpull', 'V': 'pushpull',   // ADR-246: P↔V swap, Extrude/Cut (was 'p')
         'h': 'sphere', 'H': 'sphere',
         'y': 'cylinder', 'Y': 'cylinder',
@@ -485,7 +532,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       // ADR-270 §F amendment 3 — 🏠 도 드로잉 평면을 기본(z=0)으로 복귀.
       const hadPlane = toolManager.hasPinnedPlane();
       toolManager.resetDrawingPlane();
-      if (hadPlane) Toast.info('뷰 원점 · 기본 평면(z=0) 복귀', 1800);
+      if (hadPlane) Toast.info(t('뷰 원점 · 기본 평면(z=0) 복귀'), 1800);
     });
     // Draggable (reposition + persist). A real drag suppresses the trailing
     // click so it doesn't also reset the camera; a plain click still resets.
@@ -508,7 +555,11 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
 
     // ── 키보드 단축키: AutoCAD 스타일 + Blender 넘패드 ──
     window.addEventListener('keydown', (e) => {
-      if (e.target instanceof HTMLInputElement) return;
+      // Was `instanceof HTMLInputElement` while the main listener 400 lines up
+      // used the full check — the two listeners in this one file disagreed
+      // about what "typing" means. t / b / f / k are bare letters, so the gap
+      // was real for anything that is not an <input>.
+      if (isTypingInInput(e.target)) return;
 
       // VCB 활성 도구에서는 넘패드도 숫자 입력으로 사용 (뷰 전환 차단)
       const currentTool = toolManager.currentTool;
@@ -527,6 +578,10 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       // AutoCAD / 3ds Max 스타일 단축키 (Ctrl 없이)
       if (!e.ctrlKey && !e.altKey) {
         const key = e.key.toLowerCase();
+        // Shift+F is freehand, not Front — this guard was missing, so it was
+        // both. Shift+K stays Back view (not in SHIFT_TOOL_MAP), which is what
+        // the help sheet promises with 'F / Shift+K'.
+        if (e.shiftKey && isShiftToolKey(key)) return;
         if (key === 't') mode = 'top';
         else if (key === 'b') mode = 'bottom';
         else if (key === 'f') mode = 'front';

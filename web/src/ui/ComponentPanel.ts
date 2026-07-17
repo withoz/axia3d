@@ -12,7 +12,8 @@
 
 import { WasmBridge, GroupInfo } from '../bridge/WasmBridge';
 import { SelectionManager } from '../tools/SelectionManager';
-import { Toast } from './Toast';
+import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface ComponentPanelCallbacks {
   onGroupSelect?: (groupId: number) => void;
@@ -52,14 +53,14 @@ export class ComponentPanel {
     this.panelEl.className = 'component-panel';
     this.panelEl.innerHTML = `
       <div class="cp-header">
-        <span class="cp-title">그룹 / 컴포넌트</span>
+        <span class="cp-title">${t('그룹 / 컴포넌트')}</span>
         <div class="cp-actions">
-          <button class="cp-btn cp-btn-add" title="선택한 면으로 그룹 생성">+</button>
-          <button class="cp-btn cp-btn-refresh" title="새로고침">⟳</button>
+          <button class="cp-btn cp-btn-add" title="${t('선택한 면으로 그룹 생성')}">+</button>
+          <button class="cp-btn cp-btn-refresh" title="${t('새로고침')}">⟳</button>
         </div>
       </div>
       <div class="cp-tree"></div>
-      <div class="cp-empty">그룹이 없습니다</div>
+      <div class="cp-empty">${t('그룹이 없습니다')}</div>
     `;
     this.panelEl.style.display = 'none';
     container.appendChild(this.panelEl);
@@ -182,7 +183,7 @@ export class ComponentPanel {
         <span class="cp-face-count">(${group.faceCount})</span>
         <span class="cp-lock cp-toggle" data-action="lock">${lockIcon}</span>
         <span class="cp-vis cp-toggle" data-action="vis">${visIcon}</span>
-        <button class="cp-btn-delete cp-toggle" data-action="delete" title="그룹 해제">✕</button>
+        <button class="cp-btn-delete cp-toggle" data-action="delete" title="${t('그룹 해제')}">✕</button>
       </div>
     `;
 
@@ -244,7 +245,7 @@ export class ComponentPanel {
         this.callbacks.onGroupDelete?.(groupId);
         this.bridge.deleteGroup(groupId);
         this.selection.ungroupSelected();
-        Toast.info(`Group-${groupId} 해제됨`);
+        Toast.info(t('Group-{groupId} 해제됨', { groupId }));
         this.refresh();
         break;
     }

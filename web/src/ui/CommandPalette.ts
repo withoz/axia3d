@@ -16,6 +16,7 @@
  */
 
 import { getCommandCatalog, type CommandDef } from '../commands/CommandCatalog';
+import { t } from '../i18n';
 
 const STYLE_ID = 'cmd-palette-style';
 const ROOT_ID = 'cmd-palette-root';
@@ -123,7 +124,7 @@ export class CommandPalette {
 
     const input = document.createElement('input');
     input.className = 'cmd-palette-input';
-    input.placeholder = '명령 검색… (예: line, push, 단면, undo)';
+    input.placeholder = t('명령 검색… (예: line, push, 단면, undo)');
     input.addEventListener('input', () => this.refresh());
     this.input = input;
 
@@ -194,7 +195,7 @@ export class CommandPalette {
   private renderRows(): void {
     if (!this.list) return;
     if (this.results.length === 0) {
-      this.list.innerHTML = '<li class="cmd-palette-empty">일치하는 명령이 없습니다</li>';
+      this.list.innerHTML = `<li class="cmd-palette-empty">${t('일치하는 명령이 없습니다')}</li>`;
       return;
     }
     this.list.innerHTML = '';
@@ -204,7 +205,7 @@ export class CommandPalette {
       li.className = 'cmd-palette-row' + (i === this.activeIdx ? ' active' : '');
       li.dataset.idx = String(i);
       li.innerHTML = `
-        <span class="cmd-palette-label">${escape(cmd.label)}</span>
+        <span class="cmd-palette-label">${escape(t(cmd.label))}</span>
         <span class="cmd-palette-group">${escape(cmd.group)}</span>
         ${cmd.shortcut ? `<span class="cmd-palette-shortcut">${escape(cmd.shortcut)}</span>` : ''}
       `;
@@ -228,19 +229,19 @@ export class CommandPalette {
 
 function score_match(cmd: CommandDef, q: string): number {
   if (!q) return 1; // empty query → all commands, default order
-  const hay = `${cmd.label} ${cmd.id} ${cmd.group} ${cmd.shortcut ?? ''}`.toLowerCase();
+  const hay = `${t(cmd.label)} ${cmd.label} ${cmd.id} ${cmd.group} ${cmd.shortcut ?? ''}`.toLowerCase();
   if (!containsAll(hay, q)) return -1;
   // Higher score = better match.
   let s = 0;
   if (cmd.id.toLowerCase().startsWith(q)) s += 100;
-  if (cmd.label.toLowerCase().includes(q)) s += 50;
+  if (t(cmd.label).toLowerCase().includes(q) || cmd.label.toLowerCase().includes(q)) s += 50;
   if (cmd.shortcut?.toLowerCase() === q) s += 200;
   // Prefer toolbar / mode commands slightly so common things rise to top.
   if (cmd.toolbar) s += 5;
   if (cmd.isMode) s += 3;
   // Light penalty for very long labels (more specific actions are usually
   // shorter — keeps "Line" above "선 + … + …" buried items).
-  s -= Math.min(20, cmd.label.length / 3);
+  s -= Math.min(20, t(cmd.label).length / 3);
   return s;
 }
 

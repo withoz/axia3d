@@ -13,7 +13,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -29,7 +30,7 @@ export class ArrayRadialTool implements ITool {
   }
 
   onActivate(): void {
-    Toast.info('회전축 X/Y/Z 선택 + VCB=개수 → 클릭(또는 Enter)으로 원형 배열, Esc 종료', 3500);
+    Toast.info(t('회전축 X/Y/Z 선택 + VCB=개수 → 클릭(또는 Enter)으로 원형 배열, Esc 종료'), 3500);
     debugLog('[ArrayRadialTool] Activated');
   }
 
@@ -72,7 +73,7 @@ export class ArrayRadialTool implements ITool {
     const faces = this.ctx.getSelectedFaces();
     const edges = this.ctx.selection.getSelectedEdges();
     if (faces.length === 0 && edges.length === 0) {
-      Toast.warning('배열할 면 또는 엣지를 먼저 선택하세요', 2000);
+      Toast.warning(t('배열할 면 또는 엣지를 먼저 선택하세요'), 2000);
       return;
     }
     const axisVec: [number, number, number] =
@@ -85,7 +86,7 @@ export class ArrayRadialTool implements ITool {
       this.ctx.syncMesh();
       const kind = faces.length > 0 ? '면' : '엣지';
       const n = faces.length > 0 ? faces.length : edges.length;
-      Toast.info(`원형 배열 완료 (${this.count}개 · ${this.axis.toUpperCase()}축)`, 2000);
+      Toast.info(t('원형 배열 완료 ({count}개 · {axis}축)', { count: this.count, axis: this.axis.toUpperCase() }), 2000);
       debugLog(`[ArrayRadial] ${n} ${faces.length > 0 ? 'faces' : 'edges'} × ${this.count} around ${this.axis}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '원형 배열 실패');

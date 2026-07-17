@@ -371,6 +371,60 @@ Full re-verification of the curved-sketch closed-shape path:
   ADR-284) — each has the `surfaceKind 2/3/4/5` detect + host pick + closed-loop
   dispatch (freehand/bezier gate on closure). grep-confirmed 4/4.
 
+> ⚠ **"grep-confirmed" was not "works" (2026-07-16, measured).** The call sites
+> were all present and the tools still produced nothing. In real Chromium on a
+> Path B cylinder: Circle 3→4 ✓, but **Polygon 3→3** (engine refused "wraps";
+> only a `console.warn`, no toast) and **Rect 3→3** (never reached the engine).
+> Root cause was one level up: `get3DPoint` treated a curved face as a plane —
+> a Path B cylinder's side is ONE face wrapping 360°, so its averaged DCEL
+> normal points along the axis and the "face plane" passes through the axis. A
+> click on the surface at (200,0,200) returned **(0,0,200)**, the axis, so every
+> tool centring on it built its shape around the axis and the engine correctly
+> refused it as encircling. Circle was the sole survivor because it reads
+> `plane.origin` instead. Fixed by making `get3DPoint` return the surface point
+> for `surfaceKind >= 2`; runtime-verified by
+> `web/e2e/adr-284-curved-draw-tools.spec.ts` (4/4 tools actually split).
+>
+> **Ellipse was dropped without a word.** §2's audit table groups "Rect /
+> Polygon / **Ellipse**" as one gap row; this closure lists only Rect / Polygon
+> / Freehand / Bezier. The claim "closed shapes × 4 tools" held only by silently
+> redefining which four. Ellipse kept drawing flat on the tangent plane — no
+> split, no error, no toast — until it was wired in the same pass as the
+> `get3DPoint` fix.
+>
+> Lesson: a grep proves a call site exists, not that a user gets a face. Curved
+> claims need a runtime gate.
+>
+> **Typed radius on a curved host — declined, not approximated (2026-07-16).**
+> `DrawCircleTool.applyVCBValue` had no curved branch either: it ignored the
+> sphere/cylinder/cone/torusMode the mouse path sets and drew a FLAT circle on
+> the tangent plane, so the same tool behaved differently depending on whether
+> you clicked the radius or typed it — and typing looked like it worked.
+>
+> It now declines: "곡면에서는 반지름 입력이 아직 지원되지 않습니다 — 마우스로
+> 지정해 주세요". Approximating was the tempting fix and is wrong here. The mouse
+> path takes a *point*, so honouring a typed "50" means placing the radius point
+> whose GEODESIC distance is 50 — inverting the projection per surface
+> (`d = r·tan(v/r)` on a sphere; exact along a cylinder's axis but not around
+> it). Feeding the tangent-plane point straight through lands ~2% short at
+> r=200/v=50 and ~7% at v=100: a quietly wrong dimension in a tool whose stated
+> identity is being more precise than SketchUp. **Follow-up:** an engine helper
+> for "surface point at geodesic distance d from centre" would make the VCB path
+> exact; until then the mouse path is the honest one.
+>
+> **Follow-up done (2026-07-16).** `surface_point_at_geodesic_distance` landed,
+> so the typed radius is now exact rather than declined. No inverse formula was
+> derived per surface: each has a direction along which the geodesic distance IS
+> the offset (cylinder → axial, sphere → a great circle at α = d/r, cone → the
+> slant, torus → the meridian), so the point is constructed, not solved for.
+> Measured in the browser: typing 50 on an r=200 cylinder yields a radius point
+> at an axial offset of exactly 50.000000, on the surface (axis distance
+> 200.000000); the tangent-plane shortcut would have given 48.996 (2.01% short).
+> Still fail-closed — a degenerate ask, a sphere radius past half a turn, or an
+> engine without the export declines rather than falling back to the flat circle
+> this exists to prevent. See `web/e2e/adr-284-geodesic-radius.spec.ts` and
+> `crates/axia-geo/src/surfaces/geodesic.rs`.
+
 **Menu/toolbar — UNCHANGED (additive-only, ADR-046 P31 #4):** the curved branch
 is INTERNAL to the existing rect/polygon/freehand/bezier tools — no new command,
 export-on-menu, `MenuBar` entry, `index.html` toolbar entry, or ActionCatalog

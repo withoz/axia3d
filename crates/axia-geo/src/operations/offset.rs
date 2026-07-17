@@ -2419,7 +2419,12 @@ fn surfaces_equivalent(
 ///     extremes by > scale-aware tolerance)
 ///   - RMS planarity error ≤ scale-aware tolerance (`EPSILON_LENGTH ×
 ///     max(1.0, wire_extent)`); else `WireNotPlanar { rms_error }`.
-fn derive_free_wire_plane(
+/// Visible to the crate since ADR-148 §5: the boundary tool needs the same
+/// "which plane do these free edges lie in" answer, and a second
+/// implementation would drift from this one (메타-원칙 #4). The error type
+/// stays OffsetEdgeError — its two relevant variants (WireNotPlanar /
+/// NoReferencePlane) describe the geometry, not the caller.
+pub(crate) fn derive_free_wire_plane(
     mesh: &Mesh,
     start_edge: EdgeId,
 ) -> std::result::Result<AnalyticSurface, OffsetEdgeError> {

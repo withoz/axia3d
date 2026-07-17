@@ -13,7 +13,8 @@
  * pre-check + 한국어 Toast.error + cleanup. + Engine error 메시지
  * 한국어 translation (translateEngineError helper).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { setLocale } from '../i18n';
 import * as THREE from 'three';
 import { SliceTool } from './SliceTool';
 import { Toast } from '../ui/Toast';
@@ -51,6 +52,9 @@ function mockToolContext() {
 }
 
 describe('SliceTool hotfix — empty volume pre-check + Toast 한국어', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let ctx: ReturnType<typeof mockToolContext>;
   let tool: SliceTool;
 

@@ -18,7 +18,8 @@ import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
-import { pickClickedEdge } from './edgePick';
+import { pickClickedEdge } from './edgePick';
+import { t } from '../i18n';
 
 const PICK_TOL = 2.0; // mm — snapped point must sit on a vertex for LINEAR mode
 
@@ -43,7 +44,7 @@ export class ReferenceDimensionTool implements ITool {
 
   onActivate(): void {
     debugLog('[ReferenceDimensionTool] Activated');
-    Toast.info('참조 치수(읽기전용): 정점→정점 / 원·호 / 엣지→엣지 클릭', 3800);
+    Toast.info(t('참조 치수(읽기전용): 정점→정점 / 원·호 / 엣지→엣지 클릭'), 3800);
   }
 
   onDeactivate(): void {
@@ -61,13 +62,13 @@ export class ReferenceDimensionTool implements ITool {
     if (vid >= 0) {
       this.mode = 'linear';
       this.v1 = vid;
-      Toast.info('둘째 정점을 클릭하세요 (Esc 취소)', 2500);
+      Toast.info(t('둘째 정점을 클릭하세요 (Esc 취소)'), 2500);
       return;
     }
 
     const picked = pickClickedEdge(this.ctx, e);
     if (!picked) {
-      Toast.warning('정점·원/호·엣지 위를 클릭하세요', 2000);
+      Toast.warning(t('정점·원/호·엣지 위를 클릭하세요'), 2000);
       return;
     }
     const radius = this.ctx.bridge.edgeCurveRadius(picked.edgeId);
@@ -76,33 +77,33 @@ export class ReferenceDimensionTool implements ITool {
       const verts = this.ctx.bridge.getEdgeEndpoints(picked.edgeId);
       if (verts.length < 1) return;
       const id = this.ctx.bridge.addReferenceRadius(verts[0]);
-      this.report(id, `참조 반지름 (R${this.ctx.units.format(radius)})`);
+      this.report(id, t('참조 반지름 (R{radius})', { radius: this.ctx.units.format(radius) }));
       return;
     }
     // Straight edge → start reference angular.
     this.mode = 'angular';
     this.edge1 = picked.edgeId;
-    Toast.info('둘째 엣지를 클릭하세요 (Esc 취소)', 2500);
+    Toast.info(t('둘째 엣지를 클릭하세요 (Esc 취소)'), 2500);
   }
 
   private finishLinear(e: MouseEvent, point: THREE.Vector3 | null): void {
     const vid = this.pickVertex(e, point);
-    if (vid < 0) { Toast.warning('치수를 잴 정점 위를 클릭하세요', 2000); return; }
-    if (vid === this.v1) { Toast.warning('서로 다른 정점을 선택하세요', 2000); return; }
+    if (vid < 0) { Toast.warning(t('치수를 잴 정점 위를 클릭하세요'), 2000); return; }
+    if (vid === this.v1) { Toast.warning(t('서로 다른 정점을 선택하세요'), 2000); return; }
     const pa = this.ctx.bridge.getVertexPos(this.v1);
     const pb = this.ctx.bridge.getVertexPos(vid);
     if (!pa || !pb) { this.cleanup(); return; }
     const dist = Math.hypot(pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]);
-    if (dist < 1e-6) { Toast.warning('두 정점이 같은 위치입니다', 2000); this.cleanup(); return; }
+    if (dist < 1e-6) { Toast.warning(t('두 정점이 같은 위치입니다'), 2000); this.cleanup(); return; }
     const id = this.ctx.bridge.addReferenceDistance(this.v1, vid);
-    this.report(id, `참조 거리 (${this.ctx.units.format(dist)})`);
+    this.report(id, t('참조 거리 ({distance})', { distance: this.ctx.units.format(dist) }));
     this.cleanup();
   }
 
   private finishAngular(e: MouseEvent): void {
     const picked = pickClickedEdge(this.ctx, e);
-    if (!picked) { Toast.warning('둘째 엣지를 클릭하세요', 2000); return; }
-    if (picked.edgeId === this.edge1) { Toast.warning('서로 다른 엣지를 선택하세요', 2000); return; }
+    if (!picked) { Toast.warning(t('둘째 엣지를 클릭하세요'), 2000); return; }
+    if (picked.edgeId === this.edge1) { Toast.warning(t('서로 다른 엣지를 선택하세요'), 2000); return; }
     const eA = this.ctx.bridge.getEdgeEndpoints(this.edge1);
     const eB = this.ctx.bridge.getEdgeEndpoints(picked.edgeId);
     if (eA.length < 2 || eB.length < 2) { this.cleanup(); return; }
@@ -113,10 +114,10 @@ export class ReferenceDimensionTool implements ITool {
     const dot = Math.max(-1, Math.min(1, dA[0] * dB[0] + dA[1] * dB[1] + dA[2] * dB[2]));
     const angle = Math.acos(dot);
     if (angle < 1e-3 || angle > Math.PI - 1e-3) {
-      Toast.warning('평행/일직선 엣지는 각도 치수 불가', 2200); this.cleanup(); return;
+      Toast.warning(t('평행/일직선 엣지는 각도 치수 불가'), 2200); this.cleanup(); return;
     }
     const id = this.ctx.bridge.addReferenceAngle(eA[0], eA[1], eB[0], eB[1]);
-    this.report(id, `참조 각도 (${((angle * 180) / Math.PI).toFixed(1)}°)`);
+    this.report(id, t('참조 각도 ({angle}°)', { angle: ((angle * 180) / Math.PI).toFixed(1) }));
     this.cleanup();
   }
 
@@ -131,7 +132,7 @@ export class ReferenceDimensionTool implements ITool {
   private report(id: number, label: string): void {
     if (id > 0) {
       this.ctx.syncMesh();
-      Toast.info(`${label} — 읽기전용`, 2500);
+      Toast.info(t('{label} — 읽기전용', { label }), 2500);
       debugLog(`[ReferenceDimension] constraint ${id}: ${label}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '참조 치수 생성 실패');

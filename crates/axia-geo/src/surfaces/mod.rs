@@ -58,6 +58,8 @@ pub mod sweep;
 pub mod fitting;
 pub mod merge;
 
+pub mod geodesic;
+pub use geodesic::surface_point_at_geodesic_distance;
 pub use trim::{TrimCurve2D, TrimLoop};
 pub use ssi::SurfaceIntersection;
 

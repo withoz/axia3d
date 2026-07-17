@@ -9,6 +9,7 @@ import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
 import type { LayeredChannels, TextureInfo } from '../materials/MaterialLibrary';
 import type { LayeredChannelName } from '../viewport/LayeredMaterialBinding';
+import { t } from '../i18n';
 
 // ════════════════════════════════════════════════════════════════════════
 // ADR-026 P12 — Cardinal Plane SSOT (Single Source of Truth)
@@ -534,6 +535,8 @@ type AxiaEngineExtended = AxiaEngine & {
   faceHasLargerCoplanarContainer?(faceRaw: number): boolean;
   /** ADR-252 — wall thickness under a source sheet (pocket↔through threshold), or -1. */
   wallThicknessFromSourceFace?(faceRaw: number): number;
+  moveOnlyMaxInward?(faceRaw: number): number;
+  surfacePointAtGeodesicDistance?(faceRaw: number, cx: number, cy: number, cz: number, d: number): Float64Array;
   /** 2026-04-24 — 크기 다른 coplanar 면들의 geometric merge */
   mergeCoplanarFacesGeometric?(f1: number, f2: number, angleTolDeg: number): number;
   tryMergeAdjacentFaces?(faceIds: Uint32Array): number;
@@ -665,6 +668,13 @@ type AxiaEngineExtended = AxiaEngine & {
     planeDist: number,
     searchRadiusMm: number,
   ): number;
+  // ADR-148 §5 — plane inferred from the free edges around the click
+  boundaryFromPointAutoPlane?(
+    px: number, py: number, pz: number,
+    searchRadiusMm: number,
+  ): number;
+  // ADR-148 §5 — 3D BOUNDARY (read-only: selects, does not create)
+  shellFromPoint?(px: number, py: number, pz: number): Uint32Array;
   // ADR-149 β-3 — T-junction Sweep 명시 도구
   /** Detect all mesh-level T-junctions (read-only). Returns JSON array. */
   detectTJunctions?(tolMm: number): string;
@@ -1646,6 +1656,57 @@ export class WasmBridge {
     return this.engine.boundaryFromPoint(
       px, py, pz, nx, ny, nz, planeDist, searchRadiusMm,
     );
+  }
+
+  /**
+   * ADR-148 §5 — boundaryFromPoint with the plane inferred from the free
+   * edges around the click.
+   *
+   * Boundary is used where there is no face yet — precisely where a face-hit
+   * cannot tell the tool which plane to work on, so the click falls through to
+   * Z=0 and a loop at z=100 cannot be faced. This asks the geometry.
+   *
+   * Refuses (throws) when the nearby wires disagree about the plane rather
+   * than choosing one: that choice would be a guess (메타-원칙 #5 / #16).
+   *
+   * Throws on:
+   *   - "boundaryFromPointAutoPlane: NoOrphanEdgesInRadius (radius Rmm)"
+   *   - "boundaryFromPointAutoPlane: NoEnclosingCycle"  (also the ambiguous /
+   *     non-planar refusals — from the click's side nothing resolved)
+   *   - "boundaryFromPointAutoPlane: CycleAlreadyFaced (face N)"
+   */
+  boundaryFromPointAutoPlane(
+    px: number, py: number, pz: number,
+    searchRadiusMm: number,
+  ): number {
+    if (!this.engine || !this.engine.boundaryFromPointAutoPlane) {
+      throw new Error('boundaryFromPointAutoPlane: WASM endpoint missing (rebuild required)');
+    }
+    this.markDirty();
+    return this.engine.boundaryFromPointAutoPlane(px, py, pz, searchRadiusMm);
+  }
+
+  /**
+   * ADR-148 §5 — 3D BOUNDARY: the faces of the closed shell enclosing a point.
+   *
+   * The 3D sibling of boundaryFromPoint. 2D synthesizes the face an edge loop
+   * implies; 3D has nothing to synthesize — a shell being closed is already
+   * true, and Volume is a computed state, not an entity. So this answers
+   * "which faces bound the solid I clicked inside", and the caller selects
+   * them.
+   *
+   * No markDirty: nothing changed. Nested solids resolve smallest-first, the
+   * same rule the 2D tool uses.
+   *
+   * Throws on:
+   *   - "shellFromPoint: NoClosedShell"
+   *   - "shellFromPoint: PointNotInsideAnyShell"
+   */
+  shellFromPoint(px: number, py: number, pz: number): number[] {
+    if (!this.engine || !this.engine.shellFromPoint) {
+      throw new Error('shellFromPoint: WASM endpoint missing (rebuild required)');
+    }
+    return Array.from(this.engine.shellFromPoint(px, py, pz));
   }
 
   // ==========================================================================
@@ -3282,11 +3343,12 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distance, taperDeg) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : 'Tapered extrude 실패 — 테이퍼가 너무 가파르거나 (자기교차/붕괴) 평면 프로파일이 아닙니다',
+      // ADR-190 Phase 3 — via the SSOT so the kernel's own wording (ADR refs,
+      // enum names, the Q3 fallback note) never reaches the user.
+      Toast.fromBridgeError(
+        this,
+        'Tapered extrude 실패 — 테이퍼가 너무 가파르거나 (자기교차/붕괴) 평면 프로파일이 아닙니다',
+        'warning',
         5000,
       );
     }
@@ -3314,11 +3376,10 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distance, topScale) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : 'Cone extrude 실패 — top 비율은 0~1 (1 이상은 원통→직선 Extrude) 이어야 하고 평면 원 프로파일이어야 합니다',
+      Toast.fromBridgeError(
+        this,
+        'Cone extrude 실패 — top 비율은 0~1 (1 이상은 원통→직선 Extrude) 이어야 하고 평면 원 프로파일이어야 합니다',
+        'warning',
         5000,
       );
     }
@@ -3347,11 +3408,10 @@ export class WasmBridge {
     this.markDirty();
     const ok = fn.call(this.engine, faceId, distPos, distNeg) as boolean;
     if (!ok) {
-      const msg = this.lastError();
-      Toast.warning(
-        msg && msg.length > 0
-          ? msg
-          : '양방향 extrude 실패 — 위/아래 거리는 0 이상, 합 > 0 이어야 하고 평면 프로파일이어야 합니다',
+      Toast.fromBridgeError(
+        this,
+        '양방향 extrude 실패 — 위/아래 거리는 0 이상, 합 > 0 이어야 하고 평면 프로파일이어야 합니다',
+        'warning',
         5000,
       );
     }
@@ -4474,6 +4534,36 @@ export class WasmBridge {
 
   /** ADR-252 — wall thickness under a profile sheet drawn on a solid wall (the
    *  pocket↔through depth threshold), or -1 if not a source-on-wall face. */
+  /**
+   * ADR-190 Phase 3 — how far an inward MoveOnly push may travel before the
+   * solid would invert (the local thickness under `face`); `-1` when the face
+   * has no connecting walls parallel to its normal (flat/open profile →
+   * unclamped). Read-only. ADR-196 clamps an over-push here, correctly but
+   * silently; the Push/Pull tool reads this to say so.
+   */
+  moveOnlyMaxInward(face: number): number {
+    return this.engine?.moveOnlyMaxInward?.(face) ?? -1;
+  }
+
+  /**
+   * ADR-284 follow-up — a point on `face`'s surface whose GEODESIC distance
+   * from `center` is `d`. Feed it back as the radius point so a TYPED radius
+   * means what it says: offsetting `d` in the tangent plane instead lands ~2%
+   * short at r=200/d=50 and ~7% at d=100.
+   *
+   * `null` = not answerable (non-curved face, degenerate ask, or an engine
+   * without the export) — the caller keeps its planar path. Read-only.
+   */
+  surfacePointAtGeodesicDistance(
+    face: number, center: [number, number, number], d: number,
+  ): [number, number, number] | null {
+    const out = this.engine?.surfacePointAtGeodesicDistance?.(
+      face, center[0], center[1], center[2], d,
+    );
+    if (!out || out.length < 3) return null;
+    return [out[0], out[1], out[2]];
+  }
+
   wallThicknessFromSourceFace(face: number): number {
     return this.engine?.wallThicknessFromSourceFace?.(face) ?? -1;
   }
@@ -5911,11 +6001,11 @@ export class WasmBridge {
     if (!this.engine) return null;
     try {
       const result = this.engine.export_snapshot?.();
-      if (result) Toast.success('프로젝트 내보내기 성공');
+      if (result) Toast.success(t('프로젝트 내보내기 성공'));
       return result ?? null;
     } catch (e) {
       console.error('[WasmBridge] exportSnapshot failed:', e);
-      Toast.error('프로젝트 내보내기 실패');
+      Toast.error(t('프로젝트 내보내기 실패'));
       return null;
     }
   }
@@ -5927,14 +6017,14 @@ export class WasmBridge {
     try {
       const result = this.engine.import_snapshot?.(data) ?? false;
       if (result) {
-        Toast.success('프로젝트 불러오기 성공');
+        Toast.success(t('프로젝트 불러오기 성공'));
         // Imported snapshot has its own constraint set — invalidate cache.
         this._emitConstraintsChanged();
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] importSnapshot failed:', e);
-      Toast.error('프로젝트 불러오기 실패');
+      Toast.error(t('프로젝트 불러오기 실패'));
       return false;
     }
   }
@@ -5961,14 +6051,14 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as DxfImportResult;
       if (result.ok) {
-        Toast.success(`DXF 불러오기 성공: ${result.totalFaces ?? 0}개 면`);
+        Toast.success(t('DXF 불러오기 성공: {faces}개 면', { faces: result.totalFaces ?? 0 }));
       } else {
-        Toast.error(`DXF 불러오기 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('DXF 불러오기 실패: {error}', { error: result.error ?? t('알 수 없는 오류') }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] importDxf failed:', e);
-      Toast.error('DXF 파일 파싱 실패');
+      Toast.error(t('DXF 파일 파싱 실패'));
       return null;
     }
   }
@@ -5994,7 +6084,7 @@ export class WasmBridge {
       return this.engine.translate_faces?.(ids, dx, dy, dz) ?? false;
     } catch (e) {
       console.error('[WasmBridge] translateFaces failed:', e);
-      Toast.warning('이동 실행 실패');
+      Toast.warning(t('이동 실행 실패'));
       return false;
     }
   }
@@ -6014,7 +6104,7 @@ export class WasmBridge {
       return this.engine.rotate_faces?.(ids, cx, cy, cz, ax, ay, az, angleDeg) ?? false;
     } catch (e) {
       console.error('[WasmBridge] rotateFaces failed:', e);
-      Toast.warning('회전 실행 실패');
+      Toast.warning(t('회전 실행 실패'));
       return false;
     }
   }
@@ -6032,7 +6122,7 @@ export class WasmBridge {
       return this.engine.scale_faces?.(ids, cx, cy, cz, sx, sy, sz) ?? false;
     } catch (e) {
       console.error('[WasmBridge] scaleFaces failed:', e);
-      Toast.warning('스케일 실행 실패');
+      Toast.warning(t('스케일 실행 실패'));
       return false;
     }
   }
@@ -6065,12 +6155,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as OffsetResult;
       if (!result.ok) {
-        Toast.warning(`Offset 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Offset 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] offsetFace failed:', e);
-      Toast.warning('Offset 실행 실패');
+      Toast.warning(t('Offset 실행 실패'));
       return null;
     }
   }
@@ -6086,12 +6176,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as RecessResult;
       if (!result.ok) {
-        Toast.warning(`Recess 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Recess 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] createRecess failed:', e);
-      Toast.warning('Recess 실행 실패');
+      Toast.warning(t('Recess 실행 실패'));
       return null;
     }
   }
@@ -6119,12 +6209,12 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as OffsetEdgeResult;
       if (!result.ok) {
-        Toast.warning(`Edge Offset 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.warning(t('Edge Offset 실패: {result}', { result: result.error ?? '알 수 없는 오류' }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] offsetEdge failed:', e);
-      Toast.warning('Edge Offset 실행 실패');
+      Toast.warning(t('Edge Offset 실행 실패'));
       return null;
     }
   }
@@ -6854,14 +6944,14 @@ export class WasmBridge {
       if (!json) return null;
       const result = JSON.parse(json) as BooleanResult;
       if (!result.ok) {
-        Toast.error(`Boolean ${op} 실패: ${result.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('Boolean {op} 실패: {result}', { op, result: result.error ?? '알 수 없는 오류' }));
       } else {
-        Toast.success(`Boolean ${op} 성공`);
+        Toast.success(t('Boolean {op} 성공', { op }));
       }
       return result;
     } catch (e) {
       console.error('[WasmBridge] booleanOp failed:', e);
-      Toast.error(`Boolean 연산 실패: ${String(e)}`);
+      Toast.error(t('Boolean 연산 실패: {error}', { error: String(e) }));
       return null;
     }
   }
@@ -6894,14 +6984,14 @@ export class WasmBridge {
       const json = this.engine.sheetBoolean(a, b, op);
       const res = JSON.parse(json) as { ok: boolean; resultFace?: number; error?: string };
       if (!res.ok) {
-        Toast.error(`Sheet ${op} 실패: ${res.error ?? '알 수 없는 오류'}`);
+        Toast.error(t('Sheet {op} 실패: {res}', { op, res: res.error ?? '알 수 없는 오류' }));
         return null;
       }
-      Toast.success(`Sheet ${op} 성공`);
+      Toast.success(t('Sheet {op} 성공', { op }));
       return res.resultFace ?? null;
     } catch (e) {
       console.error('[WasmBridge] sheetBoolean failed:', e);
-      Toast.error(`Sheet 연산 실패: ${String(e)}`);
+      Toast.error(t('Sheet 연산 실패: {error}', { error: String(e) }));
       return null;
     }
   }

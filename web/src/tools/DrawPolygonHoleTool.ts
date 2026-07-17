@@ -20,7 +20,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const MAX_DRAW_DISTANCE = 50000;
 const HOLE_COLOR = 0x4dabf7;
@@ -41,7 +42,7 @@ export class DrawPolygonHoleTool implements ITool {
 
   onActivate(): void {
     debugLog('[DrawPolygonHoleTool] Activated');
-    Toast.info('구멍을 낼 면 위를 클릭해 윤곽 점을 찍으세요 (Enter/더블클릭/첫 점 클릭으로 닫기)', 3000);
+    Toast.info(t('구멍을 낼 면 위를 클릭해 윤곽 점을 찍으세요 (Enter/더블클릭/첫 점 클릭으로 닫기)'), 3000);
   }
 
   onDeactivate(): void {
@@ -54,7 +55,7 @@ export class DrawPolygonHoleTool implements ITool {
       if (!point) return;
       const plane = this.ctx.getDrawPlane(e);
       if (!plane.onFace) {
-        Toast.warning('다각형 구멍은 기존 면 위에 내야 합니다 — 면을 클릭하세요');
+        Toast.warning(t('다각형 구멍은 기존 면 위에 내야 합니다 — 면을 클릭하세요'));
         return;
       }
       this.plane = plane;
@@ -159,7 +160,7 @@ export class DrawPolygonHoleTool implements ITool {
 
   private finalize(): void {
     if (!this.plane || this.points.length < MIN_POINTS) {
-      Toast.warning('점이 3개 이상 필요합니다');
+      Toast.warning(t('점이 3개 이상 필요합니다'));
       return;
     }
     const loop = this.ccwLoop();
@@ -174,7 +175,7 @@ export class DrawPolygonHoleTool implements ITool {
     const tube = this.ctx.bridge.drillPolygonThroughHole(loop, normal);
     if (tube > 0) {
       debugLog(`[PolygonHole] Drilled through → ${tube} tube quads (${loop.length}-gon)`);
-      Toast.success('관통 구멍을 뚫었습니다');
+      Toast.success(t('관통 구멍을 뚫었습니다'));
       this.cleanup();
       this.ctx.syncMesh();
       return;
@@ -190,7 +191,7 @@ export class DrawPolygonHoleTool implements ITool {
       return;
     }
     debugLog(`[PolygonHole] Punched face hole → ring face ${faceId} (${loop.length}-gon)`);
-    Toast.success('면 구멍을 뚫었습니다');
+    Toast.success(t('면 구멍을 뚫었습니다'));
     this.cleanup();
     this.ctx.syncMesh();
   }

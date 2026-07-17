@@ -16,6 +16,7 @@
  */
 
 import type { WasmBridge } from '../bridge/WasmBridge';
+import { t } from '../i18n';
 
 export interface MarkResult {
   /** True iff Reference 생성 성공. */
@@ -112,16 +113,16 @@ export function markVertsAsReference(
  */
 function humanizeRBViolation(engineMsg: string): string {
   if (engineMsg.includes('owned by a Xia')) {
-    return '이 면은 이미 다른 객체 (Xia) 에 속해 있어 참조로 표시할 수 없습니다';
+    return t('이 면은 이미 다른 객체 (Xia) 에 속해 있어 참조로 표시할 수 없습니다');
   }
   if (engineMsg.includes('owned by a Shape')) {
-    return '이 면은 이미 형태 (Shape) 에 속해 있어 참조로 표시할 수 없습니다';
+    return t('이 면은 이미 형태 (Shape) 에 속해 있어 참조로 표시할 수 없습니다');
   }
   if (engineMsg.includes('already owned by Reference')) {
-    return '이 항목은 이미 다른 참조에 등록되어 있습니다';
+    return t('이 항목은 이미 다른 참조에 등록되어 있습니다');
   }
   if (engineMsg.includes('WASM endpoint missing')) {
-    return '엔진 미준비 — 페이지 새로고침이 필요합니다';
+    return t('엔진 미준비 — 페이지 새로고침이 필요합니다');
   }
   // Fallback to original message (engineering layer 디버깅용).
   return engineMsg;

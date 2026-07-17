@@ -9,7 +9,8 @@ import { WasmBridge } from '../bridge/WasmBridge';
 import { Viewport } from '../viewport/Viewport';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { UnitSystem } from '../units/UnitSystem';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 export interface ProjectSerializerDeps {
   bridge: WasmBridge;
@@ -193,7 +194,7 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
         const project = JSON.parse(text);
 
         if (project.format !== 'xia') {
-          alert('올바른 .xia 파일이 아닙니다.');
+          alert(t('올바른 .xia 파일이 아닙니다.'));
           return;
         }
 
@@ -237,7 +238,7 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
         debugLog('[Open] Project loaded:', file.name);
       } catch (e) {
         console.error('[Open] Failed to load project:', e);
-        alert('파일을 불러오는데 실패했습니다.');
+        alert(t('파일을 불러오는데 실패했습니다.'));
       }
     };
 

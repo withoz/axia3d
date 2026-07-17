@@ -4,6 +4,7 @@
  */
 
 import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 export interface CommandHandler {
   name: string;
@@ -21,6 +22,8 @@ export class CommandInput {
   private history: string[] = [];
   private historyIndex: number = -1;
   private isVisible: boolean = false;
+  /** Set by any print* during a handler run — see executeCommand. */
+  private printedThisCommand = false;
 
   constructor() {
     this.createUI();
@@ -32,12 +35,12 @@ export class CommandInput {
     this.container.id = 'command-input-panel';
     this.container.className = 'command-input-panel';
     this.container.innerHTML = `
-      <div class="command-input-header">명령어 입력 (Command)</div>
+      <div class="command-input-header">${t('명령어 입력 (Command)')}</div>
       <div class="command-input-body">
         <input
           type="text"
           class="command-input-field"
-          placeholder="예: L 100 (라인), R 50,50,100 (상자), C 50 (원)"
+          placeholder="${t('예: L 100 (라인), R 50,50,100 (상자), C 50 (원)')}"
           autocomplete="off"
         />
         <div class="command-output"></div>
@@ -187,6 +190,18 @@ export class CommandInput {
     debugLog(`[CommandInput] Registered: ${handler.name}`);
   }
 
+  /**
+   * Every registered command, once each. The map holds one entry per alias
+   * pointing at the same handler, so dedupe by identity.
+   *
+   * This exists so `help` can list what is actually registered. It used to
+   * print a hardcoded four-line list — which named R, C and P (never
+   * registered) and omitted the eight commands that are.
+   */
+  listHandlers(): CommandHandler[] {
+    return [...new Set(this.handlers.values())];
+  }
+
   private executeCommand(input: string): void {
     const trimmed = input.trim();
     if (!trimmed) return;
@@ -197,15 +212,25 @@ export class CommandInput {
 
     const handler = this.handlers.get(cmd);
     if (!handler) {
-      this.printError(`알 수 없는 명령: ${cmd}`);
+      this.printError(t('알 수 없는 명령: {cmd}', { cmd }));
       return;
     }
 
     try {
+      // Every print* writes to the same element, so the unconditional
+      // "실행됨" below used to wipe whatever the handler had just printed —
+      // `curves`, `verify`, `mergetol` and `help` all ran, printed, and were
+      // erased a microsecond later. Only fall back to it when the handler
+      // said nothing itself.
+      this.printedThisCommand = false;
       handler.execute(args);
-      this.printSuccess(`실행됨: ${handler.name}`);
+      if (!this.printedThisCommand) {
+        this.printSuccess(t('실행됨: {name}', { name: handler.name }));
+      }
     } catch (err) {
-      this.printError(`오류: ${err instanceof Error ? err.message : String(err)}`);
+      this.printError(t('오류: {message}', {
+        message: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 
@@ -235,6 +260,7 @@ export class CommandInput {
   }
 
   printError(msg: string): void {
+    this.printedThisCommand = true;
     if (this.output) {
       this.output.textContent = msg;
       this.output.className = 'command-output error';
@@ -242,6 +268,7 @@ export class CommandInput {
   }
 
   printSuccess(msg: string): void {
+    this.printedThisCommand = true;
     if (this.output) {
       this.output.textContent = msg;
       this.output.className = 'command-output success';
@@ -249,6 +276,7 @@ export class CommandInput {
   }
 
   printInfo(msg: string): void {
+    this.printedThisCommand = true;
     if (this.output) {
       this.output.textContent = msg;
       this.output.className = 'command-output info';

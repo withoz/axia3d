@@ -3,10 +3,12 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
 import { getExtrudeMode, getExtrudeDistNeg } from './ExtrudeModeSettings';
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
 
 export class PushPullTool implements ITool {
   readonly name = 'pushpull';
@@ -119,7 +121,7 @@ export class PushPullTool implements ITool {
         if (!normalArr ||
             (normalArr[0] === 0 && normalArr[1] === 0 && normalArr[2] === 0)) {
           debugWarn('[PP] Invalid face normal for faceId=', rustFaceId);
-          Toast.error('이 면의 법선을 계산할 수 없습니다 (degenerate)');
+          Toast.error(t('이 면의 법선을 계산할 수 없습니다 (degenerate)'));
           return;
         }
         this.ppNormal = new THREE.Vector3(normalArr[0], normalArr[1], normalArr[2]);
@@ -209,7 +211,33 @@ export class PushPullTool implements ITool {
     } else {
       // Phase 2: confirm distance (second click)
       // align 스냅이 발동됐다면 currentDragDist가 그 값을 담고 있음
-      const dist = this.currentDragDist !== 0 ? this.currentDragDist : this.ppRayDist(e);
+      let dist = this.currentDragDist !== 0 ? this.currentDragDist : this.ppRayDist(e);
+
+      // ── ADR-190 Phase 3 — REPEAT LAST (double-click) ──
+      // SketchUp parity: double-click a face to re-apply the last committed
+      // distance. `lastPPDist` was already recorded by all four commit paths
+      // (live / VCB / smooth-group / per-face fallback) but nothing ever READ
+      // it — a dead cache. This wires it.
+      //
+      // Why here: a double-click's 1st mousedown enters Phase 1 (ppActive =
+      // true), so the 2nd arrives HERE with `e.detail === 2` and the cursor
+      // still on the face → `dist ≈ 0` → it was swallowed by MIN_COMMIT_DIST
+      // and the gesture did nothing. That dead slot is exactly the hook.
+      //
+      // Two guards keep this additive — it can never divert a normal commit:
+      //   lastPPDist !== 0      — there is a real prior distance to repeat
+      //   currentDragDist === 0 — the cursor has not moved since Phase 1
+      //                           (every onMouseMove ends in `currentDragDist =
+      //                           dist`), so any click-move-click or align value
+      //                           already in flight wins outright.
+      // `e.detail >= 2` then means a genuine double-click: the browser only
+      // raises detail for clicks close in both time AND position.
+      if (e.detail >= 2 && this.lastPPDist !== 0 && this.currentDragDist === 0) {
+        dist = this.lastPPDist;
+        debugLog('[PP] Phase 2: REPEAT LAST dist=', dist.toFixed(2));
+        Toast.info(t('직전 거리 반복: {dist} mm', { dist: dist.toFixed(1) }), 1800);
+      }
+
       debugLog('[PP] Phase 2: confirm dist=', dist.toFixed(2));
 
       // ── ADR-271 γ — CURVED pocket carve ──
@@ -226,14 +254,14 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carveCurvedPocket?.(this.ppFaceId, -dist) ?? -1;
         if (walls > 0) {
           debugLog(`[PP] Curved pocket carved → ${walls} side walls (depth ${(-dist).toFixed(1)})`);
-          Toast.success('곡면 포켓을 파냈습니다');
+          Toast.success(t('곡면 포켓을 파냈습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
         }
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carveCurvedPocket declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 곡면에는 포켓을 만들 수 없습니다 — 곡면에 원을 그린 뒤 안쪽으로 밀어 보세요'));
         this.cleanup();
         return;
       }
@@ -252,14 +280,14 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carveCurvedBoss?.(this.ppFaceId, dist) ?? -1;
         if (walls > 0) {
           debugLog(`[PP] Curved boss raised → ${walls} side walls (height ${dist.toFixed(1)})`);
-          Toast.success('곡면 보스를 세웠습니다');
+          Toast.success(t('곡면 보스를 세웠습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
         }
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carveCurvedBoss declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 곡면에는 보스를 세울 수 없습니다 — 곡면에 원을 그린 뒤 바깥쪽으로 밀어 보세요'));
         this.cleanup();
         return;
       }
@@ -279,7 +307,7 @@ export class PushPullTool implements ITool {
         const walls = this.ctx.bridge.carvePocketFromSourceFace(this.ppFaceId, -dist);
         if (walls > 0) {
           debugLog(`[PP] Pocket carved → ${walls} side walls (depth ${(-dist).toFixed(1)})`);
-          Toast.success('포켓(pocket)을 파냈습니다');
+          Toast.success(t('포켓(pocket)을 파냈습니다'));
           this.ctx.syncMesh();
           this.cleanup();
           return;
@@ -288,9 +316,9 @@ export class PushPullTool implements ITool {
         // pocket/through cut. If carve declines (e.g. cross-drilling through an
         // existing hole), surface the reason and abort — do NOT fall back to an
         // inward "boss" extrude, which produces confusing garbage geometry.
-        const why = this.ctx.bridge.lastError();
+        const why = this.engineWhy();
         debugWarn('[PP] carvePocket declined:', why);
-        Toast.error(why && why.length > 0 ? why : '이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요');
+        Toast.error(why && why.length > 0 ? why : t('이 위치에는 구멍/포켓을 만들 수 없습니다 — 위치를 옮겨 보세요'));
         this.cleanup();
         return;
       }
@@ -310,14 +338,20 @@ export class PushPullTool implements ITool {
         return;
       }
 
+      // ADR-190 Phase 3 — measure the inward clamp BEFORE committing: once the
+      // push lands, the face's own thickness IS the clamped value and the
+      // evidence is gone.
+      const clampLimit = this.inwardClampLimit(dist);
+
       // ADR-193 — single-face live session: commit the already-real preview.
       if (this.liveActive) {
         const ok = this.ctx.bridge.commitLiveExtrude();
         if (ok) {
           this.lastPPDist = dist;
+          this.warnIfInwardClamped(clampLimit, dist);
         } else {
-          const err = this.ctx.bridge.lastError();
-          Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+          const err = this.engineWhy();
+          Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
         }
         this.ctx.syncMesh();
         this.liveActive = false;
@@ -330,12 +364,60 @@ export class PushPullTool implements ITool {
       // no movement) → legacy commit path.
       if (Math.abs(dist) >= PushPullTool.MIN_COMMIT_DIST) {
         this.commitPushPull(dist);
+        this.warnIfInwardClamped(clampLimit, dist);
       } else if (Math.abs(dist) > 0.001) {
         // Bug C fix: 0 < |dist| < 0.5mm 일 때 조용히 실패하지 않고 피드백
-        Toast.warning(`돌출/잘라내기 거리가 너무 짧습니다 (최소 ${PushPullTool.MIN_COMMIT_DIST}mm)`, 2500);
+        Toast.warning(t('돌출/잘라내기 거리가 너무 짧습니다 (최소 {MIN_COMMIT_DIST}mm)', { MIN_COMMIT_DIST: PushPullTool.MIN_COMMIT_DIST }), 2500);
       }
       this.cleanup();
     }
+  }
+
+  /**
+   * ADR-190 Phase 3 — the engine's reason for declining, in the user's
+   * language. `lastError()` is the kernel's own error chain (ADR numbers, Rust
+   * type names, "Q3 fallback to legacy push_pull"); every Toast here goes
+   * through this so none of that reaches a modeller. Unknown messages still get
+   * through with only the internal noise stripped — never swallowed.
+   * `debugWarn` callers get the humanized text too; the raw chain stays
+   * available via `bridge.lastError()`.
+   */
+  private engineWhy(): string {
+    return humanizeEngineError(this.ctx.bridge.lastError());
+  }
+
+  /**
+   * ADR-190 Phase 3 — the thickness an inward push is about to be clamped at,
+   * or -1 when nothing will clamp (outward push, no face, or a flat/open
+   * profile with no connecting walls). MUST be read BEFORE the commit: the
+   * clamp works by moving the face itself, so afterwards the measurement
+   * returns the clamped value and the over-push is invisible.
+   */
+  private inwardClampLimit(dist: number): number {
+    if (dist >= 0 || this.ppFaceId < 0) return -1;
+    return this.ctx.bridge.moveOnlyMaxInward?.(this.ppFaceId) ?? -1;
+  }
+
+  /**
+   * ADR-190 Phase 3 — break the silence around the ADR-196 clamp.
+   *
+   * Pushing a whole face further in than the solid is thick is ambiguous (it
+   * could mean "cut through", but only the user knows), so ADR-196 stops the
+   * face just short of the far side rather than letting it flip inside-out.
+   * That is the right call — 메타-원칙 #16: guessing here is exactly the
+   * heuristic-automation trap. The defect was that it happened in silence:
+   * measured, a 2000×1000×1000 box pushed −1500 collapses to 0.001mm thick,
+   * `createSolidExtrude` still returns `true`, the mesh is watertight, and
+   * nothing is said (ADR-293 §5). Keep the clamp; explain it, and point at the
+   * path that DOES cut through (draw a profile on the face first — ADR-252).
+   */
+  private warnIfInwardClamped(clampLimit: number, dist: number): void {
+    if (clampLimit <= 0 || dist >= 0) return;
+    if (-dist <= clampLimit) return; // stayed within the solid → nothing clamped
+    Toast.warning(
+      t('두께 {clampLimit}mm 에서 멈췄습니다 — 관통하려면 면에 형상을 그린 뒤 미세요', { clampLimit: clampLimit.toFixed(1) }),
+      4000,
+    );
   }
 
   /** Press-drag-release commit (SketchUp/Fusion 제스처). 좌버튼을 누른 채 면을
@@ -473,10 +555,10 @@ export class PushPullTool implements ITool {
       let labelColor = isAligned ? '#66ff99' : '#ffd43b';
       let cutTag = '';
       if (this.isSheetSource && dist < 0) {
-        const t = this.sheetThickness;
-        const through = t > 0 && absDist >= t - 0.001;
+        const thickness = this.sheetThickness;
+        const through = thickness > 0 && absDist >= thickness - 0.001;
         labelColor = through ? '#ff3b30' : '#ff9f0a';
-        cutTag = through ? ' 관통' : '';
+        cutTag = through ? t(' 관통') : '';
       }
       const text = alignPrefix + sign + this.ctx.units.format(absDist) + cutTag;
       const offset = this.ppNormal.clone().multiplyScalar(dist);
@@ -540,7 +622,7 @@ export class PushPullTool implements ITool {
         const dist = this.currentDragDist !== 0 ? this.currentDragDist : 0;
         this.updatePPGhost(dist);
       }
-      Toast.info(`방향 반전 (Tab) — normal=(${this.ppNormal.x.toFixed(2)}, ${this.ppNormal.y.toFixed(2)}, ${this.ppNormal.z.toFixed(2)})`, 1500);
+      Toast.info(t('방향 반전 (Tab) — normal=({x}, {y}, {z})', { x: this.ppNormal.x.toFixed(2), y: this.ppNormal.y.toFixed(2), z: this.ppNormal.z.toFixed(2) }), 1500);
       debugLog('[PP] Tab pressed — normal flipped, new=', this.ppNormal.toArray());
     }
   }
@@ -572,13 +654,16 @@ export class PushPullTool implements ITool {
     // ADR-193 — live session active: snap the preview to the typed value and
     // commit it (one clean Undo).
     if (this.liveActive) {
+      // ADR-190 Phase 3 — read the clamp limit before the commit consumes it
+      const clampLimit = this.inwardClampLimit(value);
       this.ctx.bridge.updateLiveExtrude(value);
       const ok = this.ctx.bridge.commitLiveExtrude();
       if (ok) {
         this.lastPPDist = value;
+        this.warnIfInwardClamped(clampLimit, value);
       } else {
-        const err = this.ctx.bridge.lastError();
-        Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        const err = this.engineWhy();
+        Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
       this.ctx.syncMesh();
       this.liveActive = false;
@@ -623,7 +708,11 @@ export class PushPullTool implements ITool {
       }
     }
     if (this.ppFaceId >= 0 || this.isSmoothGroup) {
+      // ADR-190 Phase 3 — typing "-1500" into the VCB is the most direct way to
+      // over-push, so this path must explain the clamp too. Read before commit.
+      const clampLimit = this.inwardClampLimit(value);
       this.commitPushPull(value);
+      this.warnIfInwardClamped(clampLimit, value);
     }
     this.cleanup();
   }
@@ -664,8 +753,8 @@ export class PushPullTool implements ITool {
         this.lastPPDist = dist;
         this.ctx.syncMesh();
       } else {
-        const err = this.ctx.bridge.lastError();
-        Toast.error(err ? `곡면 돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        const err = this.engineWhy();
+        Toast.error(err ? t('곡면 돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     } else {
       const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -679,8 +768,8 @@ export class PushPullTool implements ITool {
         this.lastPPDist = dist;
         this.ctx.syncMesh();
       } else {
-        const err = this.ctx.bridge.lastError();
-        Toast.error(err ? `돌출/잘라내기 실패: ${err}` : '돌출/잘라내기가 실행되지 않았습니다', 3500);
+        const err = this.engineWhy();
+        Toast.error(err ? t('돌출/잘라내기 실패: {err}', { err }) : '돌출/잘라내기가 실행되지 않았습니다', 3500);
       }
     }
   }
@@ -695,7 +784,7 @@ export class PushPullTool implements ITool {
    */
   private commitTaper(dist: number, taperDeg: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('테이퍼(draft) 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('테이퍼(draft) 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -719,7 +808,7 @@ export class PushPullTool implements ITool {
    */
   private commitCone(dist: number, topScale: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('콘(cone) 돌출은 단일 평면 원 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('콘(cone) 돌출은 단일 평면 원 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];
@@ -744,7 +833,7 @@ export class PushPullTool implements ITool {
    */
   private commitBidirectional(dist: number): void {
     if (this.isSmoothGroup) {
-      Toast.warning('양방향 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)', 4000);
+      Toast.warning(t('양방향 돌출은 단일 평면 프로파일만 지원합니다 (곡면/그룹 미지원)'), 4000);
       return;
     }
     const faceId = this.ppFaceId >= 0 ? this.ppFaceId : this.ctx.getSelectedFaces()[0];

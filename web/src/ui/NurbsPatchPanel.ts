@@ -13,7 +13,8 @@
 
 import { recreateNurbsPatch } from '../tools/nurbsRecreate';
 import type { WasmBridge, NurbsSurfaceParams } from '../bridge/WasmBridge';
-import { Toast } from './Toast';
+import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface NurbsPatchPanelCallbacks {
   syncMesh: () => void;
@@ -56,7 +57,7 @@ export class NurbsPatchPanel {
     this.panelEl.className = 'npp-panel';
     this.panelEl.innerHTML = `
       <div class="npp-header">
-        <span class="npp-title">NURBS 제어점</span>
+        <span class="npp-title">${t('NURBS 제어점')}</span>
       </div>
       <div class="npp-cols">
         <span>CP</span><span>x</span><span>y</span><span>z</span><span>weight</span><span></span>
@@ -102,7 +103,7 @@ export class NurbsPatchPanel {
   private render(): void {
     const p = this.params;
     if (!p) return;
-    this.titleEl.textContent = `NURBS 제어점 — ${KIND_LABEL[p.kind] ?? 'patch'} (${p.nU}×${p.nV})`;
+    this.titleEl.textContent = t('NURBS 제어점 — {kind} ({nU}×{nV})', { kind: KIND_LABEL[p.kind] ?? 'patch', nU: p.nU, nV: p.nV });
     this.listEl.innerHTML = '';
     const n = p.weights.length;
     for (let i = 0; i < n; i++) {
@@ -154,11 +155,11 @@ export class NurbsPatchPanel {
     const p = this.params;
     if (!p || this.faceId == null) return;
     if (pos.some((c) => !Number.isFinite(c)) || !Number.isFinite(weight)) {
-      Toast.warning('x, y, z, weight 는 숫자여야 합니다', 2000);
+      Toast.warning(t('x, y, z, weight 는 숫자여야 합니다'), 2000);
       return;
     }
     if (weight <= 0) {
-      Toast.warning('weight 는 0보다 큰 값이어야 합니다', 2000);
+      Toast.warning(t('weight 는 0보다 큰 값이어야 합니다'), 2000);
       return;
     }
     const ctrlPts = p.ctrlPts.slice();

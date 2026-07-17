@@ -206,47 +206,90 @@ pub fn boundary_from_point(
     let (u_axis, v_axis) = plane_basis(plane.normal);
     let point_2d = project_to_plane_2d(point, plane, u_axis, v_axis);
 
+    // Project every cycle once. The outer selection below and the island
+    // detection after it both need these, and projecting twice would let the
+    // two drift.
+    let projected: Vec<(Vec<VertId>, Vec<(f64, f64)>, f64)> = cycles
+        .into_iter()
+        .filter_map(|cycle_verts| {
+            let poly_2d: Vec<(f64, f64)> = cycle_verts
+                .iter()
+                .filter_map(|&vid| {
+                    if mesh.verts.contains(vid) && mesh.verts[vid].is_active() {
+                        Some(project_to_plane_2d(mesh.verts[vid].pos(), plane, u_axis, v_axis))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if poly_2d.len() != cycle_verts.len() {
+                return None;
+            }
+            let area = polygon_area_2d(&poly_2d).abs();
+            if area <= 1e-9 {
+                return None; // degenerate
+            }
+            Some((cycle_verts, poly_2d, area))
+        })
+        .collect();
+
     // Filter cycles enclosing the point + select smallest area.
     let mut best: Option<(Vec<VertId>, f64)> = None;
-    for cycle_verts in cycles {
-        // Project cycle vertices to 2D.
-        let poly_2d: Vec<(f64, f64)> = cycle_verts
-            .iter()
-            .filter_map(|&vid| {
-                if mesh.verts.contains(vid) && mesh.verts[vid].is_active() {
-                    Some(project_to_plane_2d(
-                        mesh.verts[vid].pos(),
-                        plane,
-                        u_axis,
-                        v_axis,
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if poly_2d.len() != cycle_verts.len() {
+    for (cycle_verts, poly_2d, area) in projected.iter() {
+        if !point_in_polygon_2d(point_2d, poly_2d) {
             continue;
-        }
-        if !point_in_polygon_2d(point_2d, &poly_2d) {
-            continue;
-        }
-        // signed area for smallest selection (absolute value).
-        let area = polygon_area_2d(&poly_2d).abs();
-        if area <= 1e-9 {
-            continue; // degenerate
         }
         match &best {
-            None => best = Some((cycle_verts, area)),
+            None => best = Some((cycle_verts.clone(), *area)),
             Some((_, current_area)) => {
-                if area < *current_area {
-                    best = Some((cycle_verts, area));
+                if *area < *current_area {
+                    best = Some((cycle_verts.clone(), *area));
                 }
             }
         }
     }
 
-    let (cycle_verts, _area) = best.ok_or(BoundaryError::NoEnclosingCycle)?;
+    let (cycle_verts, outer_area) = best.ok_or(BoundaryError::NoEnclosingCycle)?;
+
+    // ── Islands (ADR-148 §5 multi-loop) ──────────────────────────────────
+    //
+    // AutoCAD BPOLY makes a ring when you click between an outer boundary and
+    // an island. We were making a solid face over the island: the outer square
+    // is the only cycle CONTAINING the click, so it won.
+    //
+    // Direct children only. A cycle is a hole here when it is inside the outer
+    // loop, smaller than it, does not contain the click (that one is already
+    // the outer, by smallest-area selection), and is not nested inside another
+    // hole — the innermost of a stack belongs to the ring one level down, not
+    // to this face. That is BPOLY's "Outer" island style, and it keeps each
+    // face's holes disjoint, which is what add_face_with_holes needs.
+    let outer_poly: &Vec<(f64, f64)> = projected
+        .iter()
+        .find(|(cv, _, _)| *cv == cycle_verts)
+        .map(|(_, poly, _)| poly)
+        .expect("outer cycle came from projected");
+
+    let candidates: Vec<&(Vec<VertId>, Vec<(f64, f64)>, f64)> = projected
+        .iter()
+        .filter(|(cv, poly, area)| {
+            *cv != cycle_verts
+                && *area < outer_area
+                && polygon_inside_polygon(poly, outer_poly)
+        })
+        .collect();
+
+    let holes: Vec<Vec<VertId>> = candidates
+        .iter()
+        .filter(|(_, poly, _)| {
+            // Drop the nested ones: if another candidate contains this, this is
+            // a grandchild, not a hole of ours.
+            !candidates
+                .iter()
+                .any(|(_, other, other_area)| other_area > &polygon_area_2d(poly).abs()
+                    && polygon_inside_polygon(poly, other))
+        })
+        .map(|(cv, _, _)| cv.clone())
+        .collect();
 
     // Validation #4 — cycle 이 이미 face 인지 검사. 모든 인접 edge 에
     // active face 있으면 CycleAlreadyFaced.
@@ -259,14 +302,300 @@ pub fn boundary_from_point(
         });
     }
 
-    // Face 합성 — `add_face` (winding 자동 정렬 via normal hint).
+    // Face 합성. No holes → add_face, unchanged. Holes → add_face_with_holes,
+    // which computes the normal and validates winding the same way
+    // (ADR-007 Invariant 2), so the ring is built by the same rules as every
+    // other face rather than a second path of its own.
     // Material = default (MaterialId::new(0) — FORM_MATERIAL sentinel).
-    // ADR-007 + LOCKED #1 P7 invariants are checked inside add_face.
-    let face_id = mesh
-        .add_face(&cycle_verts, MaterialId::new(0))
-        .map_err(|_| BoundaryError::NoEnclosingCycle)?;
+    let face_id = if holes.is_empty() {
+        mesh.add_face(&cycle_verts, MaterialId::new(0))
+            .map_err(|_| BoundaryError::NoEnclosingCycle)?
+    } else {
+        let hole_refs: Vec<&[VertId]> = holes.iter().map(|h| h.as_slice()).collect();
+        mesh.add_face_with_holes(&cycle_verts, &hole_refs, MaterialId::new(0))
+            .map_err(|_| BoundaryError::NoEnclosingCycle)?
+    };
 
     Ok(face_id)
+}
+
+/// Is every vertex of `inner` inside `outer`?
+///
+/// Enough here because the cycles come from `find_all_cycles` over orphan
+/// edges, which cannot cross: two boundary loops either nest or are disjoint.
+/// A general polygon-in-polygon test would also need edge-crossing checks.
+fn polygon_inside_polygon(inner: &[(f64, f64)], outer: &[(f64, f64)]) -> bool {
+    !inner.is_empty() && inner.iter().all(|&p| point_in_polygon_2d(p, outer))
+}
+
+/// ADR-148 §5 — plane inference errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InferPlaneError {
+    /// No orphan edges within the radius — nothing to infer from.
+    NoOrphanEdgesInRadius { search_radius_mm: f64 },
+    /// The nearby free edges are not planar (or are collinear / too few).
+    NotPlanar,
+    /// Free wires on two or more different planes are in range. This is the
+    /// ambiguous case, and it is deliberately an error: guessing which plane
+    /// the user meant is precisely the heuristic 메타-원칙 #16 forbids.
+    Ambiguous { plane_count: usize },
+}
+
+impl std::fmt::Display for InferPlaneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InferPlaneError::NoOrphanEdgesInRadius { search_radius_mm } => {
+                write!(f, "NoOrphanEdgesInRadius (radius {:.1}mm)", search_radius_mm)
+            }
+            InferPlaneError::NotPlanar => write!(f, "NotPlanar"),
+            InferPlaneError::Ambiguous { plane_count } => {
+                write!(f, "Ambiguous ({} planes in range)", plane_count)
+            }
+        }
+    }
+}
+
+/// ADR-148 §5 — infer the drawing plane from the free edges around a point.
+///
+/// Boundary is used where there is no face yet — which is exactly where a
+/// face-hit cannot tell the tool which plane to work on. Left to the usual
+/// cascade the click falls through to Z=0, so a loop drawn at z=100 (or an
+/// imported wire on a slanted plane) cannot be faced at all unless the sticky
+/// plane happens to still be right.
+///
+/// This is **not** the heuristic 메타-원칙 #16 warns about. When the free
+/// edges in range all lie in one plane, that plane is not a guess — it is the
+/// only answer consistent with the geometry. When they do not, we refuse and
+/// say why, rather than picking one (메타-원칙 #5: 명확하면 자동, 모호하면
+/// 명시).
+///
+/// Reuses `derive_free_wire_plane` (ADR-080 V-δ-α): BFS over free edges,
+/// best-fit plane, and its planarity gates — ≥3 vertices, non-collinear,
+/// scale-aware RMS.
+pub fn infer_plane_from_point(
+    mesh: &Mesh,
+    point: DVec3,
+    search_radius: f64,
+) -> Result<Plane, InferPlaneError> {
+    let radius_mm = if search_radius <= 0.0 {
+        DEFAULT_SEARCH_RADIUS_MM
+    } else {
+        search_radius
+    };
+    let near = collect_orphan_edges_in_radius(mesh, point, radius_mm);
+    if near.is_empty() {
+        return Err(InferPlaneError::NoOrphanEdgesInRadius {
+            search_radius_mm: radius_mm,
+        });
+    }
+
+    // One plane per connected wire: derive_free_wire_plane BFSes the whole
+    // component, so edges of the same wire produce the same answer. Distinct
+    // planes are what matter, not distinct edges.
+    let mut planes: Vec<Plane> = Vec::new();
+    for &(eid, _, _) in &near {
+        let surface = match crate::operations::offset::derive_free_wire_plane(mesh, eid) {
+            Ok(s) => s,
+            Err(_) => continue, // this wire is not planar — it just cannot vote
+        };
+        let crate::surfaces::AnalyticSurface::Plane { origin, normal, .. } = surface else {
+            continue;
+        };
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            continue;
+        }
+        let candidate = Plane {
+            normal: n,
+            dist: n.dot(origin),
+        };
+        if !planes.iter().any(|p| same_plane_within_eps(p, &candidate)) {
+            planes.push(candidate);
+        }
+    }
+
+    match planes.len() {
+        0 => Err(InferPlaneError::NotPlanar),
+        1 => Ok(planes.remove(0)),
+        n => Err(InferPlaneError::Ambiguous { plane_count: n }),
+    }
+}
+
+/// Two planes are the same if their normals are parallel (either direction —
+/// a wire has no front) and their offsets agree.
+fn same_plane_within_eps(a: &Plane, b: &Plane) -> bool {
+    let parallel = a.normal.dot(b.normal).abs() >= 1.0 - crate::plane::EPS_PLANE_NORMAL;
+    if !parallel {
+        return false;
+    }
+    // Compare offsets in a shared orientation.
+    let flip = if a.normal.dot(b.normal) < 0.0 { -1.0 } else { 1.0 };
+    (a.dist - flip * b.dist).abs() <= crate::plane::EPS_PLANE_OFFSET
+}
+
+/// ADR-148 §5 — `boundary_from_point`, with the plane worked out for you.
+///
+/// Same synthesis, same errors; the plane comes from `infer_plane_from_point`
+/// instead of the caller. For the tool this is the difference between "click
+/// inside the loop you drew" and "click inside the loop you drew, but only if
+/// it happens to be on the plane the app is currently thinking about".
+pub fn boundary_from_point_auto_plane(
+    mesh: &mut Mesh,
+    point: DVec3,
+    search_radius: f64,
+) -> Result<FaceId, BoundaryError> {
+    let plane = infer_plane_from_point(mesh, point, search_radius).map_err(|e| match e {
+        InferPlaneError::NoOrphanEdgesInRadius { search_radius_mm } => {
+            BoundaryError::NoOrphanEdgesInRadius { search_radius_mm }
+        }
+        // Both remaining cases mean "we will not choose for you". They surface
+        // as NoEnclosingCycle rather than a new user-facing variant: from the
+        // click's point of view nothing enclosing was resolved.
+        InferPlaneError::NotPlanar | InferPlaneError::Ambiguous { .. } => {
+            BoundaryError::NoEnclosingCycle
+        }
+    })?;
+
+    // Project onto the inferred plane: the click point came from a Z=0 ray or
+    // a face hit and will not sit exactly on it. absorb_boundary_input inside
+    // boundary_from_point handles small drift, but a plane at z=100 is not
+    // small drift — this is the whole point of inferring.
+    let signed = plane.normal.dot(point) - plane.dist;
+    let on_plane = point - plane.normal * signed;
+
+    boundary_from_point(mesh, on_plane, plane, search_radius)
+}
+
+/// ADR-148 §5 — 3D BOUNDARY errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShellError {
+    /// No closed shell in the mesh at all.
+    NoClosedShell,
+    /// Closed shells exist, but none of them contains the point.
+    PointNotInsideAnyShell,
+}
+
+impl std::fmt::Display for ShellError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShellError::NoClosedShell => write!(f, "NoClosedShell"),
+            ShellError::PointNotInsideAnyShell => write!(f, "PointNotInsideAnyShell"),
+        }
+    }
+}
+
+/// ADR-148 §5 — the 3D sibling of `boundary_from_point`: find the closed
+/// shell enclosing a point and return its faces.
+///
+/// 2D asks "which edge loop encloses this point" and synthesizes the face it
+/// implies. 3D has nothing to synthesize — a shell being closed is already
+/// true, and `Volume` is a computed state, not an entity (CLAUDE.md Geometry
+/// Layer). So this reports: **these are the faces of the solid you clicked
+/// inside.** Selecting them is what the user does next (Push/Pull, material,
+/// grouping), and the caller decides that.
+///
+/// Read-only (`&Mesh`) — nothing is created, which is why it needs no policy
+/// change (LOCKED #26 citizenship, ADR-016 Q2 both untouched).
+///
+/// Smallest-first, like 2D: nested solids mean the innermost one wins, which
+/// is the one you pointed at.
+///
+/// # Errors
+/// - `NoClosedShell` — no watertight component anywhere
+/// - `PointNotInsideAnyShell` — closed shells exist, none contains the point
+pub fn shell_from_point(mesh: &Mesh, point: DVec3) -> Result<Vec<FaceId>, ShellError> {
+    let active: Vec<FaceId> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(id, _)| id)
+        .collect();
+    if active.is_empty() {
+        return Err(ShellError::NoClosedShell);
+    }
+
+    // Existing assets, all of them: edge-connected grouping and the watertight
+    // test are already what Solidify and Boolean use.
+    let components = mesh.face_connected_components(&active);
+    let closed: Vec<Vec<FaceId>> = components
+        .into_iter()
+        .filter(|c| mesh.is_face_set_closed_solid(c))
+        .collect();
+    if closed.is_empty() {
+        return Err(ShellError::NoClosedShell);
+    }
+
+    let mut best: Option<(Vec<FaceId>, f64)> = None;
+    for comp in closed {
+        let tris = shell_triangles(mesh, &comp);
+        if tris.is_empty() {
+            continue;
+        }
+        if !crate::operations::boolean_geo::point_in_solid(&tris, point) {
+            continue;
+        }
+        // Rank by bounding-box volume: cheap, and only the ordering matters —
+        // a shell nested inside another has the smaller box.
+        let extent = shell_bbox_volume(mesh, &comp);
+        match &best {
+            None => best = Some((comp, extent)),
+            Some((_, cur)) => {
+                if extent < *cur {
+                    best = Some((comp, extent));
+                }
+            }
+        }
+    }
+
+    best.map(|(faces, _)| faces)
+        .ok_or(ShellError::PointNotInsideAnyShell)
+}
+
+/// Fan-triangulate every face of a shell for `point_in_solid`.
+///
+/// A fan is correct for the convex faces DCEL produces here and is what the
+/// ray test needs; the loops are already planar (ADR-007).
+fn shell_triangles(mesh: &Mesh, faces: &[FaceId]) -> Vec<(DVec3, DVec3, DVec3)> {
+    let mut tris = Vec::new();
+    for &fid in faces {
+        let Some(face) = mesh.faces.get(fid) else { continue };
+        let Ok(verts) = mesh.collect_loop_verts(face.outer().start) else { continue };
+        if verts.len() < 3 {
+            continue;
+        }
+        let p: Vec<DVec3> = verts
+            .iter()
+            .filter_map(|&v| mesh.verts.get(v).map(|x| x.pos()))
+            .collect();
+        if p.len() != verts.len() {
+            continue;
+        }
+        for i in 1..p.len() - 1 {
+            tris.push((p[0], p[i], p[i + 1]));
+        }
+    }
+    tris
+}
+
+/// Bounding-box volume of a shell — the nesting rank.
+fn shell_bbox_volume(mesh: &Mesh, faces: &[FaceId]) -> f64 {
+    let mut lo = DVec3::splat(f64::INFINITY);
+    let mut hi = DVec3::splat(f64::NEG_INFINITY);
+    for &fid in faces {
+        let Some(face) = mesh.faces.get(fid) else { continue };
+        let Ok(verts) = mesh.collect_loop_verts(face.outer().start) else { continue };
+        for v in verts {
+            if let Some(vert) = mesh.verts.get(v) {
+                lo = lo.min(vert.pos());
+                hi = hi.max(vert.pos());
+            }
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return f64::INFINITY;
+    }
+    let d = hi - lo;
+    d.x.max(0.0) * d.y.max(0.0) * d.z.max(0.0)
 }
 
 /// β-2 helper — collect (edge_id, v_small, v_large) for orphan edges
@@ -656,5 +985,404 @@ mod tests {
         let outside = DVec3::new(15.0, 5.0, 0.0);
         let result = boundary_from_point(&mut mesh, outside, plane, 100.0);
         assert_eq!(result, Err(BoundaryError::NoEnclosingCycle));
+    }
+
+    /// Square inside a square, click in the ring between them — AutoCAD BPOLY
+    /// makes a ring, and so do we now.
+    ///
+    /// This started as a de-risk: before the multi-loop work it asserted
+    /// (4, 0), recording that the single-loop version swallowed the island
+    /// because only the outer square contains the click. It is the same test,
+    /// now asserting the fix.
+    #[test]
+    fn adr148_multiloop_island_in_ring_becomes_a_hole() {
+        let mut mesh = Mesh::new();
+        // Outer square 0..20
+        let o00 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let o10 = mesh.add_vertex(DVec3::new(20.0, 0.0, 0.0));
+        let o11 = mesh.add_vertex(DVec3::new(20.0, 20.0, 0.0));
+        let o01 = mesh.add_vertex(DVec3::new(0.0, 20.0, 0.0));
+        let _ = mesh.add_edge(o00, o10);
+        let _ = mesh.add_edge(o10, o11);
+        let _ = mesh.add_edge(o11, o01);
+        let _ = mesh.add_edge(o01, o00);
+        // Inner square 8..12 — the island
+        let i00 = mesh.add_vertex(DVec3::new(8.0, 8.0, 0.0));
+        let i10 = mesh.add_vertex(DVec3::new(12.0, 8.0, 0.0));
+        let i11 = mesh.add_vertex(DVec3::new(12.0, 12.0, 0.0));
+        let i01 = mesh.add_vertex(DVec3::new(8.0, 12.0, 0.0));
+        let _ = mesh.add_edge(i00, i10);
+        let _ = mesh.add_edge(i10, i11);
+        let _ = mesh.add_edge(i11, i01);
+        let _ = mesh.add_edge(i01, i00);
+
+        let plane = make_plane_z0();
+        // (3, 3) — inside the outer square, outside the island. The ring.
+        let in_ring = DVec3::new(3.0, 3.0, 0.0);
+        let result = boundary_from_point(&mut mesh, in_ring, plane, 100.0);
+
+        let face_id = result.expect("ring click should synthesize something");
+        let inners = mesh.faces[face_id].inners().len();
+        let outer_start = mesh.faces[face_id].outer().start;
+        let outer_len = mesh
+            .collect_loop_verts(outer_start)
+            .expect("outer loop should walk")
+            .len();
+
+        assert_eq!(
+            (outer_len, inners),
+            (4, 1),
+            "clicking the ring should give the outer square with the island as a \
+             hole, got outer={} inners={}",
+            outer_len,
+            inners,
+        );
+        assert!(
+            mesh.verify_face_invariants().is_valid(),
+            "ring face must satisfy ADR-007 invariants",
+        );
+    }
+
+    #[test]
+    fn adr148_multiloop_click_inside_the_island_faces_the_island_only() {
+        // Same geometry, click INSIDE the inner square. The island is now the
+        // smallest cycle containing the click, so it is the outer loop — and
+        // it has no holes of its own. Nothing about the ring case may leak in.
+        let mut mesh = Mesh::new();
+        let o00 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let o10 = mesh.add_vertex(DVec3::new(20.0, 0.0, 0.0));
+        let o11 = mesh.add_vertex(DVec3::new(20.0, 20.0, 0.0));
+        let o01 = mesh.add_vertex(DVec3::new(0.0, 20.0, 0.0));
+        let _ = mesh.add_edge(o00, o10);
+        let _ = mesh.add_edge(o10, o11);
+        let _ = mesh.add_edge(o11, o01);
+        let _ = mesh.add_edge(o01, o00);
+        let i00 = mesh.add_vertex(DVec3::new(8.0, 8.0, 0.0));
+        let i10 = mesh.add_vertex(DVec3::new(12.0, 8.0, 0.0));
+        let i11 = mesh.add_vertex(DVec3::new(12.0, 12.0, 0.0));
+        let i01 = mesh.add_vertex(DVec3::new(8.0, 12.0, 0.0));
+        let _ = mesh.add_edge(i00, i10);
+        let _ = mesh.add_edge(i10, i11);
+        let _ = mesh.add_edge(i11, i01);
+        let _ = mesh.add_edge(i01, i00);
+
+        let plane = make_plane_z0();
+        let face_id = boundary_from_point(&mut mesh, DVec3::new(10.0, 10.0, 0.0), plane, 100.0)
+            .expect("click inside the island should face the island");
+        assert_eq!(
+            mesh.faces[face_id].inners().len(),
+            0,
+            "the island itself has no holes",
+        );
+        let outer = mesh
+            .collect_loop_verts(mesh.faces[face_id].outer().start)
+            .expect("outer loop walks");
+        assert_eq!(outer.len(), 4, "island outer loop is the 4-vert inner square");
+    }
+
+    #[test]
+    fn adr148_multiloop_plain_square_still_has_no_holes() {
+        // Regression guard for the no-island path: the projection refactor and
+        // the island filter must leave the ordinary case exactly as it was.
+        let mut mesh = Mesh::new();
+        let v00 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v10 = mesh.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let v11 = mesh.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let v01 = mesh.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        let _ = mesh.add_edge(v00, v10);
+        let _ = mesh.add_edge(v10, v11);
+        let _ = mesh.add_edge(v11, v01);
+        let _ = mesh.add_edge(v01, v00);
+
+        let plane = make_plane_z0();
+        let face_id = boundary_from_point(&mut mesh, DVec3::new(5.0, 5.0, 0.0), plane, 100.0)
+            .expect("plain square still faces");
+        assert_eq!(mesh.faces[face_id].inners().len(), 0);
+        assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    /// Box helper — 6 faces, watertight, outward winding via add_face's
+    /// normal handling. Returns its face ids.
+    fn add_box(mesh: &mut Mesh, lo: DVec3, hi: DVec3) -> Vec<FaceId> {
+        let v = [
+            mesh.add_vertex(DVec3::new(lo.x, lo.y, lo.z)),
+            mesh.add_vertex(DVec3::new(hi.x, lo.y, lo.z)),
+            mesh.add_vertex(DVec3::new(hi.x, hi.y, lo.z)),
+            mesh.add_vertex(DVec3::new(lo.x, hi.y, lo.z)),
+            mesh.add_vertex(DVec3::new(lo.x, lo.y, hi.z)),
+            mesh.add_vertex(DVec3::new(hi.x, lo.y, hi.z)),
+            mesh.add_vertex(DVec3::new(hi.x, hi.y, hi.z)),
+            mesh.add_vertex(DVec3::new(lo.x, hi.y, hi.z)),
+        ];
+        let quads = [
+            [v[0], v[3], v[2], v[1]], // bottom (-Z)
+            [v[4], v[5], v[6], v[7]], // top (+Z)
+            [v[0], v[1], v[5], v[4]], // -Y
+            [v[2], v[3], v[7], v[6]], // +Y
+            [v[1], v[2], v[6], v[5]], // +X
+            [v[0], v[4], v[7], v[3]], // -X
+        ];
+        quads
+            .iter()
+            .filter_map(|q| mesh.add_face(q, MaterialId::new(0)).ok())
+            .collect()
+    }
+
+    /// Square of orphan edges on an arbitrary Z plane.
+    fn add_square_at_z(mesh: &mut Mesh, z: f64, lo: f64, hi: f64) {
+        let a = mesh.add_vertex(DVec3::new(lo, lo, z));
+        let b = mesh.add_vertex(DVec3::new(hi, lo, z));
+        let c = mesh.add_vertex(DVec3::new(hi, hi, z));
+        let d = mesh.add_vertex(DVec3::new(lo, hi, z));
+        let _ = mesh.add_edge(a, b);
+        let _ = mesh.add_edge(b, c);
+        let _ = mesh.add_edge(c, d);
+        let _ = mesh.add_edge(d, a);
+    }
+
+    #[test]
+    fn adr148_infer_plane_finds_the_wire_plane_not_z0() {
+        // The case the tool cannot solve on its own: a loop at z=100 and no
+        // face to hit. Left to the usual cascade the click lands on Z=0.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+
+        let plane = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 100.0), 100.0)
+            .expect("a single planar wire is in range");
+        assert!(
+            plane.normal.dot(DVec3::Z).abs() > 0.999,
+            "wire is axis-aligned in Z, got normal {:?}",
+            plane.normal,
+        );
+        // dist is signed by the normal's direction; compare on the shared axis.
+        let z_of_plane = plane.dist / plane.normal.z;
+        assert!(
+            (z_of_plane - 100.0).abs() < 1e-6,
+            "inferred plane should be z=100, got z={}",
+            z_of_plane,
+        );
+    }
+
+    #[test]
+    fn adr148_infer_plane_refuses_when_two_planes_are_in_range() {
+        // Two loops on different planes, both within the radius. Choosing one
+        // would be the guess 메타-원칙 #16 forbids — so it is an error.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 50.0, 0.0, 10.0);
+
+        // `Plane` is not PartialEq, so match the error rather than the Result.
+        let result = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 25.0), 500.0);
+        match result {
+            Err(InferPlaneError::Ambiguous { plane_count }) => assert_eq!(plane_count, 2),
+            other => panic!("expected Ambiguous {{ plane_count: 2 }}, got {:?}", other.err()),
+        }
+    }
+
+    #[test]
+    fn adr148_infer_plane_two_wires_on_the_SAME_plane_is_not_ambiguous() {
+        // Two separate loops, one plane. Coplanar wires agree, so there is
+        // nothing to choose between — this must NOT be refused.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 100.0, 40.0, 50.0);
+
+        let plane = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 100.0), 500.0)
+            .expect("two coplanar wires agree on one plane");
+        let z_of_plane = plane.dist / plane.normal.z;
+        assert!((z_of_plane - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adr148_infer_plane_no_edges_in_range() {
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        let result = infer_plane_from_point(&mesh, DVec3::new(9000.0, 9000.0, 9000.0), 100.0);
+        assert!(matches!(
+            result,
+            Err(InferPlaneError::NoOrphanEdgesInRadius { .. }),
+        ));
+    }
+
+    #[test]
+    fn adr148_boundary_auto_plane_faces_a_loop_at_z100() {
+        // End to end: the click never mentions z=100, and the face still lands
+        // there. This is the whole point of §5.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+
+        let face_id = boundary_from_point_auto_plane(&mut mesh, DVec3::new(5.0, 5.0, 100.0), 100.0)
+            .expect("should synthesize on the inferred plane");
+        let verts = mesh
+            .collect_loop_verts(mesh.faces[face_id].outer().start)
+            .expect("outer loop");
+        assert_eq!(verts.len(), 4);
+        for v in verts {
+            let z = mesh.verts[v].pos().z;
+            assert!((z - 100.0).abs() < 1e-6, "face vertex off the wire plane: z={}", z);
+        }
+    }
+
+    #[test]
+    fn adr148_boundary_auto_plane_refuses_the_ambiguous_case() {
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 50.0, 0.0, 10.0);
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        let result = boundary_from_point_auto_plane(&mut mesh, DVec3::new(5.0, 5.0, 25.0), 500.0);
+        assert_eq!(result, Err(BoundaryError::NoEnclosingCycle));
+        let after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(before, after, "a refusal must not leave a face behind");
+    }
+
+    #[test]
+    fn adr148_shell_from_point_selects_the_enclosing_box() {
+        let mut mesh = Mesh::new();
+        let faces = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 10.0));
+        assert_eq!(faces.len(), 6, "box should have 6 faces");
+        assert!(mesh.is_face_set_closed_solid(&faces), "box must be watertight");
+
+        let inside = shell_from_point(&mesh, DVec3::new(5.0, 5.0, 5.0))
+            .expect("point inside the box");
+        assert_eq!(inside.len(), 6, "all six faces of the box");
+        let mut got = inside.clone();
+        let mut want = faces.clone();
+        got.sort_by_key(|f| f.raw());
+        want.sort_by_key(|f| f.raw());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn adr148_shell_from_point_outside_returns_not_inside() {
+        let mut mesh = Mesh::new();
+        let _ = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 10.0));
+        let result = shell_from_point(&mesh, DVec3::new(50.0, 50.0, 50.0));
+        assert_eq!(result, Err(ShellError::PointNotInsideAnyShell));
+    }
+
+    #[test]
+    fn adr148_shell_from_point_open_shell_is_not_a_solid() {
+        // A single square is a face, not a solid. Nothing to select.
+        let mut mesh = Mesh::new();
+        let a = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let b = mesh.add_vertex(DVec3::new(10.0, 0.0, 0.0));
+        let c = mesh.add_vertex(DVec3::new(10.0, 10.0, 0.0));
+        let d = mesh.add_vertex(DVec3::new(0.0, 10.0, 0.0));
+        let _ = mesh.add_face(&[a, b, c, d], MaterialId::new(0));
+        let result = shell_from_point(&mesh, DVec3::new(5.0, 5.0, 0.0));
+        assert_eq!(result, Err(ShellError::NoClosedShell));
+    }
+
+    #[test]
+    fn adr148_shell_from_point_nested_picks_the_inner_solid() {
+        // Box inside a box, click inside the inner one. Both contain the
+        // point; the inner is the one you pointed at — same smallest-first
+        // rule as 2D.
+        let mut mesh = Mesh::new();
+        let outer = add_box(&mut mesh, DVec3::new(0.0, 0.0, 0.0), DVec3::new(30.0, 30.0, 30.0));
+        let inner = add_box(&mut mesh, DVec3::new(10.0, 10.0, 10.0), DVec3::new(20.0, 20.0, 20.0));
+        assert_eq!(outer.len(), 6);
+        assert_eq!(inner.len(), 6);
+
+        let picked = shell_from_point(&mesh, DVec3::new(15.0, 15.0, 15.0))
+            .expect("inside both boxes");
+        let mut got = picked.clone();
+        let mut want = inner.clone();
+        got.sort_by_key(|f| f.raw());
+        want.sort_by_key(|f| f.raw());
+        assert_eq!(got, want, "the inner box wins — it is the one clicked into");
+
+        // And a point in the gap belongs to the outer box only.
+        let gap = shell_from_point(&mesh, DVec3::new(3.0, 3.0, 3.0)).expect("inside outer only");
+        let mut got_gap = gap.clone();
+        let mut want_outer = outer.clone();
+        got_gap.sort_by_key(|f| f.raw());
+        want_outer.sort_by_key(|f| f.raw());
+        assert_eq!(got_gap, want_outer);
+    }
+
+    #[test]
+    fn adr148_shell_from_point_empty_mesh_has_no_shell() {
+        let mesh = Mesh::new();
+        assert_eq!(
+            shell_from_point(&mesh, DVec3::ZERO),
+            Err(ShellError::NoClosedShell),
+        );
+    }
+
+    #[test]
+    fn adr148_multiloop_nested_island_is_not_our_hole() {
+        // Three rings: outer 0..30, middle 5..25, inner 10..20. Click between
+        // outer and middle.
+        //
+        // The middle is our hole. The inner is the middle's business — it sits
+        // inside the middle, one level down, and a hole inside a hole is not a
+        // hole of this face. Without the nested filter both would be handed to
+        // add_face_with_holes and the face would claim a region it does not
+        // bound. (BPOLY calls this the "Outer" island style.)
+        let mut mesh = Mesh::new();
+        let sq = |mesh: &mut Mesh, lo: f64, hi: f64| {
+            let a = mesh.add_vertex(DVec3::new(lo, lo, 0.0));
+            let b = mesh.add_vertex(DVec3::new(hi, lo, 0.0));
+            let c = mesh.add_vertex(DVec3::new(hi, hi, 0.0));
+            let d = mesh.add_vertex(DVec3::new(lo, hi, 0.0));
+            let _ = mesh.add_edge(a, b);
+            let _ = mesh.add_edge(b, c);
+            let _ = mesh.add_edge(c, d);
+            let _ = mesh.add_edge(d, a);
+        };
+        sq(&mut mesh, 0.0, 30.0);
+        sq(&mut mesh, 5.0, 25.0);
+        sq(&mut mesh, 10.0, 20.0);
+
+        let plane = make_plane_z0();
+        // (2, 2) — between outer and middle.
+        let face_id = boundary_from_point(&mut mesh, DVec3::new(2.0, 2.0, 0.0), plane, 200.0)
+            .expect("outermost ring");
+        assert_eq!(
+            mesh.faces[face_id].inners().len(),
+            1,
+            "only the middle square is our hole; the innermost belongs to the \
+             middle's own ring, not to this face",
+        );
+        assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    #[test]
+    fn adr148_multiloop_two_islands_become_two_holes() {
+        // Two disjoint islands in one outer square — both are direct children,
+        // so both are holes of the same ring (LOCKED #1 P7: disjoint inner
+        // components → multi-hole ring).
+        let mut mesh = Mesh::new();
+        let o00 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let o10 = mesh.add_vertex(DVec3::new(30.0, 0.0, 0.0));
+        let o11 = mesh.add_vertex(DVec3::new(30.0, 20.0, 0.0));
+        let o01 = mesh.add_vertex(DVec3::new(0.0, 20.0, 0.0));
+        let _ = mesh.add_edge(o00, o10);
+        let _ = mesh.add_edge(o10, o11);
+        let _ = mesh.add_edge(o11, o01);
+        let _ = mesh.add_edge(o01, o00);
+        for (x0, x1) in [(5.0_f64, 10.0_f64), (20.0, 25.0)] {
+            let a = mesh.add_vertex(DVec3::new(x0, 5.0, 0.0));
+            let b = mesh.add_vertex(DVec3::new(x1, 5.0, 0.0));
+            let c = mesh.add_vertex(DVec3::new(x1, 15.0, 0.0));
+            let d = mesh.add_vertex(DVec3::new(x0, 15.0, 0.0));
+            let _ = mesh.add_edge(a, b);
+            let _ = mesh.add_edge(b, c);
+            let _ = mesh.add_edge(c, d);
+            let _ = mesh.add_edge(d, a);
+        }
+
+        let plane = make_plane_z0();
+        // (15, 10) — between the two islands, inside the outer square.
+        let face_id = boundary_from_point(&mut mesh, DVec3::new(15.0, 10.0, 0.0), plane, 200.0)
+            .expect("ring with two islands");
+        assert_eq!(
+            mesh.faces[face_id].inners().len(),
+            2,
+            "both disjoint islands are holes of this ring",
+        );
+        assert!(mesh.verify_face_invariants().is_valid());
     }
 }

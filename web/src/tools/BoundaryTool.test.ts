@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { setLocale } from '../i18n';
 import * as THREE from 'three';
 import { BoundaryTool, humanizeBoundaryError } from './BoundaryTool';
 import type { ToolContext } from './ITool';
@@ -36,6 +37,9 @@ function mockCtx(): ToolContext {
 }
 
 describe('BoundaryTool (ADR-148 β-4)', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let ctx: ToolContext;
   let tool: BoundaryTool;
 
@@ -120,6 +124,60 @@ describe('BoundaryTool (ADR-148 β-4)', () => {
 
       expect(Toast.error).toHaveBeenCalledWith(
         expect.stringContaining('이 영역을 둘러싼 boundary 가 없습니다'),
+      );
+      expect(ctx.syncMesh).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ADR-148 §5 — auto plane inference', () => {
+    it('asks the geometry for the plane before falling back to the draw plane', async () => {
+      const { Toast } = await import('../ui/Toast');
+      const auto = vi.fn(() => 7);
+      (ctx.bridge as any).boundaryFromPointAutoPlane = auto;
+
+      tool.onMouseDown({} as MouseEvent, new THREE.Vector3(5, 5, 0));
+
+      // No plane arguments: that is the point. Boundary runs where there is no
+      // face to hit, so the draw-plane cascade cannot know the plane and a
+      // loop at z=100 would fall through to Z=0.
+      expect(auto).toHaveBeenCalledWith(5, 5, 0, 1000);
+      expect(ctx.bridge.boundaryFromPoint).not.toHaveBeenCalled();
+      expect(Toast.success).toHaveBeenCalledWith('Boundary 면이 생성되었습니다');
+    });
+
+    it('falls back to the draw plane when inference declines', async () => {
+      const { Toast } = await import('../ui/Toast');
+      // Ambiguous / not planar — the engine refuses rather than guessing
+      // (메타-원칙 #5 / #16). The user's lock or sticky plane is still a
+      // stated intent, so it is the honest second answer.
+      (ctx.bridge as any).boundaryFromPointAutoPlane = vi.fn(() => {
+        throw new Error('boundaryFromPointAutoPlane: NoEnclosingCycle');
+      });
+
+      tool.onMouseDown({} as MouseEvent, new THREE.Vector3(5, 5, 0));
+
+      expect(ctx.bridge.boundaryFromPoint).toHaveBeenCalledWith(
+        5, 5, 0, 0, 0, 1, 0, 1000,
+      );
+      expect(Toast.success).toHaveBeenCalledWith('Boundary 면이 생성되었습니다');
+      expect(Toast.error).not.toHaveBeenCalled();
+    });
+
+    it('reports the draw-plane error when both paths decline', async () => {
+      const { Toast } = await import('../ui/Toast');
+      (ctx.bridge as any).boundaryFromPointAutoPlane = vi.fn(() => {
+        throw new Error('boundaryFromPointAutoPlane: NoEnclosingCycle');
+      });
+      (ctx.bridge.boundaryFromPoint as any).mockImplementation(() => {
+        throw new Error('boundaryFromPoint: NoOrphanEdgesInRadius (radius 1000.0mm)');
+      });
+
+      tool.onMouseDown({} as MouseEvent, new THREE.Vector3(5, 5, 0));
+
+      // The LAST error, not the first: what the user needs is why the plane
+      // they are actually on did not work.
+      expect(Toast.error).toHaveBeenCalledWith(
+        expect.stringContaining('주변에 boundary 후보가 없습니다'),
       );
       expect(ctx.syncMesh).not.toHaveBeenCalled();
     });

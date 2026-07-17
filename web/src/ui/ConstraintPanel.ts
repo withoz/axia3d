@@ -14,6 +14,7 @@
 
 import type { WasmBridge } from '../bridge/WasmBridge';
 import { Toast } from './Toast';
+import { t } from '../i18n';
 
 export interface ConstraintPanelCallbacks {
   /** 제약 변경 후 뷰포트 재렌더 */
@@ -66,15 +67,15 @@ export class ConstraintPanel {
     this.panelEl.className = 'constraint-panel';
     this.panelEl.innerHTML = `
       <div class="cop-header">
-        <span class="cop-title">구속 (Constraints)</span>
+        <span class="cop-title">${t('구속 (Constraints)')}</span>
         <div class="cop-actions">
-          <button class="cop-btn cop-btn-solve" title="모든 제약 재해결">⟳</button>
-          <button class="cop-btn cop-btn-clear" title="모두 삭제">✕ ALL</button>
+          <button class="cop-btn cop-btn-solve" title="${t('모든 제약 재해결')}">⟳</button>
+          <button class="cop-btn cop-btn-clear" title="${t('모두 삭제')}">✕ ALL</button>
         </div>
       </div>
       <div class="cop-status"></div>
       <div class="cop-list"></div>
-      <div class="cop-empty">제약이 없습니다</div>
+      <div class="cop-empty">${t('제약이 없습니다')}</div>
     `;
     this.panelEl.style.display = 'none';
     container.appendChild(this.panelEl);
@@ -135,16 +136,16 @@ export class ConstraintPanel {
       row.dataset.id = String(c.id);
 
       const icon = KIND_ICON[c.kind] ?? '?';
-      const label = KIND_LABEL[c.kind] ?? c.kind;
+      const label = t(KIND_LABEL[c.kind] ?? c.kind);
       const refSummary = this.formatRefs(c.refs, c.value);
 
       row.innerHTML = `
-        <input type="checkbox" class="cop-active" ${c.active ? 'checked' : ''} title="활성/비활성">
+        <input type="checkbox" class="cop-active" ${c.active ? 'checked' : ''} title="${t('활성/비활성')}">
         <span class="cop-icon">${icon}</span>
         <span class="cop-label">${label}</span>
         <span class="cop-refs">${refSummary}</span>
         <span class="cop-id">#${c.id}</span>
-        <button class="cop-del" title="삭제">✕</button>
+        <button class="cop-del" title="${t('삭제')}">✕</button>
       `;
 
       row.querySelector<HTMLInputElement>('.cop-active')!.addEventListener('change', (e) => {
@@ -161,7 +162,7 @@ export class ConstraintPanel {
       row.querySelector('.cop-del')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (this.bridge.removeConstraint(c.id)) {
-          Toast.info(`제약 #${c.id} 삭제됨`, 1500);
+          Toast.info(t('제약 #{id} 삭제됨', { id: c.id }), 1500);
           this.refresh();
           this.callbacks.syncMesh?.();
         }
@@ -187,7 +188,7 @@ export class ConstraintPanel {
     const count = this.bridge.constraintCount?.() ?? 0;
     const satisfied = residual < 1e-4;
     this.statusEl.innerHTML = `
-      <span class="cop-count">${count}개</span>
+      <span class="cop-count">${t('{count}개', { count })}</span>
       <span class="cop-residual ${satisfied ? 'cop-ok' : 'cop-bad'}">
         residual: ${residual.toExponential(2)} ${satisfied ? '✓' : '⚠'}
       </span>
@@ -197,15 +198,15 @@ export class ConstraintPanel {
   private solveAll() {
     const result = this.bridge.resolveConstraintsIterative?.(100, 1e-6);
     if (!result) {
-      Toast.warning('제약 해결 API를 사용할 수 없습니다', 2000);
+      Toast.warning(t('제약 해결 API를 사용할 수 없습니다'), 2000);
       return;
     }
     if (result.converged) {
-      Toast.info(`수렴 완료 (${result.iterations} iter, residual=${result.finalResidual.toExponential(2)})`, 2500);
+      Toast.info(t('수렴 완료 ({iterations} iter, residual={residual})', { iterations: result.iterations, residual: result.finalResidual.toExponential(2) }), 2500);
     } else if (result.overConstrained) {
-      Toast.warning(`과제약 감지 — 수렴 실패 (residual=${result.finalResidual.toExponential(2)})`, 3500);
+      Toast.warning(t('과제약 감지 — 수렴 실패 (residual={residual})', { residual: result.finalResidual.toExponential(2) }), 3500);
     } else {
-      Toast.warning(`수렴 실패 (${result.iterations} iter)`, 2500);
+      Toast.warning(t('수렴 실패 ({iterations} iter)', { iterations: result.iterations }), 2500);
     }
     this.callbacks.syncMesh?.();
     this.refresh();
@@ -214,11 +215,11 @@ export class ConstraintPanel {
   private clearAll() {
     const items = this.bridge.listConstraints() as ConstraintListItem[];
     if (items.length === 0) return;
-    if (!confirm(`${items.length}개 제약을 모두 삭제할까요?`)) return;
+    if (!confirm(t('{count}개 제약을 모두 삭제할까요?', { count: items.length }))) return;
     for (const c of items) {
       this.bridge.removeConstraint(c.id);
     }
-    Toast.info(`${items.length}개 제약 삭제됨`, 1800);
+    Toast.info(t('{count}개 제약 삭제됨', { count: items.length }), 1800);
     this.refresh();
     this.callbacks.syncMesh?.();
   }

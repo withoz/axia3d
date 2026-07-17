@@ -39,6 +39,7 @@ import {
   type FaceTessellation,
   type EdgeTessellation,
 } from './occtTessellate';
+import { t } from '../i18n';
 
 /** OCCT.js 인스턴스 핸들 (opencascade.js v2 API). */
 type OcctInstance = unknown;
@@ -131,18 +132,20 @@ export interface InjectBridge {
 }
 
 /** OCCT.js 가 설치되지 않았을 때의 사용자 안내 메시지. */
+// Module scope is fine for t(): ES modules evaluate depth-first, so i18n's
+// detect() has already finished by the time this body runs (D6).
 const NOT_INSTALLED_MESSAGE =
-  'STEP/IGES 엔진(OCCT.js)이 설치되지 않았습니다.\n\n' +
-  '설치 명령:\n' +
+  t('STEP/IGES 엔진(OCCT.js)이 설치되지 않았습니다.\n\n') +
+  t('설치 명령:\n') +
   '  npm install opencascade.js\n\n' +
-  '설치 없이 사용 가능한 우회법:\n' +
-  '• FreeCAD: STEP → STL/DXF 변환\n' +
-  '• Fusion 360: 내보내기 → OBJ\n' +
-  '• Rhino: Save As → 3DM (AXiA 직접 지원)';
+  t('설치 없이 사용 가능한 우회법:\n') +
+  t('• FreeCAD: STEP → STL/DXF 변환\n') +
+  t('• Fusion 360: 내보내기 → OBJ\n') +
+  t('• Rhino: Save As → 3DM (AXiA 직접 지원)');
 
 /** 동적 import + WASM init 예상 소요 안내. */
 const LOADING_MESSAGE =
-  'STEP/IGES 엔진 로딩 중... (~3.5MB, 첫 사용 시에만)';
+  t('STEP/IGES 엔진 로딩 중... (~3.5MB, 첫 사용 시에만)');
 
 export class StepIgesImporter {
   private static _instance: StepIgesImporter | null = null;
@@ -249,8 +252,7 @@ export class StepIgesImporter {
     if (typeof initFn !== 'function') {
       throw new Error(
         `${NOT_INSTALLED_MESSAGE}\n\n` +
-        '(진단: opencascade.js 패키지에서 initOpenCascade entry 를 찾지 못함 — ' +
-        '버전 호환성 issue 의심. ADR-082 L1 lock-in semver caret 범위 확인.)',
+        t('(진단: opencascade.js 패키지에서 initOpenCascade entry 를 찾지 못함 — 버전 호환성 issue 의심. ADR-082 L1 lock-in semver caret 범위 확인.)'),
       );
     }
     // initOpenCascade signature: settings { mainJS, mainWasm, libs, module }.
@@ -310,7 +312,7 @@ export class StepIgesImporter {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     if (ext !== 'step' && ext !== 'stp' && ext !== 'iges' && ext !== 'igs') {
       throw new Error(
-        `STEP/IGES importer 가 처리할 수 없는 확장자: .${ext}`
+        t('STEP/IGES importer 가 처리할 수 없는 확장자: .{ext}', { ext })
       );
     }
     const format: 'step' | 'iges' = (ext === 'iges' || ext === 'igs') ? 'iges' : 'step';
@@ -322,7 +324,7 @@ export class StepIgesImporter {
     debugLog(`[StepIgesImporter] importing ${format.toUpperCase()}: ${file.name} (${bytes.length} bytes)`);
 
     // ADR-085 P-β — parse stage 시작 (engine_load 완료 후, ~5s 소요).
-    this.onStage?.('parse', '파일 분석 중...');
+    this.onStage?.('parse', t('파일 분석 중...'));
 
     // OCCT.js 의 STEP/IGES API 호출 — 실제 binding 은 opencascade.js v2 의
     // STEPControl_Reader / IGESControl_Reader 를 거친다.
@@ -337,11 +339,11 @@ export class StepIgesImporter {
       traversal = traverseBrep(occt, shape);
       warnings.push(...traversal.warnings);
     } else {
-      warnings.push('STEP/IGES shape 추출 실패 — traversal 건너뜀');
+      warnings.push(t('STEP/IGES shape 추출 실패 — traversal 건너뜀'));
     }
 
     // ADR-085 P-β — tessellate stage 시작 (~5-30s 소요).
-    this.onStage?.('tessellate', 'Mesh 생성 중...');
+    this.onStage?.('tessellate', t('Mesh 생성 중...'));
 
     // ADR-083 T-γ — BRepMesh tessellation + Three.js BufferGeometry 생성.
     // shape 가 추출되면 face 별 Mesh 를 group 에 채워서 viewport 표시.
@@ -442,7 +444,7 @@ export class StepIgesImporter {
     group.name = `${format.toUpperCase()}: ${fileName}`;
 
     if (!shape) {
-      const reason = 'shape null — tessellation 건너뜀';
+      const reason = t('shape null — tessellation 건너뜀');
       debugWarn(`[StepIgesImporter] ${reason}`);
       return { group, tessellationWarnings: [reason] };
     }
@@ -520,7 +522,7 @@ export class StepIgesImporter {
             edgesGroup.add(lineSeg);
           }
         } catch (e) {
-          edgeTess.warnings.push(`edge[${edge.index}] line 생성: ${String(e)}`);
+          edgeTess.warnings.push(t('edge[{index}] line 생성: {error}', { index: edge.index, error: String(e) }));
         }
       }
       if (edgesGroup.children.length > 0) {
@@ -603,7 +605,7 @@ export class StepIgesImporter {
           continue;
         }
         if (face.positions.length % 3 !== 0) {
-          warnings.push(`face[${face.index}] mesh 생성: positions length not multiple of 3`);
+          warnings.push(t('face[{index}] mesh 생성: positions length not multiple of 3', { index: face.index }));
           continue;
         }
         const vertCount = face.positions.length / 3;
@@ -622,7 +624,7 @@ export class StepIgesImporter {
         totalIndices += face.indices.length;
         validFaces.push(face);
       } catch (e) {
-        warnings.push(`face[${face.index}] mesh 생성: ${String(e)}`);
+        warnings.push(t('face[{index}] mesh 생성: {error}', { index: face.index, error: String(e) }));
       }
     }
 

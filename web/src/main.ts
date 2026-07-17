@@ -12,6 +12,7 @@ import { ToolManager } from './tools/ToolManagerRefactored';
 import { WasmBridge } from './bridge/WasmBridge';
 import { UnitSystem } from './units/UnitSystem';
 import { SettingsPanel } from './units/SettingsPanel';
+import { translateDom } from './i18n/translateDom';
 // FileImporter is now lazy-loaded via MenuBar (dynamic import on first use)
 import { ComponentPanel } from './ui/ComponentPanel';
 import { ConstraintPanel } from './ui/ConstraintPanel';
@@ -42,10 +43,12 @@ import { initContextMenu } from './ui/ContextMenu';
 import { loadInitialScene } from './ui/InitialScene';
 import { initXiaInspector } from './ui/XiaInspector';
 import { debugLog } from './utils/debug';
+import { isTypingInInput } from './utils/isTypingInInput';
 import { Toast } from './ui/Toast';
 import { getConsolePanel } from './ui/ConsolePanel';
 import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
 import './ui/DraggablePanels.css';
+import { t } from './i18n';
 
 // Install in-UI console panel as early as possible so any errors during
 // app boot are captured and visible to the user without DevTools.
@@ -87,7 +90,7 @@ async function checkWasmFreshness(): Promise<void> {
     if (stored && stored !== lastMod) {
       debugLog(`[WASM] Binary updated: ${stored} → ${lastMod}`);
       Toast.info(
-        'AXiA 엔진이 업데이트됐습니다. 최신 기능이 적용됩니다.',
+        t('AXiA 엔진이 업데이트됐습니다. 최신 기능이 적용됩니다.'),
         4000,
       );
     }
@@ -97,8 +100,68 @@ async function checkWasmFreshness(): Promise<void> {
   }
 }
 
+/**
+ * Route an action id through the MenuBar: many ids (panels, imports, view
+ * modes) are implemented as `#menubar [data-action]` items, not as branches of
+ * `ToolManager.dispatchAction`, so the only way to run them is to click the
+ * (possibly hidden) menu item. Scoped to `#menubar` so bare ids that live only
+ * on the toolbar / context menu (group / ungroup / make-component) fall through
+ * to executeAction. Returns false when no menubar item exists.
+ *
+ * ADR-069 — module scope so BOTH surfaces use it. It used to be a local inside
+ * the Command Palette's registration, which is why the Capability Explorer sent
+ * every id straight to executeAction: measured, 72 of the catalog's 136
+ * `action()` ids have no executeAction branch, so from the Explorer they did
+ * nothing at all — and were recorded as successes.
+ */
+/**
+ * Context-menu ids the palette may fire.
+ *
+ * Not the whole context menu. Adding `#context-menu` to the query below would
+ * re-route 13 ids that currently reach executeAction (merge-faces,
+ * constrain-*, flip-faces …) through ContextMenu's switch instead — a routing
+ * change nobody asked for. These three are here because measuring them showed
+ * they read `selection.getSelectedFaces()`, not the right-click position, and
+ * a selection survives opening the palette.
+ *
+ * snap-override stays out: it is a `ctx-submenu-trigger` whose own handler is
+ * `case 'snap-override': return; // hover로 처리, 클릭 무시`. Firing it from
+ * the palette would be a silent no-op, which is worse than not offering it.
+ */
+const CONTEXT_SELECTION_ACTIONS = new Set(['group-edit', 'group-hide', 'group-lock']);
+
+const dispatchMenuAction = (id: string): boolean => {
+  // #statusbar too: osnap / grid / edge / axis / help / rename are F-key
+  // buttons down there, handled by StatusBar.ts — they exist in neither
+  // #menubar nor executeAction, so from the palette they fell through both
+  // hops and produced "unknown command". Measured in the wiring audit.
+  const item =
+    document.querySelector<HTMLElement>(
+      `#menubar [data-action="${id}"], #statusbar [data-action="${id}"]`,
+    ) ??
+    (CONTEXT_SELECTION_ACTIONS.has(id)
+      ? document.querySelector<HTMLElement>(`#context-menu [data-action="${id}"]`)
+      : null);
+  if (!item) return false;
+  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  return true;
+};
+
 async function main() {
   debugLog('AXiA 3D starting...');
+
+  // 0a. Translate index.html's static chrome (ADR-294 D8). FIRST, before any
+  //     panel is constructed, so its scope is exactly the static markup —
+  //     panels build their own DOM from TS and re-render, so a boot-time sweep
+  //     would only paint over them until their first repaint. They get wrapped
+  //     with t() in their own batch instead. A no-op in Korean.
+  const domI18n = translateDom(document.body);
+  if (domI18n.texts || domI18n.attrs || domI18n.untranslated.length) {
+    debugLog(
+      `[i18n] chrome: ${domI18n.texts} texts + ${domI18n.attrs} attrs translated` +
+      (domI18n.untranslated.length ? `, ${domI18n.untranslated.length} untranslated` : ''),
+    );
+  }
 
   // 0. Initialize the Toast singleton FIRST — every Toast.info/warning/error/
   //    success is `Toast.getInstance()?.show(...)`, so without this init the
@@ -544,18 +607,6 @@ async function main() {
   //   MenuBar; the catalog just gathers the metadata so toolbar / menu
   //   / keyboard / palette can all consult one list.
   void import('./commands/AxiaCommands').then(({ registerAxiaCommands }) => {
-    // dispatchMenuAction — palette `action()` commands that ToolManager.
-    // executeAction doesn't handle (panels, imports, view modes) route through
-    // the MenuBar by dispatching a click on its (possibly hidden) #menubar
-    // [data-action] item. Scoped to #menubar so bare ids that only live on the
-    // toolbar / context menu (group / ungroup / make-component) fall through to
-    // executeAction. Returns false when no menubar item exists.
-    const dispatchMenuAction = (id: string): boolean => {
-      const item = document.querySelector<HTMLElement>(`#menubar [data-action="${id}"]`);
-      if (!item) return false;
-      item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      return true;
-    };
     registerAxiaCommands({ toolManager, dispatchMenuAction });
   });
   // Command Palette — Ctrl+K / Ctrl+Shift+P opens a searchable list of every
@@ -813,7 +864,15 @@ async function main() {
   initContextMenu({ viewport, bridge, toolManager, viewModeBar, openOsnapPanel });
 
   // Keyboard Shortcuts (depends on saveProject/openProject)
-  initKeyboardShortcuts({ toolManager, viewport, toolbar, viewModeBar, saveProject, openProject });
+  initKeyboardShortcuts({
+    toolManager, viewport, toolbar, viewModeBar, saveProject, openProject,
+    // Same handlers the File menu runs (MenuBar 'file-saveas' / 'file-new'),
+    // so the key and the menu item cannot drift apart.
+    saveAsProject: () => fileManager.saveAsProject(),
+    newProject: () => {
+      if (confirm(t('현재 작업을 초기화하시겠습니까?'))) location.reload();
+    },
+  });
 
   // ═══ 11. Style Side Panel — see ui/StylePanel.ts ═══
   initStylePanel({
@@ -853,7 +912,7 @@ async function main() {
 
     // 키보드 O → Component Panel 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if (e.key === 'o' || e.key === 'O') {
         if (!e.ctrlKey && !e.altKey && !e.shiftKey) {
           componentPanel.toggle();
@@ -882,7 +941,7 @@ async function main() {
 
     // 키보드 J → Constraint Panel 토글 ('K'는 Inference Lock에서 사용 중)
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         constraintPanel.toggle();
       }
@@ -899,7 +958,7 @@ async function main() {
 
     // 키보드 Shift+H → History Panel 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'h' || e.key === 'H') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         historyPanel.toggle();
       }
@@ -947,10 +1006,35 @@ async function main() {
               return { ok: true, result: text ?? '(empty)' };
             }
           }
-          // 2. Tier 1/2 launcher — ToolManager executeAction (existing tool dispatch).
-          // executeAction is void — best-effort delegation. Unknown actions
-          // surface via Toast (ToolManager internal warning).
-          toolManager.executeAction(actionId);
+          // 2. Tier 1/2 launcher.
+          //
+          // ADR-069 — this used to go straight to a void executeAction and
+          // record 'ok' unconditionally, on the strength of a comment claiming
+          // "unknown actions surface via Toast (ToolManager internal warning)".
+          // They did not: the dispatcher's if/else chain simply ended, so an
+          // unknown action did nothing, said nothing, and was written to the
+          // audit trail as a success. An audit that invents successes is worse
+          // than no audit — it IS the intrusion signal (ADR-041 P26.7).
+          //
+          // Two fixes, in order:
+          //  - Menu-backed ids first, exactly as the Command Palette does.
+          //    Measured: 72 of the catalog's 136 `action()` ids (file-open,
+          //    export-obj, help, view modes…) have no executeAction branch —
+          //    they live as `#menubar [data-action]` items. From the Explorer
+          //    they therefore did NOTHING, and were logged as successes. Now
+          //    they actually run.
+          //  - Then executeAction, which reports whether it had a branch at
+          //    all. That boolean is not a general success flag (see its doc) —
+          //    it is exactly the case that was being fabricated.
+          if (dispatchMenuAction(actionId)) {
+            audit.record({ actionId, tier, result: 'ok', args });
+            return { ok: true, result: 'Launched (menu dispatch).' };
+          }
+          if (!toolManager.executeAction(actionId)) {
+            const err = t('알 수 없는 명령입니다: {actionId}', { actionId });
+            audit.record({ actionId, tier, result: 'error', error: err, args });
+            return { ok: false, error: err };
+          }
           audit.record({ actionId, tier, result: 'ok', args });
           return { ok: true, result: 'Launched (existing tool dispatch).' };
         } catch (e) {
@@ -1065,7 +1149,7 @@ async function main() {
 
     // Shift+J → 인디케이터 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'j' || e.key === 'J') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         constraintVisual.toggle();
       }

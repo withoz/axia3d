@@ -16,7 +16,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const MIN_SEP_MM = 0.5;
 
@@ -90,13 +91,13 @@ export class DrawPlaneTool implements ITool {
     const w = c.clone().sub(a);
     const normal = u.clone().cross(w);
     if (normal.lengthSq() < 1e-9 || u.lengthSq() < 1e-9) {
-      Toast.warning('세 점이 일직선이거나 너무 가깝습니다 — 평면을 만들 수 없어요', 3000);
+      Toast.warning(t('세 점이 일직선이거나 너무 가깝습니다 — 평면을 만들 수 없어요'), 3000);
       return;
     }
     normal.normalize();
     const up = u.clone().normalize(); // in-plane reference (perpendicular to normal)
     this.ctx.lockPlane?.({ origin: a.clone(), normal, up, source: 'manual' });
-    Toast.info('작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Home 키로 해제)', 4000);
+    Toast.info(t('작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Home 키로 해제)'), 4000);
     debugLog(`[Plane] normal=(${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)})`);
   }
 

@@ -57,6 +57,15 @@ export interface EngineInstance {
   /** ADR-079 W-1-β — surface-native solid extrusion (replaces legacy push_pull). */
   create_solid_extrude(face_id_raw: number, dist: number): boolean;
   exportSnapshotStrict(): Uint8Array;
+
+  // Tier 3 — destructive. Names verified against the generated
+  // web/src/wasm/axia_wasm.d.ts, which is the only place the real JS names
+  // appear: wasm-bindgen keeps snake_case unless a `js_name` is given, so
+  // `delete_face` / `delete_group` are snake while `deleteEdgeCascade` is camel.
+  delete_face(face_id_raw: number): boolean;
+  /** Returns the cascaded FACE count (>= 0 ok, -1 failure) — not a bool. */
+  deleteEdgeCascade(edge_id_raw: number): number;
+  delete_group(group_id: number): boolean;
   /** ADR-041 P26.1 Tier 0 — list all XiaId in scene (sorted ascending). */
   allXiaIds(): Uint32Array;
   /** ADR-041 P26.1 Tier 0 — scene-level JSON summary. */

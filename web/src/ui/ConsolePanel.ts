@@ -17,6 +17,8 @@
  * + Tier 3 Danger Zone in a later PR.
  */
 
+import { t } from '../i18n';
+
 export type ConsoleLevel = 'error' | 'warn' | 'log' | 'info';
 
 export interface ConsoleEntry {
@@ -147,9 +149,9 @@ export class ConsolePanel {
   formatAsText(): string {
     return this.entries
       .map((e) => {
-        const t = new Date(e.timestamp).toISOString();
+        const time = new Date(e.timestamp).toISOString();
         const src = e.source ? ` [${e.source}]` : '';
-        return `${t} ${e.level.toUpperCase()}${src}: ${e.message}`;
+        return `${time} ${e.level.toUpperCase()}${src}: ${e.message}`;
       })
       .join('\n');
   }
@@ -234,7 +236,7 @@ export class ConsolePanel {
     // Collapsed pill button (header)
     const pill = document.createElement('button');
     pill.type = 'button';
-    pill.setAttribute('aria-label', '콘솔 열기/닫기');
+    pill.setAttribute('aria-label', t('콘솔 열기/닫기'));
     pill.style.cssText = [
       'display: flex',
       'align-items: center',
@@ -248,7 +250,7 @@ export class ConsolePanel {
       'font: inherit',
       'box-shadow: 0 4px 12px rgba(0,0,0,0.4)',
     ].join(';');
-    pill.innerHTML = `<span style="opacity:0.7">📟 콘솔</span>`;
+    pill.innerHTML = `<span style="opacity:0.7">📟 ${t('콘솔')}</span>`;
 
     const badge = document.createElement('span');
     badge.style.cssText = [
@@ -298,10 +300,10 @@ export class ConsolePanel {
     ].join(';');
 
     const filterButtons: Array<{ key: 'all' | ConsoleLevel; label: string }> = [
-      { key: 'all', label: '전체' },
-      { key: 'error', label: '오류' },
-      { key: 'warn', label: '경고' },
-      { key: 'info', label: '정보' },
+      { key: 'all', label: t('전체') },
+      { key: 'error', label: t('오류') },
+      { key: 'warn', label: t('경고') },
+      { key: 'info', label: t('정보') },
     ];
     for (const fb of filterButtons) {
       const btn = document.createElement('button');
@@ -339,8 +341,8 @@ export class ConsolePanel {
 
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
-    copyBtn.textContent = '복사';
-    copyBtn.title = '버그 리포트용 — 모든 항목 클립보드로';
+    copyBtn.textContent = t('복사');
+    copyBtn.title = t('버그 리포트용 — 모든 항목 클립보드로');
     copyBtn.style.cssText = [
       'padding: 3px 8px',
       'background: transparent',
@@ -353,18 +355,18 @@ export class ConsolePanel {
     copyBtn.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(this.formatAsText());
-        copyBtn.textContent = '복사됨 ✓';
-        setTimeout(() => (copyBtn.textContent = '복사'), 1500);
+        copyBtn.textContent = t('복사됨 ✓');
+        setTimeout(() => (copyBtn.textContent = t('복사')), 1500);
       } catch {
-        copyBtn.textContent = '복사 실패';
-        setTimeout(() => (copyBtn.textContent = '복사'), 1500);
+        copyBtn.textContent = t('복사 실패');
+        setTimeout(() => (copyBtn.textContent = t('복사')), 1500);
       }
     });
     toolbar.appendChild(copyBtn);
 
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
-    clearBtn.textContent = '지우기';
+    clearBtn.textContent = t('지우기');
     clearBtn.style.cssText = copyBtn.style.cssText;
     clearBtn.addEventListener('click', () => this.clear());
     toolbar.appendChild(clearBtn);
@@ -426,8 +428,8 @@ export class ConsolePanel {
 
   /** `[hh:mm:ss] message` with a `(×N)` suffix when collapsed. */
   private formatRow(entry: ConsoleEntry): string {
-    const t = new Date(entry.timestamp);
-    const ts = `${t.getHours().toString().padStart(2, '0')}:${t.getMinutes().toString().padStart(2, '0')}:${t.getSeconds().toString().padStart(2, '0')}`;
+    const time = new Date(entry.timestamp);
+    const ts = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
     const n = entry.count ?? 1;
     const suffix = n > 1 ? `  (×${n})` : '';
     return `[${ts}] ${entry.message}${suffix}`;

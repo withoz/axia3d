@@ -27,6 +27,7 @@ import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
+import { t } from '../i18n';
 
 /**
  * Default search radius (ADR-148 §2.1 — 10×10×10m 작업 공간 표준).
@@ -49,18 +50,18 @@ export function humanizeBoundaryError(rawMessage: string): string {
   if (rawMessage.includes('PointNotOnPlane')) {
     const match = rawMessage.match(/distance ([\d.]+)mm/);
     const dist = match ? match[1] : '?';
-    return `클릭 위치가 평면 위가 아닙니다 (거리 ${dist}mm)`;
+    return t('클릭 위치가 평면 위가 아닙니다 (거리 {dist}mm)', { dist });
   }
   if (rawMessage.includes('NoOrphanEdgesInRadius')) {
     const match = rawMessage.match(/radius ([\d.]+)mm/);
     const r = match ? match[1] : '?';
-    return `주변에 boundary 후보가 없습니다 (반경 ${r}mm 확대 필요)`;
+    return t('주변에 boundary 후보가 없습니다 (반경 {r}mm 확대 필요)', { r });
   }
   if (rawMessage.includes('NoEnclosingCycle')) {
-    return '이 영역을 둘러싼 boundary 가 없습니다';
+    return t('이 영역을 둘러싼 boundary 가 없습니다');
   }
   if (rawMessage.includes('CycleAlreadyFaced')) {
-    return '이 영역에 이미 면이 있습니다';
+    return t('이 영역에 이미 면이 있습니다');
   }
   // Fallback — strip "boundaryFromPoint: " prefix if present.
   return rawMessage.replace(/^boundaryFromPoint:\s*/, '');
@@ -82,7 +83,7 @@ export class BoundaryTool implements ITool {
 
   onActivate(): void {
     debugLog('[BoundaryTool] Activated (ADR-148 β-4, Ctrl+B)');
-    Toast.info('Boundary 도구: 영역 내부 클릭');
+    Toast.info(t('Boundary 도구: 영역 내부 클릭'));
   }
 
   onDeactivate(): void {
@@ -91,7 +92,7 @@ export class BoundaryTool implements ITool {
 
   onMouseDown(e: MouseEvent, point: THREE.Vector3 | null): void {
     if (!point) {
-      Toast.warning('Boundary: 유효한 평면 위 위치를 클릭하세요');
+      Toast.warning(t('Boundary: 유효한 평면 위 위치를 클릭하세요'));
       return;
     }
 
@@ -112,7 +113,7 @@ export class BoundaryTool implements ITool {
     const pt = normalized.point;
 
     if (normalized.skipReason === 'DegenerateBelowEpsilon') {
-      Toast.warning('Boundary: 입력 위치가 너무 작은 영역');
+      Toast.warning(t('Boundary: 입력 위치가 너무 작은 영역'));
       return;
     }
 
@@ -138,21 +139,54 @@ export class BoundaryTool implements ITool {
     );
 
     try {
-      const faceId = this.ctx.bridge.boundaryFromPoint(
-        pt.x, pt.y, pt.z,
-        planeNormal.x, planeNormal.y, planeNormal.z,
-        planeDist,
-        DEFAULT_SEARCH_RADIUS_MM,
-      );
+      // ADR-148 §5 — ask the geometry which plane first.
+      //
+      // getDrawPlane above resolves face-hit / lock / sticky / Z=0, and for a
+      // boundary click that cascade has a hole in it: you are clicking where
+      // there is no face yet, so the face-hit branch — the one that would know
+      // the plane — cannot fire. A loop drawn at z=100 then falls through to
+      // Z=0 and cannot be faced at all unless the sticky plane happens to
+      // still be right.
+      //
+      // The auto path infers the plane from the free edges in range, and
+      // refuses when they disagree rather than guessing (메타-원칙 #5 / #16).
+      // When it refuses, the explicit plane below is still the honest answer:
+      // the user's lock or sticky plane IS a stated intent.
+      const faceId = this.synthesize(pt, planeNormal, planeDist);
       debugLog('[BoundaryTool] synthesized face_id', faceId);
-      Toast.success('Boundary 면이 생성되었습니다');
+      Toast.success(t('Boundary 면이 생성되었습니다'));
       this.ctx.syncMesh();
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       const userMsg = humanizeBoundaryError(raw);
-      Toast.error(`Boundary 생성 실패: ${userMsg}`);
+      Toast.error(t('Boundary 생성 실패: {userMsg}', { userMsg }));
       debugLog('[BoundaryTool] error:', raw);
     }
+  }
+
+  /**
+   * Infer the plane from nearby free edges; fall back to the resolved draw
+   * plane when inference declines (ambiguous / not planar) or the endpoint is
+   * missing (legacy build, test mock).
+   *
+   * Throws the LAST error, not the first: if both paths fail, what the user
+   * needs to hear is why the plane they are actually on did not work.
+   */
+  private synthesize(pt: THREE.Vector3, normal: THREE.Vector3, dist: number): number {
+    const auto = this.ctx.bridge.boundaryFromPointAutoPlane;
+    if (typeof auto === 'function') {
+      try {
+        return auto.call(this.ctx.bridge, pt.x, pt.y, pt.z, DEFAULT_SEARCH_RADIUS_MM);
+      } catch (err) {
+        debugLog('[BoundaryTool] auto-plane declined, using the draw plane:', err);
+      }
+    }
+    return this.ctx.bridge.boundaryFromPoint(
+      pt.x, pt.y, pt.z,
+      normal.x, normal.y, normal.z,
+      dist,
+      DEFAULT_SEARCH_RADIUS_MM,
+    );
   }
 
   onMouseMove(_e: MouseEvent, _point: THREE.Vector3 | null): void {

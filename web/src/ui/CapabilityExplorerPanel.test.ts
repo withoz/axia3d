@@ -9,8 +9,14 @@
  *        the catalog package in the web/ tree.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { CapabilityExplorerPanel } from './CapabilityExplorerPanel';
+import { setLocale } from '../i18n';
+
+// ADR-294 — the panel now renders through t(), and jsdom reports
+// navigator.language = 'en-US', so without pinning this every test that
+// expects Korean copy would silently assert against the English table.
+beforeEach(() => setLocale('ko'));
 
 // Vite's import.meta.glob — source-level scan without node:fs deps.
 // Captures all .ts files in web/src/ as raw strings for grep.
@@ -181,9 +187,18 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
   });
 
   it('capability_explorer_tier3_hidden_by_default', () => {
-    // §D #2 lock-in — Tier 3 (destructive) actions are hidden unless
-    // user explicitly enables "Show advanced" toggle.
-    // Reset localStorage to ensure default state.
+    // §D #2 lock-in — Tier 3 (destructive) actions are hidden unless the user
+    // explicitly enables "Show advanced".
+    //
+    // The catalog currently has ZERO Tier 3 entries (measured 2026-07-16:
+    // 54/72/88/0), so the toggle used to be a control that could never do
+    // anything: renderTree looped the tier, found an empty bucket and
+    // continued. This test now pins BOTH halves — the lock-in for when Tier 3
+    // entries land, and the honest absence of the control until they do. It is
+    // not a coverage gap: `delete` / `tool-erase` / `tool-explode` / `ungroup`
+    // are catalogued at Tier 2, and moving them to 3 would hide everyday tools
+    // behind an off-by-default toggle. Per ADR-045 D5 Tier 3 belongs to the
+    // Debug Panel's Danger Zone.
     try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
 
     const container = document.createElement('div');
@@ -191,41 +206,58 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
     const panel = new CapabilityExplorerPanel(container, {});
     panel.show();
 
-    // Default: showAdvanced = false → Tier 3 not visible.
-    expect(panel.isAdvancedVisible()).toBe(false);
-    let tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    expect(tier3Group, 'Tier 3 group must NOT be rendered by default (§D #2)').toBeNull();
-
-    // Toggle on.
+    const hasTier3 = CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3);
     const toggle = container.querySelector(
       '.cep-toggle-advanced input[type="checkbox"]',
-    ) as HTMLInputElement;
-    expect(toggle, 'Show advanced toggle must exist').toBeTruthy();
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('change'));
+    ) as HTMLInputElement | null;
 
-    expect(panel.isAdvancedVisible()).toBe(true);
-    tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    // Tier 3 may or may not exist depending on catalog content; if present,
-    // it should now render.
-    const allActions = CapabilityExplorerPanel.getAllActions();
-    const hasTier3 = allActions.some((a) => a.tier === 3);
-    if (hasTier3) {
-      expect(tier3Group, 'Tier 3 group must render after toggle on').toBeTruthy();
+    // Default, either way: Tier 3 is not on screen.
+    expect(panel.isAdvancedVisible()).toBe(false);
+    expect(
+      container.querySelector('.cep-tier-group[data-tier="3"]'),
+      'Tier 3 group must NOT render by default (§D #2)',
+    ).toBeNull();
+
+    if (!hasTier3) {
+      expect(toggle, 'no Tier 3 actions → no control that cannot do anything').toBeNull();
+    } else {
+      expect(toggle, 'Tier 3 actions exist → the toggle must be offered').toBeTruthy();
+      toggle!.checked = true;
+      toggle!.dispatchEvent(new Event('change'));
+      expect(panel.isAdvancedVisible()).toBe(true);
+      expect(
+        container.querySelector('.cep-tier-group[data-tier="3"]'),
+        'Tier 3 group must render after toggle on',
+      ).toBeTruthy();
+      try {
+        expect(localStorage.getItem('axia.capabilityExplorer.showAdvanced')).toBe('1');
+      } catch { /* localStorage unavailable */ }
+
+      toggle!.checked = false;
+      toggle!.dispatchEvent(new Event('change'));
+      expect(panel.isAdvancedVisible()).toBe(false);
+      expect(
+        container.querySelector('.cep-tier-group[data-tier="3"]'),
+        'Tier 3 group must hide after toggle off',
+      ).toBeNull();
     }
 
-    // Verify localStorage persistence.
-    try {
-      expect(localStorage.getItem('axia.capabilityExplorer.showAdvanced')).toBe('1');
-    } catch {}
+    panel.dispose();
+    container.remove();
+    try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
+  });
 
-    // Toggle off again.
-    toggle.checked = false;
-    toggle.dispatchEvent(new Event('change'));
-    expect(panel.isAdvancedVisible()).toBe(false);
-    tier3Group = container.querySelector('.cep-tier-group[data-tier="3"]');
-    expect(tier3Group, 'Tier 3 group must hide after toggle off').toBeNull();
-
+  it('a stale showAdvanced=1 cannot leave an unreachable filter on', () => {
+    // An earlier build persisted the flag; with no Tier 3 entries there is now
+    // no toggle to turn it back off, so construction must clear it.
+    try { localStorage.setItem('axia.capabilityExplorer.showAdvanced', '1'); } catch {}
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new CapabilityExplorerPanel(container, {});
+    panel.show();
+    if (!CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3)) {
+      expect(panel.isAdvancedVisible()).toBe(false);
+    }
     panel.dispose();
     container.remove();
     try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
@@ -263,3 +295,65 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
     container.remove();
   });
 });
+
+/**
+ * ADR-294 batch 4 — the Explorer renders ActionCatalog's 210 Korean labels.
+ *
+ * This exists because the wiring silently did not land: a script asserted on a
+ * bad anchor and never wrote the file, and I read a grep of the file's EXISTING
+ * imports as confirmation. The commit claimed the Explorer was done; the app
+ * showed 210 Korean labels. Rendering it and looking for Hangul is the check
+ * that a grep cannot fake.
+ */
+describe('ADR-294 — Capability Explorer i18n', () => {
+  const openPanel = () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new CapabilityExplorerPanel(container, {});
+    panel.show();
+    return { panel, container, el: document.getElementById('capability-explorer')! };
+  };
+
+  it('renders Korean labels by default', async () => {
+    const { setLocale } = await import('../i18n');
+    setLocale('ko');
+    const { panel, container, el } = openPanel();
+    expect(el.textContent, 'Korean is the default').toMatch(/[가-힣]/);
+    panel.dispose(); container.remove();
+  });
+
+  it('renders NO Korean when the locale is English', async () => {
+    const { setLocale } = await import('../i18n');
+    setLocale('en');
+    const { panel, container, el } = openPanel();
+    const rows = el.querySelectorAll('.cep-action-label');
+    expect(rows.length, 'an empty tree would pass vacuously').toBeGreaterThan(100);
+    const ko = [...rows].map((r) => r.textContent ?? '').filter((s) => /[가-힣]/.test(s));
+    expect(ko, 'every catalog label must be translated').toEqual([]);
+    expect(el.querySelector('.cep-search-input')?.getAttribute('placeholder'))
+      .toBe('Search (id / label / description)');
+    panel.dispose(); container.remove(); setLocale('ko');
+  });
+
+  it('finds a command by its ENGLISH name when the locale is English', async () => {
+    // The half that is easy to forget: translating the render but not the
+    // haystack leaves search matching Korean only, so an English user types
+    // "fillet" and gets nothing.
+    const { setLocale } = await import('../i18n');
+    setLocale('en');
+    const { panel, container } = openPanel();
+    // The query has to be one the id cannot answer. 'fillet' was a bad choice:
+    // the ids ARE 'tool-fillet' / 'fillet-edge', so it matched with the label
+    // haystack removed — the test passed while proving nothing. Measured, 104
+    // of the catalog's 209 Korean labels are reachable ONLY through their
+    // translated label; 'linear array' (id 'array-linear') is one of them.
+    expect(panel.filterActions('linear array').map((a) => a.id),
+      'an English label the id and description cannot answer').toContain('array-linear');
+    expect(panel.filterActions('intersect with model').map((a) => a.id))
+      .toContain('intersect-with-model');
+    // …and the Korean must still reach it.
+    expect(panel.filterActions('선형 배열').map((a) => a.id)).toContain('array-linear');
+    panel.dispose(); container.remove(); setLocale('ko');
+  });
+});
+

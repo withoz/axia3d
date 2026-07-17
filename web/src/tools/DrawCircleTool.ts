@@ -13,9 +13,12 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { getDrawCurveMode } from './DrawCurveSettings';
+import { Toast } from '../ui/Toast';
+import { humanizeEngineError } from '../bridge/humanizeEngineError';
 
 /** Max distance from center to prevent runaway geometry when ray grazes the plane */
 const MAX_DRAW_DISTANCE = 50000;
@@ -324,6 +327,53 @@ export class DrawCircleTool implements ITool {
 
   applyVCBValue(value: number): void {
     if (!this.circleCenter) return;
+
+    // ADR-284 follow-up — a typed radius on a curved host.
+    //
+    // The mouse path takes a POINT, so "50" can only be honoured by placing the
+    // radius point whose GEODESIC distance is 50. Offsetting 50 in the tangent
+    // plane is not that: it lands ~2% short at r=200/d=50 and ~7% at d=100 — a
+    // quietly wrong dimension in a tool whose whole point is being more precise
+    // than SketchUp. This path used to fall through and draw a flat circle
+    // regardless, then (7c6e4c2) declined rather than approximate. The engine
+    // now answers it exactly, so ask.
+    //
+    // Still fail-closed: if the engine cannot answer (degenerate ask, a sphere
+    // radius past half a turn, an older build without the export), decline as
+    // before rather than fall back to the flat circle this is here to prevent.
+    const curvedHost = this.sphereMode ? this.sphereHostFace
+      : this.cylinderMode ? this.cylinderHostFace
+        : this.coneMode ? this.coneHostFace
+          : this.torusMode ? this.torusHostFace
+            : -1;
+    if (curvedHost >= 0) {
+      const c = this.circleCenter;
+      const rp = this.ctx.bridge.surfacePointAtGeodesicDistance?.(
+        curvedHost, [c.x, c.y, c.z], value,
+      ) ?? null;
+      if (!rp) {
+        Toast.warning(t('이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요'), 3500);
+        this.cleanup();
+        return;
+      }
+      const draw = this.sphereMode ? this.ctx.bridge.drawCircleOnSphere
+        : this.cylinderMode ? this.ctx.bridge.drawCircleOnCylinder
+          : this.coneMode ? this.ctx.bridge.drawCircleOnCone
+            : this.ctx.bridge.drawCircleOnTorus;
+      const res = draw?.call(this.ctx.bridge, curvedHost, [c.x, c.y, c.z], rp);
+      if (!res || res.includes('"error"')) {
+        Toast.warning(
+          humanizeEngineError(this.ctx.bridge.lastError())
+            || t('이 곡면에는 원을 그릴 수 없습니다'),
+          3500,
+        );
+      } else {
+        debugLog(`[VCB/Circle/Curved] host=${curvedHost} geodesic R=${value}`);
+      }
+      this.ctx.syncMesh();
+      this.cleanup();
+      return;
+    }
 
     // ADR-103-δ-1 (Z-up): fallback plane = XY ground (Z=0), normal +Z.
     const plane = this.plane || {

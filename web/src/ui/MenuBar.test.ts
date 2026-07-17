@@ -241,6 +241,18 @@ describe('MenuBar', () => {
       btn.click();
       expect(deps.viewport.setGridVisible).toHaveBeenCalledWith(false); // was true, toggled
     });
+
+    it('view-top updates the status-bar label, like the button and the key do', () => {
+      // There are three ways to switch views. The ViewModeBar buttons and the
+      // t/b/f keys both write #tool-label; the menu did not, so it left the
+      // label naming the previous tool while the camera had already moved.
+      const label = document.getElementById('tool-label')!;
+      label.textContent = 'Rectangle';
+      (document.querySelector('[data-action="view-top"]') as HTMLElement).click();
+      // 'Top (XY)' under jsdom's en-US; the point is that it changed at all.
+      expect(label.textContent).not.toBe('Rectangle');
+      expect(label.textContent).toContain('XY');
+    });
   });
 
   describe('file actions', () => {

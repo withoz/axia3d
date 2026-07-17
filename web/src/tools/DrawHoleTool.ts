@@ -20,7 +20,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 /** Max distance from center to prevent runaway geometry when ray grazes the plane. */
 const MAX_DRAW_DISTANCE = 50000;
@@ -47,7 +48,7 @@ export class DrawHoleTool implements ITool {
 
   onActivate(): void {
     debugLog('[DrawHoleTool] Activated');
-    Toast.info('구멍을 뚫을 면 위를 클릭해 중심을 지정하세요', 2500);
+    Toast.info(t('구멍을 뚫을 면 위를 클릭해 중심을 지정하세요'), 2500);
   }
 
   onDeactivate(): void {
@@ -61,7 +62,7 @@ export class DrawHoleTool implements ITool {
       const plane = this.ctx.getDrawPlane(e);
       if (!plane.onFace) {
         // A hole needs a host face — refuse to start on the ground / empty space.
-        Toast.warning('구멍은 기존 면 위에 뚫어야 합니다 — 면을 클릭하세요');
+        Toast.warning(t('구멍은 기존 면 위에 뚫어야 합니다 — 면을 클릭하세요'));
         return;
       }
       this.plane = plane;
@@ -153,7 +154,7 @@ export class DrawHoleTool implements ITool {
   private commitHole(radius: number): void {
     if (!this.holeCenter || !this.plane) return;
     if (radius <= 1) {
-      Toast.warning('구멍 반지름이 너무 작습니다');
+      Toast.warning(t('구멍 반지름이 너무 작습니다'));
       return;
     }
     const c = this.holeCenter;
@@ -165,7 +166,7 @@ export class DrawHoleTool implements ITool {
     const tube = this.ctx.bridge.drillThroughHole(center, normal, radius, HOLE_SEGMENTS);
     if (tube > 0) {
       debugLog(`[Hole] Drilled through R=${radius.toFixed(2)} → ${tube} tube quads`);
-      Toast.success('관통 구멍을 뚫었습니다');
+      Toast.success(t('관통 구멍을 뚫었습니다'));
       this.ctx.syncMesh();
       return;
     }
@@ -180,7 +181,7 @@ export class DrawHoleTool implements ITool {
       return;
     }
     debugLog(`[Hole] Punched 2D face hole R=${radius.toFixed(2)} → ring face ${faceId}`);
-    Toast.success('면 구멍을 뚫었습니다');
+    Toast.success(t('면 구멍을 뚫었습니다'));
     this.ctx.syncMesh();
   }
 

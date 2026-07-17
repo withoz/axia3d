@@ -18,6 +18,7 @@ import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
 import { getText3DMode } from './Text3DSettings';
+import { t } from '../i18n';
 
 const STORAGE_KEY = 'axia:text3d:last';
 
@@ -41,11 +42,11 @@ export class DrawText3DTool implements ITool {
     }
     const input =
       typeof window !== 'undefined' && typeof window.prompt === 'function'
-        ? window.prompt('3D 텍스트 내용:', prev)
+        ? window.prompt(t('3D 텍스트 내용:'), prev)
         : prev;
     if (input == null || input.trim() === '') {
       this.text = '';
-      Toast.info('3D 텍스트 취소됨 (다시 도구를 선택해 내용 입력)', 1800);
+      Toast.info(t('3D 텍스트 취소됨 (다시 도구를 선택해 내용 입력)'), 1800);
       return;
     }
     this.text = input;
@@ -56,7 +57,10 @@ export class DrawText3DTool implements ITool {
     }
     const mode = getText3DMode();
     Toast.info(
-      `3D 텍스트 "${input}" — 클릭하여 배치 (${mode === 'extruded' ? '압출' : '스프라이트'} 모드, 연속, Esc 종료)`,
+      t('3D 텍스트 "{text}" — 클릭하여 배치 ({mode} 모드, 연속, Esc 종료)', {
+        text: input,
+        mode: mode === 'extruded' ? t('압출') : t('스프라이트'),
+      }),
       4000,
     );
   }
@@ -67,13 +71,13 @@ export class DrawText3DTool implements ITool {
 
   onMouseDown(e: MouseEvent, point: THREE.Vector3 | null): void {
     if (!this.text) {
-      Toast.warning('텍스트 도구를 다시 선택해 내용을 입력하세요', 2000);
+      Toast.warning(t('텍스트 도구를 다시 선택해 내용을 입력하세요'), 2000);
       return;
     }
     const raw = this.ctx.get3DPoint(e);
     const pt = this.ctx.getSnappedPoint(e, raw) ?? raw ?? point;
     if (!pt) {
-      Toast.warning('텍스트를 배치할 위치를 클릭하세요', 1800);
+      Toast.warning(t('텍스트를 배치할 위치를 클릭하세요'), 1800);
       return;
     }
     const plane = this.ctx.getDrawPlane(e);
@@ -94,13 +98,13 @@ export class DrawText3DTool implements ITool {
         if (!obj) {
           // Latin font lacks these glyphs (e.g. Korean) → graceful sprite fallback.
           obj = builder.buildSpriteText(text);
-          Toast.info('이 글자는 3D 폰트에 없어 스프라이트 라벨로 표시했습니다', 3000);
+          Toast.info(t('이 글자는 3D 폰트에 없어 스프라이트 라벨로 표시했습니다'), 3000);
         }
       } else {
         obj = builder.buildSpriteText(text);
       }
       if (!obj) {
-        Toast.warning('텍스트 생성 실패', 2000);
+        Toast.warning(t('텍스트 생성 실패'), 2000);
         return;
       }
       obj.position.copy(pos);
@@ -115,7 +119,7 @@ export class DrawText3DTool implements ITool {
         `[Text3D] "${text}" (${mode}) @ (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
       );
     } catch (err) {
-      Toast.warning('3D 텍스트 모듈 로드 실패', 2500);
+      Toast.warning(t('3D 텍스트 모듈 로드 실패'), 2500);
       debugLog('[Text3D] build error', err);
     }
   }

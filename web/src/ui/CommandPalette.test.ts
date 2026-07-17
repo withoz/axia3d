@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CommandPalette } from './CommandPalette';
+import { CommandPalette } from './CommandPalette';
+import { setLocale } from '../i18n';
 import { __resetCommandCatalog, getCommandCatalog } from '../commands/CommandCatalog';
 
 describe('CommandPalette', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   beforeEach(() => {
     document.body.innerHTML = '';
     __resetCommandCatalog();

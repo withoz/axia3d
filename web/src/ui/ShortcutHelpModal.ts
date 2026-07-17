@@ -5,6 +5,8 @@
  * ESC 또는 배경 클릭으로 닫히며, 다시 F1을 누르면 토글.
  */
 
+import { t } from '../i18n';
+
 const MODAL_ID = 'shortcut-help-modal';
 
 interface ShortcutRow {
@@ -26,6 +28,9 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'R', description: 'Rect (사각형)' },
       { key: 'C', description: 'Circle (원)' },
       { key: 'Shift+C', description: '📐 Centerline (중심선)' },
+      // Bound all along (AxiaCommands ⇧L / ⇧F), just never written down.
+      { key: 'Shift+L', description: 'Polyline (폴리선)' },
+      { key: 'Shift+F', description: 'Freehand (자유선)' },
       { key: 'A', description: 'Arc (호)' },
       { key: 'G', description: 'Polygon (다각형)' },
       { key: 'V', description: 'Extrude/Cut (돌출/잘라내기 · Volume)' },
@@ -37,6 +42,8 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'O', description: 'Offset' },
       { key: 'E', description: 'Erase (지우기)' },
       { key: 'X', description: 'Split' },
+      // Bound since ADR-148 β-4, documented nowhere until now.
+      { key: 'Ctrl+B', description: 'Boundary (영역 클릭 → 면)' },
       { key: 'U', description: 'Measure Tool (2점 거리 / 3점 각도)' },
       { key: 'Space', description: 'Select 도구로 복귀' },
     ],
@@ -55,7 +62,7 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'Ctrl+O', description: '프로젝트 열기' },
       { key: 'Ctrl+G', description: '그룹 만들기' },
       { key: 'Ctrl+Shift+G', description: '그룹 해제' },
-      { key: 'Ctrl+M', description: '재질 패널' },
+      { key: 'Ctrl+M', description: '면 머지' },
       { key: 'Delete', description: '삭제' },
       { key: 'Esc', description: '취소 / 선택 해제' },
       { key: 'F2', description: '선택 XIA 이름 변경' },
@@ -72,8 +79,12 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'F6', description: '엣지 표시/숨김' },
       { key: 'F7', description: '축 표시/숨김' },
       { key: '`', description: '그리드 표시/숨김 (대체)' },
+      // Both were undocumented and both collided: ` also toggled the command
+      // input, Ctrl+K also opened it on top of the palette.
+      { key: 'Ctrl+`', description: '명령 입력줄 열기/닫기' },
+      { key: 'Ctrl+K', description: '명령 팔레트 (Ctrl+Shift+P 도 동일)' },
       { key: 'T / B', description: 'Top / Bottom 뷰' },
-      { key: 'F / K', description: 'Front / Back 뷰' },
+      { key: 'F / Shift+K', description: 'Front / Back 뷰' },
       { key: 'Num 0', description: '3D 투시 뷰' },
     ],
   },
@@ -117,15 +128,27 @@ const SECTIONS: ShortcutSection[] = [
   },
 ];
 
+/**
+ * SECTIONS stays pure data and t() is applied HERE, at render (ADR-294).
+ *
+ * Either place would work — D6 measured that a module-scope t() already sees
+ * the persisted locale — but translating at render keeps the table readable as
+ * a table, and it is the same shape batch 4 needs for the catalogs, which
+ * cannot import t() at all.
+ *
+ * `key` is never translated: 'Ctrl+Z' is a key, not a word. The one exception
+ * is the two Korean keys ('Alt+엣지 클릭'), which describe a gesture rather
+ * than name a key.
+ */
 function buildModalHtml(): string {
   const columns = SECTIONS.map(sec => `
     <div class="sh-section">
-      <h3>${sec.title}</h3>
+      <h3>${t(sec.title)}</h3>
       <table>
         ${sec.rows.map(r => `
           <tr>
-            <td class="sh-key"><kbd>${r.key}</kbd></td>
-            <td class="sh-desc">${r.description}</td>
+            <td class="sh-key"><kbd>${t(r.key)}</kbd></td>
+            <td class="sh-desc">${t(r.description)}</td>
           </tr>
         `).join('')}
       </table>
@@ -136,11 +159,11 @@ function buildModalHtml(): string {
     <div class="sh-modal-overlay">
       <div class="sh-modal">
         <div class="sh-header">
-          <h2>AXiA 3D 키보드 단축키</h2>
+          <h2>${t('AXiA 3D 키보드 단축키')}</h2>
           <button class="sh-close" aria-label="Close">✕</button>
         </div>
         <div class="sh-grid">${columns}</div>
-        <div class="sh-footer">F1로 다시 열기 · Esc로 닫기</div>
+        <div class="sh-footer">${t('F1로 다시 열기 · Esc로 닫기')}</div>
       </div>
     </div>
   `;

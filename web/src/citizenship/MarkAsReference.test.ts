@@ -5,7 +5,8 @@
  * 검증. 다중 trigger point (Inspector / ContextMenu) 의 SSOT 봉인.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import {
   markFacesAsReference,
   markEdgesAsReference,
@@ -26,6 +27,11 @@ function makeBridgeStub(opts: {
 }
 
 describe('ADR-095 Phase 3-δ markFacesAsReference', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy. The
+  // messages became t() keys when the raw `return '한글'` in this module was
+  // wrapped — it was reaching a Toast and rendering Korean under `en`.
+  beforeEach(() => setLocale('ko'));
+
   it('성공 시 refId 반환', () => {
     const bridge = makeBridgeStub({ createIM: () => 42 });
     const r = markFacesAsReference(bridge, [1, 2], 'Site', '/site.step');
@@ -83,6 +89,8 @@ describe('ADR-095 Phase 3-δ markFacesAsReference', () => {
 });
 
 describe('ADR-095 Phase 3-δ markEdgesAsReference', () => {
+  beforeEach(() => setLocale('ko'));
+
   it('성공 시 refId 반환', () => {
     const bridge = makeBridgeStub({ createCL: () => 7 });
     const r = markEdgesAsReference(bridge, [10, 20], 'Center axis');

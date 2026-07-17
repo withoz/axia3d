@@ -14,7 +14,9 @@
  * import), but the dedicated panel is THIS file.
  *
  * @see docs/adr/068-adr-046-phase-1-path-y-invariant-verifier-pilot.md
- */
+ */
+
+import { t } from '../i18n';
 
 export interface InvariantReport {
   checkedFaces: number;
@@ -65,14 +67,14 @@ export class InvariantVerifierPanel {
     this.panelEl.className = 'invariant-verifier';
     this.panelEl.innerHTML = `
       <div class="iv-header">
-        <span class="iv-title">🛡️ 씬 무결성 검사</span>
-        <span class="iv-meta" data-role="meta">미실행</span>
+        <span class="iv-title">🛡️ ${t('씬 무결성 검사')}</span>
+        <span class="iv-meta" data-role="meta">${t('미실행')}</span>
       </div>
       <div class="iv-toolbar">
         <button class="iv-btn iv-btn-run" data-role="run">▶ Run Verify</button>
         <span class="iv-hint" data-role="hint">
           ADR-007 invariants (winding / loop / HE / manifold) +
-          자기교차(self-intersection) 검증. 큰 mesh 에서 비싸므로 명시 실행.
+          ${t('자기교차(self-intersection) 검증. 큰 mesh 에서 비싸므로 명시 실행.')}
         </span>
       </div>
       <div class="iv-status" data-role="status"></div>
@@ -146,8 +148,8 @@ export class InvariantVerifierPanel {
     // Update meta: timestamp + face count.
     const metaEl = this.panelEl.querySelector('[data-role="meta"]');
     if (metaEl && this.lastRunAt) {
-      const t = new Date(this.lastRunAt);
-      metaEl.textContent = `${t.toLocaleTimeString()} · ${r.checkedFaces} faces`;
+      const time = new Date(this.lastRunAt);
+      metaEl.textContent = `${time.toLocaleTimeString()} · ${r.checkedFaces} faces`;
     }
 
     const si = this.lastSelfIntersect;
@@ -156,7 +158,7 @@ export class InvariantVerifierPanel {
     if (r.valid && r.violationCount === 0 && !siDirty) {
       // Clean — green status (invariants pass AND no self-intersection).
       this.statusEl.className = 'iv-status iv-status-ok';
-      const siNote = si ? ' · 자기교차 0' : '';
+      const siNote = si ? t(' · 자기교차 0') : '';
       this.statusEl.textContent = `✓ All ${r.checkedFaces} faces pass invariants${siNote}.`;
       this.bodyEl.innerHTML = '';
       return;
@@ -166,12 +168,12 @@ export class InvariantVerifierPanel {
     this.statusEl.className = 'iv-status iv-status-err';
     const parts: string[] = [];
     if (r.violationCount > 0) {
-      parts.push(`invariant 위반 ${r.violationCount}`);
+      parts.push(t('invariant 위반 {count}', { count: r.violationCount }));
     }
     if (siDirty) {
-      parts.push(`자기교차 ${si!.count} pair`);
+      parts.push(t('자기교차 {count} pair', { count: si!.count }));
     }
-    this.statusEl.textContent = `✗ ${parts.join(' · ')} 발견.`;
+    this.statusEl.textContent = t('✗ {parts} 발견.', { parts: parts.join(' · ') });
 
     this.bodyEl.innerHTML = '';
     for (const violation of r.violations) {
@@ -193,7 +195,7 @@ export class InvariantVerifierPanel {
   private buildSelfIntersectHeader(count: number): HTMLElement {
     const h = document.createElement('div');
     h.className = 'iv-si-header';
-    h.textContent = `⚠ 자기교차 (self-intersection) ${count} pair — 위상은 valid 이나 기하가 겹침`;
+    h.textContent = t('⚠ 자기교차 (self-intersection) {count} pair — 위상은 valid 이나 기하가 겹침', { count });
     return h;
   }
 
@@ -203,7 +205,7 @@ export class InvariantVerifierPanel {
 
     const text = document.createElement('span');
     text.className = 'iv-violation-text';
-    text.textContent = `Face ${fa} ⨯ Face ${fb} 교차`;
+    text.textContent = t('Face {fa} ⨯ Face {fb} 교차', { fa, fb });
     row.appendChild(text);
 
     const jumpBtn = document.createElement('button');

@@ -7,6 +7,8 @@
 
 import { Viewport } from '../viewport/Viewport';
 import type { WasmBridge } from '../bridge/WasmBridge';
+import { t } from '../i18n';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface StylePreset {
   name: string;
@@ -75,7 +77,7 @@ export function initStylePanel(deps: StylePanelDeps): void {
 
   // Escape to close
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (isTypingInInput(e.target)) return;
     if (e.key === 'Escape' && stylePanel?.classList.contains('open')) {
       stylePanel.classList.remove('open');
       e.stopPropagation();
@@ -157,7 +159,7 @@ export function initStylePanel(deps: StylePanelDeps): void {
 
       const label = document.createElement('div');
       label.className = 'sty-preset-name';
-      label.textContent = p.name;
+      label.textContent = t(p.name);
       wrap.appendChild(label);
 
       wrap.addEventListener('click', () => {
@@ -326,11 +328,11 @@ function injectFaceOrientationToggle(viewport: Viewport): void {
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#bbb;cursor:pointer;">
       <input type="checkbox" id="sty-show-face-orient" />
-      <span>면 방향 표시 (디버그)</span>
+      <span>${t('면 방향 표시 (디버그)')}</span>
     </label>
     <div style="font-size:10px;color:#888;margin-top:4px;line-height:1.4;padding-left:24px;">
-      ON: 모든 면 양면 다른 색 (winding 가시화).<br/>
-      OFF: open mesh 양면 동일, closed solid 만 두 톤. (ADR-018)
+      ${t('ON: 모든 면 양면 다른 색 (winding 가시화).')}<br/>
+      ${t('OFF: open mesh 양면 동일, closed solid 만 두 톤. (ADR-018)')}
     </div>
   `;
   body.appendChild(wrap);

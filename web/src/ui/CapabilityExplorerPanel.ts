@@ -23,6 +23,7 @@
 // Regression `capability_explorer_imports_only_capability_explorer_panel`
 // asserts no other web/src/ file references `@axia/action-catalog`.
 import { ALL_ACTIONS, CATALOG_SIZE, type ActionDef, type Tier } from '@axia/action-catalog';
+import { t } from '../i18n';
 
 const TIER_LABELS: Record<Tier, string> = {
   0: 'Tier 0 — Read',
@@ -123,14 +124,9 @@ export class CapabilityExplorerPanel {
         <span class="cep-meta" data-role="meta">${CATALOG_SIZE} actions</span>
       </div>
       <div class="cep-search">
-        <input class="cep-search-input" type="text" placeholder="검색 (id / label / description)" data-role="search" />
+        <input class="cep-search-input" type="text" placeholder="${t('검색 (id / label / description)')}" data-role="search" />
       </div>
-      <div class="cep-toolbar">
-        <label class="cep-toggle-advanced">
-          <input type="checkbox" data-role="toggle-advanced" ${this.showAdvanced ? 'checked' : ''} />
-          <span>Show advanced (Tier 3 destructive)</span>
-        </label>
-      </div>
+      <div class="cep-toolbar" data-role="toolbar"></div>
       <div class="cep-body" data-role="body"></div>
     `;
     this.panelEl.style.display = 'none';
@@ -144,19 +140,45 @@ export class CapabilityExplorerPanel {
       this.renderTree();
     });
 
-    const toggleEl = this.panelEl.querySelector('[data-role="toggle-advanced"]') as HTMLInputElement;
-    toggleEl.addEventListener('change', () => {
-      this.showAdvanced = toggleEl.checked;
-      try {
-        localStorage.setItem(
-          CapabilityExplorerPanel.LS_KEY_SHOW_ADVANCED,
-          this.showAdvanced ? '1' : '0',
-        );
-      } catch {
-        // localStorage write 실패 — silent.
-      }
-      this.renderTree();
-    });
+    // ADR-045 D3/D5 — the "Show advanced (Tier 3)" toggle only exists if there
+    // is anything at Tier 3 to reveal.
+    //
+    // Measured 2026-07-16: the catalog has **zero** Tier 3 entries (54/72/88/0),
+    // so this control was a lie — `renderTree` looped the tier, found an empty
+    // bucket and continued, and toggling it changed nothing on screen. That is
+    // not a coverage gap to fill by re-tiering: the destructive actions
+    // (`delete`, `tool-erase`, `tool-explode`, `ungroup`) are all catalogued at
+    // Tier 2 today, and moving them to 3 would HIDE everyday tools behind an
+    // off-by-default toggle. Per ADR-045 D5, Tier 3 belongs to the Debug
+    // Panel's Danger Zone, not here. So: render the control when it has a job,
+    // and don't when it doesn't.
+    const toolbarEl = this.panelEl.querySelector('[data-role="toolbar"]') as HTMLElement;
+    const hasTier3 = CapabilityExplorerPanel.getAllActions().some((a) => a.tier === 3);
+    if (hasTier3) {
+      toolbarEl.innerHTML = `
+        <label class="cep-toggle-advanced">
+          <input type="checkbox" data-role="toggle-advanced" ${this.showAdvanced ? 'checked' : ''} />
+          <span>Show advanced (Tier 3 destructive)</span>
+        </label>
+      `;
+      const toggleEl = toolbarEl.querySelector('[data-role="toggle-advanced"]') as HTMLInputElement;
+      toggleEl.addEventListener('change', () => {
+        this.showAdvanced = toggleEl.checked;
+        try {
+          localStorage.setItem(
+            CapabilityExplorerPanel.LS_KEY_SHOW_ADVANCED,
+            this.showAdvanced ? '1' : '0',
+          );
+        } catch {
+          // localStorage write 실패 — silent.
+        }
+        this.renderTree();
+      });
+    } else {
+      // No toggle, and no stale `showAdvanced` either: a persisted '1' from an
+      // earlier build must not silently keep an unreachable filter on.
+      this.showAdvanced = false;
+    }
 
     this.injectStyles();
     this.renderTree();
@@ -199,6 +221,9 @@ export class CapabilityExplorerPanel {
     const q = query.toLowerCase();
     return ALL_ACTIONS.filter((a) =>
       a.id.toLowerCase().includes(q)
+      // both the translated label and the original: in English, a query of
+      // "fillet" must match, and in Korean "필렛" must still match (ADR-294)
+      || t(a.label).toLowerCase().includes(q)
       || a.label.toLowerCase().includes(q)
       || a.description.toLowerCase().includes(q)
     );
@@ -220,7 +245,7 @@ export class CapabilityExplorerPanel {
     if (filtered.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'cep-empty';
-      empty.textContent = '검색 결과가 없습니다.';
+      empty.textContent = t('검색 결과가 없습니다.');
       this.bodyEl.appendChild(empty);
       return;
     }
@@ -285,7 +310,7 @@ export class CapabilityExplorerPanel {
     head.className = 'cep-action-head';
     head.innerHTML = `
       <span class="cep-action-id">${this.escape(action.id)}</span>
-      <span class="cep-action-label">${this.escape(action.label)}</span>
+      <span class="cep-action-label">${this.escape(t(action.label))}</span>
     `;
     if (action.status && action.status !== 'ok') {
       const badge = document.createElement('span');
@@ -320,7 +345,7 @@ export class CapabilityExplorerPanel {
     const adrsText = (action.adrs ?? []).join(', ');
 
     details.innerHTML = `
-      <div class="cep-details-desc">${this.escape(action.description)}</div>
+      <div class="cep-details-desc">${this.escape(t(action.description))}</div>
       <div class="cep-details-row"><b>Surfaces:</b> ${this.escape(surfacesText)}</div>
       ${aliasParts.length > 0 ? `<div class="cep-details-row">${aliasParts.join(' · ')}</div>` : ''}
       ${adrsText ? `<div class="cep-details-row"><b>ADRs:</b> ${this.escape(adrsText)}</div>` : ''}
@@ -373,8 +398,8 @@ export class CapabilityExplorerPanel {
       note.className = 'cep-form-note';
       note.textContent =
         action.tier >= 1 && action.aliases.bridge
-          ? '기존 UI 도구로 실행 (Launch 버튼 사용).'
-          : '복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)';
+          ? t('기존 UI 도구로 실행 (Launch 버튼 사용).')
+          : t('복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)');
       form.appendChild(note);
     }
 
@@ -383,7 +408,7 @@ export class CapabilityExplorerPanel {
     btn.className = 'cep-form-btn';
     btn.dataset.tier = String(action.tier);
     btn.textContent = action.tier === 0 ? 'Run' : 'Launch';
-    if (action.tier >= 2) btn.textContent += ' (변경)';
+    if (action.tier >= 2) btn.textContent += t(' (변경)');
     if (action.tier === 3) btn.textContent = 'Launch (advanced)';
     btn.addEventListener('click', () => this.handleInvoke(action, inputs));
     form.appendChild(btn);
@@ -404,7 +429,8 @@ export class CapabilityExplorerPanel {
     if (action.tier >= 2) {
       const tierName = action.tier === 3 ? 'Tier 3 (DESTRUCTIVE)' : 'Tier 2 (modificative)';
       const ok = window.confirm(
-        `${tierName} 작업: ${action.label}\n\n${action.description}\n\n실행하시겠습니까?`,
+        `${t('{tier} 작업: {label}', { tier: tierName, label: t(action.label) })}`
+        + `\n\n${t(action.description)}\n\n${t('실행하시겠습니까?')}`,
       );
       if (!ok) return;
     }
@@ -441,7 +467,7 @@ export class CapabilityExplorerPanel {
     if (!this.callbacks.onActionInvoke) {
       this.showResult(action.id, {
         ok: false,
-        error: 'onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).',
+        error: t('onActionInvoke 콜백이 등록되지 않았습니다 (main.ts wire 필요).'),
       });
       return;
     }

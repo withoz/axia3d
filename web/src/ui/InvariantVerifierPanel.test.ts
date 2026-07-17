@@ -9,7 +9,8 @@
  *   5. invariant_verifier_panel_imports_only_invariant_verifier
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import {
   InvariantVerifierPanel,
   type InvariantReport,
@@ -22,6 +23,9 @@ const allTsFiles = import.meta.glob('/src/**/*.ts', {
 }) as Record<string, string>;
 
 describe('ADR-068 Phase 1 Path Y B — Invariant Verifier pilot', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   it('invariant_verifier_panel_renders_run_button', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);

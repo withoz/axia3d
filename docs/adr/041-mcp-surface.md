@@ -69,6 +69,55 @@ Tier 3 (destructive, explicit user consent each call):
   - import_step (file system access)
 ```
 
+> **"explicit user consent each call" was unimplemented until 2026-07-16.** The
+> opt-in (tier config) and the audit log shipped with P26.1; the consent did
+> not, so Tier 3 was gated by exactly the same thing as Tier 2 — a config flag.
+> Now: `dispatch` asks `opts.consent` before invoking any Tier 3 handler, and
+> `wireTools` supplies one backed by **MCP elicitation** (SDK 1.29 —
+> `server.elicitInput`, `action: accept | decline | cancel`).
+>
+> **Fail-closed.** Anything other than an explicit `accept` is denied and
+> audited. A client that does not support elicitation, or a transport error,
+> becomes `unavailable` — deliberately NOT folded into `decline`, so an operator
+> can tell "the user said no" from "nobody could be asked" (the second is a
+> deployment problem, and collapsing them would hide it).
+>
+> The prompt names the capability, its description and the **validated args** —
+> "approve erase_face" without saying which face is not consent. Tier ≤ 2 is
+> never prompted: a confirm on every push/pull trains people to click through
+> the one that matters.
+>
+> Consent was the precondition, and it landed first — deliberately, so nothing
+> destructive was ever reachable without it.
+>
+> **Wired 2026-07-16 (사용자 결재 "열어주세요"): erase_face, erase_edge,
+> delete_group.** Each goes through the consent gate, is hidden on the default
+> policy (`DEFAULT_TIER_CONFIG` = tiers [0, 1]), and is audited. Every clause of
+> their agent-facing descriptions is read off the engine rather than assumed —
+> which corrected two of my own drafts:
+> - `delete_face` **no-ops to `true`** when the face is already gone; `ok=false`
+>   means the engine could not remove it. Edges survive as wires (ADR-019).
+> - `erase_edge` uses `deleteEdgeCascade`, not the legacy bool `delete_edge`,
+>   because deleting an edge **also deletes every face sharing it**
+>   (SketchUp-style cascade) and only the cascade variant reports how many. An
+>   agent's caller needs that number.
+> - `delete_group` **does not destroy geometry** — it dissolves the grouping,
+>   un-indexes the faces and re-parents children. It is ungroup, not erase, and
+>   the consent prompt says so.
+>
+> **Still unwired, with reasons:**
+> - `delete_xia` — there is no `Scene::delete_xia`. It would be
+>   `demoteXiaToShape` + `deleteShape`: two transactions (two undo steps), and a
+>   failure of the second leaves a demotion nobody asked for. Needs a
+>   Scene-level op first.
+> - `import_step` — `axia-wasm` has no `axia-foreign` dependency at all (grep:
+>   0), so the STEP parser is not reachable from the engine build. Blocked by
+>   ADR-082 Drift #2 territory, not by policy.
+>
+> See `test/tier3_consent.test.ts` (the gate) and `test/tier3_wired.test.ts`
+> (opt-in hidden by default, nothing runs without accept, decline leaves the
+> engine untouched).
+
 각 tier 는 `axia.config.json` 의 `mcp.enabled_tiers: [0, 1]` 로 제어. 기본값
 **Tier 0 + 1** (read + constructive). Tier 2/3 는 opt-in.
 

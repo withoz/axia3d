@@ -13,7 +13,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+import { t } from '../i18n';
 
 const PICK_TOL = 2.0; // mm — snapped point should sit on a vertex
 
@@ -30,7 +31,7 @@ export class DimensionTool implements ITool {
 
   onActivate(): void {
     debugLog('[DimensionTool] Activated');
-    Toast.info('치수: 첫 정점 클릭 → 둘째 정점 클릭 (영구·편집가능 치수)', 3500);
+    Toast.info(t('치수: 첫 정점 클릭 → 둘째 정점 클릭 (영구·편집가능 치수)'), 3500);
   }
 
   onDeactivate(): void {
@@ -43,16 +44,16 @@ export class DimensionTool implements ITool {
     if (!pt) return;
     const vid = this.ctx.bridge.findVertexIdAt?.(pt.x, pt.y, pt.z, PICK_TOL) ?? -1;
     if (vid < 0) {
-      Toast.warning('치수를 잴 정점 위를 클릭하세요', 2000);
+      Toast.warning(t('치수를 잴 정점 위를 클릭하세요'), 2000);
       return;
     }
     if (this.v1 < 0) {
       this.v1 = vid;
-      Toast.info('둘째 정점을 클릭하세요 (Esc 취소)', 2500);
+      Toast.info(t('둘째 정점을 클릭하세요 (Esc 취소)'), 2500);
       return;
     }
     if (vid === this.v1) {
-      Toast.warning('서로 다른 정점을 선택하세요', 2000);
+      Toast.warning(t('서로 다른 정점을 선택하세요'), 2000);
       return;
     }
 
@@ -61,7 +62,7 @@ export class DimensionTool implements ITool {
     if (!pa || !pb) { this.cleanup(); return; }
     const dist = Math.hypot(pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]);
     if (dist < 1e-6) {
-      Toast.warning('두 정점이 같은 위치입니다', 2000);
+      Toast.warning(t('두 정점이 같은 위치입니다'), 2000);
       this.cleanup();
       return;
     }
@@ -69,7 +70,7 @@ export class DimensionTool implements ITool {
     const id = this.ctx.bridge.addDistanceConstraint(this.v1, vid, dist);
     if (id > 0) {
       this.ctx.syncMesh();
-      Toast.info(`치수 생성 (${this.ctx.units.format(dist)}) — 라벨 클릭으로 편집`, 2500);
+      Toast.info(t('치수 생성 ({distance}) — 라벨 클릭으로 편집', { distance: this.ctx.units.format(dist) }), 2500);
       debugLog(`[Dimension] constraint ${id}: ${this.v1}↔${vid} = ${dist}`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '치수 생성 실패');

@@ -22,15 +22,22 @@ describe('capability handler registry', () => {
   it('current registry surface (Stage 3 + #2 + Tier 2 expansion + wired caps)', () => {
     // Adding/removing handlers requires updating this list AND the
     // tier declarations in tiers.ts. Drift between the two = bug.
+    //
+    // The three Tier 3 entries (erase_face / erase_edge / delete_group) are
+    // consent-gated per call (ADR-041 P26.1) and hidden on the default policy
+    // — DEFAULT_TIER_CONFIG enables tiers [0, 1] only. Registered ≠ reachable.
     expect(listRegisteredCapabilities().sort()).toEqual([
       'boolean_intersect',
       'boolean_subtract',
       'boolean_union',
       'create_group',
+      'delete_group',
       'draw_circle',
       'draw_line',
       'draw_polyline',
       'draw_rect',
+      'erase_edge',
+      'erase_face',
       'export_axia',
       'fillet_edge',
       'get_edge_info',

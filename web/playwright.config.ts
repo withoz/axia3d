@@ -50,6 +50,18 @@ export default defineConfig({
     // 1280×720 = standard 16:9, large enough for axes + viewport UI
     // but stable across DPR variations.
     viewport: { width: 1280, height: 720 },
+    // ADR-294 — pin the locale, for the same reason vitest pins it.
+    //
+    // i18n made the UI locale-dependent, and `detect()` falls back to
+    // navigator.language when nothing is persisted. A dev machine carries a
+    // localStorage 'axia:locale' from clicking around; a CI runner is a clean
+    // profile and reports en-US. So specs asserting Korean copy passed
+    // locally and failed on CI — the two were not running the same app.
+    //
+    // ko-KR because the specs assert the Korean source text, which is also
+    // the t() key (D2): 「T-junction 정리」 is what index.html holds. A spec
+    // that wants English can override with test.use({ locale: 'en-US' }).
+    locale: 'ko-KR',
   },
   projects: [
     {

@@ -13,7 +13,8 @@ import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
-import { pickClickedEdge } from './edgePick';
+import { pickClickedEdge } from './edgePick';
+import { t } from '../i18n';
 
 function dirOf(p0: [number, number, number], p1: [number, number, number]): [number, number, number] {
   const d: [number, number, number] = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
@@ -34,7 +35,7 @@ export class AngularDimensionTool implements ITool {
 
   onActivate(): void {
     debugLog('[AngularDimensionTool] Activated');
-    Toast.info('각도 치수: 첫 엣지 클릭 → 둘째 엣지 클릭 (영구·편집)', 3500);
+    Toast.info(t('각도 치수: 첫 엣지 클릭 → 둘째 엣지 클릭 (영구·편집)'), 3500);
   }
 
   onDeactivate(): void {
@@ -44,16 +45,16 @@ export class AngularDimensionTool implements ITool {
   onMouseDown(e: MouseEvent, _point: THREE.Vector3 | null): void {
     const picked = pickClickedEdge(this.ctx, e);
     if (!picked) {
-      Toast.warning('각도를 잴 엣지를 클릭하세요', 2000);
+      Toast.warning(t('각도를 잴 엣지를 클릭하세요'), 2000);
       return;
     }
     if (this.edge1 < 0) {
       this.edge1 = picked.edgeId;
-      Toast.info('둘째 엣지를 클릭하세요 (Esc 취소)', 2500);
+      Toast.info(t('둘째 엣지를 클릭하세요 (Esc 취소)'), 2500);
       return;
     }
     if (picked.edgeId === this.edge1) {
-      Toast.warning('서로 다른 엣지를 선택하세요', 2000);
+      Toast.warning(t('서로 다른 엣지를 선택하세요'), 2000);
       return;
     }
 
@@ -71,7 +72,7 @@ export class AngularDimensionTool implements ITool {
     const dot = Math.max(-1, Math.min(1, dA[0] * dB[0] + dA[1] * dB[1] + dA[2] * dB[2]));
     const angle = Math.acos(dot); // radians
     if (angle < 1e-3 || angle > Math.PI - 1e-3) {
-      Toast.warning('평행/일직선 엣지는 각도 치수 불가', 2200);
+      Toast.warning(t('평행/일직선 엣지는 각도 치수 불가'), 2200);
       this.cleanup();
       return;
     }
@@ -79,7 +80,7 @@ export class AngularDimensionTool implements ITool {
     const id = this.ctx.bridge.addAngleConstraint(eA[0], eA[1], eB[0], eB[1], angle);
     if (id > 0) {
       this.ctx.syncMesh();
-      Toast.info(`각도 치수 (${((angle * 180) / Math.PI).toFixed(1)}°) — 라벨 클릭으로 편집`, 2500);
+      Toast.info(t('각도 치수 ({angle}°) — 라벨 클릭으로 편집', { angle: ((angle * 180) / Math.PI).toFixed(1) }), 2500);
       debugLog(`[AngularDimension] constraint ${id}: ${(angle * 180) / Math.PI}°`);
     } else {
       Toast.fromBridgeError(this.ctx.bridge, '각도 치수 생성 실패');

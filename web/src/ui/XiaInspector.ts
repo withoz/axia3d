@@ -11,7 +11,9 @@ import { Viewport } from '../viewport/Viewport';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
+import { t } from '../i18n';
 import { attemptMaterialRemovalDemote } from '../citizenship/MaterialRemovalDemote';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface XiaInspectorDeps {
   bridge: WasmBridge;
@@ -125,7 +127,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       // (ADR-049 §4 Q3 — 사용자 facing 에서 재질 없는 단계엔 'XIA' 안 노출)
       if (hintEl) hintEl.style.display = '';
       if (propsEl) propsEl.style.display = 'none';
-      if (badgeEl) { badgeEl.textContent = '형태 (Shape)'; badgeEl.style.background = 'rgba(156, 39, 176, 0.15)'; badgeEl.style.color = '#ce93d8'; }
+      if (badgeEl) { badgeEl.textContent = t('형태 (Shape)'); badgeEl.style.background = 'rgba(156, 39, 176, 0.15)'; badgeEl.style.color = '#ce93d8'; }
       assignBtn?.classList.remove('assigned');
       return;
     }
@@ -137,7 +139,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     // (ADR-049 §4 Q3 — 부재 정체성, primary material + face-level override)
     if (hintEl) hintEl.style.display = 'none';
     if (propsEl) propsEl.style.display = '';
-    if (badgeEl) { badgeEl.textContent = 'XIA (특성)'; badgeEl.style.background = 'rgba(76, 175, 80, 0.15)'; badgeEl.style.color = '#81c784'; }
+    if (badgeEl) { badgeEl.textContent = t('XIA (특성)'); badgeEl.style.background = 'rgba(76, 175, 80, 0.15)'; badgeEl.style.color = '#81c784'; }
     assignBtn?.classList.add('assigned');
 
     // 물리 속성 채우기
@@ -189,21 +191,21 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     }
     const rows: Array<{ label: string; value: number; apply: (v: number) => boolean }> = [];
     if (kind === 3 && typeof bridge.setSphereRadius === 'function') {
-      rows.push({ label: '반지름 (mm)', value: surf.radius || 0, apply: (v) => !!bridge.setSphereRadius?.(fid, v) });
+      rows.push({ label: t('반지름 (mm)'), value: surf.radius || 0, apply: (v) => !!bridge.setSphereRadius?.(fid, v) });
     } else if (kind === 2 && typeof bridge.setCylinderRadius === 'function') {
       const h = Array.isArray(surf.vRange) ? surf.vRange[1] - surf.vRange[0] : 0;
-      rows.push({ label: '반지름 (mm)', value: surf.radius || 0, apply: (v) => !!bridge.setCylinderRadius?.(fid, v) });
-      rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setCylinderHeight?.(fid, v) });
+      rows.push({ label: t('반지름 (mm)'), value: surf.radius || 0, apply: (v) => !!bridge.setCylinderRadius?.(fid, v) });
+      rows.push({ label: t('높이 (mm)'), value: h, apply: (v) => !!bridge.setCylinderHeight?.(fid, v) });
     } else if (kind === 4 && typeof bridge.setConeRadius === 'function') {
       // Cone side (kind 4): base radius = height·tan(half_angle); height = v_range span.
       const h = Array.isArray(surf.vRange) ? surf.vRange[1] - surf.vRange[0] : 0;
       const baseR = typeof surf.halfAngle === 'number' ? h * Math.tan(surf.halfAngle) : 0;
-      rows.push({ label: '밑면 반지름 (mm)', value: baseR, apply: (v) => !!bridge.setConeRadius?.(fid, v) });
-      rows.push({ label: '높이 (mm)', value: h, apply: (v) => !!bridge.setConeHeight?.(fid, v) });
+      rows.push({ label: t('밑면 반지름 (mm)'), value: baseR, apply: (v) => !!bridge.setConeRadius?.(fid, v) });
+      rows.push({ label: t('높이 (mm)'), value: h, apply: (v) => !!bridge.setConeHeight?.(fid, v) });
     } else if (kind === 5 && typeof bridge.setTorusMajorRadius === 'function') {
       // Torus (kind 5): major + minor radius.
-      rows.push({ label: '주 반지름 (mm)', value: surf.majorRadius || 0, apply: (v) => !!bridge.setTorusMajorRadius?.(fid, v) });
-      rows.push({ label: '부 반지름 (mm)', value: surf.minorRadius || 0, apply: (v) => !!bridge.setTorusMinorRadius?.(fid, v) });
+      rows.push({ label: t('주 반지름 (mm)'), value: surf.majorRadius || 0, apply: (v) => !!bridge.setTorusMajorRadius?.(fid, v) });
+      rows.push({ label: t('부 반지름 (mm)'), value: surf.minorRadius || 0, apply: (v) => !!bridge.setTorusMinorRadius?.(fid, v) });
     }
     if (rows.length === 0) {
       if (box) box.style.display = 'none';
@@ -226,7 +228,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     title.style.cssText =
       'font-size:11px;font-weight:600;letter-spacing:0.02em;opacity:0.85;' +
       'margin-bottom:6px;color:#9cc4ff;';
-    title.textContent = '곡면 파라미터 (직접 편집)';
+    title.textContent = t('곡면 파라미터 (직접 편집)');
     box.appendChild(title);
     for (const r of rows) {
       const row = document.createElement('div');
@@ -273,10 +275,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     if (result.demoted.length > 0) {
       const n = result.demoted.length;
       const msg = n === 1
-        ? '재질 제거됨 — 형태로 강등'
-        : `${n}개 객체 재질 제거됨 — 형태로 강등`;
+        ? t('재질 제거됨 — 형태로 강등')
+        : t('{n}개 객체 재질 제거됨 — 형태로 강등', { n });
       Toast.infoWithAction(msg, {
-        label: '되돌리기',
+        label: t('되돌리기'),
         onClick: () => {
           bridge.undo();
           updateInspector(currentFaceIds);
@@ -287,7 +289,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     // still gone, but eligible-but-rejected ones (rare with current
     // gating) deserve a warning so the user understands the state.
     if (result.errors.length > 0) {
-      Toast.warning(`재질 제거 시 ${result.errors.length}건 강등 실패 (나머지는 적용됨)`);
+      Toast.warning(t('재질 제거 시 {n}건 강등 실패 (나머지는 적용됨)', { n: result.errors.length }));
     }
   };
 
@@ -383,8 +385,8 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       const shapeEl = document.getElementById('xi-shape-type');
       if (dotEl) dotEl.className = 'xi-solid-dot edge';
       if (labelEl) labelEl.textContent = `${edgeState.icon} ${edgeState.labelEn}`;
-      if (subEl) subEl.textContent = `${edgeIds.length}개 선분`;
-      if (shapeEl) shapeEl.textContent = '□ 선';
+      if (subEl) subEl.textContent = t('{n}개 선분', { n: edgeIds.length });
+      if (shapeEl) shapeEl.textContent = t('□ 선');
 
       // 치수: 길이만 의미 있음 (L = 총 길이, W/H = 0)
       const totalLen = computeEdgesTotalLength(edgeIds);
@@ -416,7 +418,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       // 이름: "선분 N개"처럼 자동 표시 (수동 편집 안 된 경우)
       const nameEl = document.getElementById('xi-name') as HTMLInputElement | null;
       if (nameEl && !nameEl.dataset.edited) {
-        nameEl.value = `${edgeState.label} ${edgeIds.length}개`;
+        nameEl.value = t('{label} {n}개', { label: t(edgeState.label), n: edgeIds.length });
       }
       return;
     }
@@ -460,7 +462,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       // - Closed solid: "L×W×H (3D solid)"
       // - Has boundary: "Open: N boundary edges"
       // - Non-manifold: "Defect: N non-manifold edges"
-      let subText = stateInfo.description;
+      let subText = t(stateInfo.description);
       if (info.isSolid) {
         subText = `✓ Closed solid (${info.interiorEdges ?? 0} manifold edges)`;
       } else if ((info.boundaryEdges ?? 0) > 0) {
@@ -532,9 +534,9 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
       if (nameEl && !nameEl.dataset.edited) {
         // Material is a property — no special "Xia" naming
         if (commonMat && commonMat.id) {
-          nameEl.value = `${commonMat.name} ${info.shapeType || '객체'}`;
+          nameEl.value = `${commonMat.name} ${info.shapeType || t('객체')}`;
         } else {
-          nameEl.value = `${stateInfo.label} ${info.shapeType || ''}`.trim();
+          nameEl.value = `${t(stateInfo.label)} ${info.shapeType || ''}`.trim();
         }
       }
     } else {
@@ -561,8 +563,13 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
 
   // 키보드 I → Inspector 토글
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    if (e.key === 'i' || e.key === 'I') toggleInspector();
+    if (isTypingInInput(e.target)) return;
+    // Plain I only. This listener read no modifiers, so Alt+I opened the
+    // Inspector on top of KeyboardShortcuts' Alt+I intersection-snap toggle —
+    // one keystroke, two unrelated things. Every Alt+<letter> is a snap filter
+    // (A5), and Alt+A/B/0 are the Boolean group tags.
+    const bare = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+    if (bare && (e.key === 'i' || e.key === 'I')) toggleInspector();
     if (e.key === 'Escape' && xiPanel?.classList.contains('open')) xiPanel.classList.remove('open');
   });
 }

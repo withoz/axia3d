@@ -15,6 +15,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -71,7 +72,7 @@ export class BoxTool implements ITool {
       c2.z = this.corner1.z;
       // If the user clicked exactly on corner1 (degenerate), bail.
       if (this.corner1.distanceTo(c2) < 0.5) {
-        Toast.warning('박스의 가로/세로 코너를 다른 위치에 클릭하세요');
+        Toast.warning(t('박스의 가로/세로 코너를 다른 위치에 클릭하세요'));
         return;
       }
       this.corner2 = c2;
@@ -84,7 +85,7 @@ export class BoxTool implements ITool {
       //   visually seeing. Sign preserved (negative = box grows down).
       const h = this.heightFromCursor(e);
       if (Math.abs(h) < 0.5) {
-        Toast.warning('높이가 0 입니다 — 위/아래로 이동 후 다시 클릭');
+        Toast.warning(t('높이가 0 입니다 — 위/아래로 이동 후 다시 클릭'));
         return;
       }
       this.commit(h);
@@ -151,7 +152,7 @@ export class BoxTool implements ITool {
 
   onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
-      Toast.info('박스 도구 취소');
+      Toast.info(t('박스 도구 취소'));
       this.cleanup();
     }
   }
@@ -176,7 +177,7 @@ export class BoxTool implements ITool {
     const d = maxY - minY;      // Y extent = depth
     const absH = Math.abs(height);
     if (w < 0.5 || d < 0.5 || absH < 0.5) {
-      Toast.warning(`박스 크기가 너무 작습니다 (${w.toFixed(1)} × ${d.toFixed(1)} × ${absH.toFixed(1)})`);
+      Toast.warning(t('박스 크기가 너무 작습니다 ({w} × {d} × {absH})', { w: w.toFixed(1), d: d.toFixed(1), absH: absH.toFixed(1) }));
       return;
     }
     const cx = (minX + maxX) * 0.5;
@@ -189,10 +190,10 @@ export class BoxTool implements ITool {
 
     const baseFace = this.ctx.bridge.create_box(cx, cy, cz, w, h, d);
     if (baseFace < 0) {
-      Toast.error('박스 생성 실패: ' + (this.ctx.bridge.lastError() || ''));
+      Toast.error(t('박스 생성 실패: ') + (this.ctx.bridge.lastError() || ''));
     } else {
       this.ctx.syncMesh();
-      Toast.success(`박스 ${w.toFixed(0)} × ${h.toFixed(0)} × ${d.toFixed(0)} mm 생성됨`, 2000);
+      Toast.success(t('박스 {w} × {h} × {d} mm 생성됨', { w: w.toFixed(0), h: h.toFixed(0), d: d.toFixed(0) }), 2000);
     }
     this.cleanup();
   }

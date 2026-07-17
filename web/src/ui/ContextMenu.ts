@@ -7,6 +7,7 @@
  */
 
 import { Viewport, ViewMode } from '../viewport/Viewport';
+import { t } from '../i18n';
 import { WasmBridge } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { Toast } from './Toast';
@@ -30,8 +31,18 @@ export function initContextMenu(deps: ContextMenuDeps): void {
   const ctxMenu = document.getElementById('context-menu');
   if (!ctxMenu) return;
 
+  /**
+   * Where the menu was opened, in client coordinates.
+   *
+   * The click handler fires later and on the menu item, so `e.clientX` there
+   * is the item, not the spot in the model you right-clicked. boundary-here
+   * needs the spot (ADR-148 §2.3 b).
+   */
+  let lastContextPos: { x: number; y: number } | null = null;
+
   // 컨텍스트 메뉴 표시
   viewport.onContextMenu((x, y) => {
+    lastContextPos = { x, y };
     // 라인 그리기 중 우클릭 → 라인 종료 + 메뉴도 표시
     if (toolManager.currentTool === 'line' && toolManager.isToolBusy()) {
       toolManager.cancelCurrentTool();
@@ -167,6 +178,28 @@ export function initContextMenu(deps: ContextMenuDeps): void {
     ctxMenu.classList.add('visible');
   });
 
+  /**
+   * The group id of the current selection, or undefined with a reason shown.
+   *
+   * group-edit / group-lock / group-hide each re-derived this and each said
+   * nothing when it came up empty. Silent was survivable from the right-click
+   * menu, which hides those items unless the selection is in a group — but the
+   * Command Palette shows every command, so from there they looked broken.
+   */
+  const resolveSelectedGroupId = (): number | undefined => {
+    const faces = toolManager.selection.getSelectedFaces();
+    if (faces.length === 0) {
+      Toast.info(t('그룹 안의 면을 먼저 선택하세요'));
+      return undefined;
+    }
+    const gid = toolManager.selection.getGroupId(faces[0]);
+    if (gid === undefined) {
+      Toast.info(t('선택한 면은 그룹에 속해 있지 않습니다'));
+      return undefined;
+    }
+    return gid;
+  };
+
   // 메뉴 아이템 클릭
   ctxMenu.addEventListener('click', (e) => {
     const item = (e.target as HTMLElement).closest('.ctx-item') as HTMLElement;
@@ -198,7 +231,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       case 'promote-circles-to-annulus': {
         const faces = toolManager.selection.getSelectedFaces();
         if (faces.length !== 2) {
-          Toast.error('Annulus: 정확히 2개의 면을 선택해야 합니다');
+          Toast.error(t('Annulus: 정확히 2개의 면을 선택해야 합니다'));
           break;
         }
         const [faceA, faceB] = faces;
@@ -216,9 +249,9 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           err = tryPromote(faceB, faceA);
         }
         if (err) {
-          Toast.error(`Annulus 만들기 실패: ${err}`);
+          Toast.error(t('Annulus 만들기 실패: {err}', { err }));
         } else {
-          Toast.success('Annulus 생성 완료');
+          Toast.success(t('Annulus 생성 완료'));
           toolManager.selection.clearSelection();
           toolManager.syncMesh();
         }
@@ -240,11 +273,11 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           reports = bridge.detectTJunctions();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`T-junction 검출 실패: ${msg}`);
+          Toast.error(t('T-junction 검출 실패: {msg}', { msg }));
           break;
         }
         if (reports.length === 0) {
-          Toast.info('T-junction 없음 (mesh 정상)');
+          Toast.info(t('T-junction 없음 (mesh 정상)'));
           break;
         }
         // β-4 MVP: serial heal — re-detect 필요한 경우 사용자가 재호출 가능.
@@ -272,11 +305,11 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         toolManager.syncMesh();
 
         if (healed > 0 && skipped === 0) {
-          Toast.success(`T-junction ${healed}개 정리 완료`);
+          Toast.success(t('T-junction {healed}개 정리 완료', { healed }));
         } else if (healed > 0 && skipped > 0) {
-          Toast.info(`T-junction ${healed}개 정리, ${skipped}개 skip (재시도 가능)`);
+          Toast.info(t('T-junction {healed}개 정리, {skipped}개 skip (재시도 가능)', { healed, skipped }));
         } else {
-          Toast.error(`T-junction 정리 실패 (${skipped}개 skip)`);
+          Toast.error(t('T-junction 정리 실패 ({skipped}개 skip)', { skipped }));
         }
         break;
       }
@@ -297,11 +330,11 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           pairs = bridge.sweepCoplanarPairs();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Coplanar 검출 실패: ${msg}`);
+          Toast.error(t('Coplanar 검출 실패: {msg}', { msg }));
           break;
         }
         if (pairs.length === 0) {
-          Toast.info('Coplanar 정리 대상 없음 (mesh 정상)');
+          Toast.info(t('Coplanar 정리 대상 없음 (mesh 정상)'));
           break;
         }
         try {
@@ -311,15 +344,15 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           toolManager.syncMesh();
 
           if (report.mergedCount > 0 && report.skippedCount === 0) {
-            Toast.success(`Coplanar ${report.mergedCount}쌍 정리 완료`);
+            Toast.success(t('Coplanar {mergedCount}쌍 정리 완료', { mergedCount: report.mergedCount }));
           } else if (report.mergedCount > 0 && report.skippedCount > 0) {
-            Toast.info(`Coplanar ${report.mergedCount}쌍 정리, ${report.skippedCount}쌍 skip`);
+            Toast.info(t('Coplanar {mergedCount}쌍 정리, {skippedCount}쌍 skip', { mergedCount: report.mergedCount, skippedCount: report.skippedCount }));
           } else {
-            Toast.error(`Coplanar 정리 실패 (${report.skippedCount}쌍 skip)`);
+            Toast.error(t('Coplanar 정리 실패 ({skippedCount}쌍 skip)', { skippedCount: report.skippedCount }));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Coplanar 정리 실패: ${msg}`);
+          Toast.error(t('Coplanar 정리 실패: {msg}', { msg }));
         }
         break;
       }
@@ -339,12 +372,12 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         };
         if (typeof tm.resetDrawingPlane === 'function') {
           tm.resetDrawingPlane();
-          Toast.info('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면', 2500);
+          Toast.info(t('작업 평면 초기화 — 빈 공간은 바닥(z=0), 면 위는 그 면'), 2500);
         } else {
           // Older builds: best-effort partial reset.
           tm.unlockPlane?.();
           tm.clearLastDrawnPlane?.();
-          Toast.info('기본 평면으로 복귀', 2000);
+          Toast.info(t('기본 평면으로 복귀'), 2000);
         }
         break;
       }
@@ -363,7 +396,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       case 'enforce-p7-canonical': {
         const faces = toolManager.selection.getSelectedFaces();
         if (faces.length < 2) {
-          Toast.error('Connected Inner Merge: container + ≥1 inner (총 ≥2 face) 선택 필요');
+          Toast.error(t('Connected Inner Merge: container + ≥1 inner (총 ≥2 face) 선택 필요'));
           break;
         }
         // β-4 MVP: first selected = container, 나머지 = inners
@@ -375,14 +408,14 @@ export function initContextMenu(deps: ContextMenuDeps): void {
           toolManager.syncMesh();
 
           if (result.isValid) {
-            Toast.success(`P7 canonical 정합: ${result.componentCount}개 component → ring-with-hole`);
+            Toast.success(t('P7 canonical 정합: {componentCount}개 component → ring-with-hole', { componentCount: result.componentCount }));
           } else {
             // ADR-051 §2.5 deferred boundary — ≤1 violation 정상.
-            Toast.info(`P7 canonical (${result.componentCount}개 component, ${result.violationCount}개 violation — ADR-051 §2.5 deferred boundary 가능)`);
+            Toast.info(t('P7 canonical ({componentCount}개 component, {violationCount}개 violation — ADR-051 §2.5 deferred boundary 가능)', { componentCount: result.componentCount, violationCount: result.violationCount }));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          Toast.error(`Connected Inner Merge 실패: ${msg}`);
+          Toast.error(t('Connected Inner Merge 실패: {msg}', { msg }));
         }
         break;
       }
@@ -454,31 +487,44 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       // 그룹 / 컴포넌트
       case 'group': toolManager.executeAction('group'); break;
       case 'ungroup': toolManager.executeAction('ungroup'); break;
-      case 'group-edit': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);
+      // ADR-148 §2.3 (b) — the right-click half of Q2=(c) Both. Ctrl+B enters
+      // the tool and waits for a click; this synthesizes the face at the spot
+      // already right-clicked, in one act. Same handler underneath.
+      case 'boundary-here': {
+        if (!lastContextPos) break;
+        toolManager.synthesizeBoundaryAt(lastContextPos.x, lastContextPos.y);
+        break;
+      }
+      // ADR-148 §5 — 3D BOUNDARY. Its 2D sibling above makes a face; this
+      // selects the faces of the solid under the cursor.
+      case 'select-shell-here': {
+        if (!lastContextPos) break;
+        const shell = toolManager.selectShellAt(lastContextPos.x, lastContextPos.y);
+        if (shell.length === 0) {
+          Toast.info(t('닫힌 솔리드 안이 아닙니다'));
+          break;
         }
+        toolManager.selection.clearSelection();
+        toolManager.selection.selectFaces(shell);
+        Toast.info(t('솔리드 선택: {n}개 면', { n: String(shell.length) }));
+        break;
+      }
+      case 'group-edit': {
+        const gid = resolveSelectedGroupId();
+        if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);
         break;
       }
       case 'make-component': toolManager.executeAction('make-component'); break;
       case 'group-lock': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) bridge.toggleGroupLock(gid);
-        }
+        const gid = resolveSelectedGroupId();
+        if (gid !== undefined) bridge.toggleGroupLock(gid);
         break;
       }
       case 'group-hide': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) {
-            bridge.toggleGroupVisibility(gid);
-            toolManager.syncMesh();
-          }
+        const gid = resolveSelectedGroupId();
+        if (gid !== undefined) {
+          bridge.toggleGroupVisibility(gid);
+          toolManager.syncMesh();
         }
         break;
       }

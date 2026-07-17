@@ -15,6 +15,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
@@ -34,56 +35,56 @@ function formatEdgeOffsetFailureToast(
     switch (reason) {
       case 'unsupported_surface':
         parts.push(
-          `${count}개: 호스트 면 (${[...unsupportedKinds].join(',')}) — V-β-γ 에서 활성됩니다`,
+          t('{count}개: 호스트 면 ({kinds}) — V-β-γ 에서 활성됩니다', { count, kinds: [...unsupportedKinds].join(',') }),
         );
         break;
       case 'unsupported_curve':
         parts.push(
-          `${count}개: 곡선 종류 (${[...unsupportedKinds].join(',')}) — V-β-β 에서 활성됩니다`,
+          t('{count}개: 곡선 종류 ({kinds}) — V-β-β 에서 활성됩니다', { count, kinds: [...unsupportedKinds].join(',') }),
         );
         break;
       case 'no_incident_face':
-        parts.push(`${count}개: 자유 와이어 — V-δ 에서 활성됩니다`);
+        parts.push(t('{count}개: 자유 와이어 — V-δ 에서 활성됩니다', { count }));
         break;
       case 'ambiguous_host':
-        parts.push(`${count}개: 호스트 면이 모호합니다`);
+        parts.push(t('{count}개: 호스트 면이 모호합니다', { count }));
         break;
       case 'multi_loop':
-        parts.push(`${count}개: hole 면 (multi-loop) 거부 (ADR-016)`);
+        parts.push(t('{count}개: hole 면 (multi-loop) 거부 (ADR-016)', { count }));
         break;
       case 'degenerate_distance':
-        parts.push(`${count}개: 거리가 너무 작습니다`);
+        parts.push(t('{count}개: 거리가 너무 작습니다', { count }));
         break;
       case 'arc_plane_mismatch':
-        parts.push(`${count}개: arc 평면이 호스트 면과 일치하지 않습니다`);
+        parts.push(t('{count}개: arc 평면이 호스트 면과 일치하지 않습니다', { count }));
         break;
       case 'radius_collapse':
-        parts.push(`${count}개: 반지름이 0 이하로 축소됩니다 (방향 반전 필요)`);
+        parts.push(t('{count}개: 반지름이 0 이하로 축소됩니다 (방향 반전 필요)', { count }));
         break;
       case 'unsupported_curve_on_surface':
         parts.push(
-          `${count}개: 곡선이 호스트 면 (${[...unsupportedKinds].join(',')}) 위에 자연스럽게 놓이지 않습니다`,
+          t('{count}개: 곡선이 호스트 면 ({kinds}) 위에 자연스럽게 놓이지 않습니다', { count, kinds: [...unsupportedKinds].join(',') }),
         );
         break;
       case 'axial_out_of_range':
-        parts.push(`${count}개: 축 방향 위치가 호스트 범위를 벗어납니다`);
+        parts.push(t('{count}개: 축 방향 위치가 호스트 범위를 벗어납니다', { count }));
         break;
       case 'wire_not_planar':
-        parts.push(`${count}개: 자유 와이어가 평면이 아닙니다 (V-δ-β 명시 평면 필요)`);
+        parts.push(t('{count}개: 자유 와이어가 평면이 아닙니다 (V-δ-β 명시 평면 필요)', { count }));
         break;
       case 'no_reference_plane':
         parts.push(
-          `${count}개: 기준 평면을 찾을 수 없습니다 (단일 엣지 또는 직선) — V-δ-β 활성 시 명시 평면 입력 가능`,
+          t('{count}개: 기준 평면을 찾을 수 없습니다 (단일 엣지 또는 직선) — V-δ-β 활성 시 명시 평면 입력 가능', { count }),
         );
         break;
       case 'bridge_unavailable':
-        parts.push(`${count}개: WASM 미가용`);
+        parts.push(t('{count}개: WASM 미가용', { count }));
         break;
       default:
-        parts.push(`${count}개: 기타 오류 (${reason})`);
+        parts.push(t('{count}개: 기타 오류 ({reason})', { count, reason }));
     }
   }
-  return `엣지 offset 실패 — ${parts.join(' · ')}`;
+  return t('엣지 offset 실패 — {parts}', { parts: parts.join(' · ') });
 }
 
 export class OffsetTool implements ITool {
@@ -129,7 +130,7 @@ export class OffsetTool implements ITool {
     if (dim === 'mixed') {
       // L5 — Mixed selection rejected, force user to disambiguate.
       Toast.warning(
-        '선과 면을 동시에 선택했습니다. Offset 명령은 한 차원만 사용합니다 (선 또는 면).',
+        t('선과 면을 동시에 선택했습니다. Offset 명령은 한 차원만 사용합니다 (선 또는 면).'),
         3500,
       );
       this.ctx.selection.clearSelection();
@@ -166,7 +167,7 @@ export class OffsetTool implements ITool {
     // pick). Click on canvas does nothing in edge mode; user enters
     // distance via VCB to apply, ESC to cancel.
     if (this.dimMode === 'edge') {
-      Toast.info('엣지 offset: 거리(VCB)를 입력하세요. ESC 로 취소.', 2000);
+      Toast.info(t('엣지 offset: 거리(VCB)를 입력하세요. ESC 로 취소.'), 2000);
       return;
     }
 
@@ -308,7 +309,7 @@ export class OffsetTool implements ITool {
   private applyEdgeOffset(dist: number): void {
     const edges = this.ctx.selection.getSelectedEdges();
     if (edges.length === 0) {
-      Toast.info('Offset 적용할 엣지가 없습니다.', 2500);
+      Toast.info(t('Offset 적용할 엣지가 없습니다.'), 2500);
       return;
     }
 
@@ -366,7 +367,7 @@ export class OffsetTool implements ITool {
       this.ctx.syncMesh();
       Toast.success(
         `엣지 offset (${distFmt}) — ${successCount}개 성공${
-          edges.length > successCount ? ` / ${edges.length - successCount}개 실패` : ''
+          edges.length > successCount ? t(' / {edges}개 실패', { edges: edges.length - successCount }) : ''
         }`,
         2500,
       );

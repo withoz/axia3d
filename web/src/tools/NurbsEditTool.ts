@@ -25,7 +25,8 @@ import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
 import { recreateNurbsPatch } from './nurbsRecreate';
-import type { NurbsSurfaceParams } from '../bridge/WasmBridge';
+import type { NurbsSurfaceParams } from '../bridge/WasmBridge';
+import { t } from '../i18n';
 
 const NURBS_KINDS = new Set([6, 7, 8]); // BezierPatch / BSplineSurface / NURBSSurface
 
@@ -74,24 +75,24 @@ export class NurbsEditTool implements ITool {
     const sel = this.ctx.getSelectedFaces();
     if (sel.length !== 1) {
       this.faceId = null;
-      Toast.warning('NURBS 곡면 1개를 먼저 선택하세요', 2500);
+      Toast.warning(t('NURBS 곡면 1개를 먼저 선택하세요'), 2500);
       return;
     }
     const fid = sel[0];
     if (!NURBS_KINDS.has(this.ctx.bridge.faceSurfaceKind(fid))) {
       this.faceId = null;
-      Toast.warning('선택한 면이 NURBS 곡면이 아닙니다', 2500);
+      Toast.warning(t('선택한 면이 NURBS 곡면이 아닙니다'), 2500);
       return;
     }
     this.faceId = fid;
     this.params = this.ctx.bridge.getNurbsSurfaceParams(fid);
     if (!this.params) {
       this.faceId = null;
-      Toast.warning('제어망을 읽을 수 없습니다', 2000);
+      Toast.warning(t('제어망을 읽을 수 없습니다'), 2000);
       return;
     }
     this.ctx.viewport.updateNurbsControlNet(this.params);
-    Toast.info('제어점(주황 마커) 클릭=값 입력 / 드래그=이동 (X/Y/Z 축 고정, Esc 종료)', 4000);
+    Toast.info(t('제어점(주황 마커) 클릭=값 입력 / 드래그=이동 (X/Y/Z 축 고정, Esc 종료)'), 4000);
   }
 
   /** ADR-239 — abort an in-progress live session (ESC / tool switch / cleanup):
@@ -115,12 +116,12 @@ export class NurbsEditTool implements ITool {
   onMouseDown(e: MouseEvent, _point: THREE.Vector3 | null): void {
     this.resetGrab();
     if (this.faceId == null || !this.params) {
-      Toast.warning('NURBS 곡면 선택 후 도구를 다시 활성화하세요', 2000);
+      Toast.warning(t('NURBS 곡면 선택 후 도구를 다시 활성화하세요'), 2000);
       return;
     }
     const idx = this.ctx.viewport.pickControlNetPoint(e);
     if (idx == null || idx < 0 || idx >= this.params.weights.length) {
-      Toast.info('제어점 마커를 클릭하세요', 1500);
+      Toast.info(t('제어점 마커를 클릭하세요'), 1500);
       return;
     }
     const p = this.params;
@@ -219,7 +220,7 @@ export class NurbsEditTool implements ITool {
         this.params = this.ctx.bridge.getNurbsSurfaceParams(this.faceId);
         this.ctx.selection.selectFaces([this.faceId]);
         if (this.params) this.ctx.viewport.updateNurbsControlNet(this.params);
-        Toast.success(`제어점 ${idx} 라이브 이동 → (${live[0].toFixed(0)}, ${live[1].toFixed(0)}, ${live[2].toFixed(0)})`, 2000);
+        Toast.success(t('제어점 {idx} 라이브 이동 → ({x}, {y}, {z})', { idx, x: live[0].toFixed(0), y: live[1].toFixed(0), z: live[2].toFixed(0) }), 2000);
       } else {
         Toast.fromBridgeError(this.ctx.bridge, 'NURBS 라이브 편집 commit 실패');
       }
@@ -239,17 +240,17 @@ export class NurbsEditTool implements ITool {
     const def = `${cx}, ${cy}, ${cz}, ${cw}`;
     const input =
       typeof window !== 'undefined' && typeof window.prompt === 'function'
-        ? window.prompt(`제어점 ${idx} — x, y, z, weight:`, def)
+        ? window.prompt(t('제어점 {idx} — x, y, z, weight:', { idx }), def)
         : null;
     if (input == null) return;
     const parts = input.split(',').map((s) => parseFloat(s.trim()));
     if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
-      Toast.warning('x, y, z, weight 4개 숫자를 쉼표로 구분해 입력하세요', 2500);
+      Toast.warning(t('x, y, z, weight 4개 숫자를 쉼표로 구분해 입력하세요'), 2500);
       return;
     }
     const [nx, ny, nz, nw] = parts;
     if (nw <= 0) {
-      Toast.warning('weight 는 0보다 큰 값이어야 합니다', 2000);
+      Toast.warning(t('weight 는 0보다 큰 값이어야 합니다'), 2000);
       return;
     }
     this._recreate(idx, [nx, ny, nz], nw);
@@ -273,7 +274,7 @@ export class NurbsEditTool implements ITool {
     this.faceId = r.newFid;
     this.params = r.newParams;
     Toast.success(
-      `제어점 ${idx} → (${pos[0]}, ${pos[1]}, ${pos[2]}) w=${newWeight.toFixed(3)} (패치 재생성)`,
+      t('제어점 {idx} → ({x}, {y}, {z}) w={weight} (패치 재생성)', { idx, x: pos[0], y: pos[1], z: pos[2], weight: newWeight.toFixed(3) }),
       2500,
     );
     debugLog(`[NurbsEdit] CP ${idx} → [${pos.join(',')}] w=${newWeight} (face → ${r.newFid})`);

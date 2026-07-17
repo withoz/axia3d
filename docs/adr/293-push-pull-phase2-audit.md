@@ -121,6 +121,12 @@ topological claim topologically (normals / loops), never by a single centroid.**
 - **L-293-3** Cross-solid push is fail-closed (measured, controls attribute it to penetration).
   Q2 결재 = keep.
 - **L-293-4** The only measured defect is the **silent** whole-face clamp (2e9 → 2000 volume,
-  returns `true`). Q3 결재 = P2.2만 → out of scope; recorded for a future ADR.
+  returns `true`). Q3 결재 = P2.2만 → out of scope here; recorded for a future ADR.
+  → ✅ **CLOSED 2026-07-15** under ADR-190 Phase 3. The clamp stays (§5 was right that it
+  should); only the silence went. New read-only export `moveOnlyMaxInward(face)` (`-1` =
+  unclamped) lets the Push/Pull tool read the limit **before** committing — afterwards the
+  face's thickness *is* the clamped value and the over-push is unmeasurable — and Toast
+  "두께 N mm 에서 멈췄습니다 — 관통하려면 면에 형상을 그린 뒤 미세요". Regressions: vitest
+  +5 (mutation-verified) + E2E +3 (real DOM Toast). See ADR-190 §4 Phase 3.
 - **L-293-5** See §7 — bridge + fresh page + topological confirmation.
 - **L-293-6** α is measurement only; no code. No β is needed for Phase 2.

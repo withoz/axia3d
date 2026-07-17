@@ -11,6 +11,7 @@
  */
 
 import * as THREE from 'three';
+import { t } from '../i18n';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
 import { debugLog } from '../utils/debug';
@@ -29,7 +30,7 @@ export class ChamferTool implements ITool {
   }
 
   onActivate(): void {
-    debugLog('[ChamferTool] Activated — 모따기할 꼭짓점(3-valence)을 클릭하세요');
+    debugLog('[ChamferTool] Activated — 챔퍼할 꼭짓점(3-valence)을 클릭하세요');
   }
 
   onDeactivate(): void {
@@ -44,11 +45,11 @@ export class ChamferTool implements ITool {
       if (!pt) return;
       const vid = this.ctx.bridge.findVertexIdAt?.(pt.x, pt.y, pt.z, PICK_TOL) ?? -1;
       if (vid < 0) {
-        Toast.warning('모따기할 꼭짓점 위를 클릭하세요', 2000);
+        Toast.warning(t('챔퍼할 꼭짓점 위를 클릭하세요'), 2000);
         return;
       }
       this.vertId = vid;
-      Toast.info('반지름을 입력하세요 (또는 다시 클릭 = 마지막 값)', 2500);
+      Toast.info(t('반지름을 입력하세요 (또는 다시 클릭 = 마지막 값)'), 2500);
     } else {
       // ═══ Second click → commit with the last radius ═══
       this.commit(this.lastRadius());
@@ -87,10 +88,10 @@ export class ChamferTool implements ITool {
     if (n >= 0) {
       try { localStorage.setItem(LS_KEY, String(radius)); } catch { /* ignore */ }
       this.ctx.syncMesh();
-      Toast.info(`꼭짓점 모따기 완료 (반지름 ${radius}mm)`, 2000);
+      Toast.info(t('꼭짓점 챔퍼 완료 (반지름 {radius}mm)', { radius }), 2000);
       debugLog(`[Chamfer] vertex ${this.vertId} radius=${radius} → ${n} faces`);
     } else {
-      Toast.fromBridgeError(this.ctx.bridge, '모따기 실패 (3-valence 꼭짓점만 가능)');
+      Toast.fromBridgeError(this.ctx.bridge, t('챔퍼 실패 (3-valence 꼭짓점만 가능)'));
     }
     this.cleanup();
   }

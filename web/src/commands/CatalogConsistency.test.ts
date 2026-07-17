@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (190, incl. Cmd-K coverage batch)', () => {
+  it('CommandCatalog count matches expected total (187, after -3 ghosts, +1 surfaced tool, -1 hover-only)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -96,7 +96,24 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // 9 view/diagnostic panel toggles + 3 imports (skp/step/iges) +
     // resynthesize-faces = +13 → 190. The matching ActionCatalog entries are
     // kept in sync (AC ⊇ CC, ADR-133 L-133-3 / CatalogConsistency).
-    expect(count).toBe(190);
+    //
+    // 187: the wiring audit removed view-shadow-pro / solar-heatmap /
+    // solar-heatmap-off. Their MenuBar handlers were deleted on 2026-05-16
+    // (shadow → ADR-106) but the catalog entries stayed, so the palette
+    // listed three features that no longer exist — searching found them,
+    // running them said "unknown command".
+    //
+    // 188: the mirror image of those three — tool-boundary (ADR-148 β-4) had
+    // a handler, a bridge, an engine op and a Ctrl+B binding, and no catalog
+    // entry, so the palette could not offer a feature that DID exist.
+    //
+    // 187: snap-override left. It is a ctx-submenu-trigger whose handler is
+    // `return; // hover로 처리, 클릭 무시` and whose real choices are
+    // `data-snap` items — the palette could only ever fire a silent no-op. It
+    // keeps its ActionCatalog entry (a right-click item has an identity); it
+    // just has nothing a dispatch surface can call. AC ⊋ CC is fine — that
+    // invariant only runs one way.
+    expect(count).toBe(187);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

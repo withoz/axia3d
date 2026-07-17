@@ -10,6 +10,7 @@ import {
   BooleanDispatchDcelMultiResult,
 } from '../bridge/WasmBridge';
 import { ToolManager } from '../tools/ToolManagerRefactored';
+import { t } from '../i18n';
 import { Toast } from './Toast';
 import { debugLog } from '../utils/debug';
 
@@ -18,17 +19,19 @@ import { debugLog } from '../utils/debug';
  *  - 그 외 → 원문 유지 (debug용)
  */
 function translateBooleanError(rawError: string | undefined, op: string): string {
-  if (!rawError) return `Boolean ${op} 실패: 알 수 없는 오류`;
+  if (!rawError) return t('Boolean {op} 실패: 알 수 없는 오류', { op });
   if (rawError.includes('hole') || rawError.includes('multi-loop')) {
+    // Fragment-per-line is fine here: every fragment is a whole line of the
+    // message, so each one is a sentence a translator can actually translate.
     return (
-      `Boolean ${op} — 선택한 면에 구멍(hole)이 있어 연산할 수 없습니다.\n` +
-      `(현재 Boolean은 단일 outer loop 면만 지원 — constrained Delaunay triangulation 추가 시 확장 예정)\n\n` +
-      `우회:\n` +
-      `1. 구멍이 없는 다른 면을 선택하거나\n` +
-      `2. "내부 면을 구멍으로 합치기"를 역으로 해제한 뒤 시도`
+      t('Boolean {op} — 선택한 면에 구멍(hole)이 있어 연산할 수 없습니다.\n', { op }) +
+      t('(현재 Boolean은 단일 outer loop 면만 지원 — constrained Delaunay triangulation 추가 시 확장 예정)\n\n') +
+      t('우회:\n') +
+      t('1. 구멍이 없는 다른 면을 선택하거나\n') +
+      t('2. "내부 면을 구멍으로 합치기"를 역으로 해제한 뒤 시도')
     );
   }
-  return `Boolean ${op} 실패: ${rawError}`;
+  return t('Boolean {op} 실패: {rawError}', { op, rawError });
 }
 
 export interface BooleanHandlerDeps {
@@ -54,14 +57,14 @@ export function intersectWithModel(deps: BooleanHandlerDeps): void {
   const { bridge, toolManager } = deps;
   const faceIds = toolManager.selection.getSelectedFaces();
   if (!faceIds.length) {
-    Toast.info('모델과 교차: 먼저 면을 선택하세요');
+    Toast.info(t('모델과 교차: 먼저 면을 선택하세요'));
     return;
   }
   const result = bridge.intersectWithModel(faceIds);
   if (!result || !result.ok) {
-    Toast.error(`모델과 교차 실패: ${result?.error ?? '알 수 없는 오류'}`);
+    Toast.error(t('모델과 교차 실패: {error}', { error: result?.error ?? t('알 수 없는 오류') }));
   } else {
-    Toast.success(`모델과 교차 완료 (총 ${result.totalFaces} 면)`);
+    Toast.success(t('모델과 교차 완료 (총 {totalFaces} 면)', { totalFaces: result.totalFaces ?? 0 }));
     toolManager.syncMesh();
   }
 }
@@ -92,7 +95,7 @@ function handleMultiDcelResult(
   // Korean op name + (multi) suffix only — engine-agnostic.
   if (result.kind === 'error') {
     Toast.error(
-      `${OP_NAME_KO[op]} (multi) — 엔진 오류 (${result.reason}):\n${result.detail}`,
+      t('{opName} (multi) — 엔진 오류 ({reason}):\n{detail}', { opName: t(OP_NAME_KO[op]), reason: result.reason, detail: result.detail }),
       8000,
     );
     debugLog(`[Multi DCEL Bool] ${op} error: ${result.reason} — ${result.detail}`);
@@ -127,9 +130,7 @@ function handleMultiDcelResult(
   // pending. Keep the wording config-specific (not "all box boolean unsupported").
   if (newCount === 0 && removedCount === 0) {
     Toast.warning(
-      `${OP_NAME_KO[op]}: 변경 없음 — 두 solid 가 떨어져 있거나, 이 형상 구성이 ` +
-        `아직 미지원입니다. 겹치는 모서리(corner) 절단과 곡면(구·원기둥·원뿔·원환) ` +
-        `∩ box 는 지원 — 관통 구멍·홈·완전 포함은 준비 중 (ADR-275/276).`,
+      t('{opName}: 변경 없음 — 두 solid 가 떨어져 있거나, 이 형상 구성이 아직 미지원입니다. 겹치는 모서리(corner) 절단과 곡면(구·원기둥·원뿔·원환) ∩ box 는 지원 — 관통 구멍·홈·완전 포함은 준비 중 (ADR-275/276).', { opName: t(OP_NAME_KO[op]) }),
       6000,
     );
     debugLog(
@@ -145,11 +146,9 @@ function handleMultiDcelResult(
   // since at least one pair mutated state.
   if (errPairs > 0) {
     deps.toolManager.syncMesh();
-    const firstWarning = result.warnings[0] ?? '(상세 없음)';
+    const firstWarning = result.warnings[0] ?? t('(상세 없음)');
     Toast.warning(
-      `${OP_NAME_KO[op]} (multi) 부분 성공 — ` +
-        `${successPairs}/${totalPairs} pair 성공, 새 면 ${newCount}개, ` +
-        `제거 ${removedCount}개.\n첫 경고: ${firstWarning}`,
+      t('{opName} (multi) 부분 성공 — {successPairs}/{totalPairs} pair 성공, 새 면 {newCount}개, 제거 {removedCount}개.\n첫 경고: {firstWarning}', { opName: t(OP_NAME_KO[op]), successPairs, totalPairs, newCount, removedCount, firstWarning }),
       6000,
     );
     debugLog(
@@ -169,14 +168,12 @@ function handleMultiDcelResult(
     // facesA / facesB 의 정확한 수는 caller 만 알지만, perPair 의
     // 고유 face 수로 근사 (cartesian 의 row × col = total pairs).
     // 단순히 "명시 그룹" 만 표시 — 정확한 N↔M 은 debug log 에.
-    sourceLabel = '명시 그룹';
+    sourceLabel = t('명시 그룹');
   } else {
-    sourceLabel = '자동 분할';
+    sourceLabel = t('자동 분할');
   }
   Toast.info(
-    `${OP_NAME_KO[op]} (multi, ${sourceLabel}) 완료 — ` +
-      `새 면 ${newCount}개, 제거 면 ${removedCount}개 ` +
-      `(${successPairs}/${totalPairs} pair 성공).`,
+    t('{opName} (multi, {sourceLabel}) 완료 — 새 면 {newCount}개, 제거 면 {removedCount}개 ({successPairs}/{totalPairs} pair 성공).', { opName: t(OP_NAME_KO[op]), sourceLabel, newCount, removedCount, successPairs, totalPairs }),
     3000,
   );
   debugLog(
@@ -245,8 +242,8 @@ export function startBooleanOp(
   const selection = toolManager.selection.getSelectedFaces();
   if (selection.length < 2) {
     Toast.warning(
-      `Boolean ${op}: 두 솔리드의 면을 선택하세요 (현재 ${selection.length}개)\n` +
-      `1) 첫 솔리드 면 클릭 → 2) Shift+클릭으로 두 번째 솔리드 면 추가 → 3) 연산 실행`,
+      t('Boolean {op}: 두 솔리드의 면을 선택하세요 (현재 {selection}개)\n', { op, selection: selection.length }) +
+      t('1) 첫 솔리드 면 클릭 → 2) Shift+클릭으로 두 번째 솔리드 면 추가 → 3) 연산 실행'),
       6000,
     );
     return;
@@ -313,7 +310,7 @@ export function startBooleanOp(
       const solid = bridge.booleanSolid(facesA, facesB, op);
       if (solid && solid.ok) {
         toolManager.syncMesh();
-        Toast.info(`${OP_NAME_KO[op]} 완료 (solid CSG)`, 3000);
+        Toast.info(t('{opName} 완료 (solid CSG)', { opName: t(OP_NAME_KO[op]) }), 3000);
         debugLog(`[Bool] solid-CSG cut: ${op}, totalFaces=${solid.totalFaces}`);
         return;
       }
@@ -344,8 +341,7 @@ export function startBooleanOp(
   }
   if (sheetIds.length > 0 && wallIds.length > 0) {
     Toast.warning(
-      `Sheet ${sheetIds.length}개 + Wall ${wallIds.length}개 혼합 선택 — ` +
-      `Sheet끼리 또는 Wall끼리만 가능합니다.`,
+      t('Sheet {sheets}개 + Wall {walls}개 혼합 선택 — Sheet끼리 또는 Wall끼리만 가능합니다.', { sheets: sheetIds.length, walls: wallIds.length }),
       6000,
     );
     return;
@@ -354,7 +350,7 @@ export function startBooleanOp(
   if (sheetIds.length === selection.length) {
     if (selection.length !== 2) {
       Toast.warning(
-        `Sheet Boolean은 정확히 2개의 동일 평면 Sheet 면이 필요합니다 (현재 ${selection.length}개).`,
+        t('Sheet Boolean은 정확히 2개의 동일 평면 Sheet 면이 필요합니다 (현재 {selection}개).', { selection: selection.length }),
         5000,
       );
       return;
@@ -365,8 +361,8 @@ export function startBooleanOp(
       return;
     }
     toolManager.syncMesh();
-    const nameKo = op === 'union' ? '합집합' : op === 'subtract' ? '차집합' : '교집합';
-    Toast.info(`Sheet ${nameKo} 완료 — 결과 face #${newFace}`, 2500);
+    const nameKo = t(op === 'union' ? '합집합' : op === 'subtract' ? '차집합' : '교집합');
+    Toast.info(t('Sheet {nameKo} 완료 — 결과 face #{newFace}', { nameKo, newFace }), 2500);
     debugLog(`[SheetBool] ${op} 완료: 결과 face=${newFace}`);
     return;
   }
@@ -378,7 +374,7 @@ export function startBooleanOp(
 
   const result = bridge.booleanOp(facesA, facesB, op);
   if (!result) {
-    Toast.error('Boolean 연산 실패: WASM 엔진이 준비되지 않았습니다', 4000);
+    Toast.error(t('Boolean 연산 실패: WASM 엔진이 준비되지 않았습니다'), 4000);
     return;
   }
 
@@ -389,17 +385,17 @@ export function startBooleanOp(
   }
 
   toolManager.syncMesh();
-  const nameKo = op === 'union' ? '합집합' : op === 'subtract' ? '차집합' : '교집합';
+  const nameKo = t(op === 'union' ? '합집합' : op === 'subtract' ? '차집합' : '교집합');
   // ADR-197 β-3-n (a) — surface-preserving feedback: tell the user the curved
   // (NURBS) surface was kept when the curved dispatch ran (vs polygonal).
   const curvedNote = result.curved ? ' · 곡면 보존됨 (NURBS surface)' : '';
   // ADR-197 β-3-n (c) — subtract minuend clarity: A is kept, B is removed.
   // Surface the A(유지)−B(제거) face counts so the user knows which solid stayed.
   const minuendNote = op === 'subtract'
-    ? `\nA(유지) ${facesA.length}면 − B(제거) ${facesB.length}면`
+    ? t('\nA(유지) {facesA}면 − B(제거) {facesB}면', { facesA: facesA.length, facesB: facesB.length })
     : '';
   Toast.info(
-    `Boolean ${nameKo} 완료 — 결과 면 ${result.resultFaces?.length ?? 0}개${curvedNote}${minuendNote}`,
+    t('Boolean {nameKo} 완료 — 결과 면 {count}개{curvedNote}{minuendNote}', { nameKo, count: result.resultFaces?.length ?? 0, curvedNote, minuendNote }),
     minuendNote ? 4000 : 2500,
   );
   debugLog(

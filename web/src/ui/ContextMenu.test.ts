@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { initContextMenu, ContextMenuDeps } from './ContextMenu';
+import { setLocale } from '../i18n';
+
+// ADR-294 — this file asserts Korean copy, and jsdom reports
+// navigator.language = 'en-US', so without pinning the locale the menu renders
+// the English table and the assertion tests the wrong string.
+beforeEach(() => setLocale('ko'));
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 vi.mock('./Toast', () => ({
@@ -16,6 +22,8 @@ function createDOM(): void {
     <div id="context-menu">
       <div class="ctx-item" data-action="undo">Undo</div>
       <div class="ctx-item" data-action="redo">Redo</div>
+      <div class="ctx-item" data-action="boundary-here">Make a face here</div>
+      <div class="ctx-item" data-action="select-shell-here">Select this whole solid</div>
       <div class="ctx-item" data-action="delete">Delete</div>
       <div class="ctx-item" data-action="select-all">Select All</div>
       <div class="ctx-item" data-action="deselect">Deselect</div>
@@ -96,6 +104,10 @@ function mockDeps(): ContextMenuDeps {
       cancelCurrentTool: vi.fn(),
       executeAction: vi.fn(),
       syncMesh: vi.fn(),
+      // ADR-148 §2.3 (b) — right-click boundary entry.
+      synthesizeBoundaryAt: vi.fn(),
+      // ADR-148 §5 — 3D BOUNDARY (selects the enclosing shell).
+      selectShellAt: vi.fn().mockReturnValue([]),
       snap: {
         setOverride: vi.fn(),
       },
@@ -105,6 +117,7 @@ function mockDeps(): ContextMenuDeps {
         getGroupId: vi.fn().mockReturnValue(undefined),
         isInGroupEditMode: vi.fn().mockReturnValue(false),
         clearSelection: vi.fn(),
+        selectFaces: vi.fn(),
         enterGroupEdit: vi.fn(),
         // ADR-074 U-2 — Boolean Group selection methods
         setGroupTag: vi.fn(),
@@ -139,6 +152,73 @@ describe('ContextMenu', () => {
 
     it('registers onContextMenu callback', () => {
       expect(deps.viewport.onContextMenu).toHaveBeenCalled();
+    });
+  });
+
+  describe('boundary-here (ADR-148 §2.3 b — right-click entry)', () => {
+    /** Run the callback Viewport would call, i.e. actually right-click. */
+    const rightClickAt = (x: number, y: number) => {
+      const cb = (deps.viewport.onContextMenu as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      cb(x, y);
+    };
+
+    it('synthesizes at the position that was right-clicked', () => {
+      // Not the click position of the menu item — the spot in the model. The
+      // menu item is somewhere else on screen by definition.
+      rightClickAt(150, 220);
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledWith(150, 220);
+    });
+
+    it('uses the most recent right-click', () => {
+      rightClickAt(10, 20);
+      rightClickAt(300, 400);
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledWith(300, 400);
+      expect(deps.toolManager.synthesizeBoundaryAt).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when the menu was never opened', () => {
+      // Reachable via the palette allowlist or a synthetic click; there is no
+      // position to act on, and guessing one would put a face somewhere the
+      // user never pointed at.
+      (document.querySelector('[data-action="boundary-here"]') as HTMLElement).click();
+      expect(deps.toolManager.synthesizeBoundaryAt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('select-shell-here (ADR-148 §5 — 3D BOUNDARY)', () => {
+    const rightClickAt = (x: number, y: number) => {
+      const cb = (deps.viewport.onContextMenu as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      cb(x, y);
+    };
+    const click = () =>
+      (document.querySelector('[data-action="select-shell-here"]') as HTMLElement).click();
+
+    it('selects every face the engine reports for the enclosing shell', () => {
+      (deps.toolManager.selectShellAt as ReturnType<typeof vi.fn>).mockReturnValue([3, 7, 11]);
+      rightClickAt(120, 240);
+      click();
+      expect(deps.toolManager.selectShellAt).toHaveBeenCalledWith(120, 240);
+      // Replaces the selection rather than adding to it: you asked for THIS
+      // solid, not this solid plus whatever was selected before.
+      expect(deps.toolManager.selection.clearSelection).toHaveBeenCalled();
+      expect(deps.toolManager.selection.selectFaces).toHaveBeenCalledWith([3, 7, 11]);
+    });
+
+    it('selects nothing and says so when the click is not inside a solid', () => {
+      (deps.toolManager.selectShellAt as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      rightClickAt(10, 10);
+      click();
+      // Silence here would read as "the menu item is broken" — the same trap
+      // the group-* items were in.
+      expect(deps.toolManager.selection.selectFaces).not.toHaveBeenCalled();
+      expect(deps.toolManager.selection.clearSelection).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the menu was never opened', () => {
+      click();
+      expect(deps.toolManager.selectShellAt).not.toHaveBeenCalled();
     });
   });
 

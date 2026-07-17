@@ -1884,7 +1884,10 @@
           <div class="menu-action" data-action="tool-circle">원 (Circle)<span class="mk">C</span></div>
           <div class="menu-action" data-action="tool-ellipse">타원 (Ellipse · 3-click)</div>
           <div class="menu-action" data-action="tool-arc">호 (Arc)<span class="mk">A</span></div>
-          <div class="menu-action" data-action="tool-pie">부채꼴 (Pie · Sector)<span class="mk">I</span></div>
+          <!-- No `I` badge: I is the XIA Inspector (user's call, 2026-07-16).
+               It was printed here while XiaInspector also owned the key, so
+               pressing I picked this tool AND opened the Inspector. -->
+          <div class="menu-action" data-action="tool-pie">부채꼴 (Pie · Sector)</div>
           <div class="menu-action" data-action="tool-hole">⊘ 구멍 (Hole)</div>
           <div class="menu-action" data-action="tool-polygon-hole">⬡ 다각형 구멍 (Polygon Hole · 임의 윤곽 관통)</div>
           <div class="menu-sep"></div>
@@ -1915,18 +1918,18 @@
           <div class="menu-action" data-action="tool-array-radial">원형 배열 도구 (X/Y/Z 축 · 개수 VCB)</div>
           <div class="menu-action" data-action="array-radial">원형 배열 (Array Radial)…</div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="tool-trim">자르기 (Trim)</div>
-          <div class="menu-action" data-action="tool-extend">연장 (Extend)</div>
-          <div class="menu-action" data-action="tool-corner-fillet">코너 둥글리기 (Corner Fillet · 2D)</div>
-          <div class="menu-action" data-action="tool-corner-chamfer">코너 모따기 (Corner Chamfer · 2D)</div>
-          <div class="menu-action" data-action="tool-join">선 병합 (Join · 일직선)</div>
-          <div class="menu-action" data-action="tool-fillet">모깎기 도구 (Fillet · 엣지+반지름 · 반복)</div>
-          <div class="menu-action" data-action="fillet-edge">엣지 모깎기 (Fillet)…</div>
-          <div class="menu-action" data-action="tool-chamfer">꼭짓점 모따기 (Vertex Chamfer)</div>
-          <div class="menu-action" data-action="chamfer-edge">엣지 모따기 (Chamfer)…</div>
+          <div class="menu-action" data-action="tool-trim">트림 (Trim)</div>
+          <div class="menu-action" data-action="tool-extend">익스텐드 (Extend)</div>
+          <div class="menu-action" data-action="tool-corner-fillet">코너 필렛 (Corner Fillet · 2D)</div>
+          <div class="menu-action" data-action="tool-corner-chamfer">코너 챔퍼 (Corner Chamfer · 2D)</div>
+          <div class="menu-action" data-action="tool-join">조인 (Join · 일직선)</div>
+          <div class="menu-action" data-action="tool-fillet">필렛 도구 (Fillet · 엣지+반지름 · 반복)</div>
+          <div class="menu-action" data-action="fillet-edge">엣지 필렛 (Fillet)…</div>
+          <div class="menu-action" data-action="tool-chamfer">꼭짓점 챔퍼 (Vertex Chamfer)</div>
+          <div class="menu-action" data-action="chamfer-edge">엣지 챔퍼 (Chamfer)…</div>
           <div class="menu-action" data-action="tool-slice">🔪 평면으로 자르기 (Slice)</div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="subdivide">매끄럽게 분할 (Subdivide)</div>
+          <div class="menu-action" data-action="subdivide">서브디비전 (Subdivide)</div>
           <div class="menu-action" data-action="bend-selection">선택 구부리기 (Bend)…</div>
           <div class="menu-action" data-action="twist-selection">선택 비틀기 (Twist)…</div>
           <div class="menu-action" data-action="taper-selection">선택 테이퍼 (Taper)…</div>
@@ -1961,7 +1964,7 @@
           <div class="menu-action" data-action="tool-nurbs-edit">NURBS 제어점 편집 (클릭=입력 / 드래그=이동)</div>
           <div class="menu-sep"></div>
           <div class="menu-action" data-action="tool-pushpull">돌출/잘라내기 (Extrude/Cut · Volume)<span class="mk">V</span></div>
-          <div class="menu-action" data-action="tool-recess">홈파기 (Recess · Pocket · 면 클릭→여유 깊이)</div>
+          <div class="menu-action" data-action="tool-recess">포켓 (Recess · Pocket · 면 클릭→여유 깊이)</div>
           <div class="menu-action" data-action="tool-sweep">스윕 (Sweep · 경로 따라 파이프)<span class="mk">W</span></div>
           <div class="menu-action" data-action="tool-loft">로프트 (Loft · 단면 블렌드 화병)</div>
           <div class="menu-action" data-action="loft-selected-faces">로프트 — 선택 면 2개 (Loft 2 faces)</div>
@@ -1969,7 +1972,7 @@
           <div class="menu-action" data-action="revolve-y">회전체 Revolve · Y축</div>
           <div class="menu-action" data-action="revolve-z">회전체 Revolve · Z축</div>
           <div class="menu-action" data-action="revolve-face-solid">회전체 — 선택 면 (Revolve · 각도 입력 · 부분/360°)</div>
-          <div class="menu-action" data-action="thicken-faces">🧱 두께 부여 (Thicken/Shell)…</div>
+          <div class="menu-action" data-action="thicken-faces">🧱 셸 (Thicken/Shell)…</div>
           <div class="menu-action" data-action="tool-wall">벽 (Wall · 기준선 → 두께·높이 압출)</div>
           <div class="menu-action" data-action="tool-window">창 (Window · 벽 면에 사각 개구부)</div>
           <div class="menu-action" data-action="tool-plane">작업 평면 (3-Point Plane · 3점으로 평면 고정)</div>
@@ -1986,6 +1989,11 @@
           <div class="menu-sep"></div>
           <div class="menu-action" data-action="synthesize-faces">자유 엣지 → 면 합성</div>
           <div class="menu-action" data-action="resynthesize-faces">🔄 면 재합성 (닫힌 라인 cycle → face)</div>
+          <!-- ADR-148 β-4. Ctrl+B has worked since the tool landed; it was in
+               no menu, no toolbar and no help sheet, so nobody could find it.
+               Sits beside 면 재합성 because that sweeps the whole mesh while
+               this one takes the single region you click (AutoCAD BPOLY). -->
+          <div class="menu-action" data-action="tool-boundary">📍 영역 클릭 → 면 (Boundary · BPOLY)<span class="mk">Ctrl+B</span></div>
           <div class="menu-action" data-action="solidify">🧩 Solidify (열린 쉘 → 닫힌 솔리드)</div>
           <div class="menu-action" data-action="mesh-repair">🩹 Heal · Mesh Repair (퇴화/와인딩/고립 정리)</div>
           <div class="menu-sep"></div>
@@ -2272,7 +2280,7 @@
         <button class="tool-btn" data-tool="offset" title="Offset (O)">
           <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5"/></svg>
         </button>
-        <button class="tool-btn" data-tool="recess" title="Recess · Pocket (홈파기)">
+        <button class="tool-btn" data-tool="recess" title="Recess · Pocket (포켓)">
           <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5"/><path d="M3 3 L8 8 M21 3 L16 8 M3 21 L8 16 M21 21 L16 16"/></svg>
         </button>
         <button class="tool-btn" data-tool="erase" title="Erase (E)">
@@ -2297,7 +2305,7 @@
       -->
       <div class="tool-group">
         <div class="tool-dropdown" data-group="organic-family">
-          <button class="tool-btn" data-action="subdivide" title="매끄럽게 분할 (Catmull-Clark)">
+          <button class="tool-btn" data-action="subdivide" title="서브디비전 (Catmull-Clark)">
             <!-- Subdivide: triangle split into 4 (classic subdivision glyph) -->
             <svg viewBox="0 0 24 24">
               <path d="M12 4 L20.66 19 L3.34 19 Z"/>
@@ -2313,7 +2321,7 @@
                 <path d="M12 4 L20.66 19 L3.34 19 Z"/>
                 <path d="M7.67 11.5 L16.33 11.5 L12 19 Z"/>
               </svg></span>
-              <span class="tdi-label">매끄럽게 분할 (Subdivide)</span>
+              <span class="tdi-label">서브디비전 (Subdivide)</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-sep"></div>
@@ -2382,7 +2390,7 @@
                 <path d="M5 19 L5 13" stroke-dasharray="2 2"/>
                 <path d="M11 19 L5 19" stroke-dasharray="2 2"/>
               </svg></span>
-              <span class="tdi-label">엣지 모깎기 (Fillet)…</span>
+              <span class="tdi-label">엣지 필렛 (Fillet)…</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-item" data-action="chamfer-edge">
@@ -2392,7 +2400,7 @@
                 <path d="M5 19 L5 13" stroke-dasharray="2 2"/>
                 <path d="M11 19 L5 19" stroke-dasharray="2 2"/>
               </svg></span>
-              <span class="tdi-label">엣지 모따기 (Chamfer)…</span>
+              <span class="tdi-label">엣지 챔퍼 (Chamfer)…</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-sep"></div>
@@ -2430,7 +2438,7 @@
                 <rect x="7" y="7" width="12" height="12" rx="0.5"/>
                 <path d="M7 7 L4 4 L16 4 L19 7 M4 4 L4 16 L7 19 M16 4 L16 16 L19 19 L19 7"/>
               </svg></span>
-              <span class="tdi-label">🧱 두께 부여 (Thicken/Shell)…</span>
+              <span class="tdi-label">🧱 셸 (Thicken/Shell)…</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-item" data-action="array-linear">
@@ -2693,7 +2701,7 @@
     </div>
 
     <!-- Home (원점 복귀) button -->
-    <button id="home-btn" title="원점으로 (H)">
+    <button id="home-btn" title="원점으로 (F5)">
       <svg viewBox="0 0 576 512"><path d="M575.8 255.5c0 18-15 32.1-32 32.1h-32l.7 160.2c0 2.7-.2 5.4-.5 8.1V472c0 22.1-17.9 40-40 40H456c-1.1 0-2.2 0-3.3-.1c-1.4 .1-2.8 .1-4.2 .1H416 392c-22.1 0-40-17.9-40-40V400 336c0-26.5-21.5-48-48-48H272c-26.5 0-48 21.5-48 48v64 72c0 22.1-17.9 40-40 40H160 128.1c-1.5 0-3-.1-4.5-.2c-1.2 .1-2.4 .2-3.6 .2H104c-22.1 0-40-17.9-40-40v-72c0-.7 0-1.3 0-2V256 237.8L32.4 287.6c-12.4 8.4-29.1 5.5-37.8-6.5s-5.7-28.1 6.6-36.8L288 48 572.6 244.3c12.3 8.7 15.1 25.2 6.4 37.3c-1 1.4-2.2 2.8-3.2 3.9z"/></svg>
     </button>
 
@@ -2707,14 +2715,21 @@
       <div class="ctx-item" data-action="deselect">선택 해제 <span class="ctx-key">Esc</span></div>
       <div class="ctx-item" data-action="toggle-selection-dims">📏 치수 표시 ON/OFF</div>
       <div class="ctx-sep"></div>
+      <!-- ADR-148 §2.3 (b) — right-click a spot and get its face, without
+           entering the tool first. Ctrl+B is the other half (Q2=(c) Both). -->
+      <div class="ctx-item" data-action="boundary-here">📍 이 영역에 면 만들기 <span class="ctx-key">Ctrl+B</span></div>
+      <!-- ADR-148 §5 — the 3D sibling. 2D makes a face; this selects the
+           faces of the solid you clicked into. Nothing is created. -->
+      <div class="ctx-item" data-action="select-shell-here">🧊 이 솔리드 전체 선택</div>
+      <div class="ctx-sep"></div>
       <div class="ctx-item" data-action="delete">삭제 <span class="ctx-key">Del</span></div>
       <!-- 면 반전 (선택된 면 있을 때만 표시) -->
       <div class="ctx-item ctx-face-item" data-action="flip-faces">면 반전 <span class="ctx-key">Shift+N</span></div>
-      <!-- 면 통합 (인접 coplanar face 합치기) -->
-      <div class="ctx-item ctx-face-item" data-action="merge-faces">면 통합 <span class="ctx-key">Ctrl+M</span></div>
-      <div class="ctx-item ctx-face-item" data-action="merge-faces-geometric">🧲 기하 병합 (크기 달라도 OK, 2면 선택)</div>
-      <div class="ctx-item ctx-face-item" data-action="merge-xia-coplanar">XIA 내 Coplanar 면 일괄 통합</div>
-      <div class="ctx-item ctx-face-item" data-action="merge-faces-force">🫧 강제 통합 (비평면, 내부 엣지 숨김)</div>
+      <!-- 면 머지 (인접 coplanar face 합치기) -->
+      <div class="ctx-item ctx-face-item" data-action="merge-faces">면 머지 <span class="ctx-key">Ctrl+M</span></div>
+      <div class="ctx-item ctx-face-item" data-action="merge-faces-geometric">🧲 기하 머지 (크기 달라도 OK, 2면 선택)</div>
+      <div class="ctx-item ctx-face-item" data-action="merge-xia-coplanar">XIA 내 Coplanar 면 일괄 머지</div>
+      <div class="ctx-item ctx-face-item" data-action="merge-faces-force">🫧 강제 머지 (비평면, 내부 엣지 숨김)</div>
       <div class="ctx-item ctx-face-item" data-action="merge-as-hole">🕳 수동: 내부 면을 구멍으로 (레거시 · 신규 그리기는 자동)</div>
       <!-- ADR-149 β-4 — T-junction Sweep 명시 trigger (메타-원칙 #16 정합) -->
       <!-- 가시성: always (선택 무관). 메뉴 클릭 시 detect → heal sequence. -->
@@ -2744,7 +2759,7 @@
       <!-- 빠른 색상 — 선택된 면에 즉석 색상 할당 -->
       <div class="ctx-item ctx-face-item" data-action="assign-quick-color">🎨 색상 지정… (Quick Color)</div>
       <!-- Array — 선택한 면을 선형 배열로 복제 -->
-      <div class="ctx-item ctx-face-item" data-action="thicken-faces">🧱 두께 부여 (Shell/Thicken)…</div>
+      <div class="ctx-item ctx-face-item" data-action="thicken-faces">🧱 셸 (Shell/Thicken)…</div>
       <div class="ctx-item ctx-face-item" data-action="array-linear">선형 배열 복제 (Array)…</div>
       <div class="ctx-item ctx-face-item" data-action="array-radial">원형 배열 복제 (Radial)…</div>
       <!-- Mirror — world plane 기준 미러링 -->
@@ -2766,8 +2781,8 @@
       <!-- 1개 엣지 선택 시 -->
       <div class="ctx-item ctx-edge1-item" data-action="constrain-edge-length">엣지 길이 설정…</div>
       <div class="ctx-item ctx-edge1-item" data-action="split-edge-midpoint">엣지 중점 분할</div>
-      <div class="ctx-item ctx-edge1-item" data-action="fillet-edge">엣지 모깎기 (Fillet)…</div>
-      <div class="ctx-item ctx-edge1-item" data-action="chamfer-edge">엣지 모따기 (Chamfer)…</div>
+      <div class="ctx-item ctx-edge1-item" data-action="fillet-edge">엣지 필렛 (Fillet)…</div>
+      <div class="ctx-item ctx-edge1-item" data-action="chamfer-edge">엣지 챔퍼 (Chamfer)…</div>
       <div class="ctx-sep"></div>
       <!-- 그룹 / 컴포넌트 -->
       <div class="ctx-item ctx-group-item" data-action="group">그룹 만들기 <span class="ctx-key">Ctrl+G</span></div>
@@ -2871,7 +2886,10 @@
       <div class="cb-tools">
         <!-- 현재 명령/도구 표시 (명령 안내) — 단위 설정(cb-unit) 바로 앞에 위치.
              도구(Rectangle 등) 또는 뷰 모드(3D Perspective 등) 표시. -->
-        <div id="tool-label">Select</div>
+        <!-- Korean is the key (ADR-294 D2); translateDom swaps it under `en`.
+             It was hard-coded "Select", so the status bar opened in English
+             for a Korean user and only became Korean once a tool was picked. -->
+        <div id="tool-label">선택</div>
         <button class="cb-unit" id="cb-unit-btn" title="단위 / 정밀도">
           <span id="cb-unit-val">0.0000</span>
           <span id="cb-unit-lbl">mm</span>

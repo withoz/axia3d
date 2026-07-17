@@ -1,15 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { initCommandRegistry, CommandRegistryDeps } from './CommandRegistry';
+import { setLocale } from '../i18n';
 
 function mockDeps(): CommandRegistryDeps {
   return {
-    commandInput: {
-      registerHandler: vi.fn(),
-      toggle: vi.fn(),
-      printSuccess: vi.fn(),
-      printInfo: vi.fn(),
-      printError: vi.fn(),
-    } as any,
+    commandInput: (() => {
+      const handlers: any[] = [];
+      return {
+        registerHandler: vi.fn((h: any) => handlers.push(h)),
+        listHandlers: vi.fn(() => handlers),
+        toggle: vi.fn(),
+        printSuccess: vi.fn(),
+        printInfo: vi.fn(),
+        printError: vi.fn(),
+      };
+    })() as any,
     bridge: {
       drawLineAsShape: vi.fn(),
       normalizeForImport: vi.fn().mockReturnValue({
@@ -33,6 +38,8 @@ describe('CommandRegistry', () => {
   let deps: ReturnType<typeof mockDeps>;
 
   beforeEach(() => {
+    // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+    setLocale('ko');
     deps = mockDeps();
     initCommandRegistry(deps);
   });
@@ -154,21 +161,42 @@ describe('CommandRegistry', () => {
       expect(helpHandler.aliases).toContain('?');
     });
 
-    it('prints command list', () => {
+    it('lists the commands that are actually registered', () => {
       helpHandler.execute([]);
-      expect(deps.commandInput.printInfo).toHaveBeenCalled();
+      const text = (deps.commandInput.printInfo as any).mock.calls[0][0] as string;
+      // Every registered command appears...
+      for (const h of (deps.commandInput as any).listHandlers()) {
+        expect(text).toContain(h.name);
+      }
+      // ...and nothing invented. The old hardcoded list named these three,
+      // none of which are commands, which is the bug this test exists for.
+      expect(text).not.toMatch(/^R \[/m);
+      expect(text).not.toMatch(/^C \[/m);
+      expect(text).not.toMatch(/^P \[/m);
+      // and it reaches the ones the hardcoded list forgot
+      expect(text).toContain('mergetol');
+      expect(text).toContain('repair');
     });
   });
 
   describe('keyboard shortcut', () => {
-    it('backtick toggles command input', () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', bubbles: true }));
+    it('Ctrl+` toggles command input', () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', ctrlKey: true, bubbles: true }));
       expect(deps.commandInput.toggle).toHaveBeenCalled();
     });
 
-    it('Ctrl+K toggles command input', () => {
+    // These two used to assert the opposite, and that is how the collision
+    // survived: the command input answered a bare ` (which toggles the grid)
+    // and Ctrl+K (which opens the palette), so one keystroke did two things.
+    // The user's call (2026-07-16): ` stays the grid, Ctrl+K stays the palette.
+    it('a bare backtick does NOT toggle the command input (that is the grid)', () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', bubbles: true }));
+      expect(deps.commandInput.toggle).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+K does NOT toggle the command input (that is the palette)', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
-      expect(deps.commandInput.toggle).toHaveBeenCalled();
+      expect(deps.commandInput.toggle).not.toHaveBeenCalled();
     });
   });
 });

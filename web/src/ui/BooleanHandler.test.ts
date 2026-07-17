@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { startBooleanOp, BooleanHandlerDeps } from './BooleanHandler';
+import { setLocale } from '../i18n';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 
@@ -40,6 +41,9 @@ function mockDeps(): BooleanHandlerDeps {
 }
 
 describe('BooleanHandler', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   let deps: ReturnType<typeof mockDeps>;
 
   beforeEach(() => {

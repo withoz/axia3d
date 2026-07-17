@@ -1109,6 +1109,21 @@ impl Mesh {
     /// DrawCircle preview follows the curvature instead of a flat tangent-plane
     /// circle (which misled — the committed `draw_circle_on_*` result IS curved).
     /// `&self` = no mutation → safe every mouse-move (mirrors `preview_curved_carve`).
+    /// ADR-284 follow-up — a point on `host_face`'s surface whose GEODESIC
+    /// distance from `center_pt` is `d`, so a typed radius can mean what it
+    /// says. `None` for a non-curved / inactive face or a degenerate ask; the
+    /// caller then keeps its planar path. Read-only.
+    pub fn surface_point_at_geodesic_distance(
+        &self,
+        host_face: FaceId,
+        center_pt: DVec3,
+        d: f64,
+    ) -> Option<DVec3> {
+        let face = self.faces.get(host_face).filter(|f| f.is_active())?;
+        let surf = face.surface()?;
+        crate::surfaces::surface_point_at_geodesic_distance(surf, center_pt, d)
+    }
+
     pub fn preview_circle_on_surface(
         &self,
         host_face: FaceId,

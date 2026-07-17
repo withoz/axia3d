@@ -4705,6 +4705,17 @@ PR 시리즈.
   - **남은 작업** (별도 sub-step):
     * B-γ' point-based localization (full mesh sweep 보다 정밀)
     * B-ε TS BoundaryTool 'B' 단축키 (현재 b=bottom view 충돌, 결재 필요)
+  - > ✅ **위 "남은 작업" 2건은 ADR-148 로 closed** (2026-07-17 확인, 사용자
+    > 결재 "문서 정리 진행"). B-γ' = `Mesh::boundary_from_point` (axia-geo
+    > `operations/boundary.rs`, 회귀 6) / B-ε = `BoundaryTool.ts` + **Ctrl+B**
+    > — 'B' 충돌은 ADR-148 L-148-9 가 Ctrl+B 로 해소했으므로 **결재 대기
+    > 항목이 아니다**. β-1~β-4 + γ E2E (2/2 PASS) 모두 landed 상태였고 본
+    > LOCKED 텍스트만 따라오지 못했다 (LOCKED #88 doc-lag 패턴).
+    >
+    > 2026-07-17 배선 감사가 찾은 진짜 gap: 도구가 Ctrl+B 로 작동하는데
+    > **메뉴 · 툴바 · 카탈로그 · 도움말 어디에도 없어** 이미 아는 사람만
+    > 쓸 수 있었다. commit `553aedb` 가 발견 경로를 붙였다. 자세히는
+    > `docs/adr/148-point-localized-boundary-tool.md` §8.
 - **(B-γ' + B-δ + B-ε + B-ι + B-μ): 다음 sub-steps** (별도 PRs):
   - B-β-4: ✅ closed (PR #131 audit pivot — TS 변경 0)
   - B-γ MVP: ✅ closed (PR #138 — label 재정의, audit pivot)
@@ -4726,8 +4737,13 @@ PR 시리즈.
   - 사용자 facing 변화: Path A cylinder Push/Pull 후 측면 face 클릭
     → group full-selection (N face 모두 선택) 정합 회복
   - B-γ: Engine — `Mesh::boundary_from_point(p, plane)` 신규
+    → ✅ **ADR-148 β-1/β-2 로 landed** (`axia-geo/operations/boundary.rs`)
   - B-δ: WASM bridge — `bridge.boundaryFromClick(...)` + TS wrapper
+    → ✅ **ADR-148 β-3 로 landed** (이름은 `boundaryFromPoint`)
   - B-ε: TS BoundaryTool 신규 — 'B' 단축키 + cursor crosshair + click
+    → ✅ **ADR-148 β-4 로 landed** — 단축키는 **Ctrl+B** ('b' = bottom view
+    충돌 회피, ADR-148 L-148-9 canonical). 메뉴/카탈로그/도움말 노출은
+    2026-07-17 `553aedb`
   - B-ζ: 회귀 자산 update — 60+ tests 재작성 (자동 → 명시 호출 시뮬레이션)
   - B-ι: E2E + 사용자 시연 (구멍 0 검증, ADR-087 K-ζ canonical)
   - B-μ: 3D BOUNDARY (closed shell extraction) Phase 2 별도 ADR

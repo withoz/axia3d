@@ -9,7 +9,8 @@
  *   5. PartialFailure + manual → warning Toast, status 'manual'
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import {
   attemptRecoveryWithDialog,
   humanizeDamageReport,
@@ -48,6 +49,9 @@ const REPORT_DAMAGED: TopologyDamageReport = {
 };
 
 describe('TopologyRecoveryOrchestrator (T-δ)', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy.
+  beforeEach(() => setLocale('ko'));
+
   beforeEach(() => {
     document.body.innerHTML = '';
   });
