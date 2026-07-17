@@ -584,6 +584,16 @@ describe('ADR-294 — en.ts hygiene', () => {
       new RegExp(String.raw`\.${SCREEN_PROPS}\s*=\s*'((?:[^'\\]|\\.)*)'`, 'g'),
       // setAttribute('title'|'placeholder'|'aria-label', '한글')
       new RegExp(String.raw`setAttribute\s*\(\s*'[^']*'\s*,\s*'((?:[^'\\]|\\.)*)'`, 'g'),
+      // `return '한글'` — the same bug one call further out. The sink list
+      // above reads the Toast, but the Korean is often assembled in a
+      // humanize*() and handed over already built: `Toast.error(humanizeX(e))`
+      // is not a raw sink, and inside humanizeX the `return '…'` is not a sink
+      // either. Measured when this landed: 16 across 6 files (BoundaryTool,
+      // SliceTool, the citizenship orchestrators), every one of them wired to
+      // a Toast, every one rendering Korean under `en` — with the survey at 0,
+      // because the survey passes anything that HAS an en.ts key and these all
+      // did. The whole class was invisible.
+      new RegExp(String.raw`\breturn\s+'((?:[^'\\]|\\.)*)'\s*;`, 'g'),
     ];
     for (const re of patterns) {
       for (const m of src.matchAll(re)) {

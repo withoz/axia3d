@@ -382,16 +382,16 @@ export class SliceTool implements ITool {
    */
   private translateEngineError(engineErr: string): string {
     if (engineErr.includes('empty face set')) {
-      return '솔리드(volume) 가 없습니다. 돌출/잘라내기(Extrude/Cut) 로 입체 먼저 만들기';
+      return t('솔리드(volume) 가 없습니다. 돌출/잘라내기(Extrude/Cut) 로 입체 먼저 만들기');
     }
     if (engineErr.includes('span multiple XIAs')) {
-      return '여러 볼륨 동시 자르기 불가 — 단일 솔리드의 면을 선택하세요';
+      return t('여러 볼륨 동시 자르기 불가 — 단일 솔리드의 면을 선택하세요');
     }
     if (engineErr.includes('has no owning XIA')) {
-      return '선택된 면에 소속 볼륨이 없습니다 (Sheet face — 돌출/잘라내기 필요)';
+      return t('선택된 면에 소속 볼륨이 없습니다 (Sheet face — 돌출/잘라내기 필요)');
     }
     if (engineErr.includes('cannot determine source XIA')) {
-      return '소속 볼륨을 결정할 수 없습니다';
+      return t('소속 볼륨을 결정할 수 없습니다');
     }
     // Default fallback — engine 메시지 그대로
     return engineErr;

@@ -5,7 +5,8 @@
  * 자체 검증.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLocale } from '../i18n';
 import { autoRegisterImportAsReference } from './AutoReferenceImport';
 import type { WasmBridge } from '../bridge/WasmBridge';
 
@@ -20,6 +21,11 @@ function makeBridgeStub(opts: {
 }
 
 describe('ADR-096 M-β autoRegisterImportAsReference', () => {
+  // jsdom's navigator.language is 'en-US'; these assert Korean copy. The
+  // messages became t() keys when the raw `return '한글'` in this module was
+  // wrapped — it was reaching a Toast and rendering Korean under `en`.
+  beforeEach(() => setLocale('ko'));
+
   it('성공 시 refId / refName / faceCount 반환', () => {
     const bridge = makeBridgeStub({ createIM: () => 42 });
     const r = autoRegisterImportAsReference(bridge, [10, 20, 30], 'site.step');

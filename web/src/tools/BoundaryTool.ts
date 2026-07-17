@@ -58,10 +58,10 @@ export function humanizeBoundaryError(rawMessage: string): string {
     return t('주변에 boundary 후보가 없습니다 (반경 {r}mm 확대 필요)', { r });
   }
   if (rawMessage.includes('NoEnclosingCycle')) {
-    return '이 영역을 둘러싼 boundary 가 없습니다';
+    return t('이 영역을 둘러싼 boundary 가 없습니다');
   }
   if (rawMessage.includes('CycleAlreadyFaced')) {
-    return '이 영역에 이미 면이 있습니다';
+    return t('이 영역에 이미 면이 있습니다');
   }
   // Fallback — strip "boundaryFromPoint: " prefix if present.
   return rawMessage.replace(/^boundaryFromPoint:\s*/, '');

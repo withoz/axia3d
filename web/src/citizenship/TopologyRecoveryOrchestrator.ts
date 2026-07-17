@@ -68,7 +68,7 @@ export interface OrchestratorOptions {
  * Lock-in T-H=b — humanize at the orchestrator boundary.
  */
 export function humanizeDamageReport(report: TopologyDamageReport): string {
-  if (report.damages.length === 0) return '손상 없음';
+  if (report.damages.length === 0) return t('손상 없음');
   const counts = { boundary: 0, nonManifold: 0, degenerate: 0, orphan: 0 };
   for (const d of report.damages) {
     switch (d.kind) {

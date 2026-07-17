@@ -72,7 +72,7 @@ export interface MaterialRecoveryOrchestratorOptions {
  * dialog. Lock-in R-H8 — humanize at the orchestrator boundary.
  */
 export function humanizeOrphanReport(report: OrphanMaterialReport): string {
-  if (report.affectedXias.length === 0) return '재질 손상 없음';
+  if (report.affectedXias.length === 0) return t('재질 손상 없음');
   const xiaCount = report.affectedXias.length;
   const faceTotal = report.affectedXias.reduce(
     (sum, e) => sum + e.faceCount, 0,
