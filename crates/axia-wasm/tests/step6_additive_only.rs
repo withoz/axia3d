@@ -1314,6 +1314,45 @@ fn adr148_beta3_boundary_uses_transaction_with_cancel_on_error() {
          for caller-side identification");
 }
 
+/// ADR-148 §5 — `boundaryFromPointAutoPlane` is wired, takes NO plane, and
+/// wraps a transaction.
+///
+/// The absent plane parameters are the feature: its sibling takes nx/ny/nz +
+/// plane_dist from the caller, and this one asks the geometry instead. If a
+/// plane argument ever appears here, the endpoint has become a duplicate of
+/// the explicit one.
+#[test]
+fn adr148_boundary_auto_plane_endpoint_wired_without_a_plane() {
+    let l = lib_src();
+    assert!(l.contains("pub fn boundary_from_point_auto_plane"),
+        "ADR-148 §5: missing Rust function boundary_from_point_auto_plane");
+    assert!(l.contains("js_name = \"boundaryFromPointAutoPlane\""),
+        "ADR-148 §5: missing js_name = \"boundaryFromPointAutoPlane\"");
+    let idx = l.find("pub fn boundary_from_point_auto_plane")
+        .expect("boundary_from_point_auto_plane");
+    let body = char_safe_slice(&l, idx, 1600);
+    assert!(body.contains("-> Result<u32, JsValue>"),
+        "ADR-148 §5: must return the synthesized face id");
+    for param in ["px: f64", "py: f64", "pz: f64", "search_radius_mm: f64"] {
+        assert!(body.contains(param), "ADR-148 §5: signature must include {}", param);
+    }
+    // The point of the endpoint: no caller-supplied plane.
+    for absent in ["nx: f64", "ny: f64", "nz: f64", "plane_dist: f64"] {
+        assert!(!body.contains(absent),
+            "ADR-148 §5: auto-plane endpoint must NOT take {} — inferring the \
+             plane is the whole reason it exists", absent);
+    }
+    // It creates a face, so unlike shellFromPoint it must be undoable.
+    assert!(body.contains("transactions.begin"),
+        "ADR-148 §5: auto-plane synthesis must open a transaction");
+    assert!(body.contains("transactions.cancel"),
+        "ADR-148 §5: failure path must cancel (a refusal leaves nothing behind)");
+    assert!(body.contains("boundary::boundary_from_point_auto_plane"),
+        "ADR-148 §5: body must delegate to axia_geo::operations::boundary");
+    assert!(body.contains("boundaryFromPointAutoPlane:"),
+        "ADR-148 §5: error message must carry its own prefix");
+}
+
 /// ADR-148 §5 — `shellFromPoint` (3D BOUNDARY) is wired, and is read-only.
 ///
 /// Its 2D sibling above wraps a transaction because it CREATES a face. This

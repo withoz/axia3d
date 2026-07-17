@@ -668,6 +668,11 @@ type AxiaEngineExtended = AxiaEngine & {
     planeDist: number,
     searchRadiusMm: number,
   ): number;
+  // ADR-148 §5 — plane inferred from the free edges around the click
+  boundaryFromPointAutoPlane?(
+    px: number, py: number, pz: number,
+    searchRadiusMm: number,
+  ): number;
   // ADR-148 §5 — 3D BOUNDARY (read-only: selects, does not create)
   shellFromPoint?(px: number, py: number, pz: number): Uint32Array;
   // ADR-149 β-3 — T-junction Sweep 명시 도구
@@ -1651,6 +1656,34 @@ export class WasmBridge {
     return this.engine.boundaryFromPoint(
       px, py, pz, nx, ny, nz, planeDist, searchRadiusMm,
     );
+  }
+
+  /**
+   * ADR-148 §5 — boundaryFromPoint with the plane inferred from the free
+   * edges around the click.
+   *
+   * Boundary is used where there is no face yet — precisely where a face-hit
+   * cannot tell the tool which plane to work on, so the click falls through to
+   * Z=0 and a loop at z=100 cannot be faced. This asks the geometry.
+   *
+   * Refuses (throws) when the nearby wires disagree about the plane rather
+   * than choosing one: that choice would be a guess (메타-원칙 #5 / #16).
+   *
+   * Throws on:
+   *   - "boundaryFromPointAutoPlane: NoOrphanEdgesInRadius (radius Rmm)"
+   *   - "boundaryFromPointAutoPlane: NoEnclosingCycle"  (also the ambiguous /
+   *     non-planar refusals — from the click's side nothing resolved)
+   *   - "boundaryFromPointAutoPlane: CycleAlreadyFaced (face N)"
+   */
+  boundaryFromPointAutoPlane(
+    px: number, py: number, pz: number,
+    searchRadiusMm: number,
+  ): number {
+    if (!this.engine || !this.engine.boundaryFromPointAutoPlane) {
+      throw new Error('boundaryFromPointAutoPlane: WASM endpoint missing (rebuild required)');
+    }
+    this.markDirty();
+    return this.engine.boundaryFromPointAutoPlane(px, py, pz, searchRadiusMm);
   }
 
   /**

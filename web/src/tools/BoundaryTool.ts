@@ -26,7 +26,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
 import { t } from '../i18n';
 
 /**
@@ -139,12 +139,20 @@ export class BoundaryTool implements ITool {
     );
 
     try {
-      const faceId = this.ctx.bridge.boundaryFromPoint(
-        pt.x, pt.y, pt.z,
-        planeNormal.x, planeNormal.y, planeNormal.z,
-        planeDist,
-        DEFAULT_SEARCH_RADIUS_MM,
-      );
+      // ADR-148 §5 — ask the geometry which plane first.
+      //
+      // getDrawPlane above resolves face-hit / lock / sticky / Z=0, and for a
+      // boundary click that cascade has a hole in it: you are clicking where
+      // there is no face yet, so the face-hit branch — the one that would know
+      // the plane — cannot fire. A loop drawn at z=100 then falls through to
+      // Z=0 and cannot be faced at all unless the sticky plane happens to
+      // still be right.
+      //
+      // The auto path infers the plane from the free edges in range, and
+      // refuses when they disagree rather than guessing (메타-원칙 #5 / #16).
+      // When it refuses, the explicit plane below is still the honest answer:
+      // the user's lock or sticky plane IS a stated intent.
+      const faceId = this.synthesize(pt, planeNormal, planeDist);
       debugLog('[BoundaryTool] synthesized face_id', faceId);
       Toast.success(t('Boundary 면이 생성되었습니다'));
       this.ctx.syncMesh();
@@ -154,6 +162,31 @@ export class BoundaryTool implements ITool {
       Toast.error(t('Boundary 생성 실패: {userMsg}', { userMsg }));
       debugLog('[BoundaryTool] error:', raw);
     }
+  }
+
+  /**
+   * Infer the plane from nearby free edges; fall back to the resolved draw
+   * plane when inference declines (ambiguous / not planar) or the endpoint is
+   * missing (legacy build, test mock).
+   *
+   * Throws the LAST error, not the first: if both paths fail, what the user
+   * needs to hear is why the plane they are actually on did not work.
+   */
+  private synthesize(pt: THREE.Vector3, normal: THREE.Vector3, dist: number): number {
+    const auto = this.ctx.bridge.boundaryFromPointAutoPlane;
+    if (typeof auto === 'function') {
+      try {
+        return auto.call(this.ctx.bridge, pt.x, pt.y, pt.z, DEFAULT_SEARCH_RADIUS_MM);
+      } catch (err) {
+        debugLog('[BoundaryTool] auto-plane declined, using the draw plane:', err);
+      }
+    }
+    return this.ctx.bridge.boundaryFromPoint(
+      pt.x, pt.y, pt.z,
+      normal.x, normal.y, normal.z,
+      dist,
+      DEFAULT_SEARCH_RADIUS_MM,
+    );
   }
 
   onMouseMove(_e: MouseEvent, _point: THREE.Vector3 | null): void {

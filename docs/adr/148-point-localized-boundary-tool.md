@@ -226,8 +226,8 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   만든다. 새 정책 결정이 없으므로 새 ADR 이 아닌 본 로그로 기록.
 - ~~**3D BOUNDARY** (closed shell from orphan faces) — ADR-139 §14 B-μ,
   별도 ADR~~ → **2026-07-17 landed** (선택 semantic), 아래 §8 참조.
-- **Auto plane inference** (사용자 점만 클릭, plane 자동 추론) —
-  ADR-141 §3 reserve 외부, future ADR
+- ~~**Auto plane inference** (사용자 점만 클릭, plane 자동 추론) —
+  ADR-141 §3 reserve 외부, future ADR~~ → **2026-07-17 landed**, 아래 §8 참조.
 - **ContextMenu integration** — Q2=(a) BoundaryTool 우선, ContextMenu
   는 follow-up ADR
 
@@ -397,10 +397,51 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   box 안 → 6면 선택 + "솔리드 선택: 6개 면", 빈 공간 → 0 선택 +
   "닫힌 솔리드 안이 아닙니다", en 로케일 한글 누출 0.
 
+- **2026-07-17 — Auto plane inference** (사용자 결재: "auto plane inference
+  진행").
+
+  **메타-원칙 #16 과 충돌하지 않는다**. Boundary 는 *면이 아직 없는 곳* 에서
+  쓰는 도구인데, 바로 그래서 `getDrawPlane` 의 cascade 에 구멍이 있다 —
+  평면을 알려줄 face-hit 분기가 발동할 수 없고, z=100 에 그린 loop 는 Z=0
+  으로 떨어져 아예 면이 안 된다 (sticky 가 우연히 맞지 않는 한).
+
+  근방 free edges 가 **한 평면에 있으면 그 평면은 추측이 아니라 기하가
+  허용하는 유일한 답**이다. 서로 다르면 고르지 않고 거부한다 — 이게
+  메타-원칙 #5 (명확하면 자동, 모호하면 명시) 이고, #16 이 경고하는 휴리
+  스틱은 바로 *고르는* 쪽이다. `Ambiguous { plane_count }` 는 그래서 기능
+  이지 한계가 아니다.
+
+  자산 재사용: ADR-080 V-δ-α `derive_free_wire_plane` (free edge BFS +
+  best-fit plane + planarity 게이트 ≥3 verts / non-collinear / scale-aware
+  RMS) 를 `pub(crate)` 로 올려 그대로 씀 — 두 번째 구현은 드리프트한다
+  (메타-원칙 #4). 신규 알고리즘 0.
+
+  `infer_plane_from_point(&Mesh, point, radius) -> Result<Plane,
+  InferPlaneError>` + `boundary_from_point_auto_plane(&mut Mesh, point,
+  radius)`. WASM `boundaryFromPointAutoPlane` (plane 인자 **없음** — 그게
+  요점이고 회귀가 그걸 단언한다) → bridge → BoundaryTool 이 auto 먼저,
+  거부 시 draw plane fallback (lock/sticky 는 사용자가 *표명한* 의도이므로
+  정직한 2순위). 두 경로 모두 실패하면 **나중** 에러를 보여준다 — 사용자가
+  실제로 있는 평면이 왜 안 됐는지가 필요한 정보다.
+
+  회귀 axia-geo +6 (z=100 wire plane 추론 / 두 평면 → Ambiguous / **같은
+  평면 두 wire 는 모호 아님** / 반경 밖 / e2e z=100 면 합성 / 거부 시 면
+  0개) · axia-wasm +1 (plane 인자 부재 + transaction 계약) · vitest
+  BoundaryTool +3. 뮤테이션 4/4 — 모호해도 첫 평면 선택 / 같은 평면 dedup
+  제거 / auto 경로 제거 / fallback 제거 모두 FAIL.
+
+  **브라우저 한계 (정직 기록)**: WASM 도달은 확인 (엔진이
+  `NoOrphanEdgesInRadius` 로 응답). 다만 orphan closed loop 를 브라우저에서
+  만들 수 없다 — 자동 면 합성의 earlier stage (4.5/4.6/4.9) 는 flag 와
+  무관하게 닫힌 cycle 을 즉시 면으로 만든다 (LOCKED #64 B-β-2 가 기록한
+  동작). z=100 케이스는 Rust 회귀가 직접 증명한다.
+
 ---
 
 ~~**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
 옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
 Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
 
-**남은 것** (본 ADR §5 Out of scope 유지): auto plane inference.
+**남은 것**: 없음. §5 의 4 항목 (multi-loop / 3D BOUNDARY / ContextMenu /
+auto plane inference) 모두 closure — multi-loop 은 ADR-016 Q2 정책 정합이
+선행이라 그 자리에 남는다 (§8 2026-07-17 multi-loop 항목).

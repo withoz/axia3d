@@ -11820,6 +11820,59 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-148 §5 — `boundaryFromPoint` with the plane inferred from the
+    /// free edges around the click.
+    ///
+    /// Boundary is used where there is no face yet, which is exactly where a
+    /// face-hit cannot say which plane to work on — so the click falls through
+    /// to Z=0 and a loop drawn at z=100 cannot be faced at all. This asks the
+    /// geometry instead.
+    ///
+    /// Not the heuristic 메타-원칙 #16 warns about: when the free edges in
+    /// range share one plane, that plane is the only answer consistent with
+    /// them. When they do not, it refuses rather than choosing (메타-원칙 #5).
+    ///
+    /// Transaction-wrapped like its explicit-plane sibling — it creates a face.
+    ///
+    /// Engine API: `axia_geo::operations::boundary::boundary_from_point_auto_plane`.
+    #[wasm_bindgen(js_name = "boundaryFromPointAutoPlane")]
+    pub fn boundary_from_point_auto_plane(
+        &mut self,
+        px: f64,
+        py: f64,
+        pz: f64,
+        search_radius_mm: f64,
+    ) -> Result<u32, JsValue> {
+        use axia_geo::operations::boundary;
+        use glam::DVec3;
+
+        self.scene.transactions.begin();
+        self.scene
+            .transactions
+            .set_before_snapshot(self.scene.scene_snapshot());
+
+        match boundary::boundary_from_point_auto_plane(
+            &mut self.scene.mesh,
+            DVec3::new(px, py, pz),
+            search_radius_mm,
+        ) {
+            Ok(face_id) => {
+                self.scene
+                    .transactions
+                    .set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                Ok(face_id.raw())
+            }
+            Err(err) => {
+                self.scene.transactions.cancel();
+                Err(JsValue::from_str(&format!(
+                    "boundaryFromPointAutoPlane: {}",
+                    err
+                )))
+            }
+        }
+    }
+
     /// ADR-148 §5 — 3D BOUNDARY: the faces of the closed shell enclosing a
     /// point.
     ///

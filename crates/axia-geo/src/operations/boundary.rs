@@ -328,6 +328,144 @@ fn polygon_inside_polygon(inner: &[(f64, f64)], outer: &[(f64, f64)]) -> bool {
     !inner.is_empty() && inner.iter().all(|&p| point_in_polygon_2d(p, outer))
 }
 
+/// ADR-148 §5 — plane inference errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InferPlaneError {
+    /// No orphan edges within the radius — nothing to infer from.
+    NoOrphanEdgesInRadius { search_radius_mm: f64 },
+    /// The nearby free edges are not planar (or are collinear / too few).
+    NotPlanar,
+    /// Free wires on two or more different planes are in range. This is the
+    /// ambiguous case, and it is deliberately an error: guessing which plane
+    /// the user meant is precisely the heuristic 메타-원칙 #16 forbids.
+    Ambiguous { plane_count: usize },
+}
+
+impl std::fmt::Display for InferPlaneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InferPlaneError::NoOrphanEdgesInRadius { search_radius_mm } => {
+                write!(f, "NoOrphanEdgesInRadius (radius {:.1}mm)", search_radius_mm)
+            }
+            InferPlaneError::NotPlanar => write!(f, "NotPlanar"),
+            InferPlaneError::Ambiguous { plane_count } => {
+                write!(f, "Ambiguous ({} planes in range)", plane_count)
+            }
+        }
+    }
+}
+
+/// ADR-148 §5 — infer the drawing plane from the free edges around a point.
+///
+/// Boundary is used where there is no face yet — which is exactly where a
+/// face-hit cannot tell the tool which plane to work on. Left to the usual
+/// cascade the click falls through to Z=0, so a loop drawn at z=100 (or an
+/// imported wire on a slanted plane) cannot be faced at all unless the sticky
+/// plane happens to still be right.
+///
+/// This is **not** the heuristic 메타-원칙 #16 warns about. When the free
+/// edges in range all lie in one plane, that plane is not a guess — it is the
+/// only answer consistent with the geometry. When they do not, we refuse and
+/// say why, rather than picking one (메타-원칙 #5: 명확하면 자동, 모호하면
+/// 명시).
+///
+/// Reuses `derive_free_wire_plane` (ADR-080 V-δ-α): BFS over free edges,
+/// best-fit plane, and its planarity gates — ≥3 vertices, non-collinear,
+/// scale-aware RMS.
+pub fn infer_plane_from_point(
+    mesh: &Mesh,
+    point: DVec3,
+    search_radius: f64,
+) -> Result<Plane, InferPlaneError> {
+    let radius_mm = if search_radius <= 0.0 {
+        DEFAULT_SEARCH_RADIUS_MM
+    } else {
+        search_radius
+    };
+    let near = collect_orphan_edges_in_radius(mesh, point, radius_mm);
+    if near.is_empty() {
+        return Err(InferPlaneError::NoOrphanEdgesInRadius {
+            search_radius_mm: radius_mm,
+        });
+    }
+
+    // One plane per connected wire: derive_free_wire_plane BFSes the whole
+    // component, so edges of the same wire produce the same answer. Distinct
+    // planes are what matter, not distinct edges.
+    let mut planes: Vec<Plane> = Vec::new();
+    for &(eid, _, _) in &near {
+        let surface = match crate::operations::offset::derive_free_wire_plane(mesh, eid) {
+            Ok(s) => s,
+            Err(_) => continue, // this wire is not planar — it just cannot vote
+        };
+        let crate::surfaces::AnalyticSurface::Plane { origin, normal, .. } = surface else {
+            continue;
+        };
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            continue;
+        }
+        let candidate = Plane {
+            normal: n,
+            dist: n.dot(origin),
+        };
+        if !planes.iter().any(|p| same_plane_within_eps(p, &candidate)) {
+            planes.push(candidate);
+        }
+    }
+
+    match planes.len() {
+        0 => Err(InferPlaneError::NotPlanar),
+        1 => Ok(planes.remove(0)),
+        n => Err(InferPlaneError::Ambiguous { plane_count: n }),
+    }
+}
+
+/// Two planes are the same if their normals are parallel (either direction —
+/// a wire has no front) and their offsets agree.
+fn same_plane_within_eps(a: &Plane, b: &Plane) -> bool {
+    let parallel = a.normal.dot(b.normal).abs() >= 1.0 - crate::plane::EPS_PLANE_NORMAL;
+    if !parallel {
+        return false;
+    }
+    // Compare offsets in a shared orientation.
+    let flip = if a.normal.dot(b.normal) < 0.0 { -1.0 } else { 1.0 };
+    (a.dist - flip * b.dist).abs() <= crate::plane::EPS_PLANE_OFFSET
+}
+
+/// ADR-148 §5 — `boundary_from_point`, with the plane worked out for you.
+///
+/// Same synthesis, same errors; the plane comes from `infer_plane_from_point`
+/// instead of the caller. For the tool this is the difference between "click
+/// inside the loop you drew" and "click inside the loop you drew, but only if
+/// it happens to be on the plane the app is currently thinking about".
+pub fn boundary_from_point_auto_plane(
+    mesh: &mut Mesh,
+    point: DVec3,
+    search_radius: f64,
+) -> Result<FaceId, BoundaryError> {
+    let plane = infer_plane_from_point(mesh, point, search_radius).map_err(|e| match e {
+        InferPlaneError::NoOrphanEdgesInRadius { search_radius_mm } => {
+            BoundaryError::NoOrphanEdgesInRadius { search_radius_mm }
+        }
+        // Both remaining cases mean "we will not choose for you". They surface
+        // as NoEnclosingCycle rather than a new user-facing variant: from the
+        // click's point of view nothing enclosing was resolved.
+        InferPlaneError::NotPlanar | InferPlaneError::Ambiguous { .. } => {
+            BoundaryError::NoEnclosingCycle
+        }
+    })?;
+
+    // Project onto the inferred plane: the click point came from a Z=0 ray or
+    // a face hit and will not sit exactly on it. absorb_boundary_input inside
+    // boundary_from_point handles small drift, but a plane at z=100 is not
+    // small drift — this is the whole point of inferring.
+    let signed = plane.normal.dot(point) - plane.dist;
+    let on_plane = point - plane.normal * signed;
+
+    boundary_from_point(mesh, on_plane, plane, search_radius)
+}
+
 /// ADR-148 §5 — 3D BOUNDARY errors.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShellError {
@@ -988,6 +1126,114 @@ mod tests {
             .iter()
             .filter_map(|q| mesh.add_face(q, MaterialId::new(0)).ok())
             .collect()
+    }
+
+    /// Square of orphan edges on an arbitrary Z plane.
+    fn add_square_at_z(mesh: &mut Mesh, z: f64, lo: f64, hi: f64) {
+        let a = mesh.add_vertex(DVec3::new(lo, lo, z));
+        let b = mesh.add_vertex(DVec3::new(hi, lo, z));
+        let c = mesh.add_vertex(DVec3::new(hi, hi, z));
+        let d = mesh.add_vertex(DVec3::new(lo, hi, z));
+        let _ = mesh.add_edge(a, b);
+        let _ = mesh.add_edge(b, c);
+        let _ = mesh.add_edge(c, d);
+        let _ = mesh.add_edge(d, a);
+    }
+
+    #[test]
+    fn adr148_infer_plane_finds_the_wire_plane_not_z0() {
+        // The case the tool cannot solve on its own: a loop at z=100 and no
+        // face to hit. Left to the usual cascade the click lands on Z=0.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+
+        let plane = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 100.0), 100.0)
+            .expect("a single planar wire is in range");
+        assert!(
+            plane.normal.dot(DVec3::Z).abs() > 0.999,
+            "wire is axis-aligned in Z, got normal {:?}",
+            plane.normal,
+        );
+        // dist is signed by the normal's direction; compare on the shared axis.
+        let z_of_plane = plane.dist / plane.normal.z;
+        assert!(
+            (z_of_plane - 100.0).abs() < 1e-6,
+            "inferred plane should be z=100, got z={}",
+            z_of_plane,
+        );
+    }
+
+    #[test]
+    fn adr148_infer_plane_refuses_when_two_planes_are_in_range() {
+        // Two loops on different planes, both within the radius. Choosing one
+        // would be the guess 메타-원칙 #16 forbids — so it is an error.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 50.0, 0.0, 10.0);
+
+        // `Plane` is not PartialEq, so match the error rather than the Result.
+        let result = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 25.0), 500.0);
+        match result {
+            Err(InferPlaneError::Ambiguous { plane_count }) => assert_eq!(plane_count, 2),
+            other => panic!("expected Ambiguous {{ plane_count: 2 }}, got {:?}", other.err()),
+        }
+    }
+
+    #[test]
+    fn adr148_infer_plane_two_wires_on_the_SAME_plane_is_not_ambiguous() {
+        // Two separate loops, one plane. Coplanar wires agree, so there is
+        // nothing to choose between — this must NOT be refused.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 100.0, 40.0, 50.0);
+
+        let plane = infer_plane_from_point(&mesh, DVec3::new(5.0, 5.0, 100.0), 500.0)
+            .expect("two coplanar wires agree on one plane");
+        let z_of_plane = plane.dist / plane.normal.z;
+        assert!((z_of_plane - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adr148_infer_plane_no_edges_in_range() {
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        let result = infer_plane_from_point(&mesh, DVec3::new(9000.0, 9000.0, 9000.0), 100.0);
+        assert!(matches!(
+            result,
+            Err(InferPlaneError::NoOrphanEdgesInRadius { .. }),
+        ));
+    }
+
+    #[test]
+    fn adr148_boundary_auto_plane_faces_a_loop_at_z100() {
+        // End to end: the click never mentions z=100, and the face still lands
+        // there. This is the whole point of §5.
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 100.0, 0.0, 10.0);
+
+        let face_id = boundary_from_point_auto_plane(&mut mesh, DVec3::new(5.0, 5.0, 100.0), 100.0)
+            .expect("should synthesize on the inferred plane");
+        let verts = mesh
+            .collect_loop_verts(mesh.faces[face_id].outer().start)
+            .expect("outer loop");
+        assert_eq!(verts.len(), 4);
+        for v in verts {
+            let z = mesh.verts[v].pos().z;
+            assert!((z - 100.0).abs() < 1e-6, "face vertex off the wire plane: z={}", z);
+        }
+    }
+
+    #[test]
+    fn adr148_boundary_auto_plane_refuses_the_ambiguous_case() {
+        let mut mesh = Mesh::new();
+        add_square_at_z(&mut mesh, 0.0, 0.0, 10.0);
+        add_square_at_z(&mut mesh, 50.0, 0.0, 10.0);
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+        let result = boundary_from_point_auto_plane(&mut mesh, DVec3::new(5.0, 5.0, 25.0), 500.0);
+        assert_eq!(result, Err(BoundaryError::NoEnclosingCycle));
+        let after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert_eq!(before, after, "a refusal must not leave a face behind");
     }
 
     #[test]
