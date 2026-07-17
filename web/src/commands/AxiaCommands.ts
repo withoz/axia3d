@@ -322,6 +322,12 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('mesh-repair',       'repair', '🩹 메시 수리',           'Repair', undefined, false, deps));
   cmds.push(action('synthesize-faces',  'repair', '면 합성',                'Synth',  undefined, false, deps));
   cmds.push(action('resynthesize-faces','repair', '경계 도구 (면 재합성)',    'Boundary', undefined, false, deps));
+  // ADR-148 β-4 — the point-localized BoundaryTool. It has answered Ctrl+B
+  // since it landed, but it was in no menu, no toolbar and no catalog, so the
+  // only way to reach it was to already know the key. Named for what it does
+  // rather than "경계 도구", which resynthesize-faces above already carries
+  // (LOCKED #64 B-γ named it that) — the two would collide on a 「경계」 search.
+  cmds.push(tool('tool-boundary', 'boundary', 'repair', '영역 클릭 → 면 (Boundary · BPOLY)', '영역면', 'Ctrl+B', false, undefined, deps));
   cmds.push(action('clash-detect',      'repair', '간섭 검사',              'Clash',  undefined, false, deps));
   cmds.push(action('clash-clear',       'repair', '간섭 표시 제거',          'Clear',  undefined, false, deps));
   cmds.push(action('reference-image',   'repair', '참조 이미지 추가',        'RefImg', undefined, false, deps));

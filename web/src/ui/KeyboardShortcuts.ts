@@ -396,6 +396,11 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
     if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
       toolManager.setTool('boundary');
+      // It set the tool and stopped there, so the status bar kept naming
+      // whatever came before — press Ctrl+B after a view change and it still
+      // read "평면도 (XY)". Every other tool key does all three.
+      syncToolbarHighlight('boundary');
+      updateToolLabel('boundary');
       return;
     }
 

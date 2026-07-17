@@ -2228,4 +2228,13 @@ export const EN: Record<string, string> = {
   'Freehand (자유선)': 'Freehand',
   '명령 입력줄 열기/닫기': 'Toggle command input',
   '명령 팔레트 (Ctrl+Shift+P 도 동일)': 'Command palette (Ctrl+Shift+P too)',
+
+  // ── batch 13c — BoundaryTool surfaced (ADR-148 β-4) ──
+  // The tool answered Ctrl+B since it landed but appeared in no menu, no
+  // catalog and no help sheet. Not named 「경계 도구」: resynthesize-faces
+  // already carries that (LOCKED #64 B-γ) and the two would collide.
+  '영역 클릭 → 면 (Boundary · BPOLY)': 'Click a region → face (Boundary · BPOLY)',
+  '📍 영역 클릭 → 면 (Boundary · BPOLY)': '📍 Click a region → face (Boundary · BPOLY)',
+  'Boundary (영역 클릭 → 면)': 'Boundary (click a region → face)',
+  '영역면': 'Region',
 };

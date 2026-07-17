@@ -112,6 +112,46 @@ describe('action wiring — every data-action reaches a handler', () => {
     ).toEqual([]);
   });
 
+  it('every registered tool is reachable from the UI', () => {
+    // The mirror of the test below. That one catches a catalog entry with no
+    // handler; this catches a handler nobody can invoke. BoundaryTool
+    // (ADR-148 β-4) shipped with an engine op, a WASM export, a bridge wrapper,
+    // a Ctrl+B binding and tests — and no menu item, no toolbar button and no
+    // catalog entry. It worked; you just had to already know it was there.
+    const tm = read('src/tools/ToolManagerRefactored.ts');
+    const registered = [...tm.matchAll(/tools\.set\('([^']+)'/g)].map((m) => m[1]);
+    expect(registered.length).toBeGreaterThan(30);
+
+    const html = read('index.html');
+    const domActions = new Set([...html.matchAll(/data-action="([^"]+)"/g)].map((m) => m[1]));
+    const domTools = new Set([...html.matchAll(/data-tool="([^"]+)"/g)].map((m) => m[1]));
+    const cmds = read('src/commands/AxiaCommands.ts');
+    const catalogTools = new Set(
+      [...cmds.matchAll(/tool\('[^']+'\s*,\s*'([^']+)'/g)].map((m) => m[1]),
+    );
+    const ks = read('src/ui/KeyboardShortcuts.ts');
+    // Both shapes: the keyMap/shiftMap tables, and direct setTool('x') calls
+    // like Ctrl+B — my first sweep only read the tables and reported boundary
+    // as unreachable when the key had worked all along.
+    const keyTools = new Set([
+      ...[...ks.matchAll(/'[A-Za-z0-9]':\s*'([a-z0-9-]+)'/g)].map((m) => m[1]),
+      ...[...ks.matchAll(/setTool\('([a-z0-9-]+)'\)/g)].map((m) => m[1]),
+    ]);
+
+    const unreachable = registered.filter(
+      (id) =>
+        !domTools.has(id) &&
+        !domActions.has(`tool-${id}`) &&
+        !catalogTools.has(id) &&
+        !keyTools.has(id),
+    );
+    expect(
+      unreachable,
+      'Registered tools with no menu item, toolbar button, catalog entry or ' +
+        'key binding — the code runs, the user cannot get to it.',
+    ).toEqual([]);
+  });
+
   it('no catalog command points at a handler that no longer exists', () => {
     // The palette lists what the catalog holds. view-shadow-pro and the two
     // solar-heatmap ids outlived their MenuBar cases (deleted 2026-05-16) and

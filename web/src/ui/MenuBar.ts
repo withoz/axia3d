@@ -436,6 +436,9 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-nurbs-edit': setActiveTool('nurbs-edit'); break; // ADR-233
 
       case 'tool-slice': setActiveTool('slice'); break;
+      // ADR-148 β-4 — the tool has answered Ctrl+B since it landed, but it had
+      // no menu item, so the only way to reach it was to already know.
+      case 'tool-boundary': setActiveTool('boundary'); break;
       case 'tool-move': setActiveTool('move'); break;
       case 'tool-copy': setActiveTool('copy'); break;
       case 'tool-rotate': setActiveTool('rotate'); break;
@@ -454,8 +457,10 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'subdivide': toolManager.executeAction('subdivide'); break;
       // Array — 선형/원형. tool-array-linear/radial = 인터랙티브 도구(2-click,
       // 개수 VCB) → setActiveTool. array-linear/radial = 일회성 prompt op →
-      // executeAction. tool-array는 레거시 linear alias.
-      case 'tool-array': toolManager.executeAction('array-linear'); break;
+      // executeAction.
+      // ('tool-array', a legacy alias for linear, is gone: no element carried
+      //  that id, no catalog entry named it, nothing dispatched it. A case with
+      //  no caller reads as a supported action to whoever greps for one.)
       case 'tool-array-linear': setActiveTool('array-linear'); break;
       case 'tool-array-radial': setActiveTool('array-radial'); break;
       case 'array-linear':

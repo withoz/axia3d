@@ -42,6 +42,8 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'O', description: 'Offset' },
       { key: 'E', description: 'Erase (지우기)' },
       { key: 'X', description: 'Split' },
+      // Bound since ADR-148 β-4, documented nowhere until now.
+      { key: 'Ctrl+B', description: 'Boundary (영역 클릭 → 면)' },
       { key: 'U', description: 'Measure Tool (2점 거리 / 3점 각도)' },
       { key: 'Space', description: 'Select 도구로 복귀' },
     ],

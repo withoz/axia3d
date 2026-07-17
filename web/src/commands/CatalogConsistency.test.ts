@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (187, after removing 3 ghost commands)', () => {
+  it('CommandCatalog count matches expected total (188, after -3 ghosts and +1 surfaced tool)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -102,7 +102,11 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // (shadow → ADR-106) but the catalog entries stayed, so the palette
     // listed three features that no longer exist — searching found them,
     // running them said "unknown command".
-    expect(count).toBe(187);
+    //
+    // 188: the mirror image of those three — tool-boundary (ADR-148 β-4) had
+    // a handler, a bridge, an engine op and a Ctrl+B binding, and no catalog
+    // entry, so the palette could not offer a feature that DID exist.
+    expect(count).toBe(188);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

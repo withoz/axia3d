@@ -2124,6 +2124,19 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     aliases: { bridge: 'resynthesizeOrphanFaces', wasm: 'resynthesizeOrphanFaces' },
     adrs: ['ADR-139'],
   },
+  {
+    // The point-localized counterpart to resynthesize-faces above: that one
+    // sweeps the whole mesh, this one takes the single region you click
+    // (AutoCAD BPOLY). It answered Ctrl+B from the day it landed but was in no
+    // menu, no toolbar and no catalog — reachable only by already knowing.
+    id: 'tool-boundary',
+    label: '영역 클릭 → 면 (Boundary · BPOLY)',
+    description: 'Boundary tool: click inside a region to synthesize its face.',
+    tier: 2,
+    surfaces: ['menu'],
+    aliases: { bridge: 'boundaryFromPoint', wasm: 'boundaryFromPoint' },
+    adrs: ['ADR-148', 'ADR-139'],
+  },
 ] as const;
 
 // ─── Lookup indices (built once at module load) ────────────────────
