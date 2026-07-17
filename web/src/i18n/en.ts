@@ -456,8 +456,13 @@ export const EN: Record<string, string> = {
   // ══════════════════════════════════════════════════════════════════════
   '언어 / Language': 'Language',
   '단위': 'Units',
-  '바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)':
-    'Changing this reloads the page (ADR-294)',
+  // The old hint said 'reloads the page' and stopped there. The reload
+  // discards the drawing (no autosave; beforeunload only disposes the
+  // viewport), and 'reloads' does not tell you that.
+  '바꾸면 화면을 다시 불러옵니다 — 저장하지 않은 작업은 사라집니다':
+    'Changing this reloads the page — unsaved work is lost',
+  '언어를 바꾸면 화면을 다시 불러옵니다.\n저장하지 않은 작업은 사라집니다. 계속할까요?':
+    'Changing the language reloads the page.\nUnsaved work will be lost. Continue?',
   '소수점 자릿수': 'Decimal places',
   '그리드 스냅': 'Grid snap',
   '스냅 간격': 'Snap spacing',

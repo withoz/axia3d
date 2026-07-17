@@ -291,7 +291,9 @@ async function main() {
 
   // 3. Initialize unit system & settings
   const units = new UnitSystem();
-  const settingsPanel = new SettingsPanel(units);
+  // bridge: switching the language reloads (ADR-294 D7) and the scene lives in
+  // memory only, so the panel asks before discarding a drawing.
+  const settingsPanel = new SettingsPanel(units, { bridge });
 
   // Settings button
   const settingsBtn = document.getElementById('settings-btn');

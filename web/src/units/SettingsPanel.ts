@@ -43,12 +43,25 @@ import {
   setAutoMaterialRecoveryMode,
 } from '../tools/AutoMaterialRecoverySettings';
 
+/**
+ * What the panel needs beyond units. Optional so existing callers and tests
+ * construct it unchanged (ADR-046 P31 #4).
+ */
+export interface SettingsPanelDeps {
+  /**
+   * Read-only stats — used to ask "is there work to lose?" before the language
+   * switch reloads the page. Structural rather than the WasmBridge type: the
+   * panel needs one number, not the engine.
+   */
+  bridge?: { getStats?: () => { verts: number } };
+}
+
 export class SettingsPanel {
   private panel: HTMLElement;
   private isOpen = false;
   private readonly _onMouseDown: (e: MouseEvent) => void;
 
-  constructor(private units: UnitSystem) {
+  constructor(private units: UnitSystem, private deps: SettingsPanelDeps = {}) {
     this.panel = this.createPanel();
     document.body.appendChild(this.panel);
 
@@ -87,6 +100,22 @@ export class SettingsPanel {
     this.isOpen = false;
   }
 
+  /**
+   * Is there anything on screen the reload would discard?
+   *
+   * Verts, not faces: four lines with no face yet are still work. Without a
+   * bridge (tests, legacy callers) the answer is "no" — that keeps the old
+   * behaviour rather than putting a confirm in front of a suite that never
+   * asked for one.
+   */
+  private hasUnsavedWork(): boolean {
+    try {
+      return (this.deps.bridge?.getStats?.().verts ?? 0) > 0;
+    } catch {
+      return false; // a broken stats call must not block the language switch
+    }
+  }
+
   private createPanel(): HTMLElement {
     const panel = document.createElement('div');
     panel.id = 'settings-panel';
@@ -96,7 +125,7 @@ export class SettingsPanel {
       <div class="sp-section">
         <label class="sp-label">${t('언어 / Language')}</label>
         <div class="sp-unit-btns" id="sp-locale-btns"></div>
-        <div class="sp-hint">${t('바꾸면 화면을 다시 불러옵니다 / Reloads the page (ADR-294)')}</div>
+        <div class="sp-hint">${t('바꾸면 화면을 다시 불러옵니다 — 저장하지 않은 작업은 사라집니다')}</div>
       </div>
 
       <div class="sp-divider"></div>
@@ -252,6 +281,16 @@ export class SettingsPanel {
       btn.classList.toggle('active', getLocale() === cfg.id);
       btn.addEventListener('click', () => {
         if (getLocale() === cfg.id) return;   // 같은 언어 클릭에 reload 하지 않는다
+        // D7 reloads, and the scene lives in memory only — no autosave, and
+        // beforeunload just disposes the viewport. So the reload throws the
+        // drawing away. D7 cited VS Code, which reloads too; the difference is
+        // that VS Code's files are on disk and ours are not. Ask first when
+        // there is something to lose.
+        if (this.hasUnsavedWork() && !confirm(
+          t('언어를 바꾸면 화면을 다시 불러옵니다.\n저장하지 않은 작업은 사라집니다. 계속할까요?'),
+        )) {
+          return;
+        }
         setLocale(cfg.id);
         location.reload();
       });

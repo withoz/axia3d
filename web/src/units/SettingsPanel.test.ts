@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
 import { UnitSystem } from './UnitSystem';
 import { getLocale, setLocale } from '../i18n';
@@ -232,6 +232,60 @@ describe('SettingsPanel', () => {
       btn('ko').click();
       expect(reloads).toBe(0);
       expect(getLocale()).toBe('ko');
+    });
+
+    // The comment above says the reload is destructive, and for a while that
+    // was all it was: a comment. There is no autosave, and beforeunload only
+    // disposes the viewport — so switching language mid-drawing lost the
+    // drawing, with no warning beyond a hint that said "reloads the page".
+    describe('it asks before discarding a drawing', () => {
+      /** Rebuild the panel with a bridge reporting `verts` on the canvas. */
+      const withWork = (verts: number) => {
+        document.body.innerHTML = '';
+        setLocale('ko');
+        return new SettingsPanel(units, { bridge: { getStats: () => ({ verts }) } });
+      };
+
+      afterEach(() => vi.restoreAllMocks());
+
+      it('confirms first, and reloads when the user accepts', () => {
+        const ask = vi.spyOn(window, 'confirm').mockReturnValue(true);
+        withWork(12);
+        btn('en').click();
+        expect(ask).toHaveBeenCalledOnce();
+        expect(getLocale()).toBe('en');
+        expect(reloads).toBe(1);
+      });
+
+      it('changes nothing when the user cancels', () => {
+        const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        withWork(12);
+        btn('en').click();
+        expect(ask).toHaveBeenCalledOnce();
+        // Both matter: a locale set without the reload would leave the app in
+        // the mixed state D7 exists to avoid, and on the next reload the
+        // language would change on its own.
+        expect(getLocale()).toBe('ko');
+        expect(reloads).toBe(0);
+      });
+
+      it('does not ask on an empty canvas — there is nothing to lose', () => {
+        const ask = vi.spyOn(window, 'confirm');
+        withWork(0);
+        btn('en').click();
+        expect(ask).not.toHaveBeenCalled();
+        expect(reloads).toBe(1);
+      });
+
+      it('does not ask when no bridge was injected (legacy callers, tests)', () => {
+        const ask = vi.spyOn(window, 'confirm');
+        document.body.innerHTML = '';
+        setLocale('ko');
+        new SettingsPanel(units);
+        btn('en').click();
+        expect(ask).not.toHaveBeenCalled();
+        expect(reloads).toBe(1);
+      });
     });
   });
 });
