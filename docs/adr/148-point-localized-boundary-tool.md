@@ -219,8 +219,11 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
 
 ## 5. Out of scope (별도 ADR)
 
-- **Multi-loop boundary** (ring with holes) — 본 ADR 은 single simple
-  closed cycle. Multi-loop ADR-016 Q2 정책 정합 별도.
+- ~~**Multi-loop boundary** (ring with holes) — 본 ADR 은 single simple
+  closed cycle. Multi-loop ADR-016 Q2 정책 정합 별도.~~ → **2026-07-17 landed**,
+  아래 §8 참조. ADR-016 Q2 는 multi-loop face 를 *쓰는 도구* (Boolean /
+  Offset) 의 제약이지 *만드는 것* 의 금지가 아니다 — `merge-as-hole` 이 이미
+  만든다. 새 정책 결정이 없으므로 새 ADR 이 아닌 본 로그로 기록.
 - **3D BOUNDARY** (closed shell from orphan faces) — ADR-139 §14 B-μ,
   별도 ADR
 - **Auto plane inference** (사용자 점만 클릭, plane 자동 추론) —
@@ -328,11 +331,45 @@ ADR-141 §3 Sprint 2 share +30 의 ~50% (ADR-147 자연 분담 +15).
   자체는 γ E2E (2/2) 가 이미 덮는다 — 브라우저에서는 자동 면 합성
   (LOCKED #76) 이 닫힌 loop 를 즉시 면으로 만들어 orphan edge 가 남지 않는다.
 
+- **2026-07-17 — Multi-loop (island → hole)** (사용자 결재: "multi-loop 진행").
+
+  De-risk 먼저 (메타-원칙 #6): 사각형 안 사각형, 링 영역 클릭 → 측정 결과
+  **outer=4 / inners=0**. 즉 single-loop 구현은 island 를 **덮어버리는**
+  solid face 를 만들고 있었다 (AutoCAD BPOLY 는 ring). 가설이 아니라 실측
+  결함. 그 de-risk 테스트가 지금은 (4, 1) 을 단언하는 회귀가 됐다.
+
+  알고리즘은 이미 **모든 cycle 을 추출** 하고 point-in-polygon 으로 걸러
+  smallest 를 고르고 있었다 — island 후보가 이미 손에 있었다는 뜻. 추가한
+  것은 (1) cycle 투영 1회 재사용 (outer 선택 ↔ island 검출 drift 차단),
+  (2) outer 안에 완전 포함 + 더 작은 cycle = hole 후보, (3) **nested 제외**
+  (다른 hole 안에 있으면 그건 한 단계 아래 ring 의 몫 — BPOLY "Outer"
+  island style), (4) holes 있으면 `add_face_with_holes` (없으면 기존
+  `add_face` 그대로). winding/normal 검증은 그 API 가 하므로 두 번째 경로를
+  만들지 않았다 (ADR-007 Invariant 2).
+
+  **ADR-016 Q2 정합**: Q2 는 multi-loop face 를 *쓰는* 도구 (Boolean /
+  Offset) 의 거부 정책이고 그건 불변. Push/Pull 은 ADR-191 (LOCKED #79) 로
+  이미 해제. 본 변경은 face 를 *만드는* 쪽이라 Q2 를 건드리지 않는다.
+
+  회귀 axia-geo +5 (ring → hole / island 클릭 시 island 만 / plain square
+  무회귀 / disjoint 2 islands → 2 holes / nested 는 우리 hole 아님). 뮤테이션
+  2/2 — island 검출 제거 시 ring 2건 FAIL, nested 필터 제거 시 nested 가
+  left:2 right:1 로 FAIL. **첫 뮤테이션은 CRLF 앵커 실패로 적용되지 않은 채
+  "통과" 했고, 그때의 초록은 아무것도 증명하지 못했다** — 다시 걸어서 확인.
+  axia-geo 2253 / axia-core 440 green.
+
+  **브라우저 시연은 불가** (정직 기록): 자동 면 합성의 earlier stage
+  (Step 4.5/4.6/4.9) 가 닫힌 loop 를 즉시 면으로 만들어 orphan edge 를 남기지
+  않는다 — flag (LOCKED #76 / ADR-139 B-β-2) 는 Step 4.95/4.99 만 gate 한다.
+  두 사각형을 그리면 faces=2 가 되어 Boundary 가 볼 orphan 이 없다. 실사용
+  trigger 는 STEP/IGES import 나 erase 로 face 만 사라진 mesh 처럼 orphan 이
+  실재하는 경우. 엔진 회귀가 authoritative.
+
 ---
 
 ~~**다음 trigger**: β-1 진입 결재 (Q1 → 옵션 (c) Hybrid 권장 / Q2 →
 옵션 (a) BoundaryTool 권장) 또는 Sprint 2 잔존 ADR-147 (Step 2
 Scenario B1) 진입.~~ — α 시점 기록. 두 권장안 모두 채택되어 landed.
 
-**남은 것** (본 ADR §5 Out of scope 유지): multi-loop (ADR-016 Q2 정책
-정합), 3D BOUNDARY (B-μ), auto plane inference.
+**남은 것** (본 ADR §5 Out of scope 유지): 3D BOUNDARY (B-μ),
+auto plane inference.
