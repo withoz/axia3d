@@ -152,6 +152,44 @@ describe('action wiring — every data-action reaches a handler', () => {
     ).toEqual([]);
   });
 
+  it('no palette command falls through to "unknown command"', () => {
+    // The palette runs dispatchMenuAction(id) and falls back to
+    // executeAction(id). dispatchMenuAction searches #menubar and #statusbar,
+    // plus the three context-menu ids on its allowlist. Anything else that is
+    // in the catalog but in none of those places is offered, searchable, and
+    // dead on execute — the same failure as the three ghost commands, arrived
+    // at from the other side.
+    //
+    // Measured when this landed: group-edit / group-hide / group-lock (fixed
+    // by the allowlist — they read the selection, which survives opening the
+    // palette) and snap-override (removed from CommandCatalog: hover-only).
+    const cmds = read('src/commands/AxiaCommands.ts');
+    const actionIds = [...cmds.matchAll(/\baction\('([^']+)'/g)].map((m) => m[1]);
+    expect(actionIds.length).toBeGreaterThan(100);
+    // action(..., deps, () => …) runs its own closure and needs no dispatch.
+    const custom = new Set(
+      [...cmds.matchAll(/action\('([^']+)'[^\n]*?,\s*\(\)\s*=>/g)].map((m) => m[1]),
+    );
+
+    const menubar = idsInContainer('menubar');
+    const statusbar = idsInContainer('statusbar');
+    const main = read('src/main.ts');
+    const allowMatch = /CONTEXT_SELECTION_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(main);
+    expect(allowMatch, 'CONTEXT_SELECTION_ACTIONS not found in main.ts').toBeTruthy();
+    const allowed = [...allowMatch![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    expect(allowed.length).toBeGreaterThan(0);
+
+    const reachable = new Set([...menubar, ...statusbar, ...allowed, ...DISPATCH]);
+    const stranded = actionIds.filter((id) => !custom.has(id) && !reachable.has(id));
+    expect(
+      stranded,
+      'Catalog commands the palette cannot execute — they will report ' +
+        '"unknown command". Wire the id, add it to CONTEXT_SELECTION_ACTIONS ' +
+        '(only if it reads the selection, not the right-click position), or ' +
+        'drop it from CommandCatalog.',
+    ).toEqual([]);
+  });
+
   it('no catalog command points at a handler that no longer exists', () => {
     // The palette lists what the catalog holds. view-shadow-pro and the two
     // solar-heatmap ids outlived their MenuBar cases (deleted 2026-05-16) and

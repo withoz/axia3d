@@ -114,18 +114,34 @@ async function checkWasmFreshness(): Promise<void> {
  * `action()` ids have no executeAction branch, so from the Explorer they did
  * nothing at all — and were recorded as successes.
  */
+/**
+ * Context-menu ids the palette may fire.
+ *
+ * Not the whole context menu. Adding `#context-menu` to the query below would
+ * re-route 13 ids that currently reach executeAction (merge-faces,
+ * constrain-*, flip-faces …) through ContextMenu's switch instead — a routing
+ * change nobody asked for. These three are here because measuring them showed
+ * they read `selection.getSelectedFaces()`, not the right-click position, and
+ * a selection survives opening the palette.
+ *
+ * snap-override stays out: it is a `ctx-submenu-trigger` whose own handler is
+ * `case 'snap-override': return; // hover로 처리, 클릭 무시`. Firing it from
+ * the palette would be a silent no-op, which is worse than not offering it.
+ */
+const CONTEXT_SELECTION_ACTIONS = new Set(['group-edit', 'group-hide', 'group-lock']);
+
 const dispatchMenuAction = (id: string): boolean => {
   // #statusbar too: osnap / grid / edge / axis / help / rename are F-key
   // buttons down there, handled by StatusBar.ts — they exist in neither
   // #menubar nor executeAction, so from the palette they fell through both
   // hops and produced "unknown command". Measured in the wiring audit.
-  //
-  // Still NOT the context menu: those ids (group-edit / snap-override …)
-  // depend on what is selected when you right-click, so firing them from a
-  // palette has nothing to act on.
-  const item = document.querySelector<HTMLElement>(
-    `#menubar [data-action="${id}"], #statusbar [data-action="${id}"]`,
-  );
+  const item =
+    document.querySelector<HTMLElement>(
+      `#menubar [data-action="${id}"], #statusbar [data-action="${id}"]`,
+    ) ??
+    (CONTEXT_SELECTION_ACTIONS.has(id)
+      ? document.querySelector<HTMLElement>(`#context-menu [data-action="${id}"]`)
+      : null);
   if (!item) return false;
   item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   return true;

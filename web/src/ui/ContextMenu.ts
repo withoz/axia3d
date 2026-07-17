@@ -168,6 +168,28 @@ export function initContextMenu(deps: ContextMenuDeps): void {
     ctxMenu.classList.add('visible');
   });
 
+  /**
+   * The group id of the current selection, or undefined with a reason shown.
+   *
+   * group-edit / group-lock / group-hide each re-derived this and each said
+   * nothing when it came up empty. Silent was survivable from the right-click
+   * menu, which hides those items unless the selection is in a group — but the
+   * Command Palette shows every command, so from there they looked broken.
+   */
+  const selectedGroupId = (): number | undefined => {
+    const faces = toolManager.selection.getSelectedFaces();
+    if (faces.length === 0) {
+      Toast.info(t('그룹 안의 면을 먼저 선택하세요'));
+      return undefined;
+    }
+    const gid = toolManager.selection.getGroupId(faces[0]);
+    if (gid === undefined) {
+      Toast.info(t('선택한 면은 그룹에 속해 있지 않습니다'));
+      return undefined;
+    }
+    return gid;
+  };
+
   // 메뉴 아이템 클릭
   ctxMenu.addEventListener('click', (e) => {
     const item = (e.target as HTMLElement).closest('.ctx-item') as HTMLElement;
@@ -456,30 +478,21 @@ export function initContextMenu(deps: ContextMenuDeps): void {
       case 'group': toolManager.executeAction('group'); break;
       case 'ungroup': toolManager.executeAction('ungroup'); break;
       case 'group-edit': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);
-        }
+        const gid = selectedGroupId();
+        if (gid !== undefined) toolManager.selection.enterGroupEdit(gid);
         break;
       }
       case 'make-component': toolManager.executeAction('make-component'); break;
       case 'group-lock': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) bridge.toggleGroupLock(gid);
-        }
+        const gid = selectedGroupId();
+        if (gid !== undefined) bridge.toggleGroupLock(gid);
         break;
       }
       case 'group-hide': {
-        const faces = toolManager.selection.getSelectedFaces();
-        if (faces.length > 0) {
-          const gid = toolManager.selection.getGroupId(faces[0]);
-          if (gid !== undefined) {
-            bridge.toggleGroupVisibility(gid);
-            toolManager.syncMesh();
-          }
+        const gid = selectedGroupId();
+        if (gid !== undefined) {
+          bridge.toggleGroupVisibility(gid);
+          toolManager.syncMesh();
         }
         break;
       }

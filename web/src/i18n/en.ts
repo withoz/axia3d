@@ -2237,4 +2237,10 @@ export const EN: Record<string, string> = {
   '📍 영역 클릭 → 면 (Boundary · BPOLY)': '📍 Click a region → face (Boundary · BPOLY)',
   'Boundary (영역 클릭 → 면)': 'Boundary (click a region → face)',
   '영역면': 'Region',
+
+  // ── batch 13d — group-* stopped failing silently ──
+  // The right-click menu hides these unless the selection is in a group, so
+  // saying nothing was survivable there. The palette shows every command.
+  '그룹 안의 면을 먼저 선택하세요': 'Select a face inside a group first',
+  '선택한 면은 그룹에 속해 있지 않습니다': 'The selected face is not in a group',
 };
