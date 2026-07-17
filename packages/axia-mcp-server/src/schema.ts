@@ -26,6 +26,26 @@ export const EdgeId = OwnerId.describe('Owner ID — EdgeId (Pick→Promote sema
 export const VertexId = OwnerId.describe('Owner ID — VertexId (semantic vertex identifier)');
 export const GroupId = OwnerId.describe('Owner ID — GroupId (semantic group identifier)');
 
+/**
+ * ADR-050 — material-library reference (u32). Deliberately NOT an OwnerId: a
+ * material is a data-layer reference, not a geometry owner, so it does not
+ * carry the P26.3 sentinel. `0` is the FORM_MATERIAL sentinel (no material —
+ * i.e. a Shape, ADR-050 P-5e-β), so a real Xia needs `material_id >= 1`.
+ */
+export const MaterialId = z
+  .number()
+  .int('Material IDs are integer material-library references.')
+  .min(
+    1,
+    'material_id 0 is the FORM_MATERIAL sentinel (no material) — promoting to ' +
+      'a Xia requires a real material (ADR-050 P-5e-β).',
+  )
+  .max(0xffff_ffff, 'Material IDs are u32 — max 4294967295.')
+  .describe(
+    'Material-library reference (u32, ADR-050) assigned on promotion. Not a ' +
+      'geometry ID.',
+  );
+
 /** 3D point in millimetres (engine native unit). */
 export const Vec3 = z.tuple([z.number(), z.number(), z.number()]).describe(
   '3D point [x, y, z] in millimetres — engine native unit. Cardinal-plane ' +

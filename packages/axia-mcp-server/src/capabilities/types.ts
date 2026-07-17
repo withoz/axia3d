@@ -56,6 +56,14 @@ export interface EngineInstance {
   ): number;
   /** ADR-079 W-1-β — surface-native solid extrusion (replaces legacy push_pull). */
   create_solid_extrude(face_id_raw: number, dist: number): boolean;
+  /**
+   * ADR-050 P-4 — promote a form-layer Shape to a property-layer Xia by
+   * assigning a material. Returns the new XiaId. THROWS (Rust
+   * `Result<u32, JsValue>`) when the four-condition validation fails —
+   * no geometry / invalid material / zero volume / zero dimension / not
+   * watertight / not manifold. (WASM js_name "promoteShapeToXia".)
+   */
+  promoteShapeToXia(shapeId: number, materialId: number): number;
   exportSnapshotStrict(): Uint8Array;
 
   // Tier 3 — destructive. Names verified against the generated

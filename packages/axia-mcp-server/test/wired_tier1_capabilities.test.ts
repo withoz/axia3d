@@ -12,6 +12,7 @@ function mockEngine(overrides: Partial<EngineInstance> = {}): EngineInstance {
     draw_circle_as_shape: () => 2,
     draw_line_as_shape: () => 3,
     create_solid_extrude: () => true,
+    promoteShapeToXia: () => 100,
     exportSnapshotStrict: () => new Uint8Array(),
     allXiaIds: () => new Uint32Array(),
     sceneSummary: () => '{}',
@@ -137,6 +138,71 @@ describe('create_group (Tier 1, default)', () => {
       dispatch(
         'create_group',
         { name: '', face_ids: [1] },
+        { engine: mockEngine(), versions: VERSIONS },
+      ),
+    ).rejects.toThrow(CapabilityInputError);
+  });
+});
+
+describe('create_xia (Tier 1, default) — ADR-050 Shape→Xia promotion', () => {
+  it('promotes a shape with a material, returns the new xia_id', async () => {
+    let captured: { shape: number; material: number } | null = null;
+    const engine = mockEngine({
+      promoteShapeToXia: (shape, material) => {
+        captured = { shape, material };
+        return 77;
+      },
+    });
+    const result = await dispatch(
+      'create_xia',
+      { shape_id: 3, material_id: 5 },
+      { engine, versions: VERSIONS },
+    );
+    expect(captured).toEqual({ shape: 3, material: 5 });
+    expect(result.output).toEqual({ ok: true, xia_id: 77 });
+  });
+
+  it('surfaces the engine reason on a four-condition failure (throw → ok:false)', async () => {
+    // promoteShapeToXia throws on failure (ADR-050 P-2-c strict). The handler
+    // must turn that into a structured negative result, not let it escape as a
+    // raw dispatcher error — the agent needs to know *why*.
+    const engine = mockEngine({
+      promoteShapeToXia: () => {
+        throw new Error('promoteShapeToXia: Zero volume');
+      },
+    });
+    const result = await dispatch(
+      'create_xia',
+      { shape_id: 3, material_id: 5 },
+      { engine, versions: VERSIONS },
+    );
+    expect(result.output).toEqual({
+      ok: false,
+      error: 'promoteShapeToXia: Zero volume',
+    });
+  });
+
+  it('rejects material_id 0 (FORM_MATERIAL sentinel — that is a Shape)', async () => {
+    // Caught at the schema, before the engine is touched: a Xia needs a real
+    // material, and 0 means "no material" (ADR-050 P-5e-β).
+    let touched = false;
+    const engine = mockEngine({
+      promoteShapeToXia: () => {
+        touched = true;
+        return 1;
+      },
+    });
+    await expect(
+      dispatch('create_xia', { shape_id: 3, material_id: 0 }, { engine, versions: VERSIONS }),
+    ).rejects.toThrow(CapabilityInputError);
+    expect(touched, 'the engine must not be called on invalid input').toBe(false);
+  });
+
+  it('rejects a negative shape_id (owner IDs are non-negative)', async () => {
+    await expect(
+      dispatch(
+        'create_xia',
+        { shape_id: -1, material_id: 5 },
         { engine: mockEngine(), versions: VERSIONS },
       ),
     ).rejects.toThrow(CapabilityInputError);

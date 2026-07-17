@@ -22,6 +22,7 @@ import { getEdgeInfoCapability } from './get_edge_info.js';
 import { getSchemaVersionCapability } from './get_schema_version.js';
 import { getXiaGeometryStateCapability } from './get_xia_geometry_state.js';
 import { drawPolylineCapability } from './draw_polyline.js';
+import { createXiaCapability } from './create_xia.js';
 import { createGroupCapability } from './create_group.js';
 import { rotateXiaCapability } from './rotate_xia.js';
 import { scaleXiaCapability } from './scale_xia.js';
@@ -48,6 +49,7 @@ export const ALL_CAPABILITY_HANDLERS: ReadonlyArray<CapabilityHandler<any, any>>
   drawCircleCapability,
   drawLineCapability,
   drawPolylineCapability,
+  createXiaCapability,
   createGroupCapability,
   exportAxiaCapability,
   // Tier 2 — modificative
