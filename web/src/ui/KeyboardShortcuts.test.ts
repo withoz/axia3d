@@ -288,6 +288,32 @@ describe('KeyboardShortcuts', () => {
       fireKey('ArrowDown');
       expect(deps.toolManager.setAxisLock).toHaveBeenCalledWith(null);
     });
+
+    it.each(['input', 'textarea', 'select'])(
+      'an arrow key typed in a <%s> does not touch the axis lock',
+      (tag) => {
+        // This listener guards with isTypingInInput. Its twin in ToolManager
+        // had no guard at all and called preventDefault(), so ArrowLeft in the
+        // VCB locked Z and swallowed the caret — verified in the live app
+        // before the fix.
+        const field = document.createElement(tag);
+        document.body.appendChild(field);
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+        expect(deps.toolManager.setAxisLock).not.toHaveBeenCalled();
+        field.remove();
+      },
+    );
+
+    it('a view key typed in a <textarea> does not move the camera', () => {
+      // The view listener guarded `instanceof HTMLInputElement` while the main
+      // listener in the same file used the full check — the two disagreed about
+      // what "typing" means, and t/b/f/k are bare letters.
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true }));
+      expect(deps.viewport.setViewMode).not.toHaveBeenCalled();
+      ta.remove();
+    });
   });
 
   describe('Escape key', () => {

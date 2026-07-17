@@ -84,6 +84,7 @@ import { TorusTool } from '../primitives/TorusTool';
 import { BoxTool } from './BoxTool';
 import { BoundaryTool } from './BoundaryTool';  // ADR-148 β-4
 import { SliceTool } from './SliceTool';
+import { isTypingInInput } from '../utils/isTypingInInput';
 import {
   mergeFaces, mergeFacesGeometric, mergeFacesForce,
   mergeXiaCoplanar, mergeAsHole,
@@ -4603,7 +4604,7 @@ export class ToolManager {
     // ═══ CAPTURE PHASE: Tab/Enter선점 (기본 포커스 이동 방지) ═══
     document.addEventListener('keydown', (e) => {
       // VCB(cmd-input)에 포커스 → VCB 핸들러가 Enter/Tab 처리하도록 통과시킴
-      if (e.target instanceof HTMLInputElement) return;
+      if (isTypingInInput(e.target)) return;
 
       // Tab/Enter: 도구 내부 제어 (숫자 입력 중일 때)
       // 이 핸들러는 가장 우선순위가 높음 (캡처 단계)
@@ -4623,6 +4624,14 @@ export class ToolManager {
 
     // ═══ BUBBLE PHASE: 일반 키보드 이벤트 ═══
     document.addEventListener('keydown', (e) => {
+      // This listener had no guard at all, and it calls preventDefault(): with
+      // a text field focused, ArrowLeft set the axis lock to Z and swallowed
+      // the caret movement. It also forwards every key to the active tool's
+      // onKeyDown, so a tool saw the characters being typed into the VCB.
+      // Measured in the live app: focus #cmd-input, press ArrowLeft →
+      // axisLock 'z'.
+      if (isTypingInInput(e.target)) return;
+
       // Arrow keys for axis lock
       if (e.key === 'ArrowRight') {
         this.setAxisLock('x');

@@ -43,6 +43,7 @@ import { initContextMenu } from './ui/ContextMenu';
 import { loadInitialScene } from './ui/InitialScene';
 import { initXiaInspector } from './ui/XiaInspector';
 import { debugLog } from './utils/debug';
+import { isTypingInInput } from './utils/isTypingInInput';
 import { Toast } from './ui/Toast';
 import { getConsolePanel } from './ui/ConsolePanel';
 import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
@@ -895,7 +896,7 @@ async function main() {
 
     // 키보드 O → Component Panel 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if (e.key === 'o' || e.key === 'O') {
         if (!e.ctrlKey && !e.altKey && !e.shiftKey) {
           componentPanel.toggle();
@@ -924,7 +925,7 @@ async function main() {
 
     // 키보드 J → Constraint Panel 토글 ('K'는 Inference Lock에서 사용 중)
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         constraintPanel.toggle();
       }
@@ -941,7 +942,7 @@ async function main() {
 
     // 키보드 Shift+H → History Panel 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'h' || e.key === 'H') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         historyPanel.toggle();
       }
@@ -1132,7 +1133,7 @@ async function main() {
 
     // Shift+J → 인디케이터 토글
     window.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (isTypingInInput(e.target)) return;
       if ((e.key === 'j' || e.key === 'J') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         constraintVisual.toggle();
       }

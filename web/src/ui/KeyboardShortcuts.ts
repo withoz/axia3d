@@ -13,6 +13,7 @@ import { Toast } from './Toast';
 import { toggleShortcutHelp, closeShortcutHelpIfOpen } from './ShortcutHelpModal';
 import { makeFloatingDraggable } from './makeFloatingDraggable';
 import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface KeyboardShortcutsDeps {
   toolManager: ToolManager;
@@ -85,17 +86,9 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
   };
 
   // ── 입력 요소 포커스 가드 (텍스트 입력 중 단축키 차단) ──
-  const isTypingInInput = (target: EventTarget | null): boolean => {
-    const el = target as HTMLElement | null;
-    if (!el) return false;
-    const tag = el.tagName;
-    return (
-      tag === 'INPUT' ||
-      tag === 'TEXTAREA' ||
-      tag === 'SELECT' ||
-      (el as HTMLElement).isContentEditable === true
-    );
-  };
+  // Moved to utils/isTypingInInput — this was the only complete version of a
+  // check six other listeners were each doing worse, and being local is why
+  // they could not share it.
 
   // ── Main keyboard shortcuts (Section 5) ──
   window.addEventListener('keydown', (e) => {
@@ -557,7 +550,11 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
 
     // ── 키보드 단축키: AutoCAD 스타일 + Blender 넘패드 ──
     window.addEventListener('keydown', (e) => {
-      if (e.target instanceof HTMLInputElement) return;
+      // Was `instanceof HTMLInputElement` while the main listener 400 lines up
+      // used the full check — the two listeners in this one file disagreed
+      // about what "typing" means. t / b / f / k are bare letters, so the gap
+      // was real for anything that is not an <input>.
+      if (isTypingInInput(e.target)) return;
 
       // VCB 활성 도구에서는 넘패드도 숫자 입력으로 사용 (뷰 전환 차단)
       const currentTool = toolManager.currentTool;

@@ -8,6 +8,7 @@
 import { Viewport } from '../viewport/Viewport';
 import type { WasmBridge } from '../bridge/WasmBridge';
 import { t } from '../i18n';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface StylePreset {
   name: string;
@@ -76,7 +77,7 @@ export function initStylePanel(deps: StylePanelDeps): void {
 
   // Escape to close
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (isTypingInInput(e.target)) return;
     if (e.key === 'Escape' && stylePanel?.classList.contains('open')) {
       stylePanel.classList.remove('open');
       e.stopPropagation();

@@ -13,6 +13,7 @@ import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import { t } from '../i18n';
 import { attemptMaterialRemovalDemote } from '../citizenship/MaterialRemovalDemote';
+import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface XiaInspectorDeps {
   bridge: WasmBridge;
@@ -562,7 +563,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
 
   // 키보드 I → Inspector 토글
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (isTypingInInput(e.target)) return;
     // Plain I only. This listener read no modifiers, so Alt+I opened the
     // Inspector on top of KeyboardShortcuts' Alt+I intersection-snap toggle —
     // one keystroke, two unrelated things. Every Alt+<letter> is a snap filter

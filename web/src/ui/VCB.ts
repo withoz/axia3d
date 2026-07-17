@@ -8,6 +8,7 @@
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { UnitSystem } from '../units/UnitSystem';
 import { debugLog, debugWarn } from '../utils/debug';
+import { isTypingInInput } from '../utils/isTypingInInput';
 import { t } from '../i18n';
 
 export interface VCBDeps {
@@ -224,7 +225,7 @@ export function initVCB(deps: VCBDeps): void {
   // 숫자키 자동 VCB 활성화 (캔버스에서 숫자/마이너스/소수점 입력 시)
   window.addEventListener('keydown', (e) => {
     // 이미 입력 필드에 포커스 → 무시
-    if (e.target instanceof HTMLInputElement) return;
+    if (isTypingInInput(e.target)) return;
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
     // 숫자, 마이너스, 소수점 키 감지 (넘패드 포함)
