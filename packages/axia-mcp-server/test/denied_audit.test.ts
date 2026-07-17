@@ -41,10 +41,12 @@ describe('denied calls are audited (intrusion signal)', () => {
   // handler used to throw with NO audit entry, behind a comment claiming the
   // branch was "unreachable: evaluatePolicy returns unknown=false above".
   // evaluatePolicy checks tiers.ts membership — what is declared — and says
-  // nothing about whether a handler exists. Measured: 32 declared, 22 wired.
-  // Four of the ten gaps (create_xia, export_obj, export_stl, export_step) are
-  // Tier 1, so they are reachable on the DEFAULT config: an agent calling an
-  // advertised-but-absent capability left no trace at all.
+  // nothing about whether a handler exists. Measured: 32 declared, 26 wired.
+  // Of the remaining six gaps, export_obj / export_stl / export_step are Tier 1
+  // (reachable on the DEFAULT config), so an agent calling an advertised-but-
+  // absent capability left no trace at all. (create_xia closed this gap for its
+  // own id — 2026-07-18; the export trio still needs an engine-side serializer,
+  // export_step is an ADR-035 P20.B non-goal.)
   it('declared-but-unimplemented → denied entry, not a silent throw', async () => {
     const sink = new MemoryAuditSink();
     await expect(

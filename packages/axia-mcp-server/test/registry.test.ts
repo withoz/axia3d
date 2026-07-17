@@ -31,6 +31,7 @@ describe('capability handler registry', () => {
       'boolean_subtract',
       'boolean_union',
       'create_group',
+      'create_xia',
       'delete_group',
       'draw_circle',
       'draw_line',

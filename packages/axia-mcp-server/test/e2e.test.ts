@@ -25,7 +25,7 @@ describe.skipIf(!wasmBuilt)('ADR-041 — end-to-end with real WASM', () => {
   it('draw_rect → real engine returns positive ShapeId', async () => {
     // ADR-050 P-5e-α migration — draw_rect now creates a form-layer
     // Shape (not a Xia). Returned ID is a ShapeId; promotion to Xia
-    // (via `promote_shape_to_xia` capability) is a separate Tier 2 op.
+    // is the `create_xia` capability (Tier 1, wired 2026-07-18).
     const engine = await loadEngine();
     const result = await dispatch(
       'draw_rect',
@@ -41,6 +41,43 @@ describe.skipIf(!wasmBuilt)('ADR-041 — end-to-end with real WASM', () => {
     const out = result.output as { shape_id: number };
     expect(out.shape_id).toBeGreaterThan(0);
     expect(Number.isInteger(out.shape_id)).toBe(true);
+  });
+
+  it('create_xia → real engine promotion path, structured (not a crash)', async () => {
+    // The gold standard for a wiring capability: drive the REAL node engine,
+    // not a mock. draw_rect gives a form-layer Shape; create_xia asks the
+    // engine to promote it. A flat rect is a zero-volume sheet, so the ADR-050
+    // four-condition gate refuses it — and the point is that the refusal comes
+    // back structured ({ ok:false, error }) from the real engine and does not
+    // surface as a dispatcher crash. That the call reached the handler at all
+    // (rather than "unknown" / "declared but not implemented", which reject) is
+    // proven by getting a well-formed { ok } back instead of a throw.
+    //
+    // No audit assertion here: ADR-041 P26.7 does not audit Tier 0/1 successes
+    // (anti-flooding), and a handler that returns { ok:false } executed
+    // normally from the dispatcher's view — so nothing is recorded. Tier 2/3
+    // and denials are where the audit e2e lives (see push_pull below).
+    const engine = await loadEngine();
+    const rect = await dispatch(
+      'draw_rect',
+      { center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 100, height: 50 },
+      { engine, versions: VERSIONS },
+    );
+    const shapeId = (rect.output as { shape_id: number }).shape_id;
+    expect(shapeId).toBeGreaterThan(0);
+
+    const result = await dispatch(
+      'create_xia',
+      { shape_id: shapeId, material_id: 1 },
+      { engine, client: 'e2e', versions: VERSIONS },
+    );
+    const out = result.output as { ok: boolean; xia_id?: number; error?: string };
+    expect(typeof out.ok).toBe('boolean');
+    if (out.ok) {
+      expect(out.xia_id).toBeGreaterThan(0);
+    } else {
+      expect(out.error, 'a refusal must carry the engine reason').toBeTruthy();
+    }
   });
 
   it('mcp_latency_budget — Tier 1 draw_rect e2e under 33ms median', async () => {
