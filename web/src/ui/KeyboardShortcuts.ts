@@ -30,6 +30,32 @@ export interface KeyboardShortcutsDeps {
 
 // Tool/view display names live in the shared SSOT (./toolDisplayNames).
 
+/**
+ * Shift+<key> tool bindings — the SSOT for BOTH listeners in this file.
+ *
+ * It lived inside the main listener, so the view-mode listener could not see
+ * it and guarded only `!ctrlKey && !altKey`. Shift+F therefore matched both:
+ * freehand here, Front view there. One keystroke picked a tool AND moved the
+ * camera, with the status bar naming the view while the tool was what changed.
+ * The view listener now consults this map and steps aside.
+ *
+ * Shift+K is deliberately absent: it is Back view, which the help sheet
+ * advertises as 'F / Shift+K'. Absence from this map is what keeps it working.
+ *
+ * Matches AxiaCommands (the identity SSOT): ⇧L / ⇧F / ⇧C.
+ */
+const SHIFT_TOOL_MAP: Record<string, string> = {
+  'L': 'polyline',
+  'F': 'freehand',
+  'C': 'centerline',
+};
+
+/** Does Shift+<key> belong to a tool? Case-insensitive; the view listener
+ *  lowercases before comparing, this map is keyed by the shifted character. */
+function isShiftToolKey(key: string): boolean {
+  return SHIFT_TOOL_MAP[key.toUpperCase()] !== undefined;
+}
+
 export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
   const { toolManager, viewport, toolbar, viewModeBar, saveProject, openProject,
           saveAsProject, newProject } = deps;
@@ -442,13 +468,8 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         syncToolbarHighlight('select');
       }
     } else if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-      // Shift 조합 단축키
-      const shiftMap: Record<string, string> = {
-        'L': 'polyline',
-        'F': 'freehand',
-        'C': 'centerline',
-      };
-      const shiftTool = shiftMap[e.key];
+      // Shift 조합 단축키 — SHIFT_TOOL_MAP 이 SSOT (뷰 리스너도 이걸 본다)
+      const shiftTool = SHIFT_TOOL_MAP[e.key];
       if (shiftTool) {
         toolManager.setTool(shiftTool);
         toolbar.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
@@ -471,8 +492,12 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
         'g': 'polygon', 'G': 'polygon',
         'c': 'circle', 'C': 'circle',
         'a': 'arc', 'A': 'arc',
-        // Toolbar Phase 4 — Pie/Sector (I = free key, matches screenshot).
-        'i': 'pie', 'I': 'pie',
+        // I is NOT here: it was claimed as "a free key" for Pie/Sector, but
+        // XiaInspector had bound it to the Inspector years earlier, so pressing
+        // I picked the Pie tool AND opened the Inspector. Both SSOTs said Pie
+        // (catalog + the menu printing `I` next to 부채꼴) and the help sheet
+        // said Inspector; the user's call (2026-07-16) is Inspector. Pie keeps
+        // its menu entry and the palette.
         'v': 'pushpull', 'V': 'pushpull',   // ADR-246: P↔V swap, Extrude/Cut (was 'p')
         'h': 'sphere', 'H': 'sphere',
         'y': 'cylinder', 'Y': 'cylinder',
@@ -551,6 +576,10 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       // AutoCAD / 3ds Max 스타일 단축키 (Ctrl 없이)
       if (!e.ctrlKey && !e.altKey) {
         const key = e.key.toLowerCase();
+        // Shift+F is freehand, not Front — this guard was missing, so it was
+        // both. Shift+K stays Back view (not in SHIFT_TOOL_MAP), which is what
+        // the help sheet promises with 'F / Shift+K'.
+        if (e.shiftKey && isShiftToolKey(key)) return;
         if (key === 't') mode = 'top';
         else if (key === 'b') mode = 'bottom';
         else if (key === 'f') mode = 'front';

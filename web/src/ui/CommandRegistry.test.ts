@@ -180,14 +180,23 @@ describe('CommandRegistry', () => {
   });
 
   describe('keyboard shortcut', () => {
-    it('backtick toggles command input', () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', bubbles: true }));
+    it('Ctrl+` toggles command input', () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', ctrlKey: true, bubbles: true }));
       expect(deps.commandInput.toggle).toHaveBeenCalled();
     });
 
-    it('Ctrl+K toggles command input', () => {
+    // These two used to assert the opposite, and that is how the collision
+    // survived: the command input answered a bare ` (which toggles the grid)
+    // and Ctrl+K (which opens the palette), so one keystroke did two things.
+    // The user's call (2026-07-16): ` stays the grid, Ctrl+K stays the palette.
+    it('a bare backtick does NOT toggle the command input (that is the grid)', () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '`', bubbles: true }));
+      expect(deps.commandInput.toggle).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+K does NOT toggle the command input (that is the palette)', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
-      expect(deps.commandInput.toggle).toHaveBeenCalled();
+      expect(deps.commandInput.toggle).not.toHaveBeenCalled();
     });
   });
 });

@@ -98,6 +98,15 @@ describe('KeyboardShortcuts', () => {
       expect(deps.toolManager.setTool).toHaveBeenCalledWith('circle');
     });
 
+    it('I does NOT pick the Pie tool — I is the XIA Inspector', () => {
+      // Pie took I as "a free key", but XiaInspector had bound it long before,
+      // so I picked the Pie tool AND opened the Inspector. The catalog and the
+      // menu badge both said Pie; the user's call (2026-07-16) is Inspector.
+      // Pie keeps its menu entry and the palette.
+      fireKey('i');
+      expect(deps.toolManager.setTool).not.toHaveBeenCalledWith('pie');
+    });
+
     it('V switches to pushpull/Extrude-Cut (ADR-246 P↔V swap)', () => {
       fireKey('v');
       expect(deps.toolManager.setTool).toHaveBeenCalledWith('pushpull');
@@ -150,6 +159,23 @@ describe('KeyboardShortcuts', () => {
     it('Shift+F switches to freehand', () => {
       fireKey('F', { shiftKey: true });
       expect(deps.toolManager.setTool).toHaveBeenCalledWith('freehand');
+    });
+
+    it('Shift+F does NOT also jump to Front view', () => {
+      // The test above passed all along, because it only looked at half of what
+      // happened: the view listener is on `window` too and guarded only
+      // `!ctrlKey && !altKey`, so Shift+F picked freehand AND moved the camera
+      // to Front. One keystroke, two unrelated things, and the status bar named
+      // the view while the tool was what changed.
+      fireKey('F', { shiftKey: true });
+      expect(deps.viewport.setViewMode).not.toHaveBeenCalled();
+    });
+
+    it('Shift+K is still Back view — the help sheet promises it', () => {
+      // The fix must not swing the other way: Shift+K is not in shiftMap, so it
+      // never reaches the tool branch and stays a view key ('F / Shift+K').
+      fireKey('K', { shiftKey: true });
+      expect(deps.viewport.setViewMode).toHaveBeenCalledWith('back');
     });
   });
 

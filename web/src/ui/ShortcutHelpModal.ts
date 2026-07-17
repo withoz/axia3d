@@ -28,6 +28,9 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'R', description: 'Rect (사각형)' },
       { key: 'C', description: 'Circle (원)' },
       { key: 'Shift+C', description: '📐 Centerline (중심선)' },
+      // Bound all along (AxiaCommands ⇧L / ⇧F), just never written down.
+      { key: 'Shift+L', description: 'Polyline (폴리선)' },
+      { key: 'Shift+F', description: 'Freehand (자유선)' },
       { key: 'A', description: 'Arc (호)' },
       { key: 'G', description: 'Polygon (다각형)' },
       { key: 'V', description: 'Extrude/Cut (돌출/잘라내기 · Volume)' },
@@ -74,6 +77,10 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'F6', description: '엣지 표시/숨김' },
       { key: 'F7', description: '축 표시/숨김' },
       { key: '`', description: '그리드 표시/숨김 (대체)' },
+      // Both were undocumented and both collided: ` also toggled the command
+      // input, Ctrl+K also opened it on top of the palette.
+      { key: 'Ctrl+`', description: '명령 입력줄 열기/닫기' },
+      { key: 'Ctrl+K', description: '명령 팔레트 (Ctrl+Shift+P 도 동일)' },
       { key: 'T / B', description: 'Top / Bottom 뷰' },
       { key: 'F / Shift+K', description: 'Front / Back 뷰' },
       { key: 'Num 0', description: '3D 투시 뷰' },

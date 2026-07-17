@@ -105,7 +105,8 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   // wired — DrawRotRectTool / DrawPieTool / DrawSplineTool, ADR-186 phases).
   // Register so they appear in the Command Palette + keyboard help (AC ⊇ CC).
   cmds.push(tool('tool-rotrect',    'rotrect',    'draw', '회전 사각형 (Rotated Rectangle · 3-click)', '회전사각', undefined, false, undefined, deps));
-  cmds.push(tool('tool-pie',        'pie',        'draw', '부채꼴 (Pie / Sector · 3-click)', '부채꼴', 'I', false, undefined, deps));
+  // No shortcut: I belongs to the XIA Inspector (user's call, 2026-07-16).
+  cmds.push(tool('tool-pie',        'pie',        'draw', '부채꼴 (Pie / Sector · 3-click)', '부채꼴', undefined, false, undefined, deps));
   cmds.push(tool('tool-spline',     'spline',     'draw', '스플라인 (Spline · open B-spline)', '스플라인', undefined, false, undefined, deps));
   // ADR-221 — Hole / Window discoverability closure (tools + menu already wired;
   // engine punch_circular_hole / punch_rect_hole). Register in CommandCatalog so
@@ -262,7 +263,10 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-ssao',   'view', 'SSAO 토글',     'SSAO',   undefined, false, deps));
   cmds.push(action('view-sun-panel', 'view','태양 패널',   '태양',   undefined, false, deps));
   // Panel / diagnostic toggles — catalog SSOT coverage (bottom-bar UX audit).
-  cmds.push(action('view-xia-inspector',          'view', 'XIA 인스펙터',        'XIA',   undefined, false, deps));
+  // 'I' was bound in XiaInspector but never recorded here, so the catalog
+  // thought the key was free and handed it to Pie — which is how one keystroke
+  // came to do two things. The binding lives in the SSOT now.
+  cmds.push(action('view-xia-inspector',          'view', 'XIA 인스펙터',        'XIA',   'I', false, deps));
   cmds.push(action('view-components',             'view', '컴포넌트 패널',        'Comp',  undefined, false, deps));
   cmds.push(action('view-constraints',            'view', '제약 패널',           'Constr',undefined, false, deps));
   cmds.push(action('view-capability-explorer',    'view', 'Capability Explorer', 'Cap',   undefined, false, deps));

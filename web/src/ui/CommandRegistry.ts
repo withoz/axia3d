@@ -386,9 +386,17 @@ export function initCommandRegistry(deps: CommandRegistryDeps): void {
     }
   });
 
-  // Keyboard shortcut to toggle command input (Backtick or Ctrl+K)
+  // Keyboard shortcut to toggle the command input (Ctrl+`).
+  //
+  // It used to claim both ` and Ctrl+K, and lost both fights: a bare ` also
+  // toggles the grid (KeyboardShortcuts) and Ctrl+K also opens the Command
+  // Palette, so each keystroke did two things at once. The user's call
+  // (2026-07-16) keeps ` on the grid — which is the one the help sheet
+  // documents — and Ctrl+K on the palette, which is what every other app
+  // binds it to. The command input takes Ctrl+` (VSCode's terminal key), and
+  // needs a key of its own: it has no menu item, so this is its only way in.
   document.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === '`' || (e.ctrlKey && e.key === 'k')) {
+    if (e.ctrlKey && e.key === '`') {
       e.preventDefault();
       commandInput.toggle();
     }

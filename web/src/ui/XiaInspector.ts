@@ -563,7 +563,12 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
   // 키보드 I → Inspector 토글
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    if (e.key === 'i' || e.key === 'I') toggleInspector();
+    // Plain I only. This listener read no modifiers, so Alt+I opened the
+    // Inspector on top of KeyboardShortcuts' Alt+I intersection-snap toggle —
+    // one keystroke, two unrelated things. Every Alt+<letter> is a snap filter
+    // (A5), and Alt+A/B/0 are the Boolean group tags.
+    const bare = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+    if (bare && (e.key === 'i' || e.key === 'I')) toggleInspector();
     if (e.key === 'Escape' && xiPanel?.classList.contains('open')) xiPanel.classList.remove('open');
   });
 }

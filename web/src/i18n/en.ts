@@ -2222,4 +2222,10 @@ export const EN: Record<string, string> = {
   '배면도 (XZ)': 'Back (XZ)',
   '우측면도 (YZ)': 'Right (YZ)',
   '좌측면도 (YZ)': 'Left (YZ)',
+
+  // ── batch 13b — help rows added when the key collisions were fixed ──
+  'Polyline (폴리선)': 'Polyline',
+  'Freehand (자유선)': 'Freehand',
+  '명령 입력줄 열기/닫기': 'Toggle command input',
+  '명령 팔레트 (Ctrl+Shift+P 도 동일)': 'Command palette (Ctrl+Shift+P too)',
 };
