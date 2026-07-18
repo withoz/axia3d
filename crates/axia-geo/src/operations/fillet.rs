@@ -54,6 +54,19 @@ pub struct FilletResult {
     pub fillet_faces: Vec<FaceId>,
 }
 
+/// Result of a successful `chamfer_edge` operation — the flat-facet sibling
+/// of [`FilletResult`]. Where a fillet leaves a strip of quads, a chamfer
+/// leaves a single planar face.
+#[derive(Clone, Debug)]
+pub struct ChamferEdgeResult {
+    /// The rebuilt face that replaces the original F1 (adjacent to the edge).
+    pub new_f1: FaceId,
+    /// The rebuilt face that replaces the original F2.
+    pub new_f2: FaceId,
+    /// The single flat chamfer facet that replaces the edge.
+    pub chamfer_face: FaceId,
+}
+
 impl Mesh {
     /// Round off `edge_id` with a cylindrical arc of the given `radius`,
     /// sampled with `segments` quads around the arc. See module docs for
@@ -355,6 +368,215 @@ impl Mesh {
 
         Ok(FilletResult { new_f1, new_f2, fillet_faces })
     }
+
+    /// Bevel `edge_id` with a single flat facet, set back `dist` along each
+    /// adjacent edge from both endpoints. The flat-facet analogue of
+    /// [`Mesh::fillet_edge`]: where fillet sweeps an arc from the two
+    /// roll-back points, chamfer joins them with one planar face.
+    ///
+    /// The roll-back points, the F1/F2/F3 rebuild and the cleanup are all
+    /// shared with the fillet path (this is literally fillet with a single
+    /// straight-chord "arc"), so the same MVP constraints apply:
+    ///
+    /// - Edge shared by exactly two active planar faces.
+    /// - Each endpoint has ≤ 3 incident active faces.
+    /// - Convex edge only.
+    /// - `dist` strictly shorter than every incident edge it sets back along —
+    ///   otherwise the facet overshoots and folds through a neighbour, a
+    ///   manifold-but-self-intersecting result no downstream check catches
+    ///   (adversarial sweep, flap class — the same trap `edge_trim_points`
+    ///   guards for the vertex chamfer). Rejected up front so the caller's
+    ///   transaction rolls back cleanly.
+    pub fn chamfer_edge(
+        &mut self,
+        edge_id: EdgeId,
+        dist: f64,
+    ) -> Result<ChamferEdgeResult> {
+        // ─── Guards ──────────────────────────────────────────────
+        ensure!(dist > EPSILON_LENGTH, "chamfer_edge: dist must be positive");
+        ensure!(self.edges.contains(edge_id),
+            "chamfer_edge: edge {} not found", edge_id.raw());
+
+        let edge = &self.edges[edge_id];
+        let v_a = edge.v_small();
+        let v_b = edge.v_large();
+
+        let (shared_faces, _) = self.get_faces_sharing_edge(edge_id);
+        let active_shared: Vec<FaceId> = shared_faces.into_iter()
+            .filter(|&f| self.faces.contains(f) && self.faces[f].is_active())
+            .collect();
+        ensure!(
+            active_shared.len() == 2,
+            "chamfer_edge: edge must be shared by exactly 2 active faces, got {}",
+            active_shared.len(),
+        );
+        // Pick F1 as the face that walks the shared edge v_a → v_b (F2 walks
+        // v_b → v_a). Same orientation fix as fillet — without it ~half the
+        // edges hit "F1 loop doesn't contain the edge" and silently no-op'd.
+        let (f1, f2) = {
+            let f0 = active_shared[0];
+            let f0_loop = self.collect_loop_verts(self.faces[f0].outer().start)?;
+            if loop_neighbors(&f0_loop, v_a, v_b).is_some() {
+                (f0, active_shared[1])
+            } else {
+                (active_shared[1], f0)
+            }
+        };
+
+        // ─── Face geometry ───────────────────────────────────────
+        let n1 = self.faces[f1].normal().normalize();
+        let n2 = self.faces[f2].normal().normalize();
+        ensure!(n1.length_squared() > 0.5,
+            "chamfer_edge: face {} has a degenerate normal", f1.raw());
+        ensure!(n2.length_squared() > 0.5,
+            "chamfer_edge: face {} has a degenerate normal", f2.raw());
+
+        let f1_verts = self.collect_loop_verts(self.faces[f1].outer().start)?;
+        let f2_verts = self.collect_loop_verts(self.faces[f2].outer().start)?;
+
+        let (f1_prev_a, f1_next_b) = loop_neighbors(&f1_verts, v_a, v_b)
+            .ok_or_else(|| anyhow::anyhow!("chamfer_edge: F1 loop doesn't contain the edge"))?;
+        let (f2_prev_b, f2_next_a) = loop_neighbors(&f2_verts, v_b, v_a)
+            .ok_or_else(|| anyhow::anyhow!("chamfer_edge: F2 loop doesn't contain the edge"))?;
+
+        let va_pos = self.vertex_pos(v_a)?;
+        let vb_pos = self.vertex_pos(v_b)?;
+
+        // ─── Roll-back points (dist along each adjacent edge) ────
+        // p1_* is on the F1 side, p2_* on the F2 side. setback_point guards
+        // dist < incident edge length so the facet cannot overshoot.
+        let p1_a = setback_point(self, va_pos, f1_prev_a, dist)?;
+        let p2_a = setback_point(self, va_pos, f2_next_a, dist)?;
+        let p1_b = setback_point(self, vb_pos, f1_next_b, dist)?;
+        let p2_b = setback_point(self, vb_pos, f2_prev_b, dist)?;
+
+        // ─── Convex check (mirror fillet's center-based test) ────
+        // Replicated verbatim from fillet so chamfer accepts exactly the same
+        // edges: build the arc center inside the solid and require the mid of
+        // the roll-back points to sit outward of it. Concave edges flip the
+        // bisector and fail.
+        let bisector_out = (n1 + n2).normalize();
+        ensure!(
+            bisector_out.length_squared() > 0.5,
+            "chamfer_edge: faces are (nearly) parallel — no well-defined bevel",
+        );
+        let bisector_in = -bisector_out;
+        let half_angle_sin = n1.cross(bisector_out).length().max(1e-6);
+        let center_a = va_pos + bisector_in * (dist / half_angle_sin);
+        let mid_a = (p1_a + p2_a) * 0.5;
+        ensure!(
+            (mid_a - center_a).normalize().dot(bisector_out) > 0.0,
+            "chamfer_edge: edge appears concave — MVP supports convex edges only",
+        );
+
+        // F1-side directions for orienting the F3 trim splice (computed from
+        // original positions, before any teardown).
+        let dir_f1_va = (self.vertex_pos(f1_prev_a)? - va_pos).normalize();
+        let dir_f1_vb = (self.vertex_pos(f1_next_b)? - vb_pos).normalize();
+
+        // ─── Materialize the 4 trim vertices ─────────────────────
+        // add_vertex dedups, so a trim point shared with F3 welds to one id.
+        let f1_mat = self.faces[f1].material();
+        let f2_mat = self.faces[f2].material();
+        let pa1 = self.add_vertex(p1_a); // F1 side @ a
+        let pa2 = self.add_vertex(p2_a); // F2 side @ a
+        let pb1 = self.add_vertex(p1_b); // F1 side @ b
+        let pb2 = self.add_vertex(p2_b); // F2 side @ b
+
+        // ─── F1' / F2' vertex lists (splice the edge out) ────────
+        // F1 walks (..., f1_prev_a, v_a, v_b, f1_next_b, ...) → replace
+        // {v_a, v_b} with the F1-side points {pa1, pb1}. F2 walks the reverse.
+        let f1_new_verts = splice_edge_replacement(&f1_verts, v_a, v_b, pa1, pb1)?;
+        let f2_new_verts = splice_edge_replacement(&f2_verts, v_b, v_a, pb2, pa2)?;
+
+        // ─── Optional F3 at each endpoint ────────────────────────
+        let f3_a = third_face_at_vert(self, v_a, f1, f2)?;
+        let f3_b = third_face_at_vert(self, v_b, f1, f2)?;
+        let f3_a_info = match f3_a {
+            Some(fid) => Some((fid,
+                self.collect_loop_verts(self.faces[fid].outer().start)?,
+                self.faces[fid].material())),
+            None => None,
+        };
+        let f3_b_info = match f3_b {
+            Some(fid) => Some((fid,
+                self.collect_loop_verts(self.faces[fid].outer().start)?,
+                self.faces[fid].material())),
+            None => None,
+        };
+
+        // ─── Tear down affected faces ────────────────────────────
+        let mut faces_to_remove: Vec<FaceId> = vec![f1, f2];
+        if let Some(fid) = f3_a { faces_to_remove.push(fid); }
+        if let Some(fid) = f3_b {
+            if Some(fid) != f3_a { faces_to_remove.push(fid); }
+        }
+        for fid in &faces_to_remove {
+            let _ = self.remove_face(*fid);
+            if self.faces.contains(*fid) {
+                self.faces.remove(*fid);
+            }
+        }
+
+        // ─── Rebuild F1' and F2' ─────────────────────────────────
+        let new_f1 = self.add_face_with_holes(&f1_new_verts, &[], f1_mat)?;
+        let new_f2 = self.add_face_with_holes(&f2_new_verts, &[], f2_mat)?;
+
+        // ─── Rebuild F3 (replace corner vertex with its 2 trim pts) ─
+        if let Some((_fid, ref verts, material)) = f3_a_info {
+            let trim = orient_arc_for_f3(self, verts, v_a, &[pa1, pa2], dir_f1_va)?;
+            let new_verts = splice_vertex_replacement(verts, v_a, &trim)?;
+            self.add_face_with_holes(&new_verts, &[], material)?;
+        }
+        if let Some((f3_b_id, ref verts, material)) = f3_b_info {
+            if let Some((f3_a_id, _, _)) = f3_a_info {
+                if f3_a_id == f3_b_id {
+                    bail!("chamfer_edge: same face on both endpoints of edge — \
+                           single-ring topology not yet supported");
+                }
+            }
+            let trim = orient_arc_for_f3(self, verts, v_b, &[pb1, pb2], dir_f1_vb)?;
+            let new_verts = splice_vertex_replacement(verts, v_b, &trim)?;
+            self.add_face_with_holes(&new_verts, &[], material)?;
+        }
+
+        // ─── The flat chamfer facet ──────────────────────────────
+        // Quad [pa1, pa2, pb2, pb1] shares each of its 4 edges with a rebuilt
+        // face (pa1-pa2 with F3_a, pa2-pb2 with F2', pb2-pb1 with F3_b,
+        // pb1-pa1 with F1'), so the solid stays closed. Wind it so the normal
+        // points outward (along bisector_out).
+        // Order is forced, not chosen: to stay manifold the facet traverses each
+        // shared edge opposite to F1'/F2' (which walk the F1/F2 side, outward),
+        // so it winds outward by construction — no runtime flip is reachable for
+        // a valid two-face convex edge. debug_assert guards the proof.
+        let facet = [pa1, pa2, pb2, pb1];
+        debug_assert!(
+            (p2_a - p1_a).cross(p2_b - p1_a).dot(bisector_out) >= 0.0,
+            "chamfer_edge: natural facet order came out inward — unexpected topology",
+        );
+        let chamfer_face = self.add_face_with_holes(&facet, &[], f1_mat)?;
+
+        // ─── Cleanup: orphan edges + isolated verts ──────────────
+        let all_edges: Vec<EdgeId> = self.edges.iter().map(|(id, _)| id).collect();
+        for eid in all_edges {
+            if !self.edges.contains(eid) { continue; }
+            let (faces, _) = self.get_faces_sharing_edge(eid);
+            let has_active_face = faces.iter().any(|&f|
+                self.faces.contains(f) && self.faces[f].is_active());
+            if !has_active_face {
+                let _ = self.remove_edge_and_halfedges(eid);
+                if self.edges.contains(eid) {
+                    self.edges.remove(eid);
+                }
+            }
+        }
+        self.remove_isolated_verts();
+
+        // ADR-007
+        self.debug_verify_invariants();
+
+        Ok(ChamferEdgeResult { new_f1, new_f2, chamfer_face })
+    }
 }
 
 /// ADR-024 P10 result of `chamfer_vertex_3way`.
@@ -525,6 +747,23 @@ fn edge_trim_points(
         }
     }
     bail!("chamfer: vertex {} not in face loop", v.raw())
+}
+
+/// A point set back `dist` from `from` toward vertex `to`, with an overshoot
+/// guard: `dist` must be strictly shorter than the `from`→`to` edge, else the
+/// chamfer facet folds back through the neighbouring face — a self-intersection
+/// that stays manifold and closed, so no downstream check catches it
+/// (adversarial sweep, flap class). `chamfer_edge`-internal.
+fn setback_point(mesh: &Mesh, from: DVec3, to: VertId, dist: f64) -> Result<DVec3> {
+    let e = mesh.vertex_pos(to)? - from;
+    let len = e.length();
+    ensure!(len > EPSILON_LENGTH,
+        "chamfer_edge: degenerate incident edge (zero-length)");
+    ensure!(dist < len,
+        "chamfer_edge: dist {:.3} exceeds an incident edge length {:.3} — \
+         overshoots the neighbour; pick a clean convex edge or a smaller dist",
+        dist, len);
+    Ok(from + (e / len) * dist)
 }
 
 /// Collect unique active incident faces of a vertex via the v_next radial
@@ -897,6 +1136,165 @@ mod tests {
         m.add_face_with_holes(&[a, b, c], &[], mat).unwrap();
         let edge = m.find_edge(a, b).unwrap();
         assert!(m.fillet_edge(edge, 0.1, 4).is_err());
+    }
+
+    // ─── chamfer_edge (flat bevel) ───────────────────────────────
+
+    /// Chamfer the cube's top-front edge (v001-v101, shared by top + front).
+    /// Both endpoints have a 3rd face (left / right side), so 4 faces are
+    /// removed and 5 rebuilt (top' + front' + 2 sides' + 1 flat facet) = +1.
+    #[test]
+    fn chamfer_edge_cube_top_front_edge() {
+        let (mut m, v) = cube_mesh();
+        let (v001, v101) = (v[4], v[5]);
+        let edge = m.find_edge(v001, v101).expect("top-front edge exists");
+
+        let before = m.face_count();
+        let res = m.chamfer_edge(edge, 2.0).unwrap();
+
+        assert_eq!(m.face_count(), before + 1,
+            "chamfer_edge should add exactly 1 face net (got {})",
+            m.face_count() as i64 - before as i64);
+
+        // The facet is a single flat quad.
+        let facet = m.collect_loop_verts(m.faces[res.chamfer_face].outer().start).unwrap();
+        assert_eq!(facet.len(), 4, "chamfer facet is a quad");
+
+        let report = m.verify_face_invariants();
+        assert_eq!(report.violations.len(), 0,
+            "invariants after cube edge chamfer:\n{}", report.summary());
+    }
+
+    /// EVERY cube edge must chamfer and stay a closed manifold solid — the
+    /// adversarial guard that a wrong F3 splice / winding silently opens the
+    /// solid while `verify_face_invariants` still passes (fillet's pattern #2,
+    /// inherited here since chamfer reuses the same splice/orient helpers).
+    #[test]
+    fn chamfer_edge_cube_all_edges_keep_closed() {
+        fn manifold(m: &Mesh) -> crate::mesh::ManifoldInfo {
+            let active: Vec<_> = m.faces.iter()
+                .filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+            m.face_set_manifold_info(&active)
+        }
+        let mut chamfered = 0;
+        for i in 0..12 {
+            let (mut m, _) = cube_mesh();
+            assert!(manifold(&m).is_closed_solid, "cube starts closed");
+            let edges: Vec<_> = m.edges.iter()
+                .filter(|(_, e)| e.is_active()).map(|(id, _)| id).collect();
+            m.chamfer_edge(edges[i], 2.0)
+                .unwrap_or_else(|e| panic!("chamfer of edge #{} failed: {}", i, e));
+            chamfered += 1;
+            let info = manifold(&m);
+            assert!(info.is_closed_solid,
+                "REGRESSION: chamfer of edge #{} opened the solid \
+                 (boundary={}, non_manifold={})",
+                i, info.boundary_edge_count, info.non_manifold_edge_count);
+            assert_eq!(info.boundary_edge_count, 0, "no boundary edges");
+            assert_eq!(info.non_manifold_edge_count, 0, "stays manifold");
+            assert!(m.verify_face_invariants().violations.is_empty());
+        }
+        assert_eq!(chamfered, 12, "all 12 cube edges must chamfer");
+    }
+
+    /// Same for the push_pull box — its base-face verts have an incomplete
+    /// v_next fan, the topology that broke `third_face_at_vert` for fillet.
+    #[test]
+    fn chamfer_edge_pushpull_box_all_edges_stay_closed() {
+        let active = |m: &Mesh| -> Vec<FaceId> {
+            m.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect()
+        };
+        let edges: Vec<(VertId, VertId)> = {
+            let m = pushpull_box(10.0, 10.0, 10.0);
+            m.edges.iter().filter(|(_, e)| e.is_active())
+                .map(|(_, e)| (e.v_small(), e.v_large())).collect()
+        };
+        assert_eq!(edges.len(), 12, "extruded box has 12 edges");
+        for (vs, vl) in edges {
+            let mut m = pushpull_box(10.0, 10.0, 10.0);
+            let eid = m.find_edge(vs, vl).expect("edge exists");
+            m.chamfer_edge(eid, 2.0).expect("chamfer must succeed");
+            let info = m.face_set_manifold_info(&active(&m));
+            assert!(info.is_closed_solid,
+                "REGRESSION: chamfer of push_pull box edge {:?}-{:?} opened the solid (bnd={})",
+                vs, vl, info.boundary_edge_count);
+            assert_eq!(info.non_manifold_edge_count, 0);
+        }
+    }
+
+    /// The facet must be wound so its normal points OUTWARD. A flipped facet
+    /// stays manifold and passes invariants, so nothing else pins the winding.
+    /// Checked on ALL 12 edges: some edges' natural roll-back order is already
+    /// outward and some inward, so the flip branch must fire for at least one —
+    /// a single-edge test silently passes an always-same-order bug. On the
+    /// convex cube, "outward" = the facet normal points away from the centre.
+    #[test]
+    fn chamfer_edge_facet_faces_outward() {
+        let center = DVec3::new(5.0, 5.0, 5.0);
+        for i in 0..12 {
+            let (mut m, _) = cube_mesh();
+            let eid = m.edges.iter().filter(|(_, e)| e.is_active())
+                .map(|(id, _)| id).nth(i).unwrap();
+            let res = m.chamfer_edge(eid, 2.0)
+                .unwrap_or_else(|e| panic!("chamfer of edge #{} failed: {}", i, e));
+            let facet_verts = m.collect_loop_verts(
+                m.faces[res.chamfer_face].outer().start).unwrap();
+            let centroid: DVec3 = facet_verts.iter()
+                .map(|&vv| m.vertex_pos(vv).unwrap())
+                .sum::<DVec3>() / facet_verts.len() as f64;
+            let facet_n = m.faces[res.chamfer_face].normal();
+            assert!(facet_n.dot(centroid - center) > 0.0,
+                "edge #{}: chamfer facet normal {:?} must point away from the \
+                 cube centre (dot {})", i, facet_n, facet_n.dot(centroid - center));
+        }
+    }
+
+    /// Overshoot guard (flap class): a `dist` longer than an incident edge folds
+    /// the facet through the neighbour — a result that stays manifold + closed,
+    /// so no downstream check catches it. Uses a flat 10×10×3 box and chamfers a
+    /// face edge with dist 5: the two in-face edges are length 10 (fine), but the
+    /// length-3 extrusion edge at each endpoint is overshot. Without the guard
+    /// this returns Ok with a self-intersecting solid; the guard rejects it
+    /// BEFORE any edit, so the mesh is left untouched.
+    #[test]
+    fn chamfer_edge_rejects_overshoot() {
+        let mut m = pushpull_box(10.0, 10.0, 3.0); // extruded along +y by 3
+        // A face edge on y=0 or y=3: both endpoints share a y, and each endpoint
+        // has a length-3 edge running along y to the opposite face.
+        let face_edge = m.edges.iter().filter(|(_, e)| e.is_active())
+            .map(|(id, e)| (id, e.v_small(), e.v_large()))
+            .find(|(_, vs, vl)| {
+                let ya = m.vertex_pos(*vs).unwrap().y;
+                let yb = m.vertex_pos(*vl).unwrap().y;
+                (ya - yb).abs() < 1e-6 && (ya < 1e-6 || (ya - 3.0).abs() < 1e-6)
+            })
+            .map(|(id, _, _)| id)
+            .expect("a face edge on the 10×10 face");
+        let before = m.face_count();
+        let err = m.chamfer_edge(face_edge, 5.0).expect_err(
+            "dist 5 overshoots the length-3 extrusion edge — must be rejected");
+        // Pin the guard specifically: without it, chamfer would return Ok with a
+        // self-intersecting solid (or fail elsewhere for the wrong reason). The
+        // message must be the overshoot guard's, not some downstream symptom.
+        assert!(err.to_string().contains("overshoots the neighbour"),
+            "expected the overshoot guard to fire, got: {}", err);
+        assert_eq!(m.face_count(), before,
+            "a rejected chamfer must not mutate the mesh");
+        assert!(m.verify_face_invariants().violations.is_empty(),
+            "mesh is untouched after rejection");
+    }
+
+    #[test]
+    fn chamfer_edge_rejects_boundary_edge() {
+        // An edge shared by only one face (boundary) must be rejected.
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let b = m.add_vertex(DVec3::new(1.0, 0.0, 0.0));
+        let c = m.add_vertex(DVec3::new(0.0, 1.0, 0.0));
+        m.add_face_with_holes(&[a, b, c], &[], mat).unwrap();
+        let edge = m.find_edge(a, b).unwrap();
+        assert!(m.chamfer_edge(edge, 0.1).is_err());
     }
 
     /// ADR-024 P10 — Flat triangular chamfer at cube corner v000.

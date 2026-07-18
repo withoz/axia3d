@@ -6194,6 +6194,51 @@ impl AxiaEngine {
         }
     }
 
+    /// Chamfer (flat-bevel) a single edge, set back `dist` along each adjacent
+    /// edge — the flat sibling of `filletEdge` (`chamfer_edge` already exists in
+    /// axia-geo). Additive WASM expose, mirroring filletEdge's closure-preserving
+    /// gate + transaction wiring. Returns 1 (the single facet) on success, or -1
+    /// on error with `lastError()` populated.
+    #[wasm_bindgen(js_name = "chamferEdge")]
+    pub fn chamfer_edge(
+        &mut self,
+        edge_id_raw: u32,
+        dist: f64,
+    ) -> i32 {
+        let eid = EdgeId::new(edge_id_raw);
+        if !self.scene.mesh.edges.contains(eid) {
+            self.set_error(format!("chamfer_edge: edge {} not found", edge_id_raw));
+            return -1;
+        }
+
+        self.scene.transactions.begin();
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+        let before_boundary = self.active_boundary_count();
+        let before_si = self.scene.mesh.detect_self_intersections().count();
+
+        match self.scene.mesh.chamfer_edge(eid, dist) {
+            Ok(_res) => {
+                if !self.closure_preserving_gate_passed(
+                    before_boundary, before_si, &before_snapshot, "chamfer_edge", true,
+                ) {
+                    return -1;
+                }
+                self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                1
+            }
+            Err(e) => {
+                self.scene.transactions.cancel();
+                console_error!("[RUST] chamfer_edge ERROR: {}", e);
+                self.set_error(format!("chamfer_edge: {}", e));
+                -1
+            }
+        }
+    }
+
     /// ADR-211 — EXTEND free wire edge `target` so its nearest endpoint meets
     /// `boundary`'s supporting line. `extend_edge_to_boundary` already exists in
     /// axia-geo; additive WASM expose. Returns 0 on success, or -1 on error.
