@@ -28,6 +28,7 @@ function mockEngine(overrides: Partial<EngineInstance> = {}): EngineInstance {
     boolean_op: () =>
       JSON.stringify({ ok: true, resultFaces: [99], totalVerts: 8, totalFaces: 6 }),
     filletEdge: () => 4,
+    chamferEdge: () => 1,
     translateVerts: () => true,
     rotateVerts: () => true,
     scaleVerts: () => true,
@@ -115,6 +116,65 @@ describe('rotate_xia (Tier 2)', () => {
       dispatch(
         'rotate_xia',
         { xia_id: 1.5, center: [0, 0, 0], axis: [0, 0, 1], angle_deg: 90 },
+        { engine: mockEngine(), policy: TIER2_POLICY, versions: VERSIONS },
+      ),
+    ).rejects.toThrow(CapabilityInputError);
+  });
+});
+
+describe('chamfer_edge (Tier 2) — flat-bevel sibling of fillet_edge', () => {
+  it('blocked at default tier', async () => {
+    await expect(
+      dispatch(
+        'chamfer_edge',
+        { edge_id: 3, dist: 2 },
+        { engine: mockEngine(), versions: VERSIONS },
+      ),
+    ).rejects.toThrow(CapabilityBlockedError);
+  });
+
+  it('passes edge_id + dist, ok when the engine returns the facet (1)', async () => {
+    let captured: { edge: number; dist: number } | null = null;
+    const engine = mockEngine({
+      chamferEdge: (edge, dist) => {
+        captured = { edge, dist };
+        return 1;
+      },
+    });
+    const result = await dispatch(
+      'chamfer_edge',
+      { edge_id: 7, dist: 2.5 },
+      { engine, policy: TIER2_POLICY, versions: VERSIONS },
+    );
+    expect(captured).toEqual({ edge: 7, dist: 2.5 });
+    expect(result.output).toEqual({ ok: true });
+  });
+
+  it('engine -1 (overshoot / concave / non-manifold) → ok:false', async () => {
+    const engine = mockEngine({ chamferEdge: () => -1 });
+    const result = await dispatch(
+      'chamfer_edge',
+      { edge_id: 7, dist: 999 },
+      { engine, policy: TIER2_POLICY, versions: VERSIONS },
+    );
+    expect(result.output).toEqual({ ok: false });
+  });
+
+  it('rejects a non-positive dist', async () => {
+    await expect(
+      dispatch(
+        'chamfer_edge',
+        { edge_id: 7, dist: 0 },
+        { engine: mockEngine(), policy: TIER2_POLICY, versions: VERSIONS },
+      ),
+    ).rejects.toThrow(CapabilityInputError);
+  });
+
+  it('rejects a float edge_id (owner IDs are integers)', async () => {
+    await expect(
+      dispatch(
+        'chamfer_edge',
+        { edge_id: 7.5, dist: 2 },
         { engine: mockEngine(), policy: TIER2_POLICY, versions: VERSIONS },
       ),
     ).rejects.toThrow(CapabilityInputError);
