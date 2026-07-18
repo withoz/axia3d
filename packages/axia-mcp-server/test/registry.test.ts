@@ -30,6 +30,7 @@ describe('capability handler registry', () => {
       'boolean_intersect',
       'boolean_subtract',
       'boolean_union',
+      'chamfer_edge',
       'create_group',
       'create_xia',
       'delete_group',

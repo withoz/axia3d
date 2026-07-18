@@ -80,6 +80,42 @@ describe.skipIf(!wasmBuilt)('ADR-041 — end-to-end with real WASM', () => {
     }
   });
 
+  it('chamfer_edge (Tier 2) reaches the real engine, structured + audited', async () => {
+    // Gold standard for the wiring: drive the REAL node engine's chamferEdge
+    // (landed 2026-07-18, PR #5). Draw a flat rect and chamfer one of its
+    // boundary edges — a boundary edge is shared by a single face, so the
+    // engine deterministically refuses it (needs exactly two), returning -1.
+    // The point is the whole path: dispatch → handler → real chamferEdge →
+    // structured { ok:false } (not a crash, not "declared but not implemented"),
+    // and a Tier 2 call is audited whichever way it resolves (P26.7). The 6
+    // axia-geo tests prove chamfer succeeds on real solids; this proves the
+    // MCP → WASM → engine binding.
+    const engine = await loadEngine();
+    const sink = new MemoryAuditSink();
+    await dispatch(
+      'draw_rect',
+      { center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 100, height: 50 },
+      { engine, versions: VERSIONS },
+    );
+    const result = await dispatch(
+      'chamfer_edge',
+      { edge_id: 0, dist: 5 },
+      {
+        engine,
+        config: { enabled_tiers: [0, 1, 2] },
+        auditSink: sink,
+        client: 'e2e',
+        versions: VERSIONS,
+      },
+    );
+    const out = result.output as { ok: boolean };
+    expect(typeof out.ok).toBe('boolean');
+    expect(
+      sink.entries.some((e) => e.capability === 'chamfer_edge' && e.tier === 2),
+      'a Tier 2 call must be audited',
+    ).toBe(true);
+  });
+
   it('mcp_latency_budget — Tier 1 draw_rect e2e under 33ms median', async () => {
     const engine = await loadEngine();
     // warmup

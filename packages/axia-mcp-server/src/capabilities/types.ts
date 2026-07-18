@@ -86,6 +86,10 @@ export interface EngineInstance {
   boolean_op(facesA: Uint32Array, facesB: Uint32Array, op: string): string;
   /** ADR-041 P26.1 Tier 2 — fillet an edge, returns the new face count. */
   filletEdge(edgeIdRaw: number, radius: number, segments: number): number;
+  /** Tier 2 — chamfer (flat-bevel) an edge, set back `dist` along each adjacent
+   *  edge. The flat sibling of `filletEdge`. Returns 1 on success (the single
+   *  facet), -1 on failure (lastError populated). (WASM js_name "chamferEdge") */
+  chamferEdge(edgeIdRaw: number, dist: number): number;
   /** Translate a vertex set by (dx, dy, dz). Used by move_xia. */
   translateVerts(vertIds: Uint32Array, dx: number, dy: number, dz: number): boolean;
   /** Rotate a vertex set about center (cx,cy,cz) around axis (ax,ay,az) by
