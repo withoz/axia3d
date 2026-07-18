@@ -2122,10 +2122,18 @@
           <div class="menu-action" data-action="view-scenes">🎬 Scenes (저장된 뷰)</div>
           <div class="menu-action" data-action="view-sun-panel">☀️ 태양 방향 패널<span class="mk">Shift+U</span></div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="view-capability-explorer">🧭 Capability Explorer (ADR-063)</div>
-          <div class="menu-action" data-action="view-invariant-verifier">🛡️ Invariant Verifier (ADR-068)</div>
-          <div class="menu-action" data-action="view-audit-log">📜 Audit Log Viewer (ADR-069)</div>
-          <div class="menu-action" data-action="view-analytic-hover-overlay">🔍 Analytic Hover Overlay (ADR-070)</div>
+          <!-- ADR-045 D5 — the dev/diagnostic panels belong to a Debug grouping,
+               not mixed in with the everyday panels above. Additive (ADR-046
+               P31 #4): ids/labels unchanged, submenu parent carries no
+               data-action (File▸Export pattern). -->
+          <div class="menu-action menu-sub">🛠️ 개발자 (Debug)
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="view-capability-explorer">🧭 Capability Explorer (ADR-063)</div>
+              <div class="menu-action" data-action="view-invariant-verifier">🛡️ Invariant Verifier (ADR-068)</div>
+              <div class="menu-action" data-action="view-audit-log">📜 Audit Log Viewer (ADR-069)</div>
+              <div class="menu-action" data-action="view-analytic-hover-overlay">🔍 Analytic Hover Overlay (ADR-070)</div>
+            </div>
+          </div>
         </div>
       </div>
 
