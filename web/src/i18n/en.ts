@@ -121,10 +121,12 @@ export const EN: Record<string, string> = {
   '🔹 선택 엣지 → 일반선 변환': '🔹 Selected edges → normal line',
   '□ 직사각형': '□ Rectangle',
 
-  // ── Model menu group headers (ADR-046 P31 #4 reorg, 2026-07-18) ──
+  // ── Model / Modify menu group headers (ADR-046 P31 #4 reorg, 2026-07-18) ──
   '프리미티브': 'Primitives',
   '솔리드 도구': 'Solid Tools',
   '면 · 힐링': 'Surface · Heal',
+  '배열': 'Array',
+  '필렛 · 챔퍼': 'Fillet · Chamfer',
 
   // ── Primitives ──
   '박스 (Box)': 'Box',
