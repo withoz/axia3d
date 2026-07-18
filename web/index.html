@@ -1900,6 +1900,13 @@
       </div>
 
       <!-- Modify — 기하 편집 (ADR-210: 이동/회전/배열/트림/필렛 등; 3D 빌드는 Modeling) -->
+      <!-- ADR-046 P31 #4 additive (2026-07-18): the interactive tool + its
+           one-shot action are NOT duplicates (ADR-209 mirror etc.) but paired
+           entry styles — grouped side by side, not merged/removed. Every
+           data-action id, label and shortcut is unchanged; the submenu parents
+           carry NO data-action (pure grouping, File▸Export pattern). Only the
+           three tool↔action families (미러 / 배열 / 필렛·챔퍼) are grouped; trim /
+           extend / join / slice / deform / convert stay flat. -->
       <div class="menu-item" data-menu="modify">Modify
         <div class="menu-dropdown">
           <div class="menu-action" data-action="tool-move">이동 (Move)<span class="mk">M</span></div>
@@ -1909,24 +1916,43 @@
           <div class="menu-action" data-action="tool-offset">오프셋 (Offset)<span class="mk">O</span></div>
           <div class="menu-action" data-action="tool-erase">삭제 (Erase)<span class="mk">E</span></div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="tool-mirror">미러 도구 (Mirror · X/Y/Z 전환 · 반복)</div>
-          <div class="menu-action" data-action="mirror-x">대칭 · YZ 평면 (X 반전)</div>
-          <div class="menu-action" data-action="mirror-y">대칭 · XZ 평면 (Y 반전)</div>
-          <div class="menu-action" data-action="mirror-z">대칭 · XY 평면 (Z 반전)</div>
-          <div class="menu-action" data-action="tool-array-linear">선형 배열 도구 (2-click · 개수 VCB)</div>
-          <div class="menu-action" data-action="array-linear">선형 배열 (Array Linear)…</div>
-          <div class="menu-action" data-action="tool-array-radial">원형 배열 도구 (X/Y/Z 축 · 개수 VCB)</div>
-          <div class="menu-action" data-action="array-radial">원형 배열 (Array Radial)…</div>
+
+          <div class="menu-action menu-sub">미러
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-mirror">미러 도구 (Mirror · X/Y/Z 전환 · 반복)</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="mirror-x">대칭 · YZ 평면 (X 반전)</div>
+              <div class="menu-action" data-action="mirror-y">대칭 · XZ 평면 (Y 반전)</div>
+              <div class="menu-action" data-action="mirror-z">대칭 · XY 평면 (Z 반전)</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">배열
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-array-linear">선형 배열 도구 (2-click · 개수 VCB)</div>
+              <div class="menu-action" data-action="array-linear">선형 배열 (Array Linear)…</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="tool-array-radial">원형 배열 도구 (X/Y/Z 축 · 개수 VCB)</div>
+              <div class="menu-action" data-action="array-radial">원형 배열 (Array Radial)…</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">필렛 · 챔퍼
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-fillet">필렛 도구 (Fillet · 엣지+반지름 · 반복)</div>
+              <div class="menu-action" data-action="fillet-edge">엣지 필렛 (Fillet)…</div>
+              <div class="menu-action" data-action="tool-corner-fillet">코너 필렛 (Corner Fillet · 2D)</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="tool-chamfer">꼭짓점 챔퍼 (Vertex Chamfer)</div>
+              <div class="menu-action" data-action="chamfer-edge">엣지 챔퍼 (Chamfer)…</div>
+              <div class="menu-action" data-action="tool-corner-chamfer">코너 챔퍼 (Corner Chamfer · 2D)</div>
+            </div>
+          </div>
           <div class="menu-sep"></div>
+
           <div class="menu-action" data-action="tool-trim">트림 (Trim)</div>
           <div class="menu-action" data-action="tool-extend">익스텐드 (Extend)</div>
-          <div class="menu-action" data-action="tool-corner-fillet">코너 필렛 (Corner Fillet · 2D)</div>
-          <div class="menu-action" data-action="tool-corner-chamfer">코너 챔퍼 (Corner Chamfer · 2D)</div>
           <div class="menu-action" data-action="tool-join">조인 (Join · 일직선)</div>
-          <div class="menu-action" data-action="tool-fillet">필렛 도구 (Fillet · 엣지+반지름 · 반복)</div>
-          <div class="menu-action" data-action="fillet-edge">엣지 필렛 (Fillet)…</div>
-          <div class="menu-action" data-action="tool-chamfer">꼭짓점 챔퍼 (Vertex Chamfer)</div>
-          <div class="menu-action" data-action="chamfer-edge">엣지 챔퍼 (Chamfer)…</div>
           <div class="menu-action" data-action="tool-slice">🔪 평면으로 자르기 (Slice)</div>
           <div class="menu-sep"></div>
           <div class="menu-action" data-action="subdivide">서브디비전 (Subdivide)</div>
