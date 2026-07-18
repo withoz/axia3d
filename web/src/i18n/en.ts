@@ -128,6 +128,10 @@ export const EN: Record<string, string> = {
   '배열': 'Array',
   '필렛 · 챔퍼': 'Fillet · Chamfer',
   '🛠️ 개발자 (Debug)': '🛠️ Developer (Debug)',
+  '다듬기 · 자르기': 'Trim · Slice',
+  '디폼': 'Deform',
+  '효과': 'Effects',
+  '✂️ 섹션 평면': '✂️ Section Plane',
 
   // ── Primitives ──
   '박스 (Box)': 'Box',
