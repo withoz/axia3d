@@ -1953,58 +1953,99 @@
       </div>
 
       <!-- MoDeling — 3D 빌드: Primitive / 압출(Push-Pull·Sweep·Loft·Revolve·Wall·Window) / Boolean / 그룹 / 메시 / 스케치 (ADR-210) -->
-      <div class="menu-item" data-menu="modeling">MoDeling
+      <!-- ADR-046 P31 #4 additive reorg (2026-07-18): the 41-item flat
+           "MoDeling" split into grouped submenus. Every data-action id, label
+           and keyboard hint is UNCHANGED — this is markup regrouping only, so
+           MenuBar.ts dispatch, ToolManager and shortcuts are untouched. Submenu
+           parents (프리미티브 / 솔리드 도구 / …) carry NO data-action — they are
+           pure grouping (hover opens; a click is a no-op, MenuBar.ts:205),
+           exactly like File ▸ Export / Import. -->
+      <div class="menu-item" data-menu="modeling">Model
         <div class="menu-dropdown">
-          <div class="menu-action" data-action="tool-box">박스 (Box)</div>
-          <div class="menu-action" data-action="tool-sphere">구 (Sphere)<span class="mk">H</span></div>
-          <div class="menu-action" data-action="tool-cylinder">원통 (Cylinder)<span class="mk">Y</span></div>
-          <div class="menu-action" data-action="tool-cone">원뿔 (Cone)<span class="mk">N</span></div>
-          <div class="menu-action" data-action="tool-torus">토러스 (Torus)<span class="mk">D</span></div>
-          <div class="menu-action" data-action="tool-nurbs">NURBS 곡면 (NURBS Surface)</div>
-          <div class="menu-action" data-action="tool-nurbs-edit">NURBS 제어점 편집 (클릭=입력 / 드래그=이동)</div>
-          <div class="menu-sep"></div>
+          <!-- 최다 사용 op 은 상단에 flat -->
           <div class="menu-action" data-action="tool-pushpull">돌출/잘라내기 (Extrude/Cut · Volume)<span class="mk">V</span></div>
-          <div class="menu-action" data-action="tool-recess">포켓 (Recess · Pocket · 면 클릭→여유 깊이)</div>
-          <div class="menu-action" data-action="tool-sweep">스윕 (Sweep · 경로 따라 파이프)<span class="mk">W</span></div>
-          <div class="menu-action" data-action="tool-loft">로프트 (Loft · 단면 블렌드 화병)</div>
-          <div class="menu-action" data-action="loft-selected-faces">로프트 — 선택 면 2개 (Loft 2 faces)</div>
-          <div class="menu-action" data-action="revolve-x">회전체 Revolve · X축</div>
-          <div class="menu-action" data-action="revolve-y">회전체 Revolve · Y축</div>
-          <div class="menu-action" data-action="revolve-z">회전체 Revolve · Z축</div>
-          <div class="menu-action" data-action="revolve-face-solid">회전체 — 선택 면 (Revolve · 각도 입력 · 부분/360°)</div>
-          <div class="menu-action" data-action="thicken-faces">🧱 셸 (Thicken/Shell)…</div>
-          <div class="menu-action" data-action="tool-wall">벽 (Wall · 기준선 → 두께·높이 압출)</div>
-          <div class="menu-action" data-action="tool-window">창 (Window · 벽 면에 사각 개구부)</div>
-          <div class="menu-action" data-action="tool-plane">작업 평면 (3-Point Plane · 3점으로 평면 고정)</div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="bool-union">BREP ∪ · 합집합 (Union)<span class="mk">F8</span></div>
-          <div class="menu-action" data-action="bool-subtract">BREP − · 차집합 (Subtract)</div>
-          <div class="menu-action" data-action="bool-intersect">BREP ∩ · 교집합 (Intersect)<span class="mk">F9</span></div>
-          <div class="menu-action" data-action="intersect-with-model">모델과 교차 (Intersect with Model)</div>
+
+          <div class="menu-action menu-sub">프리미티브
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-box">박스 (Box)</div>
+              <div class="menu-action" data-action="tool-sphere">구 (Sphere)<span class="mk">H</span></div>
+              <div class="menu-action" data-action="tool-cylinder">원통 (Cylinder)<span class="mk">Y</span></div>
+              <div class="menu-action" data-action="tool-cone">원뿔 (Cone)<span class="mk">N</span></div>
+              <div class="menu-action" data-action="tool-torus">토러스 (Torus)<span class="mk">D</span></div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="tool-nurbs">NURBS 곡면 (NURBS Surface)</div>
+              <div class="menu-action" data-action="tool-nurbs-edit">NURBS 제어점 편집 (클릭=입력 / 드래그=이동)</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">솔리드 도구
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-recess">포켓 (Recess · Pocket · 면 클릭→여유 깊이)</div>
+              <div class="menu-action" data-action="tool-sweep">스윕 (Sweep · 경로 따라 파이프)<span class="mk">W</span></div>
+              <div class="menu-action" data-action="tool-loft">로프트 (Loft · 단면 블렌드 화병)</div>
+              <div class="menu-action" data-action="loft-selected-faces">로프트 — 선택 면 2개 (Loft 2 faces)</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="revolve-x">회전체 Revolve · X축</div>
+              <div class="menu-action" data-action="revolve-y">회전체 Revolve · Y축</div>
+              <div class="menu-action" data-action="revolve-z">회전체 Revolve · Z축</div>
+              <div class="menu-action" data-action="revolve-face-solid">회전체 — 선택 면 (Revolve · 각도 입력 · 부분/360°)</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="thicken-faces">🧱 셸 (Thicken/Shell)…</div>
+              <div class="menu-action" data-action="tool-wall">벽 (Wall · 기준선 → 두께·높이 압출)</div>
+              <div class="menu-action" data-action="tool-window">창 (Window · 벽 면에 사각 개구부)</div>
+              <div class="menu-action" data-action="tool-plane">작업 평면 (3-Point Plane · 3점으로 평면 고정)</div>
+            </div>
+          </div>
           <div class="menu-sep"></div>
-          <div class="menu-action" data-action="tool-group">그룹 (Group)<span class="mk">Ctrl+G</span></div>
-          <div class="menu-action" data-action="tool-ungroup">그룹 해제 (Ungroup)<span class="mk">Ctrl+Shift+G</span></div>
-          <div class="menu-action" data-action="tool-make-component">컴포넌트로 변환</div>
-          <div class="menu-action" data-action="tool-explode">분해 (Explode)</div>
-          <div class="menu-sep"></div>
-          <div class="menu-action" data-action="synthesize-faces">자유 엣지 → 면 합성</div>
-          <div class="menu-action" data-action="resynthesize-faces">🔄 면 재합성 (닫힌 라인 cycle → face)</div>
-          <!-- ADR-148 β-4. Ctrl+B has worked since the tool landed; it was in
-               no menu, no toolbar and no help sheet, so nobody could find it.
-               Sits beside 면 재합성 because that sweeps the whole mesh while
-               this one takes the single region you click (AutoCAD BPOLY). -->
-          <div class="menu-action" data-action="tool-boundary">📍 영역 클릭 → 면 (Boundary · BPOLY)<span class="mk">Ctrl+B</span></div>
-          <div class="menu-action" data-action="solidify">🧩 Solidify (열린 쉘 → 닫힌 솔리드)</div>
-          <div class="menu-action" data-action="mesh-repair">🩹 Heal · Mesh Repair (퇴화/와인딩/고립 정리)</div>
-          <div class="menu-sep"></div>
-          <div class="menu-action" data-action="sketch-start-auto">✨ 스케치 시작 · 자동 평면 감지<span class="mk">⇧S</span></div>
-          <div class="menu-action" data-action="sketch-start-xz">✏️ 스케치 시작 · XZ 바닥 (평면도)</div>
-          <div class="menu-action" data-action="sketch-start-xy">✏️ 스케치 시작 · XY 정면 (입면도)</div>
-          <div class="menu-action" data-action="sketch-start-yz">✏️ 스케치 시작 · YZ 측면</div>
-          <div class="menu-action" data-action="sketch-start-face">✏️ 스케치 시작 · 선택 면</div>
-          <div class="menu-action" data-action="sketch-resume-last">↩ 스케치 재개 · 마지막 평면</div>
-          <div class="menu-action" data-action="sketch-align-up">↻ 스케치 up 카메라 정렬</div>
-          <div class="menu-action" data-action="sketch-exit">스케치 종료</div>
+
+          <div class="menu-action menu-sub">Boolean
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="bool-union">BREP ∪ · 합집합 (Union)<span class="mk">F8</span></div>
+              <div class="menu-action" data-action="bool-subtract">BREP − · 차집합 (Subtract)</div>
+              <div class="menu-action" data-action="bool-intersect">BREP ∩ · 교집합 (Intersect)<span class="mk">F9</span></div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="intersect-with-model">모델과 교차 (Intersect with Model)</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">면 · 힐링
+            <div class="menu-dropdown">
+              <!-- ADR-148 β-4. Ctrl+B has worked since the tool landed but was in
+                   no menu; it takes the single region you click (AutoCAD BPOLY),
+                   while 면 합성 sweeps the whole mesh. -->
+              <div class="menu-action" data-action="tool-boundary">📍 영역 클릭 → 면 (Boundary · BPOLY)<span class="mk">Ctrl+B</span></div>
+              <div class="menu-action" data-action="synthesize-faces">자유 엣지 → 면 합성</div>
+              <div class="menu-action" data-action="resynthesize-faces">🔄 면 재합성 (닫힌 라인 cycle → face)</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="solidify">🧩 Solidify (열린 쉘 → 닫힌 솔리드)</div>
+              <div class="menu-action" data-action="mesh-repair">🩹 Heal · Mesh Repair (퇴화/와인딩/고립 정리)</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">스케치
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="sketch-start-auto">✨ 스케치 시작 · 자동 평면 감지<span class="mk">⇧S</span></div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="sketch-start-xz">✏️ 스케치 시작 · XZ 바닥 (평면도)</div>
+              <div class="menu-action" data-action="sketch-start-xy">✏️ 스케치 시작 · XY 정면 (입면도)</div>
+              <div class="menu-action" data-action="sketch-start-yz">✏️ 스케치 시작 · YZ 측면</div>
+              <div class="menu-action" data-action="sketch-start-face">✏️ 스케치 시작 · 선택 면</div>
+              <div class="menu-sep"></div>
+              <div class="menu-action" data-action="sketch-resume-last">↩ 스케치 재개 · 마지막 평면</div>
+              <div class="menu-action" data-action="sketch-align-up">↻ 스케치 up 카메라 정렬</div>
+              <div class="menu-action" data-action="sketch-exit">스케치 종료</div>
+            </div>
+          </div>
+
+          <div class="menu-action menu-sub">그룹
+            <div class="menu-dropdown">
+              <div class="menu-action" data-action="tool-group">그룹 (Group)<span class="mk">Ctrl+G</span></div>
+              <div class="menu-action" data-action="tool-ungroup">그룹 해제 (Ungroup)<span class="mk">Ctrl+Shift+G</span></div>
+              <div class="menu-action" data-action="tool-make-component">컴포넌트로 변환</div>
+              <div class="menu-action" data-action="tool-explode">분해 (Explode)</div>
+            </div>
+          </div>
         </div>
       </div>
 
