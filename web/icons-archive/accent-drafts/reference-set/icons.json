@@ -2,8 +2,8 @@
   {
     "key": "region-nested",
     "label": "영역/사각형 (region)",
-    "note": "square in square + 빨강 코너",
-    "inner": "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\"/><rect x=\"8.5\" y=\"8.5\" width=\"7\" height=\"7\"/><path class=\"accent\" d=\"M4 7.5 L4 4 L7.5 4 M16.5 4 L20 4 L20 7.5 M4 16.5 L4 20 L7.5 20 M16.5 20 L20 20 L20 16.5\"/>"
+    "note": "square in square + 빨간 점(코너)",
+    "inner": "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\"/><rect x=\"8.5\" y=\"8.5\" width=\"7\" height=\"7\"/><circle class=\"accent-fill\" cx=\"4\" cy=\"4\" r=\"1.7\"/><circle class=\"accent-fill\" cx=\"20\" cy=\"4\" r=\"1.7\"/><circle class=\"accent-fill\" cx=\"4\" cy=\"20\" r=\"1.7\"/><circle class=\"accent-fill\" cx=\"20\" cy=\"20\" r=\"1.7\"/>"
   },
   {
     "key": "line",
@@ -38,20 +38,20 @@
   {
     "key": "arrow-2way",
     "label": "양방향 화살 (빨강)",
-    "note": "red ↔",
+    "note": "red ↔ (아이콘 전체 빨강)",
     "inner": "<path class=\"accent\" d=\"M4 12 L20 12 M7.5 8.5 L4 12 L7.5 15.5 M16.5 8.5 L20 12 L16.5 15.5\"/>"
   },
   {
     "key": "corner-mark",
-    "label": "직각 코너 + 빨강 점",
-    "note": "ㄴ + 빨강 사각",
-    "inner": "<path d=\"M6 4 L6 18 L20 18\"/><rect class=\"accent-fill\" x=\"4.4\" y=\"16.4\" width=\"3.2\" height=\"3.2\"/>"
+    "label": "직각 코너 + 빨간 점",
+    "note": "ㄴ + 빨간 점(꼭짓점)",
+    "inner": "<path d=\"M6 4 L6 18 L20 18\"/><circle class=\"accent-fill\" cx=\"6\" cy=\"18\" r=\"2\"/>"
   },
   {
     "key": "fillet",
     "label": "필렛(둥근 모서리)",
-    "note": "빨강 곡선 코너",
-    "inner": "<path d=\"M6 3 L6 10\"/><path class=\"accent\" d=\"M6 10 A 8 8 0 0 0 14 18\"/><path d=\"M14 18 L21 18\"/>"
+    "note": "빨강 없음",
+    "inner": "<path d=\"M6 3 L6 10\"/><path d=\"M6 10 A 8 8 0 0 0 14 18\"/><path d=\"M14 18 L21 18\"/>"
   },
   {
     "key": "ring",
@@ -67,9 +67,9 @@
   },
   {
     "key": "triangle",
-    "label": "삼각형 (빗변 빨강)",
-    "note": "직각삼각형",
-    "inner": "<path d=\"M5 5 L5 19 L19 19\"/><path class=\"accent\" d=\"M19 19 L5 5\"/>"
+    "label": "삼각형",
+    "note": "빨강 없음",
+    "inner": "<path d=\"M5 5 L5 19 L19 19 Z\"/>"
   },
   {
     "key": "boundary-poly",
@@ -79,20 +79,20 @@
   },
   {
     "key": "rect-basepoint",
-    "label": "사각형+기준점(빨강)",
-    "note": "red base corner",
-    "inner": "<rect x=\"5\" y=\"6\" width=\"14\" height=\"12\"/><path class=\"accent\" d=\"M3 18 L7 18 M5 16 L5 20\"/>"
+    "label": "사각형 + 빨간 점",
+    "note": "red base point(코너)",
+    "inner": "<rect x=\"5\" y=\"6\" width=\"14\" height=\"12\"/><circle class=\"accent-fill\" cx=\"5\" cy=\"18\" r=\"2\"/>"
   },
   {
     "key": "triangle-diag",
     "label": "삼각형 B",
-    "note": "대각 삼각형",
+    "note": "빨강 없음",
     "inner": "<path d=\"M5 19 L19 19 L19 5 Z\"/>"
   },
   {
     "key": "quad",
     "label": "사변형/트래피조이드",
-    "note": "irregular quad",
+    "note": "빨강 없음",
     "inner": "<path d=\"M4 18 L7 7 L19 5 L20 16 Z\"/>"
   },
   {

@@ -1,6 +1,6 @@
 // Reference-set generator.
-// Recreates the shapes from the user's reference image as icons, with red/green
-// accents, and writes standalone SVGs + a catalog. NOT applied to the engine.
+// Recreates the shapes from the user's reference image as icons, with red DOTS
+// (accent points) and a green hatch. NOT applied to the engine.
 //   node icons-archive/accent-drafts/reference-set/generate.mjs   (from web/)
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -8,9 +8,12 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 
 const RED = '#ef4444', GREEN = '#22c55e';
+// red pick-point dot helper
+const dot = (x, y, r = 1.7) => `<circle class="accent-fill" cx="${x}" cy="${y}" r="${r}"/>`;
+
 const ICONS = [
-  { key:'region-nested', label:'영역/사각형 (region)', note:'square in square + 빨강 코너',
-    inner:`<rect x="4" y="4" width="16" height="16"/><rect x="8.5" y="8.5" width="7" height="7"/><path class="accent" d="M4 7.5 L4 4 L7.5 4 M16.5 4 L20 4 L20 7.5 M4 16.5 L4 20 L7.5 20 M16.5 20 L20 20 L20 16.5"/>` },
+  { key:'region-nested', label:'영역/사각형 (region)', note:'square in square + 빨간 점(코너)',
+    inner:`<rect x="4" y="4" width="16" height="16"/><rect x="8.5" y="8.5" width="7" height="7"/>${dot(4,4)}${dot(20,4)}${dot(4,20)}${dot(20,20)}` },
   { key:'line', label:'선 (line)', note:'가로 선',
     inner:`<path d="M4 12 L20 12"/><circle cx="4" cy="12" r="1.3" class="filled"/><circle cx="20" cy="12" r="1.3" class="filled"/>` },
   { key:'corner-open', label:'모서리/폴리라인 A', note:'ㄴ자 열린 코너',
@@ -21,25 +24,25 @@ const ICONS = [
     inner:`<path d="M17 5 L6 5 L6 19 L17 19"/>` },
   { key:'arc-u', label:'호/U 곡선', note:'U 골 곡선',
     inner:`<path d="M5 6 L5 11 A 7 7 0 0 0 19 11 L19 6"/>` },
-  { key:'arrow-2way', label:'양방향 화살 (빨강)', note:'red ↔',
+  { key:'arrow-2way', label:'양방향 화살 (빨강)', note:'red ↔ (아이콘 전체 빨강)',
     inner:`<path class="accent" d="M4 12 L20 12 M7.5 8.5 L4 12 L7.5 15.5 M16.5 8.5 L20 12 L16.5 15.5"/>` },
-  { key:'corner-mark', label:'직각 코너 + 빨강 점', note:'ㄴ + 빨강 사각',
-    inner:`<path d="M6 4 L6 18 L20 18"/><rect class="accent-fill" x="4.4" y="16.4" width="3.2" height="3.2"/>` },
-  { key:'fillet', label:'필렛(둥근 모서리)', note:'빨강 곡선 코너',
-    inner:`<path d="M6 3 L6 10"/><path class="accent" d="M6 10 A 8 8 0 0 0 14 18"/><path d="M14 18 L21 18"/>` },
+  { key:'corner-mark', label:'직각 코너 + 빨간 점', note:'ㄴ + 빨간 점(꼭짓점)',
+    inner:`<path d="M6 4 L6 18 L20 18"/>${dot(6,18,2)}` },
+  { key:'fillet', label:'필렛(둥근 모서리)', note:'빨강 없음',
+    inner:`<path d="M6 3 L6 10"/><path d="M6 10 A 8 8 0 0 0 14 18"/><path d="M14 18 L21 18"/>` },
   { key:'ring', label:'링/동심원', note:'concentric',
     inner:`<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.8"/>` },
   { key:'diamond-nested', label:'다이아 중첩', note:'nested diamond',
     inner:`<path d="M12 3 L21 12 L12 21 L3 12 Z"/><path d="M12 8 L16 12 L12 16 L8 12 Z"/>` },
-  { key:'triangle', label:'삼각형 (빗변 빨강)', note:'직각삼각형',
-    inner:`<path d="M5 5 L5 19 L19 19"/><path class="accent" d="M19 19 L5 5"/>` },
+  { key:'triangle', label:'삼각형', note:'빨강 없음',
+    inner:`<path d="M5 5 L5 19 L19 19 Z"/>` },
   { key:'boundary-poly', label:'경계 폴리곤', note:'집/펜타곤',
     inner:`<path d="M4 20 L4 10 L12 4 L20 10 L20 20 Z"/>` },
-  { key:'rect-basepoint', label:'사각형+기준점(빨강)', note:'red base corner',
-    inner:`<rect x="5" y="6" width="14" height="12"/><path class="accent" d="M3 18 L7 18 M5 16 L5 20"/>` },
-  { key:'triangle-diag', label:'삼각형 B', note:'대각 삼각형',
+  { key:'rect-basepoint', label:'사각형 + 빨간 점', note:'red base point(코너)',
+    inner:`<rect x="5" y="6" width="14" height="12"/>${dot(5,18,2)}` },
+  { key:'triangle-diag', label:'삼각형 B', note:'빨강 없음',
     inner:`<path d="M5 19 L19 19 L19 5 Z"/>` },
-  { key:'quad', label:'사변형/트래피조이드', note:'irregular quad',
+  { key:'quad', label:'사변형/트래피조이드', note:'빨강 없음',
     inner:`<path d="M4 18 L7 7 L19 5 L20 16 Z"/>` },
   { key:'lens', label:'렌즈/뾰족 타원', note:'vesica',
     inner:`<path d="M12 3 Q 18 12 12 21 Q 6 12 12 3 Z"/>` },
@@ -93,7 +96,7 @@ const catalog = `<!doctype html><html lang="ko"><head><meta charset="utf-8">
   figcaption .nt{ display:block; color:var(--sub); font-size:10px; margin-top:1px; }
 </style></head><body><div class="wrap">
 <h1>참조 아이콘 세트 (WIP)</h1>
-<p class="lead">사용자 참조 이미지의 모양들을 우리 SVG 스타일로 재현 (${ICONS.length}종). 빨강=강조, 초록=해치.</p>
+<p class="lead">사용자 참조 이미지의 모양들을 우리 SVG 스타일로 재현 (${ICONS.length}종). 빨강=점(꼭짓점), 초록=해치.</p>
 <div class="warn">⚠️ 참조 이미지가 저해상도라 <b>제 해석</b>이 들어갔습니다. 틀린 모양/이름은 알려주시면 고칩니다. <b>엔진 미적용</b> — 드래프트 보관용.</div>
 <div class="grid">${cells}</div>
 </div></body></html>\n`;
