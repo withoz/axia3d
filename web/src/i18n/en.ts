@@ -127,6 +127,7 @@ export const EN: Record<string, string> = {
   '면 · 힐링': 'Surface · Heal',
   '배열': 'Array',
   '필렛 · 챔퍼': 'Fillet · Chamfer',
+  '🛠️ 개발자 (Debug)': '🛠️ Developer (Debug)',
 
   // ── Primitives ──
   '박스 (Box)': 'Box',
