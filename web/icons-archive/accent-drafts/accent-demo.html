@@ -1,0 +1,71 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>강조색(Accent) 아이콘 데모 — WIP</title>
+<style>
+  :root{ --bg:#0e141b; --ink:#e6edf4; --sub:#93a4b5; --line:#26333f; --accent:#33d6c2; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap{ max-width:860px; margin:0 auto; padding:26px 18px 70px; }
+  .eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); font-weight:700; margin:0 0 5px; }
+  h1{ margin:0 0 8px; font-size:21px; font-weight:800; }
+  p.lead{ margin:0 0 20px; color:var(--sub); font-size:13.5px; }
+  p.lead b{ color:var(--ink); }
+  .warn{ background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:8px; padding:9px 12px; font-size:12.5px; color:var(--ink); margin:0 0 18px; }
+  table{ border-collapse:collapse; width:100%; }
+  th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--sub); padding:0 0 8px; border-bottom:1px solid var(--line); }
+  td{ padding:10px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  .tool{ font-size:13px; font-weight:600; }
+  .tool small{ display:block; color:var(--sub); font-weight:400; font-size:11px; margin-top:1px; }
+  .chip{ width:44px; height:44px; border-radius:9px; background:rgba(20,22,28,0.96); display:inline-grid; place-items:center; }
+  .chip svg{ width:26px; height:26px; fill:none; stroke:#e8e8e8; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .chip svg .filled{ fill:#e8e8e8; stroke:none; }
+  /* accent classes — the only additions needed to apply this for real */
+  .chip svg .accent{ stroke:#ef4444; }
+  .chip svg .accent-fill{ fill:#ef4444; stroke:none; }
+  code{ background:rgba(255,255,255,0.07); padding:1px 5px; border-radius:4px; font-size:12px; }
+</style></head><body><div class="wrap">
+  <p class="eyebrow">AxiA 3D · 아이콘 강조색 데모 (WIP)</p>
+  <h1>컬러(강조색) 아이콘 — 가능성 데모</h1>
+  <div class="warn">⚠️ 이 데모는 <b>보관용</b>입니다. 아직 엔진 툴바에 적용하지 않았고, 모아서 선별 후 일괄 적용 예정입니다.</div>
+  <p class="lead">방식: 도구가 <b>작용하는 부분</b>만 빨강 (AutoCAD/BricsCAD 관례). 나머지는 흰색. 구현은 CSS에 <code>.accent</code>(선)/<code>.accent-fill</code>(면) 클래스만 추가하고 강조할 요소에 붙이면 됩니다.</p>
+  <table>
+    <thead><tr><th>도구</th><th>현재 (단색)</th><th>강조색 (빨강)</th><th>빨강 = ?</th></tr></thead>
+    <tbody>
+      <tr><td class="tool">필렛 <small>fillet-edge</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M4 4 L4 20 L20 20" stroke-dasharray="2 2"/><path d="M4 4 L4 12 A 8 8 0 0 0 12 20 L20 20"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M4 4 L4 20 L20 20" stroke-dasharray="2 2"/><path class="accent" d="M4 4 L4 12 A 8 8 0 0 0 12 20 L20 20"/></svg></span></td>
+        <td class="tool"><small>둥글려지는 모서리</small></td></tr>
+      <tr><td class="tool">챔퍼 <small>chamfer-edge</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M4 4 L4 20 L20 20" stroke-dasharray="2 2"/><path d="M4 4 L4 11 L13 20 L20 20"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M4 4 L4 20 L20 20" stroke-dasharray="2 2"/><path class="accent" d="M4 4 L4 11 L13 20 L20 20"/></svg></span></td>
+        <td class="tool"><small>깎이는 모서리</small></td></tr>
+      <tr><td class="tool">오프셋 <small>offset</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><rect class="accent" x="8" y="8" width="8" height="8" rx="0.5"/></svg></span></td>
+        <td class="tool"><small>오프셋된 결과</small></td></tr>
+      <tr><td class="tool">포켓 <small>recess</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M3 8 L12 4 L21 8 L12 12 Z"/><path d="M3 8 L3 14 L12 18 L12 12 M21 8 L21 14 L12 18"/><path d="M8 8 L14 6 L18 8 L12 10 Z"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M3 8 L12 4 L21 8 L12 12 Z"/><path d="M3 8 L3 14 L12 18 L12 12 M21 8 L21 14 L12 18"/><path class="accent" d="M8 8 L14 6 L18 8 L12 10 Z"/></svg></span></td>
+        <td class="tool"><small>파내는 영역</small></td></tr>
+      <tr><td class="tool">밀기/당기기 <small>pushpull</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M6 21 L18 21 M12 17 L12 4 M8 8 L12 4 L16 8"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M6 21 L18 21"/><path class="accent" d="M12 17 L12 4 M8 8 L12 4 L16 8"/></svg></span></td>
+        <td class="tool"><small>압출 방향</small></td></tr>
+      <tr><td class="tool">차집합 <small>bool-subtract</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6" stroke-dasharray="2 2"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle class="accent" cx="15" cy="12" r="6" stroke-dasharray="2 2"/></svg></span></td>
+        <td class="tool"><small>빼내는 대상</small></td></tr>
+      <tr><td class="tool">교집합 <small>bool-intersect</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/><path d="M12 7.2 A 6 6 0 0 1 12 16.8 A 6 6 0 0 1 12 7.2 Z" class="filled"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/><path d="M12 7.2 A 6 6 0 0 1 12 16.8 A 6 6 0 0 1 12 7.2 Z" class="accent-fill"/></svg></span></td>
+        <td class="tool"><small>겹치는 결과</small></td></tr>
+      <tr><td class="tool">미러 <small>mirror-x</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path d="M12 2 L12 22" stroke-dasharray="2 2"/><path d="M9 6 L4 12 L9 18 Z"/><path d="M15 6 L20 12 L15 18 Z"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><path class="accent" d="M12 2 L12 22" stroke-dasharray="2 2"/><path d="M9 6 L4 12 L9 18 Z"/><path d="M15 6 L20 12 L15 18 Z"/></svg></span></td>
+        <td class="tool"><small>대칭 축</small></td></tr>
+      <tr><td class="tool">구멍 <small>hole</small></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><circle cx="12" cy="12" r="4"/></svg></span></td>
+        <td><span class="chip"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><circle class="accent" cx="12" cy="12" r="4"/></svg></span></td>
+        <td class="tool"><small>뚫는 구멍</small></td></tr>
+    </tbody>
+  </table>
+  <p class="lead" style="margin-top:22px">적용은 <code>web/icons-archive/accent-drafts/README.md</code> 참조. 선별 후 <code>index.html</code>에 CSS + <code>class="accent"</code> 일괄 반영.</p>
+</div></body></html>
