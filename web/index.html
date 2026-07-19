@@ -349,6 +349,18 @@
       background: rgba(255, 255, 255, 0.08);
       margin: 4px 6px;
     }
+    /* Section label inside a dropdown (non-interactive). Makes long
+       flyouts like the organic-family group scannable. */
+    .tool-dropdown-header {
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: rgba(255, 255, 255, 0.38);
+      padding: 8px 14px 3px;
+      user-select: none;
+      pointer-events: none;
+    }
+    .tool-dropdown-header:first-child { padding-top: 4px; }
 
     .tool-group {
       display: flex;
@@ -2417,6 +2429,7 @@
             <svg viewBox="0 0 12 12"><path d="M2 4 L6 8 L10 4"/></svg>
           </button>
           <div class="tool-dropdown-panel">
+            <div class="tool-dropdown-header">MESH</div>
             <div class="tool-dropdown-item active" data-action="subdivide">
               <span class="tdi-icon"><svg viewBox="0 0 24 24">
                 <path d="M12 4 L20.66 19 L3.34 19 Z"/>
@@ -2425,7 +2438,7 @@
               <span class="tdi-label">서브디비전 (Subdivide)</span>
               <span class="tdi-key"></span>
             </div>
-            <div class="tool-dropdown-sep"></div>
+            <div class="tool-dropdown-header">MIRROR · ARRAY</div>
             <div class="tool-dropdown-item" data-action="mirror-x">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M12 2 L12 22" stroke-dasharray="2 2"/><path d="M9 6 L4 12 L9 18 Z"/><path d="M15 6 L20 12 L15 18 Z"/></svg></span>
               <span class="tdi-label">Mirror · YZ 평면 (X 반전)</span>
@@ -2451,7 +2464,7 @@
               <span class="tdi-label">원형 배열 (Radial)…</span>
               <span class="tdi-key"></span>
             </div>
-            <div class="tool-dropdown-sep"></div>
+            <div class="tool-dropdown-header">REVOLVE</div>
             <div class="tool-dropdown-item" data-action="revolve-x">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M3 12 L21 12" stroke-dasharray="2 2"/><path d="M5 12 Q 8 5 12 5 Q 16 5 19 12"/><path d="M9 18 A 3 6 0 0 0 15 18"/><path d="M9 18 L10.6 16.8 M9 18 L10.4 19.6"/></svg></span>
               <span class="tdi-label">Revolve · X축 회전</span>
@@ -2467,7 +2480,7 @@
               <span class="tdi-label">Revolve · Z축 회전</span>
               <span class="tdi-key"></span>
             </div>
-            <div class="tool-dropdown-sep"></div>
+            <div class="tool-dropdown-header">FILLET · CHAMFER</div>
             <div class="tool-dropdown-item" data-action="fillet-edge">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M4 4 L4 20 L20 20" stroke-dasharray="2 2"/><path d="M4 4 L4 12 A 8 8 0 0 0 12 20 L20 20"/></svg></span>
               <span class="tdi-label">엣지 필렛 (Fillet)…</span>
@@ -2478,7 +2491,7 @@
               <span class="tdi-label">엣지 챔퍼 (Chamfer)…</span>
               <span class="tdi-key"></span>
             </div>
-            <div class="tool-dropdown-sep"></div>
+            <div class="tool-dropdown-header">DEFORM</div>
             <div class="tool-dropdown-item" data-action="bend-selection">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M5 20 Q 5 5 19 8"/><path d="M8 20 Q 8 9 19 11"/><path d="M5 20 L8 20"/></svg></span>
               <span class="tdi-label">선택 구부리기 (Bend)…</span>
@@ -2494,7 +2507,7 @@
               <span class="tdi-label">선택 테이퍼 (Taper)…</span>
               <span class="tdi-key"></span>
             </div>
-            <div class="tool-dropdown-sep"></div>
+            <div class="tool-dropdown-header">SHELL</div>
             <div class="tool-dropdown-item" data-action="thicken-faces">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M4 8 L12 4 L20 8 L12 12 Z"/><path d="M4 8 L4 16 L12 20 L12 12 M20 8 L20 16 L12 20"/><path d="M7 9.5 L12 7 L17 9.5 L12 12 Z"/></svg></span>
               <span class="tdi-label">🧱 셸 (Thicken/Shell)…</span>
