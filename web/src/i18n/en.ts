@@ -918,6 +918,7 @@ export const EN: Record<string, string> = {
   'glTF 내보내기': 'Export glTF',
   'IFC 내보내기': 'Export IFC',
   'IFC 내보내기 완료': 'IFC export complete',
+  'IFC 내보내기 완료 (analytic)': 'IFC export complete (analytic)',
   '내보낼 형상이 없습니다.': 'No geometry to export.',
   'STEP 내보내기': 'Export STEP',
   'IGES 내보내기': 'Export IGES',

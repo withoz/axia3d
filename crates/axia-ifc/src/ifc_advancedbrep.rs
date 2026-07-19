@@ -23,7 +23,7 @@
 use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, dir, placement_axes, pt};
 use crate::step_value::{EntityRef, StepValue};
 use crate::step_writer::StepWriter;
-use axia_geo::AnalyticSurface;
+use axia_geo::{AnalyticSurface, HeId, Mesh};
 use glam::DVec3;
 
 /// One face of an advanced B-rep: an analytic surface trimmed by boundary loops.
@@ -106,6 +106,94 @@ pub fn emit_advanced_brep(faces: &[AdvancedFace], scale: f64, name: &str) -> Res
     emit_product_and_spatial(&mut w, &sc, name, brep, "AdvancedBrep");
 
     Ok(w.build())
+}
+
+/// Extract an [`AdvancedBrep`](emit_advanced_brep) directly from a live DCEL
+/// [`Mesh`] (ADR-203 β-2.5). Walks every **active** face, reading its analytic
+/// surface + boundary loops (outer + holes) + orientation. `scale` converts
+/// engine units to the IFC unit (metre); `name` labels the wall.
+///
+/// **All-or-nothing**: errors (→ caller falls back to β-1.5 faceted export) if
+/// *any* active face lacks a supported analytic surface (Plane/Cylinder/Sphere/
+/// Cone/Torus) or has a boundary that cannot be a straight-edge loop — in
+/// particular Path B curved faces, whose rims are 1-vertex self-loops, need
+/// curved edges (β-3). Planar-face models (boxes, extruded polygons) export as
+/// exact `IfcAdvancedFace(IfcPlane)` here.
+pub fn emit_advanced_brep_from_mesh(mesh: &Mesh, scale: f64, name: &str) -> Result<String, String> {
+    let faces = advanced_faces_from_mesh(mesh)?;
+    emit_advanced_brep(&faces, scale, name)
+}
+
+/// Build the [`AdvancedFace`] list from a mesh's active faces (engine units).
+fn advanced_faces_from_mesh(mesh: &Mesh) -> Result<Vec<AdvancedFace>, String> {
+    let mut out = Vec::new();
+    for (fid, face) in mesh.faces.iter() {
+        if !face.is_active() {
+            continue;
+        }
+        let surface = mesh
+            .face_surface(fid)
+            .ok_or_else(|| format!("face {:?}: no analytic surface (advanced brep needs every face analytic)", fid))?
+            .clone();
+        let outer = loop_positions(mesh, face.outer().start)
+            .ok_or_else(|| format!("face {:?}: outer loop unreadable", fid))?;
+        let mut inners = Vec::with_capacity(face.inners().len());
+        for lr in face.inners() {
+            inners.push(
+                loop_positions(mesh, lr.start)
+                    .ok_or_else(|| format!("face {:?}: inner loop unreadable", fid))?,
+            );
+        }
+        let same_sense = compute_same_sense(&outer, &surface);
+        out.push(AdvancedFace { surface, outer, inners, same_sense });
+    }
+    if out.is_empty() {
+        return Err("no active faces".into());
+    }
+    Ok(out)
+}
+
+/// Resolve a DCEL boundary loop (from its start half-edge) to world vertex
+/// positions (engine units).
+fn loop_positions(mesh: &Mesh, start: HeId) -> Option<Vec<DVec3>> {
+    let vids = mesh.collect_loop_verts(start).ok()?;
+    let mut ps = Vec::with_capacity(vids.len());
+    for v in vids {
+        ps.push(mesh.vertex_pos(v).ok()?);
+    }
+    Some(ps)
+}
+
+/// `IfcAdvancedFace.SameSense`: does the face's outward normal (Newell of the
+/// outer loop, CCW-outward per ADR-007) agree with the surface's parametric
+/// normal at a boundary point? Defaults `true` on a degenerate probe (matching
+/// the ADR-033 convention that attached surfaces are oriented face-outward).
+fn compute_same_sense(outer: &[DVec3], surface: &AnalyticSurface) -> bool {
+    let n_face = newell(outer);
+    if n_face.length_squared() < 1e-18 {
+        return true;
+    }
+    // A boundary vertex lies on the surface, so its normal is well-defined
+    // (unlike the loop centroid, which is inside a curved face).
+    let n_surf = surface.normal_at_world_pos(outer[0]);
+    if n_surf.length_squared() < 1e-18 {
+        return true;
+    }
+    n_face.dot(n_surf) >= 0.0
+}
+
+/// Newell's method — area-weighted polygon normal (robust to non-planarity).
+fn newell(pts: &[DVec3]) -> DVec3 {
+    let n = pts.len();
+    let mut acc = DVec3::ZERO;
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        acc.x += (a.y - b.y) * (a.z + b.z);
+        acc.y += (a.z - b.z) * (a.x + b.x);
+        acc.z += (a.x - b.x) * (a.y + b.y);
+    }
+    acc
 }
 
 /// Map an [`AnalyticSurface`] to its IFC surface entity, returning the `#N` ref.
@@ -473,5 +561,70 @@ mod tests {
     #[test]
     fn empty_faces_rejected() {
         assert!(emit_advanced_brep(&[], 0.001, "e").is_err());
+    }
+
+    // ── β-2.5: extract advanced brep directly from a live DCEL mesh ──
+
+    #[test]
+    fn box_mesh_exports_six_planar_advanced_faces() {
+        // Mesh::create_box attaches a Plane surface to all 6 faces (ADR-087 K-δ).
+        let mut mesh = Mesh::new();
+        mesh.create_box(
+            DVec3::new(0.0, 0.0, 0.0),
+            2000.0, // width  (X) mm
+            3000.0, // height (Z) mm
+            4000.0, // depth  (Y) mm
+            axia_geo::MaterialId::new(0),
+        )
+        .unwrap();
+
+        let s = emit_advanced_brep_from_mesh(&mesh, 0.001, "box").unwrap();
+        assert!(s.contains("FILE_SCHEMA(('IFC4X3'));"));
+        assert!(s.contains("=IFCADVANCEDBREP("));
+        assert!(s.contains("'AdvancedBrep'"));
+        // Every box face is planar → 6 IfcAdvancedFace(IfcPlane), 4-edge loops.
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 6);
+        assert_eq!(s.matches("=IFCPLANE(").count(), 6);
+        assert_eq!(s.matches("=IFCEDGELOOP(").count(), 6);
+        assert_eq!(s.matches("=IFCEDGECURVE(").count(), 24);
+        assert_eq!(s.matches("=IFCCLOSEDSHELL(").count(), 1);
+        assert!(!s.contains("=IFCFACETEDBREP("), "advanced, not faceted");
+        assert_refs_resolve(&s);
+        // width 2000(X)→±1m, depth 4000(Y)→±2m, height 3000(Z)→±1.5m: the
+        // +++ corner is (1,2,1.5) in metres.
+        assert!(s.contains("IFCCARTESIANPOINT((1.,2.,1.5))"), "corner in metres");
+    }
+
+    #[test]
+    fn box_mesh_faces_are_same_sense_outward() {
+        // create_box winds CCW-outward and attaches face-outward Plane surfaces,
+        // so every advanced face should be SameSense .T. (no .F.).
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        let s = emit_advanced_brep_from_mesh(&mesh, 0.001, "b").unwrap();
+        // 6 advanced faces, all SameSense .T.
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 6);
+        for line in s.lines().filter(|l| l.contains("=IFCADVANCEDFACE(")) {
+            assert!(line.ends_with(",.T.);"), "outward face is SameSense .T.: {}", line);
+        }
+    }
+
+    #[test]
+    fn empty_mesh_errors_for_faceted_fallback() {
+        let mesh = Mesh::new();
+        // No active faces → Err → caller (wasm) falls back to faceted export.
+        assert!(emit_advanced_brep_from_mesh(&mesh, 0.001, "e").is_err());
+    }
+
+    #[test]
+    fn box_mesh_export_byte_identical() {
+        let build = || {
+            let mut mesh = Mesh::new();
+            mesh.create_box(DVec3::ZERO, 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
+                .unwrap();
+            emit_advanced_brep_from_mesh(&mesh, 0.001, "b").unwrap()
+        };
+        assert_eq!(build(), build(), "deterministic (L-203-2)");
     }
 }
