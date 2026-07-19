@@ -916,6 +916,9 @@ export const EN: Record<string, string> = {
   'OBJ 내보내기': 'Export OBJ',
   'STL 내보내기': 'Export STL',
   'glTF 내보내기': 'Export glTF',
+  'IFC 내보내기': 'Export IFC',
+  'IFC 내보내기 완료': 'IFC export complete',
+  '내보낼 형상이 없습니다.': 'No geometry to export.',
   'STEP 내보내기': 'Export STEP',
   'IGES 내보내기': 'Export IGES',
 
@@ -1163,6 +1166,7 @@ export const EN: Record<string, string> = {
   // ── MenuBar ──
   '현재 작업을 초기화하시겠습니까?': 'Discard the current work and start over?',
   'DXF 내보내기에 실패했습니다': 'Could not export the DXF',
+  'IFC 내보내기에 실패했습니다': 'Could not export the IFC',
   'OBJ 내보내기에 실패했습니다': 'Could not export the OBJ',
   'glTF 내보내기에 실패했습니다': 'Could not export the glTF',
   'STL 내보내기에 실패했습니다': 'Could not export the STL',

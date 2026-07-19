@@ -113,7 +113,11 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // keeps its ActionCatalog entry (a right-click item has an identity); it
     // just has nothing a dispatch surface can call. AC ⊋ CC is fine — that
     // invariant only runs one way.
-    expect(count).toBe(187);
+    //
+    // 188: export-ifc (ADR-203 β-1.5) — the first working DCEL→interchange
+    // export (IFC4.3 IfcFacetedBrep), wired to the export menu + palette, with
+    // a matching ActionCatalog entry.
+    expect(count).toBe(188);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

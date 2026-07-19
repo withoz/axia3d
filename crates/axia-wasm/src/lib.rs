@@ -5418,6 +5418,37 @@ impl AxiaEngine {
         self.cached_indices.clone()
     }
 
+    /// ADR-203 β-1.5 — export the whole model as an IFC4.3 `IfcFacetedBrep`
+    /// file (STEP-21 text). Uses the cached render tessellation (curved faces
+    /// already faceted, same source as OBJ/STL export), converting engine mm →
+    /// IFC metre. `name` labels the single IfcWall. Returns "" if the scene has
+    /// no geometry (caller should warn).
+    #[wasm_bindgen(js_name = "exportIfc")]
+    pub fn export_ifc(&mut self, name: String) -> String {
+        self.rebuild_cache();
+        if self.cached_indices.is_empty() {
+            return String::new();
+        }
+        const MM_TO_M: f64 = 0.001;
+        let pos = &self.cached_positions_f64;
+        let mut points = Vec::with_capacity(pos.len() / 3);
+        let mut i = 0;
+        while i + 2 < pos.len() {
+            points.push(DVec3::new(pos[i] * MM_TO_M, pos[i + 1] * MM_TO_M, pos[i + 2] * MM_TO_M));
+            i += 3;
+        }
+        let idx = &self.cached_indices;
+        let mut tris = Vec::with_capacity(idx.len() / 3);
+        let mut j = 0;
+        while j + 2 < idx.len() {
+            tris.push([idx[j], idx[j + 1], idx[j + 2]]);
+            j += 3;
+        }
+        let nm = name.trim();
+        let nm = if nm.is_empty() { "AXiA Model" } else { nm };
+        axia_ifc::emit_faceted_brep(&points, &tris, nm)
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {

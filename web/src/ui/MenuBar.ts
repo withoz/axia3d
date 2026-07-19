@@ -329,6 +329,18 @@ export function initMenuBar(deps: MenuBarDeps): void {
           .catch((err) => { console.error('[MenuBar] STL 내보내기 실패:', err); alert(t('STL 내보내기에 실패했습니다')); });
         break;
       }
+      // ── 내보내기 IFC (ADR-203 β-1.5 — DCEL → IFC4.3 IfcFacetedBrep) ──
+      case 'export-ifc': {
+        const ifc = bridge.exportIfc('AXiA Model');
+        if (!ifc) { Toast.warning(t('내보낼 형상이 없습니다.')); break; }
+        import('../export/ExportUtils')
+          .then(({ downloadText }) => {
+            downloadText(ifc, timestampedName('ifc'), 'application/x-step');
+            Toast.success(t('IFC 내보내기 완료'));
+          })
+          .catch((err) => { console.error('[MenuBar] IFC 내보내기 실패:', err); alert(t('IFC 내보내기에 실패했습니다')); });
+        break;
+      }
 
       // ── 편집 ──
       case 'undo': toolManager.executeAction('undo'); break;

@@ -178,3 +178,26 @@ identical (2회 emit 동일). 외부 IFC 도구는 ε.
   catalog CI), 메타-원칙 #4 (SSOT) / #5 / #6 / #10 / #16
 - `web/src/export/DxfWriter.ts` (exporter+writer 패턴 precedent)
 - `feedback_ifc_export_feasibility.md` / `feedback_aixxia_engine_compare.md` (memory)
+
+## 8. β-1.5 Acceptance (2026-07-19) — live-scene FacetedBrep + app wiring
+
+첫 **동작하는** IFC export. β-1(box writer) 위에서 실제 씬을 내보낸다.
+
+- **axia-ifc**: box emitter 를 공유 `emit_brep(points, face_loops)` 코어로
+  리팩터 + `emit_faceted_brep(positions, tris)` 추가 (crate 는 `glam`-only 유지 —
+  DCEL 은 wasm 이 이미 테셀레이트한 렌더 버퍼(`cached_positions_f64`/`cached_
+  indices`)로 넘김, 곡면도 OBJ/STL 처럼 faceted).
+- **axia-wasm**: `export_ifc(name) -> String` (engine mm → IFC metre ×0.001,
+  빈 씬 → ""). axia-ifc 를 workspace + axia-wasm dep 로 승격 (이전엔 런타임 dead).
+- **web**: WasmBridge `exportIfc` + 파일▸내보내기▸IFC + `ExportUtils.downloadText`
+  + ActionCatalog/CommandCatalog `export-ifc` (AC⊇CC, ADR-133).
+- **최초 DCEL→interchange 경로** (기존 4 exporter 는 Three.js 씬 소스).
+- **라이브 검증** (박스 2×3×4m, ADR-087 K-ζ): 3611-byte IFC4X3, 0 dangling
+  ref (모든 #N 해소), 좌표 metre, 25 pt / 12 폴리루프 / IFCFACETEDBREP +
+  IFCWALL, bare-STEP 아님 → Revit/ArchiCAD 호환.
+- **회귀**: axia-ifc +3 (`faceted_brep_tetrahedron_well_formed` /
+  `faceted_brep_byte_identical` / `box_via_emit_brep_matches_faces`),
+  CatalogConsistency 187→188. 절대 #[ignore] 금지.
+- **한계 (후속)**: 곡면이 flat facet — analytic IfcAdvancedBrep 은 β-2; 전부
+  단일 IfcWall — element-type(origin_hint) 후속; tri-soup 이라 planar face 도
+  삼각화 — analytic Plane→clean IfcFace 는 β-2.
