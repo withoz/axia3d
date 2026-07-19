@@ -1,0 +1,477 @@
+//! IfcAdvancedBrep emitter (ADR-203 β-2) — analytic surfaces + edge loops.
+//!
+//! Where [`crate::ifc_facetedbrep`] emits a triangle soup (`IfcFacetedBrep`),
+//! this emits a true B-rep whose faces carry their **analytic surface**
+//! (`IfcPlane` / `IfcCylindricalSurface` / `IfcSphericalSurface` /
+//! `IfcConicalSurface` / `IfcToroidalSurface`, mapped 1:1 from axia-geo's
+//! [`AnalyticSurface`]) and whose boundaries are `IfcEdgeLoop`s of
+//! `IfcOrientedEdge` → `IfcEdgeCurve`.
+//!
+//! **β-2 scope**: edge geometry is straight `IfcLine` only (β-2 roadmap).
+//! - **Planar faces are geometrically exact** — a box exports as 6 clean
+//!   `IfcAdvancedFace(IfcPlane)` instead of β-1.5's 12 triangles.
+//! - Curved-surface faces get an exact analytic **surface** but line-approximate
+//!   trim **edges**; proper curved edges (`IfcCircle`/`IfcBSplineCurve`) are β-3.
+//!
+//! **Units**: face fields (surface + loop verts) are in engine units (mm); the
+//! emitter multiplies every position/radius by `scale` (0.001 for mm→metre).
+//! Directions (axes) and angles are unit/radian and are *not* scaled.
+//!
+//! NURBS-class surfaces (BezierPatch/BSplineSurface/NURBSSurface) are rejected
+//! with an error in β-2 — they need `IfcBSplineSurfaceWithKnots` (β-3+).
+
+use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, dir, placement_axes, pt};
+use crate::step_value::{EntityRef, StepValue};
+use crate::step_writer::StepWriter;
+use axia_geo::AnalyticSurface;
+use glam::DVec3;
+
+/// One face of an advanced B-rep: an analytic surface trimmed by boundary loops.
+/// Coordinates are engine units (mm) — the emitter converts via `scale`.
+pub struct AdvancedFace {
+    /// The face's geometric surface (axia-geo). β-2: Plane/Cylinder/Sphere/
+    /// Cone/Torus. NURBS-class → export error.
+    pub surface: AnalyticSurface,
+    /// CCW outer boundary polygon (world verts, engine units).
+    pub outer: Vec<DVec3>,
+    /// Hole boundary loops (each CCW-in-parameter, engine units).
+    pub inners: Vec<Vec<DVec3>>,
+    /// `true` if the face normal agrees with the surface's parametric normal
+    /// (`IfcAdvancedFace.SameSense`).
+    pub same_sense: bool,
+}
+
+impl AdvancedFace {
+    /// Convenience: a planar face with no holes.
+    pub fn planar(surface: AnalyticSurface, outer: Vec<DVec3>, same_sense: bool) -> Self {
+        AdvancedFace { surface, outer, inners: Vec::new(), same_sense }
+    }
+}
+
+/// Emit `faces` as a complete IFC4.3 `IFCADVANCEDBREP` file. `scale` converts
+/// engine units to the IFC unit (metre): pass `0.001` for mm. `name` labels the
+/// single IfcWall. Errors if any face carries a NURBS-class surface (β-3) or a
+/// degenerate boundary loop.
+pub fn emit_advanced_brep(faces: &[AdvancedFace], scale: f64, name: &str) -> Result<String, String> {
+    if faces.is_empty() {
+        return Err("emit_advanced_brep: no faces".into());
+    }
+    let mut w = StepWriter::new();
+    w.file_description = format!("AXiA IFC4.3 '{}' (IfcAdvancedBrep, ADR-203)", name);
+    w.file_name = format!("{}.ifc", name);
+
+    // ── Owner / units / context (shared scaffold) ──
+    let sc = emit_owner_units_context(&mut w);
+
+    // ── Geometry: analytic advanced faces ──
+    let mut face_refs = Vec::with_capacity(faces.len());
+    for (i, f) in faces.iter().enumerate() {
+        let surface = emit_surface(&mut w, &f.surface, scale)
+            .map_err(|e| format!("face[{}]: {}", i, e))?;
+
+        let outer_loop = emit_edge_loop(&mut w, &f.outer, scale)
+            .map_err(|e| format!("face[{}] outer: {}", i, e))?;
+        let outer_bound = w.add(
+            "IFCFACEOUTERBOUND",
+            vec![StepValue::Ref(outer_loop), StepValue::Enum("T".into())],
+        );
+        let mut bounds = vec![StepValue::Ref(outer_bound)];
+        for (j, inner) in f.inners.iter().enumerate() {
+            let inner_loop = emit_edge_loop(&mut w, inner, scale)
+                .map_err(|e| format!("face[{}] inner[{}]: {}", i, j, e))?;
+            let inner_bound = w.add(
+                "IFCFACEBOUND",
+                vec![StepValue::Ref(inner_loop), StepValue::Enum("T".into())],
+            );
+            bounds.push(StepValue::Ref(inner_bound));
+        }
+
+        let adv_face = w.add(
+            "IFCADVANCEDFACE",
+            vec![
+                StepValue::List(bounds),
+                StepValue::Ref(surface),
+                StepValue::Enum(if f.same_sense { "T" } else { "F" }.into()),
+            ],
+        );
+        face_refs.push(adv_face);
+    }
+    let shell = w.add(
+        "IFCCLOSEDSHELL",
+        vec![StepValue::List(face_refs.iter().map(|&f| StepValue::Ref(f)).collect())],
+    );
+    let brep = w.add("IFCADVANCEDBREP", vec![StepValue::Ref(shell)]);
+
+    // ── Product + spatial hierarchy (shared scaffold) ──
+    emit_product_and_spatial(&mut w, &sc, name, brep, "AdvancedBrep");
+
+    Ok(w.build())
+}
+
+/// Map an [`AnalyticSurface`] to its IFC surface entity, returning the `#N` ref.
+/// Positions/radii are scaled to the IFC unit; axes/angles are not.
+fn emit_surface(w: &mut StepWriter, s: &AnalyticSurface, scale: f64) -> Result<EntityRef, String> {
+    match s {
+        AnalyticSurface::Plane { origin, normal, basis_u, .. } => {
+            let pl = placement_axes(w, *origin * scale, *normal, *basis_u);
+            Ok(w.add("IFCPLANE", vec![StepValue::Ref(pl)]))
+        }
+        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+            let pl = placement_axes(w, *axis_origin * scale, *axis_dir, *ref_dir);
+            Ok(w.add(
+                "IFCCYLINDRICALSURFACE",
+                vec![StepValue::Ref(pl), StepValue::Real(radius * scale)],
+            ))
+        }
+        AnalyticSurface::Sphere { center, radius, axis_dir, ref_dir, .. } => {
+            let pl = placement_axes(w, *center * scale, *axis_dir, *ref_dir);
+            Ok(w.add(
+                "IFCSPHERICALSURFACE",
+                vec![StepValue::Ref(pl), StepValue::Real(radius * scale)],
+            ))
+        }
+        AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, v_range, .. } => {
+            // IfcConicalSurface parametric: P = C + (R + v·tanθ)·(cos u·x + sin u·y) + v·z,
+            // with the apex at v = -R/tanθ. To place the apex at `apex`, put the
+            // reference plane a representative distance up the axis (toward the
+            // base) so R is a natural, positive radius near the used region.
+            let v_ref = {
+                let d = v_range.1.abs();
+                if d > 1e-9 { d } else { 1.0 }
+            } * scale;
+            let radius = v_ref * half_angle.tan();
+            let location = *apex * scale + *axis_dir * v_ref;
+            let pl = placement_axes(w, location, *axis_dir, *ref_dir);
+            Ok(w.add(
+                "IFCCONICALSURFACE",
+                vec![StepValue::Ref(pl), StepValue::Real(radius), StepValue::Real(*half_angle)],
+            ))
+        }
+        AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } => {
+            let pl = placement_axes(w, *center * scale, *axis_dir, *ref_dir);
+            Ok(w.add(
+                "IFCTOROIDALSURFACE",
+                vec![
+                    StepValue::Ref(pl),
+                    StepValue::Real(major_radius * scale),
+                    StepValue::Real(minor_radius * scale),
+                ],
+            ))
+        }
+        AnalyticSurface::BezierPatch { .. }
+        | AnalyticSurface::BSplineSurface { .. }
+        | AnalyticSurface::NURBSSurface { .. } => Err(
+            "NURBS-class surface needs IfcBSplineSurfaceWithKnots (β-3)".into(),
+        ),
+    }
+}
+
+/// Build an `IfcEdgeLoop` of straight edges from a CCW `verts` polygon (engine
+/// units, scaled by `scale`). Consecutive duplicate verts are collapsed; a loop
+/// with < 3 distinct verts is an error.
+fn emit_edge_loop(w: &mut StepWriter, verts: &[DVec3], scale: f64) -> Result<EntityRef, String> {
+    // Collapse consecutive duplicates (and wrap-around duplicate).
+    let mut vs: Vec<DVec3> = Vec::with_capacity(verts.len());
+    for &v in verts {
+        if vs.last().map_or(true, |&p| (p - v).length() > 1e-9) {
+            vs.push(v);
+        }
+    }
+    if vs.len() >= 2 && (vs[0] - *vs.last().unwrap()).length() <= 1e-9 {
+        vs.pop();
+    }
+    let n = vs.len();
+    if n < 3 {
+        return Err(format!("degenerate loop ({} distinct verts)", n));
+    }
+
+    // Points + vertex points (shared between adjacent edges within the loop).
+    let vpts: Vec<EntityRef> = vs
+        .iter()
+        .map(|&v| {
+            let p = pt(w, v * scale);
+            w.add("IFCVERTEXPOINT", vec![StepValue::Ref(p)])
+        })
+        .collect();
+    // Re-register the same cartesian points for the line `Pnt` (a point on the
+    // curve). We fetch them via the vertex points' geometry order: emit a fresh
+    // point per edge start keeps the writer simple and refs local.
+    let mut oedges = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = vs[i];
+        let b = vs[(i + 1) % n];
+        let d = b - a;
+        let len = d.length();
+        let dirv = d / len; // non-zero: duplicates were collapsed
+        let pnt = pt(w, a * scale);
+        let direction = dir(w, dirv);
+        let vector = w.add(
+            "IFCVECTOR",
+            vec![StepValue::Ref(direction), StepValue::Real(len * scale)],
+        );
+        let line = w.add("IFCLINE", vec![StepValue::Ref(pnt), StepValue::Ref(vector)]);
+        let edge = w.add(
+            "IFCEDGECURVE",
+            vec![
+                StepValue::Ref(vpts[i]),
+                StepValue::Ref(vpts[(i + 1) % n]),
+                StepValue::Ref(line),
+                StepValue::Enum("T".into()),
+            ],
+        );
+        // IfcOrientedEdge.EdgeStart/EdgeEnd are DERIVED (`*`).
+        let oedge = w.add(
+            "IFCORIENTEDEDGE",
+            vec![
+                StepValue::Derived,
+                StepValue::Derived,
+                StepValue::Ref(edge),
+                StepValue::Enum("T".into()),
+            ],
+        );
+        oedges.push(oedge);
+    }
+    Ok(w.add(
+        "IFCEDGELOOP",
+        vec![StepValue::List(oedges.iter().map(|&e| StepValue::Ref(e)).collect())],
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `#N` referenced in arg position must be a defined id in range.
+    fn assert_refs_resolve(s: &str) {
+        let mut max_def = 0u32;
+        for line in s.lines() {
+            if let Some(eq) = line.find('=') {
+                if line.starts_with('#') {
+                    if let Ok(id) = line[1..eq].parse::<u32>() {
+                        max_def = max_def.max(id);
+                    }
+                }
+            }
+        }
+        for line in s.lines() {
+            if !line.starts_with('#') {
+                continue;
+            }
+            let args = &line[line.find('(').map(|i| i + 1).unwrap_or(line.len())..];
+            let mut chars = args.char_indices().peekable();
+            while let Some((i, c)) = chars.next() {
+                if c == '#' {
+                    let rest = &args[i + 1..];
+                    let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(id) = num.parse::<u32>() {
+                        assert!(id >= 1 && id <= max_def, "ref #{} out of range (max #{})", id, max_def);
+                    }
+                }
+            }
+        }
+    }
+
+    fn plane(origin: DVec3, normal: DVec3, basis_u: DVec3) -> AnalyticSurface {
+        AnalyticSurface::Plane {
+            origin,
+            normal,
+            basis_u,
+            u_range: (-1e6, 1e6),
+            v_range: (-1e6, 1e6),
+        }
+    }
+
+    /// A unit box `[0,1000]³` mm as 6 planar advanced faces (scale 0.001 → metre).
+    fn box_faces() -> Vec<AdvancedFace> {
+        let s = 1000.0;
+        let c = |x: f64, y: f64, z: f64| DVec3::new(x * s, y * s, z * s);
+        vec![
+            // bottom (-Z), normal -Z
+            AdvancedFace::planar(
+                plane(c(0.0, 0.0, 0.0), -DVec3::Z, DVec3::X),
+                vec![c(0.0, 0.0, 0.0), c(0.0, 1.0, 0.0), c(1.0, 1.0, 0.0), c(1.0, 0.0, 0.0)],
+                true,
+            ),
+            // top (+Z)
+            AdvancedFace::planar(
+                plane(c(0.0, 0.0, 1.0), DVec3::Z, DVec3::X),
+                vec![c(0.0, 0.0, 1.0), c(1.0, 0.0, 1.0), c(1.0, 1.0, 1.0), c(0.0, 1.0, 1.0)],
+                true,
+            ),
+            // front (-Y)
+            AdvancedFace::planar(
+                plane(c(0.0, 0.0, 0.0), -DVec3::Y, DVec3::X),
+                vec![c(0.0, 0.0, 0.0), c(1.0, 0.0, 0.0), c(1.0, 0.0, 1.0), c(0.0, 0.0, 1.0)],
+                true,
+            ),
+            // back (+Y)
+            AdvancedFace::planar(
+                plane(c(0.0, 1.0, 0.0), DVec3::Y, DVec3::X),
+                vec![c(1.0, 1.0, 0.0), c(0.0, 1.0, 0.0), c(0.0, 1.0, 1.0), c(1.0, 1.0, 1.0)],
+                true,
+            ),
+            // left (-X)
+            AdvancedFace::planar(
+                plane(c(0.0, 0.0, 0.0), -DVec3::X, DVec3::Y),
+                vec![c(0.0, 0.0, 0.0), c(0.0, 0.0, 1.0), c(0.0, 1.0, 1.0), c(0.0, 1.0, 0.0)],
+                true,
+            ),
+            // right (+X)
+            AdvancedFace::planar(
+                plane(c(1.0, 0.0, 0.0), DVec3::X, DVec3::Y),
+                vec![c(1.0, 0.0, 0.0), c(1.0, 1.0, 0.0), c(1.0, 1.0, 1.0), c(1.0, 0.0, 1.0)],
+                true,
+            ),
+        ]
+    }
+
+    #[test]
+    fn advanced_box_six_planar_faces() {
+        let s = emit_advanced_brep(&box_faces(), 0.001, "adv-box").unwrap();
+        // true IFC4X3 advanced brep
+        assert!(s.contains("FILE_SCHEMA(('IFC4X3'));"));
+        assert!(s.contains("=IFCADVANCEDBREP("));
+        assert!(s.contains("IFCWALL"));
+        assert!(s.contains("'AdvancedBrep'"), "RepresentationType AdvancedBrep");
+        // 6 planar advanced faces
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 6);
+        assert_eq!(s.matches("=IFCPLANE(").count(), 6);
+        assert_eq!(s.matches("=IFCEDGELOOP(").count(), 6);
+        // 6 faces × 4 edges = 24 edges/lines/vectors/vertexpoints/orientededges
+        assert_eq!(s.matches("=IFCEDGECURVE(").count(), 24);
+        assert_eq!(s.matches("=IFCLINE(").count(), 24);
+        assert_eq!(s.matches("=IFCVERTEXPOINT(").count(), 24);
+        assert_eq!(s.matches("=IFCORIENTEDEDGE(").count(), 24);
+        assert_eq!(s.matches("=IFCCLOSEDSHELL(").count(), 1);
+        // NOT faceted
+        assert!(!s.contains("=IFCFACETEDBREP("));
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn advanced_brep_byte_identical() {
+        let a = emit_advanced_brep(&box_faces(), 0.001, "b").unwrap();
+        let b = emit_advanced_brep(&box_faces(), 0.001, "b").unwrap();
+        assert_eq!(a, b, "deterministic (L-203-2)");
+    }
+
+    #[test]
+    fn scale_converts_mm_to_metre() {
+        // A 1000mm×1000mm planar quad → coords 0. and 1. in metres.
+        let s = emit_advanced_brep(&box_faces(), 0.001, "b").unwrap();
+        assert!(s.contains("IFCCARTESIANPOINT((1.,1.,0.))"), "1000mm → 1.m");
+        assert!(s.contains("IFCCARTESIANPOINT((0.,0.,0.))"));
+    }
+
+    /// A synthetic single face carrying a given surface (quad boundary — the
+    /// edges only approximate a curved surface, but the surface entity is exact;
+    /// β-3 supplies curved edges).
+    fn one_face(surface: AnalyticSurface) -> Vec<AdvancedFace> {
+        let s = 1000.0;
+        let c = |x: f64, y: f64, z: f64| DVec3::new(x * s, y * s, z * s);
+        vec![AdvancedFace::planar(
+            surface,
+            vec![c(0.0, 0.0, 0.0), c(1.0, 0.0, 0.0), c(1.0, 1.0, 0.0), c(0.0, 1.0, 0.0)],
+            true,
+        )]
+    }
+
+    #[test]
+    fn surface_cylinder_maps_to_cylindrical() {
+        let surf = AnalyticSurface::Cylinder {
+            axis_origin: DVec3::new(0.0, 0.0, 0.0),
+            axis_dir: DVec3::Z,
+            radius: 500.0, // mm
+            ref_dir: DVec3::X,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (0.0, 1000.0),
+        };
+        let s = emit_advanced_brep(&one_face(surf), 0.001, "cyl").unwrap();
+        assert!(s.contains("=IFCCYLINDRICALSURFACE("));
+        assert!(s.contains("IFCCYLINDRICALSURFACE(#") && s.contains(",0.5)"), "radius 500mm → 0.5m: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn surface_sphere_maps_to_spherical() {
+        let surf = AnalyticSurface::Sphere {
+            center: DVec3::new(0.0, 0.0, 0.0),
+            radius: 250.0,
+            axis_dir: DVec3::Z,
+            ref_dir: DVec3::X,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+        };
+        let s = emit_advanced_brep(&one_face(surf), 0.001, "sph").unwrap();
+        assert!(s.contains("=IFCSPHERICALSURFACE("));
+        assert!(s.contains(",0.25)"), "radius 250mm → 0.25m: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn surface_cone_maps_to_conical() {
+        let surf = AnalyticSurface::Cone {
+            apex: DVec3::new(0.0, 0.0, 0.0),
+            axis_dir: DVec3::Z,
+            half_angle: std::f64::consts::FRAC_PI_4, // 45° → tan = 1
+            ref_dir: DVec3::X,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (0.0, 1000.0), // apex→base 1000mm
+        };
+        let s = emit_advanced_brep(&one_face(surf), 0.001, "cone").unwrap();
+        assert!(s.contains("=IFCCONICALSURFACE("));
+        // semiangle (last arg) = π/4 exactly; radius = v_ref·tan(45°) ≈ 1m
+        // (tan(π/4) is 0.9999999999999999 in f64, so don't assert it exactly).
+        assert!(s.contains(",0.7853981633974483);"), "semiangle π/4: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn surface_torus_maps_to_toroidal() {
+        let surf = AnalyticSurface::Torus {
+            center: DVec3::new(0.0, 0.0, 0.0),
+            axis_dir: DVec3::Z,
+            ref_dir: DVec3::X,
+            major_radius: 1000.0,
+            minor_radius: 200.0,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (0.0, std::f64::consts::TAU),
+        };
+        let s = emit_advanced_brep(&one_face(surf), 0.001, "tor").unwrap();
+        assert!(s.contains("=IFCTOROIDALSURFACE("));
+        assert!(s.contains(",1.,0.2)"), "major 1m, minor 0.2m: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn nurbs_surface_rejected() {
+        let surf = AnalyticSurface::NURBSSurface {
+            ctrl_grid: vec![vec![DVec3::ZERO; 2]; 2],
+            weights: vec![vec![1.0; 2]; 2],
+            knots_u: vec![0.0, 0.0, 1.0, 1.0],
+            knots_v: vec![0.0, 0.0, 1.0, 1.0],
+            deg_u: 1,
+            deg_v: 1,
+            trim_loops: vec![],
+        };
+        let err = emit_advanced_brep(&one_face(surf), 0.001, "n").unwrap_err();
+        assert!(err.contains("β-3") || err.contains("NURBS"), "err: {}", err);
+    }
+
+    #[test]
+    fn degenerate_loop_rejected() {
+        // A face whose outer loop collapses to < 3 distinct verts.
+        let surf = plane(DVec3::ZERO, DVec3::Z, DVec3::X);
+        let faces = vec![AdvancedFace::planar(
+            surf,
+            vec![DVec3::ZERO, DVec3::ZERO, DVec3::new(1.0, 0.0, 0.0)],
+            true,
+        )];
+        assert!(emit_advanced_brep(&faces, 0.001, "d").is_err());
+    }
+
+    #[test]
+    fn empty_faces_rejected() {
+        assert!(emit_advanced_brep(&[], 0.001, "e").is_err());
+    }
+}

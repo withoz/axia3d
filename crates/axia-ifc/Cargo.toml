@@ -12,5 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # β-1: writer foundation + IfcFacetedBrep cube. glam for DVec3 coords.
-# axia-geo / axia-core added in β-2+ (analytic surfaces / DCEL traversal).
 glam.workspace = true
+# β-2: IfcAdvancedBrep maps axia-geo AnalyticSurface directly (SSOT, L-203-1).
+# No runtime cost — axia-wasm (the only runtime consumer) already links axia-geo.
+axia-geo.workspace = true
