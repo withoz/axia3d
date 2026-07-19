@@ -319,3 +319,45 @@ face 가 있으면 β-1.5 faceted 로 자동 fallback.
   /`IfcRationalBSplineCurveWithKnots` + Bezier→BSpline knot 합성) → closed-Bezier/
   BSpline/NURBS face 모델. BSpline/NURBS *surface* (`IfcBSplineSurfaceWithKnots`).
   per-face island edge (watertight 위상 공유). 전부 단일 IfcWall (γ).
+
+## 12. γ Acceptance (2026-07-19) — 부재별 IfcWall + IfcMaterial (semantic BIM)
+
+β-3 까지 전체 모델 = **단일** IfcWall 이었으나, γ 는 **부재별 IfcWall** + 재질 로
+분해 — 진짜 BIM 워크플로우 (Revit/ArchiCAD 에서 부재·재질 인식).
+
+- **axia-ifc**: 신 `ifc_model.rs` — `emit_ifc_model(mesh, elements: &[IfcElement],
+  scale, project_name)`. `IfcElement { name, material_name: Option<String>,
+  face_ids }`. 하나의 `Project→Site→Building→Storey` 아래에 element 마다:
+  advanced geometry (β-3, 자기 face subset) + `IfcShapeRepresentation`/
+  `IfcProductDefinitionShape` + `IFCWALL` + (재질 있으면) `IFCMATERIAL` +
+  `IFCRELASSOCIATESMATERIAL`. 재질은 name 으로 dedup (한 `IfcMaterial` → 여러 wall).
+  모든 wall 은 하나의 `IfcRelContainedInSpatialStructure` 로 storey 에 포함.
+  - `emit_advanced_geometry` (geometry-only) + `advanced_faces_filtered`
+    (face subset) 를 β-3 emitter 에서 추출 — 단일-wall 경로 (β-1.5/β-3) **byte-
+    identical 보존**. axia-ifc 는 Scene-agnostic (generic `IfcElement`).
+- **axia-wasm**: `exportIfcModel(name)` — `self.scene` 에서 element 열거:
+  **Xia** (id 정렬) → named wall + `material_library.get(xia.material).name`
+  (FORM_MATERIAL(0) → None), **Shape** (id 정렬) → named wall (무재질),
+  나머지 active face → 단일 "Model" wall. face 는 claimed-set 으로 정확히 1
+  element 에만 (중복 0). 결정적 순서 (id 정렬 + SlotStorage).
+- **web**: `WasmBridge.exportIfcModel` + MenuBar `export-ifc` 가 `exportIfcModel
+  ?? exportIfc` 로 라우팅 (부재별 우선, 비지원 → faceted single wall fallback).
+  additive (기존 export-ifc 업그레이드, 신규 action/catalog/i18n 0).
+- **라이브 검증** (real WASM, ADR-087 K-ζ):
+  - rect Shape (form) → `IFCWALL('Rectangle')`, 재질 0 (Xia 아님 → 무재질).
+  - rect → `create_solid_extrude` (solid) → `promoteShapeToXia(_, 1)` (강철) →
+    `exportIfcModel` = **1 IFCWALL + 1 IFCMATERIAL('강철') + 1 IFCRELASSOCIATES
+    MATERIAL**, `IFCMATERIAL('\X2\AC15CCA0\X0\')` = 한글 "강철" 정확 인코딩,
+    wall↔material ref 연결, advanced brep, faceted 없음.
+- **회귀**: axia-ifc **+5** (42→47, 절대 #[ignore] 금지):
+  `two_elements_two_walls_two_materials`(2 wall + 2 material + assoc + 1 storey) /
+  `shared_material_deduplicated`(1 material, 2 assoc) / `element_without_material_
+  has_no_association` / `deterministic_byte_identical` / `empty_elements_rejected`.
+  단일-wall byte-identical 테스트 무변경. axia-wasm 85 pass, web guards
+  (WasmBridge/CatalogConsistency/i18n/MenuBar 669) + vite build green. Cargo.lock
+  변경 0.
+- **한계 (후속)**: element-type 은 전부 `IfcWall` (Shape/Xia 에 origin_hint 없음
+  → IfcSlab/IfcColumn/IfcBeam 구분 별도 ADR). per-element advanced-or-nothing
+  (한 element 라도 비지원 → 전체 faceted fallback; per-element faceted 는 후속).
+  재질은 name 만 (색상/물성/layered → IfcMaterialProperties 후속). β-3b NURBS
+  edge/surface. 외부 IFC 검증 (ε).

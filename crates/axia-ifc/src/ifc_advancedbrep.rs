@@ -108,12 +108,28 @@ pub fn emit_advanced_brep(faces: &[AdvancedFace], scale: f64, name: &str) -> Res
     let sc = emit_owner_units_context(&mut w);
 
     // ── Geometry: analytic advanced faces ──
+    let brep = emit_advanced_geometry(&mut w, faces, scale)?;
+
+    // ── Product + spatial hierarchy (shared scaffold) ──
+    emit_product_and_spatial(&mut w, &sc, name, brep, "AdvancedBrep");
+
+    Ok(w.build())
+}
+
+/// Emit the analytic-face geometry (`IFCADVANCEDFACE`* → `IFCCLOSEDSHELL` →
+/// `IFCADVANCEDBREP`) for `faces`, returning the brep `#N`. Shared by
+/// [`emit_advanced_brep`] (single wall) and `emit_ifc_model` (β-γ, per element).
+pub(crate) fn emit_advanced_geometry(
+    w: &mut StepWriter,
+    faces: &[AdvancedFace],
+    scale: f64,
+) -> Result<EntityRef, String> {
     let mut face_refs = Vec::with_capacity(faces.len());
     for (i, f) in faces.iter().enumerate() {
-        let surface = emit_surface(&mut w, &f.surface, scale)
+        let surface = emit_surface(w, &f.surface, scale)
             .map_err(|e| format!("face[{}]: {}", i, e))?;
 
-        let outer_loop = emit_edge_loop(&mut w, &f.outer, scale)
+        let outer_loop = emit_edge_loop(w, &f.outer, scale)
             .map_err(|e| format!("face[{}] outer: {}", i, e))?;
         let outer_bound = w.add(
             "IFCFACEOUTERBOUND",
@@ -121,7 +137,7 @@ pub fn emit_advanced_brep(faces: &[AdvancedFace], scale: f64, name: &str) -> Res
         );
         let mut bounds = vec![StepValue::Ref(outer_bound)];
         for (j, inner) in f.inners.iter().enumerate() {
-            let inner_loop = emit_edge_loop(&mut w, inner, scale)
+            let inner_loop = emit_edge_loop(w, inner, scale)
                 .map_err(|e| format!("face[{}] inner[{}]: {}", i, j, e))?;
             let inner_bound = w.add(
                 "IFCFACEBOUND",
@@ -144,12 +160,7 @@ pub fn emit_advanced_brep(faces: &[AdvancedFace], scale: f64, name: &str) -> Res
         "IFCCLOSEDSHELL",
         vec![StepValue::List(face_refs.iter().map(|&f| StepValue::Ref(f)).collect())],
     );
-    let brep = w.add("IFCADVANCEDBREP", vec![StepValue::Ref(shell)]);
-
-    // ── Product + spatial hierarchy (shared scaffold) ──
-    emit_product_and_spatial(&mut w, &sc, name, brep, "AdvancedBrep");
-
-    Ok(w.build())
+    Ok(w.add("IFCADVANCEDBREP", vec![StepValue::Ref(shell)]))
 }
 
 /// Extract an [`AdvancedBrep`](emit_advanced_brep) directly from a live DCEL
@@ -170,10 +181,26 @@ pub fn emit_advanced_brep_from_mesh(mesh: &Mesh, scale: f64, name: &str) -> Resu
 
 /// Build the [`AdvancedFace`] list from a mesh's active faces (engine units).
 fn advanced_faces_from_mesh(mesh: &Mesh) -> Result<Vec<AdvancedFace>, String> {
+    advanced_faces_filtered(mesh, None)
+}
+
+/// Like [`advanced_faces_from_mesh`] but, when `allowed` is `Some`, only the
+/// listed faces are included (β-γ: one element's owned faces). Errors if any
+/// included face lacks a supported analytic surface / straight-or-circular
+/// boundary (→ caller's faceted fallback).
+pub(crate) fn advanced_faces_filtered(
+    mesh: &Mesh,
+    allowed: Option<&std::collections::HashSet<axia_geo::FaceId>>,
+) -> Result<Vec<AdvancedFace>, String> {
     let mut out = Vec::new();
     for (fid, face) in mesh.faces.iter() {
         if !face.is_active() {
             continue;
+        }
+        if let Some(set) = allowed {
+            if !set.contains(&fid) {
+                continue;
+            }
         }
         let surface = mesh
             .face_surface(fid)
