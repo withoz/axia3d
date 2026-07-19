@@ -23,29 +23,73 @@
 use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, dir, placement_axes, pt};
 use crate::step_value::{EntityRef, StepValue};
 use crate::step_writer::StepWriter;
-use axia_geo::{AnalyticSurface, HeId, Mesh};
+use axia_geo::{AnalyticCurve, AnalyticSurface, HeId, Mesh};
 use glam::DVec3;
 
-/// One face of an advanced B-rep: an analytic surface trimmed by boundary loops.
-/// Coordinates are engine units (mm) — the emitter converts via `scale`.
+/// Geometry of one boundary edge (ADR-203 β-3). β-3 maps `Line` + `Circle`/`Arc`;
+/// Bezier/BSpline/NURBS edges are β-3b (`IfcBSplineCurveWithKnots`).
+#[derive(Clone, Debug)]
+pub enum EdgeCurve {
+    /// Straight segment (the default edge). Emits `IFCLINE`.
+    Line,
+    /// Full circle / circular support curve. Emits `IFCCIRCLE`; the edge's
+    /// start/end vertices trim it — a self-loop (start == end) is the whole
+    /// circle (a Path B rim), a partial span is an arc.
+    Circle { center: DVec3, radius: f64, normal: DVec3, basis_u: DVec3 },
+    /// Circular arc — same `IFCCIRCLE` support, trimmed by the edge vertices.
+    /// `ccw` (end_angle ≥ start_angle) sets `IfcEdgeCurve.SameSense`.
+    Arc { center: DVec3, radius: f64, normal: DVec3, basis_u: DVec3, ccw: bool },
+}
+
+/// One ordered boundary edge: its two vertices + geometry. `start == end` for a
+/// closed self-loop (a full-circle rim). Coordinates are engine units (mm).
+#[derive(Clone, Debug)]
+pub struct IfcEdge {
+    pub start: DVec3,
+    pub end: DVec3,
+    pub curve: EdgeCurve,
+}
+
+/// One face of an advanced B-rep: an analytic surface trimmed by boundary loops
+/// of [`IfcEdge`]s. Coordinates are engine units (mm) — the emitter converts via
+/// `scale`.
 pub struct AdvancedFace {
-    /// The face's geometric surface (axia-geo). β-2: Plane/Cylinder/Sphere/
-    /// Cone/Torus. NURBS-class → export error.
+    /// The face's geometric surface (axia-geo). Plane/Cylinder/Sphere/Cone/Torus;
+    /// NURBS-class → export error.
     pub surface: AnalyticSurface,
-    /// CCW outer boundary polygon (world verts, engine units).
-    pub outer: Vec<DVec3>,
-    /// Hole boundary loops (each CCW-in-parameter, engine units).
-    pub inners: Vec<Vec<DVec3>>,
+    /// Ordered outer boundary edges.
+    pub outer: Vec<IfcEdge>,
+    /// Hole boundary loops.
+    pub inners: Vec<Vec<IfcEdge>>,
     /// `true` if the face normal agrees with the surface's parametric normal
     /// (`IfcAdvancedFace.SameSense`).
     pub same_sense: bool,
 }
 
 impl AdvancedFace {
-    /// Convenience: a planar face with no holes.
-    pub fn planar(surface: AnalyticSurface, outer: Vec<DVec3>, same_sense: bool) -> Self {
-        AdvancedFace { surface, outer, inners: Vec::new(), same_sense }
+    /// Convenience: a planar face from a CCW vertex polygon (all straight edges).
+    /// Consecutive + wrap-around duplicate verts are collapsed.
+    pub fn planar(surface: AnalyticSurface, verts: Vec<DVec3>, same_sense: bool) -> Self {
+        AdvancedFace { surface, outer: line_loop(verts), inners: Vec::new(), same_sense }
     }
+}
+
+/// Build a straight-edge loop (all [`EdgeCurve::Line`]) from a vertex polygon,
+/// collapsing consecutive + wrap-around duplicates.
+fn line_loop(verts: Vec<DVec3>) -> Vec<IfcEdge> {
+    let mut vs: Vec<DVec3> = Vec::with_capacity(verts.len());
+    for v in verts {
+        if vs.last().map_or(true, |&p| (p - v).length() > 1e-9) {
+            vs.push(v);
+        }
+    }
+    if vs.len() >= 2 && (vs[0] - *vs.last().unwrap()).length() <= 1e-9 {
+        vs.pop();
+    }
+    let n = vs.len();
+    (0..n)
+        .map(|i| IfcEdge { start: vs[i], end: vs[(i + 1) % n], curve: EdgeCurve::Line })
+        .collect()
 }
 
 /// Emit `faces` as a complete IFC4.3 `IFCADVANCEDBREP` file. `scale` converts
@@ -135,13 +179,12 @@ fn advanced_faces_from_mesh(mesh: &Mesh) -> Result<Vec<AdvancedFace>, String> {
             .face_surface(fid)
             .ok_or_else(|| format!("face {:?}: no analytic surface (advanced brep needs every face analytic)", fid))?
             .clone();
-        let outer = loop_positions(mesh, face.outer().start)
-            .ok_or_else(|| format!("face {:?}: outer loop unreadable", fid))?;
+        let outer = loop_edges(mesh, face.outer().start)
+            .map_err(|e| format!("face {:?} outer: {}", fid, e))?;
         let mut inners = Vec::with_capacity(face.inners().len());
         for lr in face.inners() {
             inners.push(
-                loop_positions(mesh, lr.start)
-                    .ok_or_else(|| format!("face {:?}: inner loop unreadable", fid))?,
+                loop_edges(mesh, lr.start).map_err(|e| format!("face {:?} inner: {}", fid, e))?,
             );
         }
         let same_sense = compute_same_sense(&outer, &surface);
@@ -153,29 +196,76 @@ fn advanced_faces_from_mesh(mesh: &Mesh) -> Result<Vec<AdvancedFace>, String> {
     Ok(out)
 }
 
-/// Resolve a DCEL boundary loop (from its start half-edge) to world vertex
-/// positions (engine units).
-fn loop_positions(mesh: &Mesh, start: HeId) -> Option<Vec<DVec3>> {
-    let vids = mesh.collect_loop_verts(start).ok()?;
-    let mut ps = Vec::with_capacity(vids.len());
-    for v in vids {
-        ps.push(mesh.vertex_pos(v).ok()?);
+/// Resolve a DCEL boundary loop (from its start half-edge) to ordered
+/// [`IfcEdge`]s — each half-edge's destination vertex + its edge's analytic
+/// curve. Errors on a curve β-3 can't map yet (Bezier/BSpline/NURBS).
+///
+/// A half-edge points to its `dst`, so edge `hes[i]` runs from `dst(hes[i-1])`
+/// to `dst(hes[i])`. A self-loop (rim) is one half-edge whose `dst` is the sole
+/// anchor → `start == end` (a full-circle edge).
+fn loop_edges(mesh: &Mesh, start: HeId) -> Result<Vec<IfcEdge>, String> {
+    let hes = mesh.collect_loop_hes(start).map_err(|e| e.to_string())?;
+    let n = hes.len();
+    if n == 0 {
+        return Err("empty loop".into());
     }
-    Some(ps)
+    // Destination vertex position of each half-edge.
+    let mut d = Vec::with_capacity(n);
+    for &h in &hes {
+        let he = mesh.hes.get(h).ok_or_else(|| format!("half-edge {:?} missing", h))?;
+        d.push(mesh.vertex_pos(he.dst()).map_err(|e| e.to_string())?);
+    }
+    let mut edges = Vec::with_capacity(n);
+    for i in 0..n {
+        let he = mesh.hes.get(hes[i]).unwrap();
+        let curve = edge_curve_to_ifc(mesh.edge_curve(he.edge()))?;
+        edges.push(IfcEdge { start: d[(i + n - 1) % n], end: d[i], curve });
+    }
+    Ok(edges)
+}
+
+/// Map an [`AnalyticCurve`] (or `None` = plain straight edge) to an [`EdgeCurve`].
+/// Bezier/BSpline/NURBS are β-3b → error (→ caller's faceted fallback).
+fn edge_curve_to_ifc(c: Option<&AnalyticCurve>) -> Result<EdgeCurve, String> {
+    match c {
+        None | Some(AnalyticCurve::Line { .. }) => Ok(EdgeCurve::Line),
+        Some(AnalyticCurve::Circle { center, radius, normal, basis_u }) => Ok(EdgeCurve::Circle {
+            center: *center,
+            radius: *radius,
+            normal: *normal,
+            basis_u: *basis_u,
+        }),
+        Some(AnalyticCurve::Arc { center, radius, normal, basis_u, start_angle, end_angle }) => {
+            Ok(EdgeCurve::Arc {
+                center: *center,
+                radius: *radius,
+                normal: *normal,
+                basis_u: *basis_u,
+                ccw: end_angle >= start_angle,
+            })
+        }
+        Some(AnalyticCurve::Bezier { .. })
+        | Some(AnalyticCurve::BSpline { .. })
+        | Some(AnalyticCurve::NURBS { .. }) => {
+            Err("Bezier/BSpline/NURBS edge needs IfcBSplineCurveWithKnots (β-3b)".into())
+        }
+    }
 }
 
 /// `IfcAdvancedFace.SameSense`: does the face's outward normal (Newell of the
-/// outer loop, CCW-outward per ADR-007) agree with the surface's parametric
-/// normal at a boundary point? Defaults `true` on a degenerate probe (matching
-/// the ADR-033 convention that attached surfaces are oriented face-outward).
-fn compute_same_sense(outer: &[DVec3], surface: &AnalyticSurface) -> bool {
-    let n_face = newell(outer);
+/// outer loop vertices, CCW-outward per ADR-007) agree with the surface's
+/// parametric normal at a boundary point? Defaults `true` on a degenerate probe
+/// — e.g. a single-edge circular rim (matching the ADR-033 convention that
+/// attached surfaces are oriented face-outward).
+fn compute_same_sense(outer: &[IfcEdge], surface: &AnalyticSurface) -> bool {
+    let verts: Vec<DVec3> = outer.iter().map(|e| e.start).collect();
+    let n_face = newell(&verts);
     if n_face.length_squared() < 1e-18 {
         return true;
     }
     // A boundary vertex lies on the surface, so its normal is well-defined
     // (unlike the loop centroid, which is inside a curved face).
-    let n_surf = surface.normal_at_world_pos(outer[0]);
+    let n_surf = surface.normal_at_world_pos(verts[0]);
     if n_surf.length_squared() < 1e-18 {
         return true;
     }
@@ -254,57 +344,66 @@ fn emit_surface(w: &mut StepWriter, s: &AnalyticSurface, scale: f64) -> Result<E
     }
 }
 
-/// Build an `IfcEdgeLoop` of straight edges from a CCW `verts` polygon (engine
-/// units, scaled by `scale`). Consecutive duplicate verts are collapsed; a loop
-/// with < 3 distinct verts is an error.
-fn emit_edge_loop(w: &mut StepWriter, verts: &[DVec3], scale: f64) -> Result<EntityRef, String> {
-    // Collapse consecutive duplicates (and wrap-around duplicate).
-    let mut vs: Vec<DVec3> = Vec::with_capacity(verts.len());
-    for &v in verts {
-        if vs.last().map_or(true, |&p| (p - v).length() > 1e-9) {
-            vs.push(v);
-        }
+/// Build an `IfcEdgeLoop` from ordered [`IfcEdge`]s (engine units, scaled by
+/// `scale`). Straight edges emit `IFCLINE`; circular edges emit `IFCCIRCLE`
+/// (the edge vertices trim it — a self-loop is a whole rim). A single closed
+/// circular edge is a valid loop; an all-straight loop needs ≥ 3 edges.
+fn emit_edge_loop(w: &mut StepWriter, edges: &[IfcEdge], scale: f64) -> Result<EntityRef, String> {
+    if edges.is_empty() {
+        return Err("empty loop".into());
     }
-    if vs.len() >= 2 && (vs[0] - *vs.last().unwrap()).length() <= 1e-9 {
-        vs.pop();
+    let all_line = edges.iter().all(|e| matches!(e.curve, EdgeCurve::Line));
+    if all_line && edges.len() < 3 {
+        return Err(format!("degenerate straight loop ({} edges)", edges.len()));
     }
-    let n = vs.len();
-    if n < 3 {
-        return Err(format!("degenerate loop ({} distinct verts)", n));
-    }
+    let n = edges.len();
 
-    // Points + vertex points (shared between adjacent edges within the loop).
-    let vpts: Vec<EntityRef> = vs
+    // Vertex points, shared between adjacent edges: vpt[i] at edges[i].start
+    // (== edges[i-1].end). A self-loop (n == 1, start == end) has one vertex.
+    let vpts: Vec<EntityRef> = edges
         .iter()
-        .map(|&v| {
-            let p = pt(w, v * scale);
+        .map(|e| {
+            let p = pt(w, e.start * scale);
             w.add("IFCVERTEXPOINT", vec![StepValue::Ref(p)])
         })
         .collect();
-    // Re-register the same cartesian points for the line `Pnt` (a point on the
-    // curve). We fetch them via the vertex points' geometry order: emit a fresh
-    // point per edge start keeps the writer simple and refs local.
+
     let mut oedges = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = vs[i];
-        let b = vs[(i + 1) % n];
-        let d = b - a;
-        let len = d.length();
-        let dirv = d / len; // non-zero: duplicates were collapsed
-        let pnt = pt(w, a * scale);
-        let direction = dir(w, dirv);
-        let vector = w.add(
-            "IFCVECTOR",
-            vec![StepValue::Ref(direction), StepValue::Real(len * scale)],
-        );
-        let line = w.add("IFCLINE", vec![StepValue::Ref(pnt), StepValue::Ref(vector)]);
+    for (i, e) in edges.iter().enumerate() {
+        let (geom, same_sense) = match &e.curve {
+            EdgeCurve::Line => {
+                let d = e.end - e.start;
+                let len = d.length();
+                if len < 1e-9 {
+                    return Err("degenerate line edge (start == end)".into());
+                }
+                let pnt = pt(w, e.start * scale);
+                let direction = dir(w, d / len);
+                let vector = w.add(
+                    "IFCVECTOR",
+                    vec![StepValue::Ref(direction), StepValue::Real(len * scale)],
+                );
+                let line = w.add("IFCLINE", vec![StepValue::Ref(pnt), StepValue::Ref(vector)]);
+                (line, true)
+            }
+            EdgeCurve::Circle { center, radius, normal, basis_u } => {
+                let pl = placement_axes(w, *center * scale, *normal, *basis_u);
+                let circ = w.add("IFCCIRCLE", vec![StepValue::Ref(pl), StepValue::Real(radius * scale)]);
+                (circ, true)
+            }
+            EdgeCurve::Arc { center, radius, normal, basis_u, ccw } => {
+                let pl = placement_axes(w, *center * scale, *normal, *basis_u);
+                let circ = w.add("IFCCIRCLE", vec![StepValue::Ref(pl), StepValue::Real(radius * scale)]);
+                (circ, *ccw)
+            }
+        };
         let edge = w.add(
             "IFCEDGECURVE",
             vec![
                 StepValue::Ref(vpts[i]),
                 StepValue::Ref(vpts[(i + 1) % n]),
-                StepValue::Ref(line),
-                StepValue::Enum("T".into()),
+                StepValue::Ref(geom),
+                StepValue::Enum(if same_sense { "T" } else { "F" }.into()),
             ],
         );
         // IfcOrientedEdge.EdgeStart/EdgeEnd are DERIVED (`*`).
@@ -626,5 +725,108 @@ mod tests {
             emit_advanced_brep_from_mesh(&mesh, 0.001, "b").unwrap()
         };
         assert_eq!(build(), build(), "deterministic (L-203-2)");
+    }
+
+    // ── β-3: curved edge curves (IfcCircle) ──
+
+    #[test]
+    fn emitter_circle_self_loop_disk() {
+        // A planar disk: Plane surface bounded by ONE closed circular edge
+        // (a self-loop, start == end). Emits IFCPLANE + a single-edge IfcEdgeLoop
+        // whose geometry is IFCCIRCLE (not IFCLINE).
+        let anchor = DVec3::new(500.0, 0.0, 0.0); // on the rim, radius 500mm
+        let face = AdvancedFace {
+            surface: plane(DVec3::ZERO, DVec3::Z, DVec3::X),
+            outer: vec![IfcEdge {
+                start: anchor,
+                end: anchor, // closed self-loop = whole circle
+                curve: EdgeCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 500.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+            }],
+            inners: vec![],
+            same_sense: true,
+        };
+        let s = emit_advanced_brep(&[face], 0.001, "disk").unwrap();
+        assert!(s.contains("=IFCADVANCEDBREP("));
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 1);
+        assert_eq!(s.matches("=IFCPLANE(").count(), 1);
+        assert_eq!(s.matches("=IFCCIRCLE(").count(), 1);
+        assert!(s.contains(",0.5)"), "radius 500mm → 0.5m: {}", s);
+        // single closed edge: 1 edge curve, 1 vertex point, 0 lines
+        assert_eq!(s.matches("=IFCEDGECURVE(").count(), 1);
+        assert_eq!(s.matches("=IFCVERTEXPOINT(").count(), 1);
+        assert_eq!(s.matches("=IFCLINE(").count(), 0);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn path_b_cylinder_exports_analytic_circles() {
+        // A Path B cylinder attaches Circle curves to its rims + Cylinder/Plane
+        // surfaces — β-3 exports it as an exact IfcAdvancedBrep (no faceted
+        // fallback): cylindrical side + planar caps, IfcCircle rim edges.
+        let mut mesh = Mesh::new();
+        mesh.create_cylinder_kernel_native_clean(
+            DVec3::ZERO,
+            500.0,  // radius mm
+            1000.0, // height mm
+            axia_geo::MaterialId::new(0),
+        )
+        .unwrap();
+
+        let s = emit_advanced_brep_from_mesh(&mesh, 0.001, "cyl").unwrap();
+        assert!(s.contains("=IFCADVANCEDBREP("));
+        assert!(!s.contains("=IFCFACETEDBREP("), "analytic, not faceted");
+        // 3 faces: base (Plane) + top (Plane) + side (Cylinder)
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 3);
+        assert_eq!(s.matches("=IFCCYLINDRICALSURFACE(").count(), 1);
+        assert_eq!(s.matches("=IFCPLANE(").count(), 2);
+        // rims are analytic circles, not straight lines
+        assert!(s.matches("=IFCCIRCLE(").count() >= 3, "circular rims: {}", s);
+        assert!(s.contains(",0.5)"), "radius 500mm → 0.5m circle");
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn bezier_bspline_nurbs_edge_curves_deferred_to_beta3b() {
+        use axia_geo::AnalyticCurve;
+        // β-3 maps Line/Circle/Arc; NURBS-class edges error → faceted fallback.
+        assert!(edge_curve_to_ifc(None).is_ok());
+        assert!(matches!(edge_curve_to_ifc(None).unwrap(), EdgeCurve::Line));
+        assert!(edge_curve_to_ifc(Some(&AnalyticCurve::Bezier {
+            control_pts: vec![DVec3::ZERO, DVec3::X, DVec3::Y],
+        }))
+        .is_err());
+        assert!(edge_curve_to_ifc(Some(&AnalyticCurve::BSpline {
+            control_pts: vec![DVec3::ZERO, DVec3::X],
+            knots: vec![0.0, 0.0, 1.0, 1.0],
+            degree: 1,
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn arc_edge_maps_to_circle_with_sense() {
+        use axia_geo::AnalyticCurve;
+        // Arc → IFCCIRCLE support; ccw (end ≥ start) sets SameSense.
+        let ccw = edge_curve_to_ifc(Some(&AnalyticCurve::Arc {
+            center: DVec3::ZERO,
+            radius: 1.0,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+            start_angle: 0.0,
+            end_angle: 1.5,
+        }))
+        .unwrap();
+        match ccw {
+            EdgeCurve::Arc { ccw, radius, .. } => {
+                assert!(ccw);
+                assert_eq!(radius, 1.0);
+            }
+            _ => panic!("expected Arc"),
+        }
     }
 }

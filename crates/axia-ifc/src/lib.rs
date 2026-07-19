@@ -27,7 +27,9 @@ pub mod step_value;
 pub mod step_writer;
 
 pub use guid::{ifc_guid, ifc_guid_for};
-pub use ifc_advancedbrep::{emit_advanced_brep, emit_advanced_brep_from_mesh, AdvancedFace};
+pub use ifc_advancedbrep::{
+    emit_advanced_brep, emit_advanced_brep_from_mesh, AdvancedFace, EdgeCurve, IfcEdge,
+};
 pub use ifc_facetedbrep::{emit_box, emit_brep, emit_faceted_brep, emit_unit_cube};
 pub use step_value::{EntityRef, StepValue};
 pub use step_writer::{IfcEntity, StepWriter};

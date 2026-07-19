@@ -282,3 +282,40 @@ face 가 있으면 β-1.5 faceted 로 자동 fallback.
 - **한계 (후속)**: 곡면 모델은 아직 faceted (β-3 곡선 edge → 곡면 advanced),
   mixed advanced+faceted brep (현재 all-or-nothing), per-face island edge
   (watertight 위상 공유 후속), 전부 단일 IfcWall (γ).
+
+## 11. β-3 Acceptance (2026-07-19) — curved edge curves (IfcCircle) → 곡면 정확 export
+
+β-2.5 의 곡면 faceted fallback 제거. 경계 **edge 의 AnalyticCurve** 를 IFC 곡선
+으로 매핑 → cylinder/sphere/cone/torus 가 **정확한 IfcAdvancedBrep** 으로 export.
+
+- **axia-ifc**: `AdvancedFace` 를 vertex-polygon 에서 **edge-loop** (`Vec<IfcEdge>`)
+  으로 진화. `IfcEdge { start, end, curve: EdgeCurve }`, `EdgeCurve = Line |
+  Circle{center,radius,normal,basis_u} | Arc{..,ccw}`. `AdvancedFace::planar(
+  verts)` 시그니처 보존 (내부적으로 Line edge loop 생성 → 기존 planar 테스트 무변경).
+  - **curve 매핑**: Line→`IFCLINE`, Circle/Arc→`IFCCIRCLE` (edge 의 start/end 정점
+    이 trim — **self-loop rim = whole circle**). Arc 는 `ccw`→`IfcEdgeCurve.
+    SameSense`. Bezier/BSpline/NURBS edge → Err (β-3b, `IfcBSplineCurveWithKnots`).
+  - **mesh 추출**: `loop_edges` 가 `collect_loop_hes` 로 경계 half-edge 순회 —
+    각 he 의 `dst` (정점) + `edge_curve(he.edge())` 로 `IfcEdge` 구성.
+    self-loop rim (1 half-edge, dst==anchor) → `start==end` 의 Circle edge.
+  - Path B cylinder = base(Plane)+top(Plane)+side(Cylinder), rim = `IFCCIRCLE`
+    self-loop → **3 IfcAdvancedFace 정확 export**. sphere = 2 hemisphere(Sphere)
+    + 적도 circle.
+- **WASM/web 변경 0** — `exportIfcAdvanced` 가 이미 `emit_advanced_brep_from_mesh`
+  호출, 본 커밋은 emitter 가 곡면을 지원하도록 개선만 (β-2.5 wiring 재사용).
+- **라이브 검증** (real WASM, ADR-087 K-ζ):
+  | 모델 | 결과 (β-2.5 → β-3) |
+  |---|---|
+  | Path B cylinder | faceted fallback → **1 IFCCYLINDRICALSURFACE + 2 IFCPLANE + 5 IFCCIRCLE, 0 line, faceted 없음** |
+  | Path B sphere | faceted fallback → **2 IFCSPHERICALSURFACE + 적도 IFCCIRCLE** |
+  | box+cyl+sphere 혼합 | 전부 faceted → **11 IfcAdvancedFace: 8 IFCPLANE + 24 IFCLINE(box) + 3 곡면 surface + 8 IFCCIRCLE, faceted 없음** |
+- **회귀**: axia-ifc **+4** (38→42, 절대 #[ignore] 금지):
+  `emitter_circle_self_loop_disk`(단일 closed circle edge → IFCCIRCLE, 0 line) /
+  `path_b_cylinder_exports_analytic_circles`(3 face + 1 cyl + 2 plane + circle,
+  not faceted) / `bezier_bspline_nurbs_edge_curves_deferred_to_beta3b`(β-3b Err) /
+  `arc_edge_maps_to_circle_with_sense`. 기존 box planar 테스트(Line edge) 무변경.
+  axia-wasm/web 무회귀 (Rust-only, API 시그니처 불변).
+- **한계 (후속)**: **β-3b** Bezier/BSpline/NURBS edge (`IfcBSplineCurveWithKnots`
+  /`IfcRationalBSplineCurveWithKnots` + Bezier→BSpline knot 합성) → closed-Bezier/
+  BSpline/NURBS face 모델. BSpline/NURBS *surface* (`IfcBSplineSurfaceWithKnots`).
+  per-face island edge (watertight 위상 공유). 전부 단일 IfcWall (γ).
