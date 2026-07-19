@@ -201,3 +201,47 @@ identical (2회 emit 동일). 외부 IFC 도구는 ε.
 - **한계 (후속)**: 곡면이 flat facet — analytic IfcAdvancedBrep 은 β-2; 전부
   단일 IfcWall — element-type(origin_hint) 후속; tri-soup 이라 planar face 도
   삼각화 — analytic Plane→clean IfcFace 는 β-2.
+
+## 9. β-2 Acceptance (2026-07-19) — IfcAdvancedBrep emitter + analytic surfaces
+
+β-1(FacetedBrep emitter)에 이어 **analytic B-rep emitter** 를 추가. β-1→β-1.5
+리듬 답습 — **본 커밋은 순수 emitter + 테스트 (crate-only), WASM/앱 wiring 은
+β-2.5** (DCEL 순회 export 신설, 별도 원자 단계).
+
+- **axia-ifc**: 신 `ifc_advancedbrep.rs` — `emit_advanced_brep(faces, scale, name)
+  -> Result<String,String>`. 각 `AdvancedFace` = { `surface: AnalyticSurface`,
+  `outer`, `inners`, `same_sense` } (engine mm, emitter 가 `scale` 로 metre 변환).
+  - **surface 매핑 (SSOT, axia-geo `AnalyticSurface` 직접 사용, L-203-1)**:
+    Plane→`IFCPLANE`, Cylinder→`IFCCYLINDRICALSURFACE`, Sphere→`IFCSPHERICALSURFACE`,
+    Cone→`IFCCONICALSURFACE`(apex→reference-plane 변환, v_range 기반 R+semiangle),
+    Torus→`IFCTOROIDALSURFACE`. 각 surface 는 `IFCAXIS2PLACEMENT3D`(실제 축) 부여.
+  - **경계 (β-2 = LINE only)**: `IFCEDGELOOP`(`IFCORIENTEDEDGE`→`IFCEDGECURVE`(
+    `IFCLINE`+`IFCVECTOR`) + `IFCVERTEXPOINT`). `IFCADVANCEDFACE(bounds, surface,
+    same_sense)` → `IFCCLOSEDSHELL` → `IFCADVANCEDBREP`.
+  - **NURBS-class surface (BezierPatch/BSpline/NURBS) → Err** (β-3 의
+    `IfcBSplineSurfaceWithKnots` 필요).
+- **공유 스캐폴드 SSOT**: owner/units/context prologue + product/spatial epilogue
+  + `pt`/`dir`/`placement`/`placement_axes` 를 신 `ifc_common.rs` 로 추출. faceted
+  brep(β-1.5)+advanced brep(β-2) 공유. `RepresentationType` 만 `"Brep"` vs
+  `"AdvancedBrep"` 로 분기. 리팩터 후 faceted brep **byte-identical 보존**
+  (기존 회귀 유지).
+- **핵심 값** — planar face 는 **기하학적으로 정확**: box 가 β-1.5 의 12 삼각형
+  대신 **6 clean `IfcAdvancedFace(IfcPlane)`** (4-edge loop) 로 export. 곡면 face 는
+  surface 는 정확하나 trim edge 는 LINE 근사 (곡선 edge = β-3).
+- **회귀**: axia-ifc **+10** (24→34, 절대 #[ignore] 금지):
+  `advanced_box_six_planar_faces`(6 face/plane/edgeloop + 24 edge/line/vertexpoint
+  + refs resolve + not-faceted) / `advanced_brep_byte_identical` /
+  `scale_converts_mm_to_metre` / `surface_{cylinder,sphere,cone,torus}_maps_*`(4) /
+  `nurbs_surface_rejected` / `degenerate_loop_rejected` / `empty_faces_rejected`.
+  axia-wasm 무회귀 (public API `emit_faceted_brep` 불변).
+- **검증**: crate 단위 테스트 (구조 well-formedness + surface 매핑 + 단위 변환 +
+  결정성). 실제 앱 export 는 β-2.5 wiring 후 (ADR-087 K-ζ 시연).
+- **한계 (후속)**:
+  - **β-2.5 wiring** — WASM 이 active DCEL face 를 순회하며 (`collect_loop_verts`
+    outer+inner + `getFaceSurfaceJson`/face surface read + same_sense 계산)
+    `emit_advanced_brep` 호출; 모든 face 가 지원 surface 면 advanced, 아니면 β-1.5
+    faceted fallback.
+  - **β-3** — 곡면 face 의 곡선 edge (`IfcCircle`/`IfcTrimmedCurve`/`IfcBSplineCurve`)
+    → 곡면도 기하학적으로 정확. self-loop rim(Path B) 도 이때.
+  - edge sharing (현재 per-face island — watertight 위상 공유는 후속),
+    BSpline/NURBS surface (`IfcBSplineSurfaceWithKnots`).

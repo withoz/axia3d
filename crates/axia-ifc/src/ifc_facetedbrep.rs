@@ -4,46 +4,14 @@
 //! as a true-IFC4X3 `IFCFACETEDBREP` closed shell wrapped in a minimal spatial
 //! hierarchy (Project→Site→Building→Storey, one IfcWall). [`emit_box`] feeds it
 //! 8 points + 6 quads (β-1 proof); [`emit_faceted_brep`] feeds it a tessellated
-//! triangle soup from the live engine (β-1.5). No analytic surfaces / edge
-//! curves yet — that is β-2 (IfcAdvancedBrep).
+//! triangle soup from the live engine (β-1.5). The owner/units/context prologue
+//! and product/spatial epilogue are shared with the analytic `IfcAdvancedBrep`
+//! emitter (β-2) via [`crate::ifc_common`].
 
-use crate::guid::ifc_guid_for;
+use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, pt};
 use crate::step_value::{EntityRef, StepValue};
 use crate::step_writer::StepWriter;
 use glam::DVec3;
-
-fn pt(w: &mut StepWriter, p: DVec3) -> EntityRef {
-    w.add(
-        "IFCCARTESIANPOINT",
-        vec![StepValue::List(vec![
-            StepValue::Real(p.x),
-            StepValue::Real(p.y),
-            StepValue::Real(p.z),
-        ])],
-    )
-}
-
-fn dir(w: &mut StepWriter, d: DVec3) -> EntityRef {
-    w.add(
-        "IFCDIRECTION",
-        vec![StepValue::List(vec![
-            StepValue::Real(d.x),
-            StepValue::Real(d.y),
-            StepValue::Real(d.z),
-        ])],
-    )
-}
-
-/// `IFCAXIS2PLACEMENT3D(location, axis, ref_direction)`.
-fn placement(w: &mut StepWriter, origin: DVec3) -> EntityRef {
-    let loc = pt(w, origin);
-    let z = dir(w, DVec3::Z);
-    let x = dir(w, DVec3::X);
-    w.add(
-        "IFCAXIS2PLACEMENT3D",
-        vec![StepValue::Ref(loc), StepValue::Ref(z), StepValue::Ref(x)],
-    )
-}
 
 /// Shared core: emit `points` + polygonal `face_loops` (each a CCW list of
 /// vertex indices into `points`) as a complete IFC4.3 `IFCFACETEDBREP` file.
@@ -55,90 +23,8 @@ pub fn emit_brep(points: &[DVec3], face_loops: &[Vec<usize>], name: &str) -> Str
     w.file_description = format!("AXiA IFC4.3 '{}' (IfcFacetedBrep, ADR-203)", name);
     w.file_name = format!("{}.ifc", name);
 
-    // ── Owner / units / context (header scaffold) ──
-    let person = w.add(
-        "IFCPERSON",
-        vec![
-            StepValue::Unset,
-            StepValue::Str("AXiA".into()),
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-        ],
-    );
-    let org = w.add(
-        "IFCORGANIZATION",
-        vec![
-            StepValue::Unset,
-            StepValue::Str("AXiA 3D".into()),
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-        ],
-    );
-    let person_org = w.add(
-        "IFCPERSONANDORGANIZATION",
-        vec![StepValue::Ref(person), StepValue::Ref(org), StepValue::Unset],
-    );
-    let app = w.add(
-        "IFCAPPLICATION",
-        vec![
-            StepValue::Ref(org),
-            StepValue::Str("0.1.0".into()),
-            StepValue::Str("axia-ifc".into()),
-            StepValue::Str("axia-ifc".into()),
-        ],
-    );
-    let owner = w.add(
-        "IFCOWNERHISTORY",
-        vec![
-            StepValue::Ref(person_org),
-            StepValue::Ref(app),
-            StepValue::Unset,
-            StepValue::Enum("ADDED".into()),
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Unset,
-            StepValue::Int(0),
-        ],
-    );
-
-    // SI units (length = METRE, plane angle = RADIAN, solid angle = STERADIAN).
-    let unit_len = w.add(
-        "IFCSIUNIT",
-        vec![StepValue::Derived, StepValue::Enum("LENGTHUNIT".into()), StepValue::Unset, StepValue::Enum("METRE".into())],
-    );
-    let unit_ang = w.add(
-        "IFCSIUNIT",
-        vec![StepValue::Derived, StepValue::Enum("PLANEANGLEUNIT".into()), StepValue::Unset, StepValue::Enum("RADIAN".into())],
-    );
-    let unit_sol = w.add(
-        "IFCSIUNIT",
-        vec![StepValue::Derived, StepValue::Enum("SOLIDANGLEUNIT".into()), StepValue::Unset, StepValue::Enum("STERADIAN".into())],
-    );
-    let units = w.add(
-        "IFCUNITASSIGNMENT",
-        vec![StepValue::List(vec![
-            StepValue::Ref(unit_len),
-            StepValue::Ref(unit_ang),
-            StepValue::Ref(unit_sol),
-        ])],
-    );
-    let world = placement(&mut w, DVec3::ZERO);
-    let context = w.add(
-        "IFCGEOMETRICREPRESENTATIONCONTEXT",
-        vec![
-            StepValue::Unset,
-            StepValue::Str("Model".into()),
-            StepValue::Int(3),
-            StepValue::Real(1e-5),
-            StepValue::Ref(world),
-            StepValue::Unset,
-        ],
-    );
+    // ── Owner / units / context (shared scaffold) ──
+    let sc = emit_owner_units_context(&mut w);
 
     // ── Geometry: points + polygonal faces ──
     let verts: Vec<EntityRef> = points.iter().map(|&p| pt(&mut w, p)).collect();
@@ -163,92 +49,8 @@ pub fn emit_brep(points: &[DVec3], face_loops: &[Vec<usize>], name: &str) -> Str
     );
     let brep = w.add("IFCFACETEDBREP", vec![StepValue::Ref(shell)]);
 
-    let shape_rep = w.add(
-        "IFCSHAPEREPRESENTATION",
-        vec![
-            StepValue::Ref(context),
-            StepValue::Str("Body".into()),
-            StepValue::Str("Brep".into()),
-            StepValue::List(vec![StepValue::Ref(brep)]),
-        ],
-    );
-    let prod_def = w.add(
-        "IFCPRODUCTDEFINITIONSHAPE",
-        vec![StepValue::Unset, StepValue::Unset, StepValue::List(vec![StepValue::Ref(shape_rep)])],
-    );
-
-    // ── Spatial hierarchy: Project → Site → Building → Storey → Wall ──
-    // Deterministic IfcRoot GUIDs by fixed index (L-203-2).
-    let g = |i: u64| StepValue::Str(ifc_guid_for(i));
-
-    let project = w.add(
-        "IFCPROJECT",
-        vec![
-            g(0),
-            StepValue::Ref(owner),
-            StepValue::Str("AXiA Export".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Unset, StepValue::Unset,
-            StepValue::List(vec![StepValue::Ref(context)]),
-            StepValue::Ref(units),
-        ],
-    );
-    let site_pl = w.add("IFCLOCALPLACEMENT", vec![StepValue::Unset, StepValue::Ref(world)]);
-    let site = w.add(
-        "IFCSITE",
-        vec![
-            g(1), StepValue::Ref(owner), StepValue::Str("Site".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
-            StepValue::Unset, StepValue::Unset, StepValue::Enum("ELEMENT".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Unset, StepValue::Unset, StepValue::Unset,
-        ],
-    );
-    let building = w.add(
-        "IFCBUILDING",
-        vec![
-            g(2), StepValue::Ref(owner), StepValue::Str("Building".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
-            StepValue::Unset, StepValue::Unset, StepValue::Enum("ELEMENT".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Unset,
-        ],
-    );
-    let storey = w.add(
-        "IFCBUILDINGSTOREY",
-        vec![
-            g(3), StepValue::Ref(owner), StepValue::Str("Storey".into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
-            StepValue::Unset, StepValue::Unset, StepValue::Enum("ELEMENT".into()), StepValue::Unset,
-        ],
-    );
-    let wall = w.add(
-        "IFCWALL",
-        vec![
-            g(4), StepValue::Ref(owner), StepValue::Str(name.into()),
-            StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
-            StepValue::Ref(prod_def), StepValue::Unset, StepValue::Unset,
-        ],
-    );
-
-    // Aggregation + spatial containment relationships.
-    w.add(
-        "IFCRELAGGREGATES",
-        vec![g(5), StepValue::Ref(owner), StepValue::Unset, StepValue::Unset,
-             StepValue::Ref(project), StepValue::List(vec![StepValue::Ref(site)])],
-    );
-    w.add(
-        "IFCRELAGGREGATES",
-        vec![g(6), StepValue::Ref(owner), StepValue::Unset, StepValue::Unset,
-             StepValue::Ref(site), StepValue::List(vec![StepValue::Ref(building)])],
-    );
-    w.add(
-        "IFCRELAGGREGATES",
-        vec![g(7), StepValue::Ref(owner), StepValue::Unset, StepValue::Unset,
-             StepValue::Ref(building), StepValue::List(vec![StepValue::Ref(storey)])],
-    );
-    w.add(
-        "IFCRELCONTAINEDINSPATIALSTRUCTURE",
-        vec![g(8), StepValue::Ref(owner), StepValue::Unset, StepValue::Unset,
-             StepValue::List(vec![StepValue::Ref(wall)]), StepValue::Ref(storey)],
-    );
+    // ── Product + spatial hierarchy (shared scaffold) ──
+    emit_product_and_spatial(&mut w, &sc, name, brep, "Brep");
 
     w.build()
 }

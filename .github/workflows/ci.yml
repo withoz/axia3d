@@ -75,6 +75,10 @@ jobs:
       - name: cargo test -p axia-wasm --tests
         run: cargo test -p axia-wasm --tests
 
+      # ADR-203 IFC exporter (β-1.5 FacetedBrep, β-2 IfcAdvancedBrep).
+      - name: cargo test -p axia-ifc --lib
+        run: cargo test -p axia-ifc --lib
+
   # ───────────────────────────────────────────────────────────────
   # Browser E2E — Playwright Chromium round-trip.
   # ADR-075 E4-1~E4-4 → 11 E2E tests (smoke + ADR-064 + ADR-066 + undo).
