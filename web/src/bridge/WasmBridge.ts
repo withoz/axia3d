@@ -551,6 +551,9 @@ type AxiaEngineExtended = AxiaEngine & {
   import_dxf?(data: Uint8Array): string;
   // IFC export (ADR-203 β-1.5) — whole model → IFC4.3 IfcFacetedBrep text
   exportIfc?(name: string): string;
+  // IFC export (ADR-203 β-2.5) — analytic IfcAdvancedBrep; "" if any face is
+  // not a supported analytic surface (caller falls back to exportIfc)
+  exportIfcAdvanced?(name: string): string;
   // Transform operations
   translate_faces?(ids: Uint32Array, dx: number, dy: number, dz: number): boolean;
   rotate_faces?(ids: Uint32Array, cx: number, cy: number, cz: number, ax: number, ay: number, az: number, angleDeg: number): boolean;
@@ -6066,6 +6069,23 @@ export class WasmBridge {
       return ifc && ifc.length > 0 ? ifc : null;
     } catch (e) {
       console.error('[WasmBridge] exportIfc failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * ADR-203 β-2.5 — export the model as analytic IFC4.3 IfcAdvancedBrep text.
+   * Returns the `.ifc` string, or null if the engine is absent or the model
+   * cannot be an all-analytic advanced brep (empty string → null). The caller
+   * (MenuBar) falls back to {@link exportIfc} (faceted) when this returns null.
+   */
+  exportIfcAdvanced(name: string): string | null {
+    if (!this.engine?.exportIfcAdvanced) return null;
+    try {
+      const ifc = this.engine.exportIfcAdvanced(name);
+      return ifc && ifc.length > 0 ? ifc : null;
+    } catch (e) {
+      console.error('[WasmBridge] exportIfcAdvanced failed:', e);
       return null;
     }
   }

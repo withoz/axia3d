@@ -5449,6 +5449,23 @@ impl AxiaEngine {
         axia_ifc::emit_faceted_brep(&points, &tris, nm)
     }
 
+    /// ADR-203 β-2.5 — export the model as an IFC4.3 `IfcAdvancedBrep` with
+    /// analytic surfaces, walking the live DCEL directly (not the render
+    /// tessellation). Planar-face models export as exact `IfcAdvancedFace(
+    /// IfcPlane)`; converts engine mm → IFC metre. `name` labels the wall.
+    ///
+    /// Returns "" (→ caller falls back to `exportIfc` faceted) if the scene is
+    /// empty, or if any active face lacks a supported analytic surface or has a
+    /// boundary that is not a straight-edge loop (e.g. Path B curved rims —
+    /// their curved edges are β-3).
+    #[wasm_bindgen(js_name = "exportIfcAdvanced")]
+    pub fn export_ifc_advanced(&mut self, name: String) -> String {
+        const MM_TO_M: f64 = 0.001;
+        let nm = name.trim();
+        let nm = if nm.is_empty() { "AXiA Model" } else { nm };
+        axia_ifc::emit_advanced_brep_from_mesh(&self.scene.mesh, MM_TO_M, nm).unwrap_or_default()
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {

@@ -245,3 +245,40 @@ identical (2회 emit 동일). 외부 IFC 도구는 ε.
     → 곡면도 기하학적으로 정확. self-loop rim(Path B) 도 이때.
   - edge sharing (현재 per-face island — watertight 위상 공유는 후속),
     BSpline/NURBS surface (`IfcBSplineSurfaceWithKnots`).
+
+## 10. β-2.5 Acceptance (2026-07-19) — live DCEL → IfcAdvancedBrep wiring
+
+β-2 emitter 를 실제 앱에 연결. β-1→β-1.5 와 동일 리듬 (emitter → wiring).
+**파일▸내보내기▸IFC** 가 이제 analytic advanced brep 을 우선 시도하고, 비지원
+face 가 있으면 β-1.5 faceted 로 자동 fallback.
+
+- **axia-ifc**: `emit_advanced_brep_from_mesh(&Mesh, scale, name) -> Result<..>` —
+  live DCEL 을 직접 순회. active face 마다 `mesh.face_surface` +
+  `collect_loop_verts`(outer + `face.inners()`) + `mesh.vertex_pos` 로
+  `AdvancedFace` 구성, `same_sense` 는 Newell(outer) · `AnalyticSurface::
+  normal_at_world_pos`(경계 정점) 로 계산 (ADR-140 SSOT). extraction 이
+  axia-ifc 에 있어 `Mesh::create_box` 로 **Rust 단위 테스트 가능** (CI 커버).
+  - **All-or-nothing**: active face 하나라도 지원 surface(Plane/Cyl/Sph/Cone/
+    Torus)가 없거나 straight-edge loop 불가(**Path B 곡면 rim = 1-vertex
+    self-loop** → 곡선 edge β-3 필요)면 Err → caller 가 faceted fallback.
+    Planar 모델(box/extrude polygon)은 여기서 정확한 advanced 로 export.
+- **axia-wasm**: `exportIfcAdvanced(name) -> String` — `self.scene.mesh` 를
+  `emit_advanced_brep_from_mesh` 에 전달, Err/empty → "".
+- **web**: `WasmBridge.exportIfcAdvanced` + MenuBar `export-ifc` 가
+  `advanced ?? faceted` 로 라우팅 + Toast "IFC 내보내기 완료 (analytic)" vs
+  faceted. 새 action/catalog entry 없음 (기존 `export-ifc` 업그레이드,
+  additive). i18n +1.
+- **라이브 검증** (preview, real WASM, ADR-087 K-ζ):
+  - box 2×3×4m → `exportIfcAdvanced` = **IfcAdvancedBrep, 6 IFCADVANCEDFACE
+    + 6 IFCPLANE + 6 IFCEDGELOOP + 24 IFCEDGECURVE, faceted 없음, IFC4X3,
+    IfcWall** (β-1.5 의 12 삼각형 → clean 6 planar face).
+  - box + Path B sphere → `exportIfcAdvanced` = **""** (곡면 self-loop rim
+    비지원) → MenuBar 가 `exportIfc` = **IfcFacetedBrep** 로 fallback.
+- **회귀**: axia-ifc **+4** (34→38, 절대 #[ignore] 금지):
+  `box_mesh_exports_six_planar_advanced_faces` / `box_mesh_faces_are_same_sense_
+  outward`(전 face `.T.`) / `empty_mesh_errors_for_faceted_fallback` /
+  `box_mesh_export_byte_identical`. web: WasmBridge/CatalogConsistency/i18n
+  guards green, vite build green.
+- **한계 (후속)**: 곡면 모델은 아직 faceted (β-3 곡선 edge → 곡면 advanced),
+  mixed advanced+faceted brep (현재 all-or-nothing), per-face island edge
+  (watertight 위상 공유 후속), 전부 단일 IfcWall (γ).
