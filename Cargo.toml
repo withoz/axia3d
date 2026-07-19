@@ -52,6 +52,7 @@ axia-core = { path = "crates/axia-core" }
 axia-geo = { path = "crates/axia-geo" }
 axia-transaction = { path = "crates/axia-transaction" }
 axia-foreign = { path = "crates/axia-foreign" }
+axia-ifc = { path = "crates/axia-ifc" }
 
 [profile.release]
 lto = true

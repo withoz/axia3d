@@ -15,6 +15,7 @@ wasm-opt = false
 axia-core = { workspace = true }
 axia-geo = { workspace = true }
 axia-transaction = { workspace = true }
+axia-ifc = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true }

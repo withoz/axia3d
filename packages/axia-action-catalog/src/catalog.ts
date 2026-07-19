@@ -1278,6 +1278,16 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     adrs: ['ADR-133'],
   },
   {
+    id: 'export-ifc',
+    label: 'IFC 내보내기',
+    description: 'Export current model to IFC4.3 (IfcFacetedBrep) for BIM tools.',
+    tier: 1,
+    surfaces: ['menu'],
+    aliases: {},
+    status: 'ui-only',
+    adrs: ['ADR-133', 'ADR-203'],
+  },
+  {
     id: 'export-stl',
     label: 'STL 내보내기',
     description: 'Export current scene to STL format (binary).',

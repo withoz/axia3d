@@ -322,6 +322,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('export-obj',  'export', 'OBJ 내보내기',  'OBJ',  undefined, false, deps));
   cmds.push(action('export-stl',  'export', 'STL 내보내기',  'STL',  undefined, false, deps));
   cmds.push(action('export-gltf', 'export', 'glTF 내보내기', 'glTF', undefined, false, deps));
+  cmds.push(action('export-ifc',  'export', 'IFC 내보내기',  'IFC',  undefined, false, deps));
 
   // ── Repair / Diagnostics ───────────────────────────────────────
   cmds.push(action('mesh-repair',       'repair', '🩹 메시 수리',           'Repair', undefined, false, deps));

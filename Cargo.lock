@@ -90,6 +90,7 @@ dependencies = [
  "anyhow",
  "axia-core",
  "axia-geo",
+ "axia-ifc",
  "axia-transaction",
  "console_error_panic_hook",
  "getrandom 0.2.17",
