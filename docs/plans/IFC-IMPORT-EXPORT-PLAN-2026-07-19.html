@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IFC Import/Export 마스터 플랜</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151c26; --panel2:#1b2430; --ink:#e6edf4; --ink2:#9fb0c0; --muted:#6b7c8c;
+    --line:#243040; --accent:#4dd6c1; --accent2:#6ea8fe;
+    --done:#3fb950; --gap:#e3a13c; --plan:#6ea8fe; --danger:#f0616d;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6; --ink:#1c2530; --ink2:#4a5765; --muted:#8592a0;
+      --line:#e1e6ec; --accent:#0d9488; --accent2:#2563eb; --done:#1a7f37; --gap:#bc6a13; --plan:#2563eb; --danger:#cf222e; }
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; }
+  .wrap{ max-width:1000px; margin:0 auto; padding:32px 20px 90px; }
+  .eyebrow{ font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); font-weight:700; margin:0 0 6px; }
+  h1{ margin:0 0 6px; font-size:27px; font-weight:800; letter-spacing:-.02em; }
+  .sub{ color:var(--ink2); font-size:14px; margin:0 0 4px; }
+  .meta{ color:var(--muted); font-size:12px; font-family:var(--mono); }
+  h2{ font-size:18px; font-weight:750; margin:38px 0 12px; padding-bottom:7px; border-bottom:1px solid var(--line); }
+  h2 .n{ color:var(--accent); font-family:var(--mono); font-size:14px; margin-right:8px; }
+  h3{ font-size:14.5px; font-weight:700; margin:20px 0 8px; }
+  p{ font-size:14px; color:var(--ink); margin:8px 0; }
+  .lead{ color:var(--ink2); }
+  code{ font-family:var(--mono); font-size:.86em; background:var(--panel2); padding:1px 5px; border-radius:5px; color:var(--accent); }
+  ul{ margin:8px 0; padding-left:20px; } li{ font-size:13.5px; margin:4px 0; }
+  .callout{ background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:9px; padding:13px 16px; margin:14px 0; font-size:13.5px; }
+  .callout.warn{ border-left-color:var(--gap); } .callout.key{ border-left-color:var(--accent2); }
+  table{ border-collapse:collapse; width:100%; margin:12px 0; font-size:13px; }
+  th{ text-align:left; padding:8px 10px; border-bottom:1.5px solid var(--line); color:var(--ink2); font-size:11px; letter-spacing:.04em; text-transform:uppercase; }
+  td{ padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td code{ white-space:nowrap; }
+  .pill{ display:inline-block; font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:20px; letter-spacing:.02em; white-space:nowrap; }
+  .p-done{ color:var(--done); background:color-mix(in srgb,var(--done) 15%,transparent); }
+  .p-gap{ color:var(--gap); background:color-mix(in srgb,var(--gap) 15%,transparent); }
+  .p-plan{ color:var(--plan); background:color-mix(in srgb,var(--plan) 15%,transparent); }
+  .phase{ background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px; margin:10px 0; }
+  .phase .ph-h{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .phase .tag{ font-family:var(--mono); font-size:12px; font-weight:700; color:var(--accent); background:var(--panel2); padding:2px 8px; border-radius:6px; }
+  .phase .ttl{ font-weight:700; font-size:14px; } .phase .est{ margin-left:auto; font-size:11px; color:var(--muted); font-family:var(--mono); }
+  .phase p{ margin:7px 0 0; font-size:13px; color:var(--ink2); }
+  .two{ display:grid; grid-template-columns:1fr 1fr; gap:12px; } @media (max-width:720px){ .two{ grid-template-columns:1fr; } }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px; }
+  .card h3{ margin-top:0; } .card ul{ padding-left:18px; }
+  .scroll{ overflow-x:auto; }
+  .foot{ margin-top:40px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  .legend{ display:flex; gap:14px; flex-wrap:wrap; margin:6px 0 0; font-size:12px; color:var(--ink2); }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">AxiA 3D · BIM Interop</p>
+  <h1>IFC Import/Export — 기반구축 &amp; 확장 마스터 플랜</h1>
+  <p class="sub">우리 analytic kernel(DCEL + AnalyticSurface/Curve + Shape/Xia/Material) ↔ IFC4.3 상호운용</p>
+  <p class="meta">2026-07-19 · 계획(audit + roadmap) · ADR-203 계속 + IFC import 신규 · 측정 기반</p>
+
+  <div class="callout key">
+    <b>한 줄 요약.</b> IFC <b>export 기반(writer)</b>은 이미 존재(<code>axia-ifc</code> β-1)하나 ① 실제 씬을 못 받고 ② 앱에 안 붙어 아직 <b>동작하지 않음</b>. IFC <b>import</b>는 placeholder("준비중"). → <b>권장 순서: export를 먼저 동작시키고(반쯤 지은 기반 활용) → analytic 확장 → import 착수.</b>
+  </div>
+
+  <h2><span class="n">1</span>측정된 현재 상태</h2>
+  <p class="lead">measure-first로 확인 — IFC는 greenfield가 아님(CLAUDE.md 포맷 표가 뒤처져 있었음).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>영역</th><th>상태</th><th>근거 / 위치</th></tr></thead>
+    <tbody>
+      <tr><td><b>Export 기반</b> (writer)</td><td><span class="pill p-done">완료</span></td>
+        <td><code>crates/axia-ifc</code> (ADR-203 β-1). StepWriter + StepValue formatter SSOT + 결정적 22-char GUID + <code>IfcFacetedBrep</code> <code>emit_box(min,max,name)</code>/<code>emit_unit_cube()</code>. 진짜 IFC4X3 STEP-21. 21 tests.</td></tr>
+      <tr><td>Export — 실제 씬 geometry</td><td><span class="pill p-gap">공백</span></td>
+        <td>axia-ifc가 <b>axia-geo/axia-core 미의존</b> → primitive box만 emit, 실제 DCEL Mesh/Scene 못 받음.</td></tr>
+      <tr><td>Export — 앱 배선</td><td><span class="pill p-gap">공백</span></td>
+        <td><b>axia-wasm 미노출</b> → 웹에서 호출 불가. 'IFC 내보내기' 명령/메뉴 <b>없음</b>.</td></tr>
+      <tr><td><b>Import</b> (IFC)</td><td><span class="pill p-gap">미착수</span></td>
+        <td><code>import-ifc</code> 명령 + 메뉴 = <b>placeholder</b> ("IFC 가져오기는 준비중입니다"). 파서 0. <code>MenuBar.ts:281</code>, <code>AxiaCommands.ts:315</code>.</td></tr>
+      <tr><td>STEP-21 파서 (재사용 자산)</td><td><span class="pill p-done">있음</span></td>
+        <td><code>axia-foreign</code>에 <b>스키마 무관 Part-21 lexer/parser/resolver</b> 완비(<code>step_lexer.rs</code>/<code>step_parser.rs</code>/<code>step_resolver.rs</code>). <b>IFC도 STEP-21이라 이 front-end로 <code>.ifc</code> DATA를 그대로 파싱 가능</b> → IFC import는 <b>entity classifier + promote 레이어만</b> 추가.</td></tr>
+      <tr><td><b>런타임 배선 (공통)</b></td><td><span class="pill p-gap">공백</span></td>
+        <td><code>axia-ifc</code>·<code>axia-foreign</code> 둘 다 <b>axia-wasm에 미포함 → 런타임 dead</b>. 현 STEP/IGES import는 전부 <b>OCCT.js(브라우저)</b>. IFC(export·import)는 <b>WASM 바인딩 추가가 공통 선행조건</b>.</td></tr>
+      <tr><td>기타 포맷 (참고)</td><td><span class="pill p-done">있음</span></td>
+        <td>Import: OBJ/STL/glTF/DAE/PLY/3DS/3DM/DWG = <b>Three.js loader(디스플레이 전용, 편집 불가)</b>; DXF = <b>Rust DCEL(편집 가능, Path B)</b>; STEP/IGES = OCCT.js + best-effort DCEL inject. Export: DXF/OBJ/GLTF/STL(전부 <b>Three.js 씬 소스</b>). Native <code>.axia</code>.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><b>audit 결론.</b> Import은 3개 병렬 파이프라인(Three.js 디스플레이 전용 / DXF→DCEL 편집 / OCCT STEP·IGES). Export은 4개 전부 <b>Three.js 씬</b>에서 추출 — <b>DCEL→interchange 경로가 0</b> (β-1.5가 그 첫 경로). IFC는 export writer(β-1)와 import용 STEP-21 파서(axia-foreign)가 둘 다 in-repo에 존재하나 <b>런타임에 안 붙어 있음</b>.</div>
+
+  <h2><span class="n">2</span>핵심 결정 (ADR-203 계승)</h2>
+  <div class="two">
+    <div class="card"><h3>진짜 IFC emit</h3>
+      <p class="lead" style="font-size:13px">IFC4X3 엔티티명(<code>IFCCARTESIANPOINT</code>/<code>IFCFACETEDBREP</code>/<code>IFCWALL</code>). Revit/ArchiCAD/FreeCAD에서 열림 = BIM interop 목표 직결. STEP AP203명 혼용 금지.</p></div>
+    <div class="card"><h3>결정적 byte-identical</h3>
+      <p class="lead" style="font-size:13px">순차 <code>#N</code> (insertion-order Vec), 결정적 GUID seed(geometry hash, OS-time 금지), formatter SSOT. 같은 모델 → 같은 <code>.ifc</code> 바이트.</p></div>
+    <div class="card"><h3>StepValue format SSOT</h3>
+      <p class="lead" style="font-size:13px">REAL trailing-dot + sci-notation, STRING <code>''</code>-escape + non-ASCII <code>\X2\..\X0\</code>, ENUM <code>.IDENT.</code>, REF <code>#N</code>. 단일 모듈. <b>import 파서도 이 SSOT의 역방향을 재사용.</b></p></div>
+    <div class="card"><h3>Path Z atomic</h3>
+      <p class="lead" style="font-size:13px">각 sub-step = shippable 의미 단위(LOCKED #44), 별도 PR + 사용자 결재, 절대 <code>#[ignore]</code> 금지, 회귀 단조 증가.</p></div>
+  </div>
+
+  <h2><span class="n">3</span>Export 로드맵 (동작 → 정밀)</h2>
+  <p class="lead">ADR-203 β-1 완료 위에서 계속. 첫 목표 = <b>현재 모델을 .ifc로 저장 → 외부 BIM 도구에서 열림.</b></p>
+
+  <div class="phase"><div class="ph-h"><span class="tag">β-1.5</span><span class="ttl">실제 geometry FacetedBrep + 앱 배선</span><span class="est">~1주 · 첫 동작</span></div>
+    <p>axia-ifc가 <code>axia-geo</code>(Mesh/DCEL)·<code>axia-core</code>(Scene/Xia)를 의존하도록 확장. 씬의 모든 활성 face를 tessellate → <code>IfcFacetedBrep</code>(point + polyloop) emit(β-1 emitter 일반화). <b>axia-wasm 바인딩</b> <code>export_ifc() -&gt; String</code>(<code>export_snapshot</code> 답습) + WasmBridge wrapper + 웹 <b>파일▸내보내기▸IFC</b> 명령 + <code>ExportUtils.downloadText</code>(DxfWriter 다운로드 패턴). <b>이것이 엔진 DCEL을 interchange 포맷으로 내보내는 최초 경로</b>(기존 4 exporter는 전부 Three.js 씬 소스) → 임의 모델 export 동작.</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">β-2</span><span class="ttl">IfcAdvancedBrep + analytic surfaces</span><span class="est">~1주</span></div>
+    <p>Plane/Cylinder/Sphere/Cone/Torus/BSpline/NURBS surface → <code>IfcPlane</code>/<code>IfcCylindricalSurface</code>/... + <code>IfcAxis2Placement3D</code>/<code>IfcDirection</code> + <code>IfcEdgeLoop</code>/<code>IfcOrientedEdge</code>. tessellation-loss 없는 진짜 곡면 export (우리 kernel의 강점).</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">β-3</span><span class="ttl">AnalyticCurve → IFC edge curves</span><span class="est">~1.5주</span></div>
+    <p>Line/Circle/Arc/BSpline/NURBS → <code>IfcLine</code>/<code>IfcCircle</code>/<code>IfcTrimmedCurve</code>/<code>IfcBSplineCurveWithKnots</code>/<code>IfcRationalBSplineCurveWithKnots</code>. Bezier→BSpline knot 합성. ADR-036 P21 매핑표의 역방향.</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">γ</span><span class="ttl">Xia → IfcWall + Material + Representation</span><span class="est">~0.5주</span></div>
+    <p>Xia(부재) 열거 → <code>IfcWall</code> + <code>IfcMaterial</code>(name) + <code>IfcProductDefinitionShape</code>/<code>IfcShapeRepresentation</code>. (element-type 세분은 origin_hint 후속 — MVP는 전부 Wall.)</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">δ</span><span class="ttl">Spatial hierarchy</span><span class="est">~0.5주</span></div>
+    <p>Project→Site→Building→Storey→Element + <code>IfcRelContainedInSpatialStructure</code>/<code>IfcRelAggregates</code>. 단일 storey MVP.</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">ε</span><span class="ttl">외부 IFC 검증 + 시연</span><span class="est">~1주</span></div>
+    <p>IfcOpenShell/Revit/FreeCAD round-trip, corpus 검증, 사용자 시연(ADR-087 K-ζ). β 이전은 자체 well-formedness(모든 <code>#N</code> 해소·닫힌 graph·좌표 정확) 검증.</p></div>
+
+  <h2><span class="n">4</span>Import 로드맵 (신규 — 별도 ADR)</h2>
+  <div class="callout key"><b>좋은 소식 — 파서 절반이 이미 있음.</b> IFC는 물리적으로 STEP-21. <code>axia-foreign</code>의 Part-21 <b>lexer/parser/resolver는 스키마 무관</b>이라 <code>.ifc</code> DATA를 그대로 파싱함(신규 파서 불필요). IFC 전용으로 필요한 건 <b>entity classifier(IFC4X3명 인식) + geometry promote(brep→DCEL / analytic surface) 레이어</b>뿐 — <code>classify_*_entity</code> 패턴 답습. (axia-foreign은 곡선/곡면만 promote하고 brep topology는 아니라 brep→DCEL은 신규.) → import 난이도·추정이 애초 예상보다 낮음.</div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">I-1</span><span class="ttl">STEP-21 front-end 재사용 + WASM 배선</span><span class="est">~0.5주 · 신규 거의 0</span></div>
+    <p><b>axia-foreign의 <code>step_lexer</code>/<code>step_parser</code>/<code>step_resolver</code>를 그대로 사용</b>(IFC DATA 파싱 가능). 공통 선행조건 <b>axia-wasm 바인딩</b> 추가(현재 두 Rust 크레이트 모두 런타임 dead — export β-1.5와 공유하는 배선 작업).</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">I-2</span><span class="ttl">IFC 엔티티 인식 + graph 해소</span><span class="est">~1.5주</span></div>
+    <p>IFC4X3 엔티티 인식(<code>IFCFACETEDBREP</code>/<code>IFCPOLYLOOP</code>/<code>IFCCARTESIANPOINT</code>/<code>IFCADVANCEDBREP</code>/surface·curve). <code>#N</code> 참조 그래프 해소 + 순환/누락 방어.</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">I-3</span><span class="ttl">geometry → DCEL</span><span class="est">~2주</span></div>
+    <p>IfcFacetedBrep → verts/faces → <code>Mesh</code>(spatial-hash dedup, LOCKED #5). IfcAdvancedBrep/surface → AnalyticSurface promote(ADR-036 P21 매핑 재사용). winding/manifold 정합(ADR-007).</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">I-4</span><span class="ttl">spatial/시맨틱 → Scene</span><span class="est">~1주</span></div>
+    <p>IfcWall → Xia(부재), IfcMaterial → MaterialLibrary, spatial → group. owner-ID 매핑(ADR-037 P22).</p></div>
+
+  <div class="phase"><div class="ph-h"><span class="tag">I-5</span><span class="ttl">배선 + placeholder 대체 + 시연</span><span class="est">~0.5주</span></div>
+    <p>axia-wasm 바인딩 + 웹 <b>파일▸가져오기▸IFC</b>(현 "준비중" 대체) + FileImporter 통합 + 사용자 시연.</p></div>
+
+  <h2><span class="n">5</span>스코프 / Out-of-scope (MVP)</h2>
+  <div class="two">
+    <div class="card"><h3>In-scope</h3><ul>
+      <li>Export: FacetedBrep + AdvancedBrep(analytic surface) + edge curve + Xia→IfcWall + Material(name) + 단일 spatial + 단위/OwnerHistory</li>
+      <li>Import: FacetedBrep + (가능 시) AdvancedBrep → DCEL/analytic + IfcWall→Xia + Material</li>
+      <li>결정적 byte-identical export, 진짜 IFC4X3, self-validation + 외부 도구(ε)</li>
+    </ul></div>
+    <div class="card"><h3>Out-of-scope (후속 ADR)</h3><ul>
+      <li>Assembly/composition hierarchy, Drawing views</li>
+      <li>PMI/GD&amp;T/annotation</li>
+      <li>Material cost·thickness (필드 부재 → IfcCostValue 미지원)</li>
+      <li>element-type 세분(origin_hint 부재 → MVP 전부 IfcWall)</li>
+      <li>IfcRectangularTrimmedSurface 등 trim loop 시맨틱</li>
+    </ul></div>
+  </div>
+
+  <h2><span class="n">6</span>Lock-ins · 리스크</h2>
+  <div class="two">
+    <div class="card"><h3>Lock-ins</h3><ul>
+      <li>신 crate 분리(<code>axia-ifc</code> export / import 파서는 별 모듈), axia-foreign import 보존</li>
+      <li>결정적 byte-identical + StepValue SSOT + 진짜 IFC4X3명</li>
+      <li>ADDITIVE 신규 scope — LOCKED 역전 0 (ADR-035 §P20.A IFC defer 충족)</li>
+      <li>Path Z atomic + 사용자 결재 + 절대 <code>#[ignore]</code> 금지</li>
+    </ul></div>
+    <div class="card"><h3>리스크</h3><ul>
+      <li>R1 formatter 정확성(REAL/STRING) → SSOT + 단위 테스트</li>
+      <li>R2 결정성 → DCEL 순회 결정적(<code>collect_loop_hes</code>)</li>
+      <li>R3 IFC 시맨틱 검증 gap → ε 외부 도구</li>
+      <li>R4 import entity-graph 복잡도(순환/버전 IFC2x3 vs IFC4) → 방어적 파서</li>
+      <li>R5 geometry 정밀도(round-trip &lt;1e-3mm)</li>
+    </ul></div>
+  </div>
+
+  <h2><span class="n">7</span>권장 착수 순서 &amp; 결재 포인트</h2>
+  <ol>
+    <li><b>β-1.5 (Export 실동작)</b> — 반쯤 지은 기반을 shippable 기능으로. 첫 사용자 가치(모델→.ifc→Revit). <span class="pill p-plan">첫 결재</span></li>
+    <li>β-2 → β-3 → γ → δ → ε — export 정밀·완성 (ADR-203)</li>
+    <li>Import I-1~I-5 — export writer/SSOT 성숙 후 착수(파서가 formatter 역방향 재사용). 별도 ADR.</li>
+  </ol>
+  <div class="callout"><b>다음 결재:</b> 이 계획 승인 + <b>β-1.5</b> 착수 여부. (β-1.5 α spec를 별도 ADR로 쓸지, ADR-203 amendment로 흡수할지도 결정.)</div>
+
+  <h2><span class="n">8</span>Cross-link</h2>
+  <p class="lead">ADR-203(IFC export 전략, 본 계획의 모체) · ADR-035 §P20.A(IFC defer 충족)/§P20.B(Export non-goal — 신규 scope, 역전 아님) · ADR-036 P21(curve/surface 매핑 11+12, emit·import 양방향 참조) · ADR-031 Phase D(AnalyticSurface 8종) · ADR-027~033(NURBS kernel) · ADR-050(Shape/Xia) · ADR-098/099(material) · ADR-007(winding/manifold) · ADR-037 P22(owner-ID) · LOCKED #5(spatial-hash)/#44(Complete Meaning per Merge)/#66(STATUS-POLICY) · 메타-원칙 #4(SSOT)/#5/#6/#10/#16.</p>
+
+  <div class="foot">AxiA 3D · IFC Import/Export 마스터 플랜 · 2026-07-19 · 측정 기반 (import/export 서브시스템 병렬 audit 반영) · 엔진 미변경, 문서만 · ADR-203 계승 + IFC import 신규</div>
+</div>
+
+</body>
+</html>
