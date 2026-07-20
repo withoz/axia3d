@@ -554,6 +554,9 @@ type AxiaEngineExtended = AxiaEngine & {
   // IFC export (ADR-203 β-2.5) — analytic IfcAdvancedBrep; "" if any face is
   // not a supported analytic surface (caller falls back to exportIfc)
   exportIfcAdvanced?(name: string): string;
+  // IFC export (ADR-203 γ) — semantic model: one IfcWall per member (Xia →
+  // material, Shape) with analytic geometry; "" → caller falls back to exportIfc
+  exportIfcModel?(name: string): string;
   // Transform operations
   translate_faces?(ids: Uint32Array, dx: number, dy: number, dz: number): boolean;
   rotate_faces?(ids: Uint32Array, cx: number, cy: number, cz: number, ax: number, ay: number, az: number, angleDeg: number): boolean;
@@ -6086,6 +6089,24 @@ export class WasmBridge {
       return ifc && ifc.length > 0 ? ifc : null;
     } catch (e) {
       console.error('[WasmBridge] exportIfcAdvanced failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * ADR-203 γ — export a semantic IFC4.3 model: one IfcWall per member
+   * (Xia → named + material, Shape → named) with analytic geometry. Returns the
+   * `.ifc` string, or null if the engine is absent or the model can't be an
+   * all-analytic advanced brep (empty string → null). The caller (MenuBar) falls
+   * back to {@link exportIfc} (faceted single wall) when this returns null.
+   */
+  exportIfcModel(name: string): string | null {
+    if (!this.engine?.exportIfcModel) return null;
+    try {
+      const ifc = this.engine.exportIfcModel(name);
+      return ifc && ifc.length > 0 ? ifc : null;
+    } catch (e) {
+      console.error('[WasmBridge] exportIfcModel failed:', e);
       return null;
     }
   }

@@ -5466,6 +5466,71 @@ impl AxiaEngine {
         axia_ifc::emit_advanced_brep_from_mesh(&self.scene.mesh, MM_TO_M, nm).unwrap_or_default()
     }
 
+    /// ADR-203 γ — export a semantic IFC4.3 model: one `IfcWall` per member
+    /// (Xia → named + material, Shape → named, leftover faces → "Model"), all
+    /// under one Project→Site→Building→Storey. Analytic geometry (β-3).
+    ///
+    /// Returns "" (→ caller falls back to `exportIfc` faceted) if the scene is
+    /// empty or any element can't form an advanced brep. Elements are ordered by
+    /// id (Xias, then Shapes, then leftover) for deterministic output.
+    #[wasm_bindgen(js_name = "exportIfcModel")]
+    pub fn export_ifc_model(&self, name: String) -> String {
+        use std::collections::HashSet;
+        const MM_TO_M: f64 = 0.001;
+        let nm = name.trim();
+        let nm = if nm.is_empty() { "AXiA Model" } else { nm };
+
+        let scene = &self.scene;
+        let mut claimed: HashSet<axia_geo::FaceId> = HashSet::new();
+        let mut elements: Vec<axia_ifc::IfcElement> = Vec::new();
+
+        // Xias (sorted by id) → named wall + material.
+        let mut xia_ids: Vec<u32> = scene.xias.keys().copied().collect();
+        xia_ids.sort_unstable();
+        for xid in xia_ids {
+            let xia = &scene.xias[&xid];
+            let faces: Vec<axia_geo::FaceId> =
+                xia.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
+            if faces.is_empty() {
+                continue;
+            }
+            let material_name = if xia.material == axia_core::FORM_MATERIAL {
+                None
+            } else {
+                scene.material_library.get(xia.material).map(|m| m.name.clone())
+            };
+            elements.push(axia_ifc::IfcElement { name: xia.name.clone(), material_name, face_ids: faces });
+        }
+        // Shapes (sorted by id) → named wall, no material.
+        let mut shape_ids: Vec<_> = scene.shapes.keys().copied().collect();
+        shape_ids.sort_unstable();
+        for sid in shape_ids {
+            let shape = &scene.shapes[&sid];
+            let faces: Vec<axia_geo::FaceId> =
+                shape.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
+            if faces.is_empty() {
+                continue;
+            }
+            elements.push(axia_ifc::IfcElement { name: shape.name.clone(), material_name: None, face_ids: faces });
+        }
+        // Leftover active faces (unowned) → one "Model" wall.
+        let leftover: Vec<axia_geo::FaceId> = scene
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && !claimed.contains(fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        if !leftover.is_empty() {
+            elements.push(axia_ifc::IfcElement { name: "Model".into(), material_name: None, face_ids: leftover });
+        }
+
+        if elements.is_empty() {
+            return String::new();
+        }
+        axia_ifc::emit_ifc_model(&scene.mesh, &elements, MM_TO_M, nm).unwrap_or_default()
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {

@@ -329,16 +329,16 @@ export function initMenuBar(deps: MenuBarDeps): void {
           .catch((err) => { console.error('[MenuBar] STL 내보내기 실패:', err); alert(t('STL 내보내기에 실패했습니다')); });
         break;
       }
-      // ── 내보내기 IFC (ADR-203) — analytic IfcAdvancedBrep (β-2.5) 우선,
+      // ── 내보내기 IFC (ADR-203) — 부재별 IfcWall + 재질 (γ) 우선,
       //    비지원 face 있으면 IfcFacetedBrep (β-1.5) 로 fallback ──
       case 'export-ifc': {
-        const advanced = bridge.exportIfcAdvanced('AXiA Model');
-        const ifc = advanced ?? bridge.exportIfc('AXiA Model');
+        const model = bridge.exportIfcModel('AXiA Model');
+        const ifc = model ?? bridge.exportIfc('AXiA Model');
         if (!ifc) { Toast.warning(t('내보낼 형상이 없습니다.')); break; }
         import('../export/ExportUtils')
           .then(({ downloadText }) => {
             downloadText(ifc, timestampedName('ifc'), 'application/x-step');
-            Toast.success(advanced ? t('IFC 내보내기 완료 (analytic)') : t('IFC 내보내기 완료'));
+            Toast.success(model ? t('IFC 내보내기 완료 (analytic)') : t('IFC 내보내기 완료'));
           })
           .catch((err) => { console.error('[MenuBar] IFC 내보내기 실패:', err); alert(t('IFC 내보내기에 실패했습니다')); });
         break;
