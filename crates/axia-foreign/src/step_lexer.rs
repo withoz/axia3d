@@ -241,13 +241,93 @@ impl<'a> Lexer<'a> {
                         return Ok(LocatedToken { token: Token::Str(buf), pos });
                     }
                 }
+                // ISO 10303-21 §6.6 control directives. Without these a
+                // non-ASCII name reads back as its raw escape (e.g. the Korean
+                // "강철" as `\X2\AC15CCA0\X0\`), which is what an IFC written by
+                // us — or by any other tool — actually contains.
+                Some(b'\\') => self.lex_string_escape(&mut buf),
                 Some(c) => {
-                    // ISO 10303-21 strings can contain ISO 8859-1 / control sequences.
-                    // MVP: pass through as UTF-8 bytes; treat each byte as one char.
+                    // Remaining bytes are ISO 8859-1; each byte is one char.
                     buf.push(c as char);
                 }
             }
         }
+    }
+
+    /// Decode one `\…\` control directive, having consumed the leading `\`.
+    /// Unknown or malformed directives are kept verbatim rather than dropped —
+    /// losing characters silently would be worse than showing the escape.
+    fn lex_string_escape(&mut self, buf: &mut String) {
+        match self.peek() {
+            // `\X2\HHHH…\X0\` — UTF-16 code units (BMP + surrogate pairs).
+            Some(b'X') if self.peek_at(1) == Some(b'2') && self.peek_at(2) == Some(b'\\') => {
+                self.advance();
+                self.advance();
+                self.advance();
+                let mut units: Vec<u16> = Vec::new();
+                loop {
+                    // Terminator `\X0\`.
+                    if self.peek() == Some(b'\\')
+                        && self.peek_at(1) == Some(b'X')
+                        && self.peek_at(2) == Some(b'0')
+                        && self.peek_at(3) == Some(b'\\')
+                    {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        break;
+                    }
+                    match self.hex_quad() {
+                        Some(u) => units.push(u),
+                        None => break, // malformed / EOF: stop, keep what we have
+                    }
+                }
+                match String::from_utf16(&units) {
+                    Ok(s) => buf.push_str(&s),
+                    Err(_) => buf.push_str(&String::from_utf16_lossy(&units)),
+                }
+            }
+            // `\X\HH` — one ISO 8859-1 byte.
+            Some(b'X') if self.peek_at(1) == Some(b'\\') => {
+                self.advance();
+                self.advance();
+                match self.hex_pair() {
+                    Some(b) => buf.push(b as char),
+                    None => buf.push_str("\\X\\"),
+                }
+            }
+            // `\S\c` — ISO 8859-1 with the high bit set on the next char.
+            Some(b'S') if self.peek_at(1) == Some(b'\\') => {
+                self.advance();
+                self.advance();
+                match self.advance() {
+                    Some(c) => buf.push((c as u32 + 0x80) as u8 as char),
+                    None => buf.push_str("\\S\\"),
+                }
+            }
+            // Anything else (`\P…\`, `\N\`, a stray backslash): keep it literal.
+            _ => buf.push('\\'),
+        }
+    }
+
+    /// Read four hex digits as one UTF-16 code unit.
+    fn hex_quad(&mut self) -> Option<u16> {
+        let mut v: u16 = 0;
+        for _ in 0..4 {
+            v = v.checked_mul(16)? + hex_val(self.peek()?)? as u16;
+            self.advance();
+        }
+        Some(v)
+    }
+
+    /// Read two hex digits as one byte.
+    fn hex_pair(&mut self) -> Option<u8> {
+        let hi = hex_val(self.peek()?)?;
+        self.advance();
+        let lo = hex_val(self.peek()?)?;
+        self.advance();
+        Some(hi * 16 + lo)
     }
 
     fn lex_enum_or_number(&mut self, pos: Position) -> Result<LocatedToken, LexError> {
@@ -334,12 +414,59 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// Value of one hex digit, or `None` if the byte is not one.
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn just_tokens(src: &str) -> Vec<Token> {
         tokenize(src).unwrap().into_iter().map(|lt| lt.token).collect()
+    }
+
+    /// Just the string values, for escape-decoding tests.
+    fn just_strings(src: &str) -> Vec<String> {
+        just_tokens(src)
+            .into_iter()
+            .filter_map(|t| match t {
+                Token::Str(s) => Some(s),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn string_x2_directive_decodes_utf16() {
+        // ISO 10303-21 §6.6: \X2\HHHH…\X0\ carries UTF-16 code units. Our own
+        // IFC export writes Korean this way, so the round-trip depends on it.
+        assert_eq!(just_strings(r"'\X2\AC15CCA0\X0\'"), vec!["강철".to_string()]);
+        // ASCII around an escaped run
+        assert_eq!(just_strings(r"'a\X2\AC00\X0\b'"), vec!["a가b".to_string()]);
+        // surrogate pair → U+1F600
+        assert_eq!(just_strings(r"'\X2\D83DDE00\X0\'"), vec!["\u{1F600}".to_string()]);
+    }
+
+    #[test]
+    fn string_x_and_s_directives_decode_latin1() {
+        // \X\HH — one ISO 8859-1 byte (0xE9 = é)
+        assert_eq!(just_strings(r"'caf\X\E9'"), vec!["café".to_string()]);
+        // \S\c — next char with the high bit set (0x69 + 0x80 = 0xE9)
+        assert_eq!(just_strings(r"'caf\S\i'"), vec!["café".to_string()]);
+    }
+
+    #[test]
+    fn unknown_or_malformed_escapes_are_kept_verbatim() {
+        // Dropping characters silently would be worse than showing the escape.
+        assert_eq!(just_strings(r"'a\Qb'"), vec!["a\\Qb".to_string()]);
+        assert_eq!(just_strings(r"'a\X\ZZ'"), vec!["a\\X\\ZZ".to_string()]);
     }
 
     #[test]

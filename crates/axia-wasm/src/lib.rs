@@ -5548,6 +5548,25 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-203 I-2 — classify an `.ifc` file's building elements: each member's
+    /// type, name, material and the geometry it points at, following the IFC
+    /// reference chain (element → ProductDefinitionShape → ShapeRepresentation
+    /// → items). Read-only; the scene is untouched.
+    ///
+    /// Returns JSON — `{"ok":true,"elementCount":N,"convertible":M,"elements":
+    /// [{id,type,name,material,geometry:[{id,kind,representationType,supported}]}],
+    /// "unsupportedGeometry":{tag:count}}` or `{"ok":false,"error":"…"}`.
+    ///
+    /// `supported` marks the items I-3 will be able to turn into DCEL faces;
+    /// anything else is reported rather than silently dropped.
+    #[wasm_bindgen(js_name = "classifyIfc")]
+    pub fn classify_ifc(&self, text: String) -> String {
+        match axia_ifc::classify_ifc(&text) {
+            Ok(r) => r.to_json(),
+            Err(e) => axia_ifc::ifc_analyze::error_json(&e),
+        }
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {

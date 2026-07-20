@@ -74,9 +74,39 @@ export function importIfcFile(deps: IfcImportDeps): void {
       });
       const body = parts.length ? parts.join(', ') : t('식별된 BIM 부재 없음');
 
+      // I-2 — name the members and say how many we could actually convert.
+      const elements = bridge.classifyIfc(text);
+      const lines = [head, body];
+
+      if (elements?.ok && (elements.elementCount ?? 0) > 0) {
+        const total = elements.elementCount ?? 0;
+        const convertible = elements.convertible ?? 0;
+        lines.push(t('가져올 수 있는 형상: {convertible} / {total} 부재', { convertible, total }));
+
+        // A short preview so the user recognizes their own model.
+        const preview = (elements.elements ?? []).slice(0, 4).map((e) => {
+          const name = e.name || e.type.replace(/^IFC/, '');
+          return e.material ? `${name} (${e.material})` : name;
+        });
+        if (preview.length) {
+          const more = total > preview.length ? t(' 외 {rest}개', { rest: total - preview.length }) : '';
+          lines.push(preview.join(', ') + more);
+        }
+
+        const unsupported = Object.entries(elements.unsupportedGeometry ?? {});
+        if (unsupported.length) {
+          lines.push(
+            t('아직 못 읽는 형상: {kinds}', {
+              kinds: unsupported.map(([k, n]) => `${k.replace(/^IFC/, '')} ${n}`).join(', '),
+            }),
+          );
+        }
+      }
+
       // Say plainly that this reads the file but does not place geometry yet.
-      Toast.info(`${head}\n${body}\n${t('현재는 내용 확인만 가능합니다 (형상 가져오기는 준비 중).')}`, 8000);
-      debugLog('[IFC Import] 분석 결과:', report);
+      lines.push(t('현재는 내용 확인만 가능합니다 (형상 가져오기는 준비 중).'));
+      Toast.info(lines.join('\n'), 9000);
+      debugLog('[IFC Import] 분석 결과:', report, elements);
     } catch (err) {
       console.error('[IFC Import] 오류:', err);
       Toast.error(t('IFC 가져오기 중 오류: {error}', { error: (err as Error).message }), 6000);
