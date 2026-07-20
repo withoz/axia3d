@@ -5567,6 +5567,106 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-203 I-3 — actually import an `.ifc`: turn each element's B-rep into
+    /// DCEL faces and add them to the scene. Coordinates are converted from the
+    /// file's `IfcSIUnit` length unit to engine mm.
+    ///
+    /// One undo step: the whole import is wrapped in a transaction, so a failure
+    /// leaves the scene exactly as it was.
+    ///
+    /// Returns JSON — `{"ok":true,"elements":N,"faces":F,"vertices":V,
+    /// "scaleToMm":S,"warnings":[…]}` or `{"ok":false,"error":"…"}`.
+    #[wasm_bindgen(js_name = "importIfc")]
+    pub fn import_ifc(&mut self, text: String) -> String {
+        let g = match axia_ifc::import_ifc_geometry(&text) {
+            Ok(g) => g,
+            Err(e) => return axia_ifc::ifc_analyze::error_json(&e),
+        };
+        if g.elements.is_empty() {
+            let mut msg = String::from("no convertible geometry in this file");
+            if !g.warnings.is_empty() {
+                msg.push_str(" (");
+                msg.push_str(&g.warnings.join("; "));
+                msg.push(')');
+            }
+            return axia_ifc::ifc_analyze::error_json(&msg);
+        }
+
+        let before_verts = self.scene.mesh.vert_count();
+        let before_faces = self.scene.mesh.face_count();
+
+        self.scene.transactions.begin();
+        let before_snapshot = self.scene.scene_snapshot();
+        self.scene.transactions.set_before_snapshot(before_snapshot.clone());
+
+        let material = axia_core::FORM_MATERIAL;
+        let mut failed: Vec<String> = Vec::new();
+        for el in &g.elements {
+            for f in &el.faces {
+                let outer: Vec<_> =
+                    f.outer.iter().map(|&p| self.scene.mesh.add_vertex(p)).collect();
+                let inner_ids: Vec<Vec<_>> = f
+                    .inners
+                    .iter()
+                    .map(|ring| ring.iter().map(|&p| self.scene.mesh.add_vertex(p)).collect())
+                    .collect();
+                let hole_refs: Vec<&[_]> = inner_ids.iter().map(|v| v.as_slice()).collect();
+                match self.scene.mesh.add_face_with_holes(&outer, &hole_refs, material) {
+                    // An imported face must carry its surface like any other
+                    // face (ADR-087 K-ε) — otherwise Push/Pull, Boolean and
+                    // re-export all refuse it.
+                    Ok(face_id) => {
+                        if let Some(plane) = f.plane() {
+                            self.scene.mesh.set_face_surface(face_id, Some(plane));
+                        }
+                    }
+                    Err(e) => failed.push(format!(
+                        "element #{} '{}': {}",
+                        el.element_id,
+                        el.name.clone().unwrap_or_default(),
+                        e
+                    )),
+                }
+            }
+        }
+
+        let added_faces = self.scene.mesh.face_count().saturating_sub(before_faces);
+        if added_faces == 0 {
+            // Nothing landed — restore rather than leave half-built vertices.
+            self.scene.restore_scene_snapshot(&before_snapshot);
+            self.scene.transactions.cancel();
+            let mut msg = String::from("no faces could be built");
+            if !failed.is_empty() {
+                msg.push_str(" (");
+                msg.push_str(&failed.join("; "));
+                msg.push(')');
+            }
+            return axia_ifc::ifc_analyze::error_json(&msg);
+        }
+
+        self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+        self.scene.transactions.commit();
+        self.mark_topology_changed();
+        self.invalidate_cache();
+
+        let added_verts = self.scene.mesh.vert_count().saturating_sub(before_verts);
+        let mut warnings = g.warnings.clone();
+        warnings.extend(failed);
+        let warn_json: Vec<String> = warnings
+            .iter()
+            .map(|w| format!("\"{}\"", w.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect();
+
+        format!(
+            r#"{{"ok":true,"elements":{},"faces":{},"vertices":{},"scaleToMm":{},"warnings":[{}]}}"#,
+            g.elements.len(),
+            added_faces,
+            added_verts,
+            g.scale_to_mm,
+            warn_json.join(","),
+        )
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {
