@@ -16,11 +16,15 @@ use crate::step_writer::StepWriter;
 use axia_geo::{FaceId, Mesh};
 use std::collections::HashSet;
 
-/// One semantic member to export as an `IfcWall`: a display name, an optional
-/// material name, and the faces it owns (engine `FaceId`s).
+/// One semantic member to export: a display name, an optional material name,
+/// what kind of building element it is, and the faces it owns (engine
+/// `FaceId`s).
 pub struct IfcElement {
     pub name: String,
     pub material_name: Option<String>,
+    /// What this member *is* (ADR-203 δ). Defaults to `Wall` — which is what
+    /// every member used to be, so an unassigned model exports unchanged.
+    pub kind: crate::IfcElementKind,
     pub face_ids: Vec<FaceId>,
 }
 
@@ -131,7 +135,7 @@ pub fn emit_ifc_model(
             vec![StepValue::Unset, StepValue::Unset, StepValue::List(vec![StepValue::Ref(shape_rep)])],
         );
         let wall = w.add(
-            "IFCWALL",
+            el.kind.tag(),
             vec![
                 next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Str(el.name.clone().into()),
                 StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
@@ -225,8 +229,8 @@ mod tests {
     fn two_elements_two_walls_two_materials() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), face_ids: a },
-            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), face_ids: b },
+            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
+            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), kind: crate::IfcElementKind::Wall, face_ids: b },
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
         assert!(s.contains("FILE_SCHEMA(('IFC4X3'));"));
@@ -252,8 +256,8 @@ mod tests {
     fn shared_material_deduplicated() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), face_ids: a },
-            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), face_ids: b },
+            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
+            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: b },
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap();
         // one IfcMaterial (deduped), two associations (one per wall)
@@ -264,7 +268,7 @@ mod tests {
     #[test]
     fn element_without_material_has_no_association() {
         let (mesh, a, _b) = two_box_mesh();
-        let elements = vec![IfcElement { name: "Form".into(), material_name: None, face_ids: a }];
+        let elements = vec![IfcElement { name: "Form".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: a }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "F").unwrap();
         assert_eq!(s.matches("=IFCWALL(").count(), 1);
         assert_eq!(s.matches("=IFCMATERIAL(").count(), 0);
@@ -277,8 +281,8 @@ mod tests {
         let build = || {
             let (mesh, a, b) = two_box_mesh();
             let elements = vec![
-                IfcElement { name: "A".into(), material_name: Some("C".into()), face_ids: a },
-                IfcElement { name: "B".into(), material_name: None, face_ids: b },
+                IfcElement { name: "A".into(), material_name: Some("C".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
+                IfcElement { name: "B".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: b },
             ];
             emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
         };

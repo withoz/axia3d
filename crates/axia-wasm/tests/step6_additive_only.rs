@@ -1951,3 +1951,60 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
         );
     }
 }
+
+// ── ADR-203 δ — element classification is wired and canonical ────────
+//
+// Two things must hold or the classification is decoration: the five
+// endpoints exist, and the setters normalize through IfcElementKind rather
+// than storing whatever string arrived (an un-normalized value would be
+// stored fine and then silently export as a wall).
+#[test]
+fn adr203_delta_element_kind_endpoints_wired_and_normalized() {
+    let l = lib_src();
+    let src: &str = &l;
+    let method_body = |sig: &str| -> String {
+        let start = src.find(sig).unwrap_or_else(|| panic!("method not found: {sig}"));
+        let rest = &src[start + sig.len()..];
+        let end = rest
+            .find("
+    pub fn ")
+            .map(|e| e + sig.len())
+            .unwrap_or(src.len() - start);
+        src[start..start + end].to_string()
+    };
+    for name in [
+        "setXiaElementKind",
+        "setShapeElementKind",
+        "getXiaElementKind",
+        "getShapeElementKind",
+        "ifcElementKinds",
+    ] {
+        assert!(
+            src.contains(&format!("js_name = \"{name}\"")),
+            "{name} endpoint missing"
+        );
+    }
+
+    for sig in ["fn set_xia_element_kind(", "fn set_shape_element_kind("] {
+        let body = method_body(sig);
+        assert!(
+            body.contains("IfcElementKind::from_tag"),
+            "{sig} must validate through IfcElementKind::from_tag"
+        );
+        assert!(
+            body.contains("k.key()"),
+            "{sig} must store the canonical key, not the caller's string"
+        );
+    }
+
+    // The exporter has to read the assignment back, or setting it does nothing.
+    let export = method_body("fn export_ifc_model(");
+    assert!(
+        export.contains("xia_element_kind") && export.contains("shape_element_kind"),
+        "export_ifc_model must consult the assigned kinds"
+    );
+    assert!(
+        export.contains("el.kind") || export.contains("kind,"),
+        "export_ifc_model must pass the kind into IfcElement"
+    );
+}

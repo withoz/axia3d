@@ -346,6 +346,67 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     return total;
   };
 
+  // ── ADR-203 δ — 부재 종류 (IFC 로 내보낼 때 무엇으로 나갈지) ──
+  //
+  // 지정하지 않으면 모든 부재가 IfcWall 로 나간다. 슬래브도, 기둥도 벽이 된다.
+  const kindSelect = document.getElementById('xi-element-kind') as HTMLSelectElement | null;
+  const KIND_LABELS: Record<string, string> = {
+    wall: '벽', slab: '슬래브', column: '기둥', beam: '보', roof: '지붕',
+    stair: '계단', ramp: '경사로', railing: '난간', covering: '마감',
+    member: '부재', plate: '판', footing: '기초', proxy: '미분류',
+  };
+  if (kindSelect) {
+    // 목록은 엔진이 준다 — UI 와 엔진이 서로 다른 어휘로 갈라지지 않도록.
+    for (const { key } of bridge.ifcElementKinds()) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = t(KIND_LABELS[key] ?? key);
+      kindSelect.appendChild(opt);
+    }
+  }
+
+  /**
+   * 선택된 면이 속한 부재. Xia 를 먼저 보고, 없으면 Shape.
+   *
+   * 인자가 비어 있으면 **현재 선택** 을 직접 읽는다 — Inspector 의 캐시가
+   * 아직 갱신되지 않았을 때 드롭다운이 조용히 아무 것도 안 하는 것을 막는다.
+   */
+  const ownerOfSelection = (ids: number[]): { kind: 'xia' | 'shape'; id: number } | null => {
+    const faceIds = ids.length > 0 ? ids : toolManager.selection.getSelectedFaces();
+    if (faceIds.length === 0) return null;
+    const xid = bridge.getXiaForFace(faceIds[0]);
+    if (xid >= 0) return { kind: 'xia', id: xid };
+    const sid = bridge.getShapeForFace(faceIds[0]);
+    if (sid >= 0) return { kind: 'shape', id: sid };
+    return null;
+  };
+
+  const refreshElementKind = (faceIds: number[]) => {
+    if (!kindSelect) return;
+    const owner = ownerOfSelection(faceIds);
+    // 주인 없는 면 (leftover) 은 지정할 대상이 없다.
+    kindSelect.disabled = owner === null;
+    kindSelect.value = owner
+      ? owner.kind === 'xia'
+        ? bridge.getXiaElementKind(owner.id)
+        : bridge.getShapeElementKind(owner.id)
+      : '';
+  };
+
+  kindSelect?.addEventListener('change', () => {
+    const owner = ownerOfSelection(currentFaceIds);
+    if (!owner) return;
+    const kind = kindSelect.value;
+    const ok = owner.kind === 'xia'
+      ? bridge.setXiaElementKind(owner.id, kind)
+      : bridge.setShapeElementKind(owner.id, kind);
+    if (!ok) {
+      // 엔진이 거부하면 UI 가 거짓말하지 않도록 되돌린다.
+      refreshElementKind(currentFaceIds);
+      Toast.warning(t('이 부재 종류는 아직 지원하지 않습니다.'));
+    }
+  });
+
   // ── Inspector 메인 업데이트 ──
   const updateInspector = (faceIds: number[]) => {
     currentFaceIds = faceIds;
@@ -355,6 +416,8 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
 
     // ADR-285 β-1 — parametric radius editor (shows only for a single Sphere face).
     updateCurvedEditor(faceIds);
+    // ADR-203 δ — 이 부재가 IFC 로 무엇으로 나가는지.
+    refreshElementKind(faceIds);
 
     // 1) 아무것도 선택 안 됨 — 모든 상태 비활성 (Point 강제 표시 금지)
     if (faceIds.length === 0 && edgeIds.length === 0) {

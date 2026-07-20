@@ -182,6 +182,7 @@ mod tests {
         let ifc = emit_ifc_model(
             &mesh,
             &[IfcElement {
+                kind: crate::IfcElementKind::Wall,
                 name: "Wall A".into(),
                 material_name: Some("Concrete".into()),
                 face_ids: faces,

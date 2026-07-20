@@ -379,6 +379,24 @@ pub struct Scene {
     /// (`mesh.pin_vertex`) so cleanup passes never purge them (ADR-219 guard).
     pub shape_to_standalone_vertex: HashMap<crate::ShapeId, axia_geo::VertId>,
 
+    /// ADR-203 δ — user-assigned building-element classification, keyed by the
+    /// owning citizen. A member that is a floor slab has to be able to say so;
+    /// without it every IFC export is an `IfcWall` and a BIM tool reads the
+    /// whole model as walls.
+    ///
+    /// The value is a **canonical lower-case key** (`"slab"`, `"column"`) and
+    /// the engine deliberately does not know what it means — mapping a key to
+    /// an IFC entity tag is the file format's job, so `axia-core` never grows a
+    /// dependency on `axia-ifc`. Writers normalize before storing.
+    ///
+    /// Scene-level maps rather than fields on `Xia` / `Shape` (ADR-091 §E L1):
+    /// a new bincode struct field would break legacy snapshot round-trip.
+    /// `BTreeMap` for deterministic snapshot bytes (ADR-098 L1). Persisted via
+    /// additive snapshot section 11.
+    pub xia_element_kind: std::collections::BTreeMap<XiaId, String>,
+    /// Form-citizen counterpart of [`Self::xia_element_kind`].
+    pub shape_element_kind: std::collections::BTreeMap<crate::ShapeId, String>,
+
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
     /// layer. Updated by `create_shape` (registration) and
@@ -534,6 +552,8 @@ impl Scene {
             shape_to_standalone_vertex: HashMap::new(),
             face_to_shape: HashMap::new(),
             xia_to_original_shape: HashMap::new(),
+            xia_element_kind: std::collections::BTreeMap::new(),
+            shape_element_kind: std::collections::BTreeMap::new(),
             // ADR-095 Phase 3-β — Reference citizenship (Two-Layer Phase 3).
             references: HashMap::new(),
             next_reference_id: 1,
@@ -619,6 +639,13 @@ impl Scene {
             eprintln!("[Scene] ShapeToStandaloneVertex serialize failed: {}", e);
             Vec::new()
         });
+        // ADR-203 δ — section 11 (additive). Both citizenships in one blob so
+        // the section stays a single length-prefixed unit.
+        let element_kind_data = bincode::serialize(&(&self.xia_element_kind, &self.shape_element_kind))
+            .unwrap_or_else(|e| {
+                eprintln!("[Scene] ElementKind serialize failed: {}", e);
+                Vec::new()
+            });
         let next_xia = self.next_xia_id;
         let next_shape = self.next_shape_id;
         let next_reference = self.next_reference_id;
@@ -680,6 +707,11 @@ impl Scene {
         // this → restore reads empty map (offset guard).
         buf.extend_from_slice(&(point_verts_data.len() as u64).to_le_bytes());
         buf.extend_from_slice(&point_verts_data);
+        // ADR-203 δ — section 11 (additive). Element classification for both
+        // citizenships. Legacy snapshots truncate before this → restore reads
+        // empty maps, i.e. everything stays an IfcWall as it was.
+        buf.extend_from_slice(&(element_kind_data.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&element_kind_data);
         buf
     }
 
@@ -938,6 +970,34 @@ impl Scene {
         }
         if !point_verts_section_present {
             self.shape_to_standalone_vertex.clear();
+        }
+
+        // 11. ADR-203 δ — element classification for both citizenships.
+        //     Additive: a legacy snapshot truncates before this section, so the
+        //     maps come back empty and every member exports as it always did.
+        let mut element_kind_section_present = false;
+        if offset + 8 <= data.len() {
+            let klen = read_len(data, &mut offset);
+            if klen > 0 && offset + klen <= data.len() {
+                type KindMaps = (
+                    std::collections::BTreeMap<XiaId, String>,
+                    std::collections::BTreeMap<crate::ShapeId, String>,
+                );
+                if let Ok((xk, sk)) = bincode::deserialize::<KindMaps>(&data[offset..offset + klen]) {
+                    self.xia_element_kind = xk;
+                    self.shape_element_kind = sk;
+                    element_kind_section_present = true;
+                }
+                offset += klen;
+            } else if klen == 0 {
+                self.xia_element_kind.clear();
+                self.shape_element_kind.clear();
+                element_kind_section_present = true;
+            }
+        }
+        if !element_kind_section_present {
+            self.xia_element_kind.clear();
+            self.shape_element_kind.clear();
         }
         let _ = offset;
 
@@ -21038,6 +21098,40 @@ mod tests {
     }
 
     #[test]
+    fn adr203_delta_element_kind_survives_a_snapshot_round_trip() {
+        // ADR-203 δ — a member classified as a slab must still be a slab after
+        // save/load, or the classification is decoration.
+        let mut scene = Scene::new();
+        let shape_id = build_shape_unit_cube(&mut scene);
+        let xia_id = scene.promote_shape_to_xia(shape_id, MaterialId::new(7)).unwrap().xia_id;
+        scene.xia_element_kind.insert(xia_id, "slab".into());
+        scene.shape_element_kind.insert(shape_id, "column".into());
+
+        let bytes = scene.export_versioned_snapshot().expect("export");
+        let mut restored = Scene::new();
+        restored.import_versioned_snapshot(&bytes).expect("import");
+
+        assert_eq!(restored.xia_element_kind.get(&xia_id).map(String::as_str), Some("slab"));
+        assert_eq!(restored.shape_element_kind.get(&shape_id).map(String::as_str), Some("column"));
+    }
+
+    #[test]
+    fn adr203_delta_unclassified_scene_round_trips_with_empty_maps() {
+        // The common case: nothing classified. The section must still be
+        // written and read without disturbing anything else.
+        let mut scene = Scene::new();
+        let shape_id = build_shape_unit_cube(&mut scene);
+        let bytes = scene.export_versioned_snapshot().expect("export");
+        let mut restored = Scene::new();
+        restored.import_versioned_snapshot(&bytes).expect("import");
+
+        assert!(restored.xia_element_kind.is_empty());
+        assert!(restored.shape_element_kind.is_empty());
+        assert_eq!(restored.shapes.len(), 1, "the rest of the scene is untouched");
+        assert!(restored.shapes.contains_key(&shape_id));
+    }
+
+    #[test]
     fn adr091_d_epsilon_legacy_v2_without_section_7d_loads_empty_map() {
         // ADR-091 D-ε — Legacy V2 snapshots that predate sub-section
         // 7d must load with an empty xia_to_original_shape map (the
@@ -21051,16 +21145,22 @@ mod tests {
         scene.promote_shape_to_xia(shape_id, MaterialId::new(7)).unwrap();
         let bytes = scene.export_versioned_snapshot().expect("export");
 
-        // ADR-095 Phase 3-ε amendment — snapshot now has section 8
-        // (references) AFTER sub-section 7d. ADR-098 S-γ amendment —
-        // snapshot now ALSO has section 9 (material_library) AFTER
-        // section 8. To simulate legacy V2 without 7d, strip ALL trailing
-        // sections: section 9 (8 + ml_data) + section 8 (8 + refs_data
-        // + 8 next_ref_id) + sub-section 7d (8 + xia_to_orig_data).
+        // Every additive section lands AFTER sub-section 7d, so simulating a
+        // legacy V2 file means stripping all of them: 11 (element kinds,
+        // ADR-203 δ), 10 (point verts, ADR-219), 9 (material library,
+        // ADR-098 S-γ), 8 (references + next id, ADR-095 Phase 3-ε), then 7d
+        // itself. A new section must be added here too, or the truncation
+        // stops landing on a section boundary and the test starts passing for
+        // the wrong reason.
         let refs_data = bincode::serialize(&scene.references).unwrap();
         let xia_orig_data = bincode::serialize(&scene.xia_to_original_shape).unwrap();
         let ml_data = bincode::serialize(&scene.material_library).unwrap();
-        let strip_len = (8 + ml_data.len())
+        let point_verts_data = bincode::serialize(&scene.shape_to_standalone_vertex).unwrap();
+        let element_kind_data =
+            bincode::serialize(&(&scene.xia_element_kind, &scene.shape_element_kind)).unwrap();
+        let strip_len = (8 + element_kind_data.len())
+            + (8 + point_verts_data.len())
+            + (8 + ml_data.len())
             + (8 + refs_data.len() + 8)
             + (8 + xia_orig_data.len());
         assert!(bytes.len() > strip_len);

@@ -68,3 +68,42 @@ describe('I opens the Inspector — and only a bare I', () => {
     expect(ks).not.toMatch(/'I':\s*'pie'/);
   });
 });
+
+describe('ADR-203 δ — the element-type picker', () => {
+  const src = () =>
+    fs.readFileSync(path.resolve(__dirname, 'XiaInspector.ts'), 'utf-8');
+  const html = () =>
+    fs.readFileSync(path.resolve(__dirname, '..', '..', 'index.html'), 'utf-8');
+
+  it('the picker exists in the Inspector template', () => {
+    // Without it a slab exports as a wall and the user cannot say otherwise.
+    expect(html()).toContain('id="xi-element-kind"');
+    expect(html()).toContain('부재 종류');
+  });
+
+  it('the option list comes from the engine, not a hard-coded copy', () => {
+    // Two lists would drift: the engine would accept a kind the picker never
+    // offers, or offer one it rejects.
+    expect(src()).toMatch(/bridge\.ifcElementKinds\(\)/);
+  });
+
+  it('it resolves the owner from the live selection, not a stale cache', () => {
+    // The handler first read the Inspector's own currentFaceIds, which is
+    // updated on redraw — changing the picker right after selecting did
+    // nothing at all. Verified in the browser after the fix.
+    expect(src()).toMatch(/toolManager\.selection\.getSelectedFaces\(\)/);
+  });
+
+  it('it classifies Shapes as well as Xias', () => {
+    // Drawn members are Form citizens (LOCKED #26); handling only Xias would
+    // leave most of what a user draws unclassifiable.
+    expect(src()).toMatch(/bridge\.getShapeForFace/);
+    expect(src()).toMatch(/bridge\.setShapeElementKind/);
+    expect(src()).toMatch(/bridge\.setXiaElementKind/);
+  });
+
+  it('a rejected kind reverts the picker instead of leaving it lying', () => {
+    // The engine refuses unknown kinds; the UI must not keep showing one.
+    expect(src()).toMatch(/if \(!ok\) \{[\s\S]{0,200}refreshElementKind/);
+  });
+});
