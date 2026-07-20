@@ -5466,9 +5466,90 @@ impl AxiaEngine {
         axia_ifc::emit_advanced_brep_from_mesh(&self.scene.mesh, MM_TO_M, nm).unwrap_or_default()
     }
 
-    /// ADR-203 γ — export a semantic IFC4.3 model: one `IfcWall` per member
+    /// ADR-203 δ — classify a member as a slab, column, beam, … so it exports
+    /// as that instead of an `IfcWall`.
+    ///
+    /// `kind` accepts either a short key (`"slab"`) or an IFC tag
+    /// (`"IFCSLAB"`); an empty string clears the assignment. Returns false for
+    /// an unknown kind rather than storing something the exporter cannot use —
+    /// that keeps the stored value canonical.
+    #[wasm_bindgen(js_name = "setXiaElementKind")]
+    pub fn set_xia_element_kind(&mut self, xia_id: u32, kind: String) -> bool {
+        if kind.trim().is_empty() {
+            self.scene.xia_element_kind.remove(&xia_id);
+            return true;
+        }
+        match axia_ifc::IfcElementKind::from_tag(&kind) {
+            Some(k) => {
+                self.scene.xia_element_kind.insert(xia_id, k.key().to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Form-citizen counterpart of [`Self::set_xia_element_kind`].
+    #[wasm_bindgen(js_name = "setShapeElementKind")]
+    pub fn set_shape_element_kind(&mut self, shape_id: u32, kind: String) -> bool {
+        let sid = axia_core::ShapeId::new(shape_id);
+        if kind.trim().is_empty() {
+            self.scene.shape_element_kind.remove(&sid);
+            return true;
+        }
+        match axia_ifc::IfcElementKind::from_tag(&kind) {
+            Some(k) => {
+                self.scene.shape_element_kind.insert(sid, k.key().to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Which Form citizen owns a face, or `u32::MAX` when none does — the
+    /// mirror of `get_xia_for_face`, which the Inspector needs in order to
+    /// classify a drawn Shape (ADR-203 δ). The reverse index already exists
+    /// (ADR-079 W-1); this only exposes it.
+    #[wasm_bindgen(js_name = "getShapeForFace")]
+    pub fn get_shape_for_face(&self, face_id_raw: u32) -> u32 {
+        self.scene
+            .face_to_shape
+            .get(&axia_geo::FaceId::new(face_id_raw))
+            .map(|s| s.raw())
+            .unwrap_or(u32::MAX)
+    }
+
+    /// The member's classification key, or "" when unassigned (exports as a
+    /// wall, which is what it always did).
+    #[wasm_bindgen(js_name = "getXiaElementKind")]
+    pub fn get_xia_element_kind(&self, xia_id: u32) -> String {
+        self.scene.xia_element_kind.get(&xia_id).cloned().unwrap_or_default()
+    }
+
+    /// Form-citizen counterpart of [`Self::get_xia_element_kind`].
+    #[wasm_bindgen(js_name = "getShapeElementKind")]
+    pub fn get_shape_element_kind(&self, shape_id: u32) -> String {
+        self.scene
+            .shape_element_kind
+            .get(&axia_core::ShapeId::new(shape_id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Every classification a member can be given, as `key|IFCTAG` pairs — one
+    /// per line. The UI builds its picker from this so the two never drift.
+    #[wasm_bindgen(js_name = "ifcElementKinds")]
+    pub fn ifc_element_kinds(&self) -> String {
+        axia_ifc::IfcElementKind::ALL
+            .iter()
+            .map(|k| format!("{}|{}", k.key(), k.tag()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// ADR-203 γ — export a semantic IFC4.3 model: one element per member
     /// (Xia → named + material, Shape → named, leftover faces → "Model"), all
-    /// under one Project→Site→Building→Storey. Analytic geometry (β-3).
+    /// under one Project→Site→Building→Storey. Analytic geometry (β-3), and
+    /// each member exports as its assigned kind (δ).
     ///
     /// Returns "" (→ caller falls back to `exportIfc` faceted) if the scene is
     /// empty or any element can't form an advanced brep. Elements are ordered by
@@ -5499,7 +5580,17 @@ impl AxiaEngine {
             } else {
                 scene.material_library.get(xia.material).map(|m| m.name.clone())
             };
-            elements.push(axia_ifc::IfcElement { name: xia.name.clone(), material_name, face_ids: faces });
+            let kind = scene
+                .xia_element_kind
+                .get(&xid)
+                .and_then(|k| axia_ifc::IfcElementKind::from_tag(k))
+                .unwrap_or_default();
+            elements.push(axia_ifc::IfcElement {
+                name: xia.name.clone(),
+                material_name,
+                kind,
+                face_ids: faces,
+            });
         }
         // Shapes (sorted by id) → named wall, no material.
         let mut shape_ids: Vec<_> = scene.shapes.keys().copied().collect();
@@ -5511,7 +5602,17 @@ impl AxiaEngine {
             if faces.is_empty() {
                 continue;
             }
-            elements.push(axia_ifc::IfcElement { name: shape.name.clone(), material_name: None, face_ids: faces });
+            let kind = scene
+                .shape_element_kind
+                .get(&sid)
+                .and_then(|k| axia_ifc::IfcElementKind::from_tag(k))
+                .unwrap_or_default();
+            elements.push(axia_ifc::IfcElement {
+                name: shape.name.clone(),
+                material_name: None,
+                kind,
+                face_ids: faces,
+            });
         }
         // Leftover active faces (unowned) → one "Model" wall.
         let leftover: Vec<axia_geo::FaceId> = scene
@@ -5522,7 +5623,12 @@ impl AxiaEngine {
             .map(|(fid, _)| fid)
             .collect();
         if !leftover.is_empty() {
-            elements.push(axia_ifc::IfcElement { name: "Model".into(), material_name: None, face_ids: leftover });
+            elements.push(axia_ifc::IfcElement {
+                name: "Model".into(),
+                material_name: None,
+                kind: axia_ifc::IfcElementKind::default(),
+                face_ids: leftover,
+            });
         }
 
         if elements.is_empty() {

@@ -452,7 +452,7 @@ mod tests {
             .unwrap();
         let ifc = emit_ifc_model(
             &mesh,
-            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), face_ids: faces }],
+            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), kind: crate::IfcElementKind::Wall, face_ids: faces }],
             0.001,
             "House",
         )

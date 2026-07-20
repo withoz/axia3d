@@ -577,6 +577,14 @@ type AxiaEngineExtended = AxiaEngine & {
   get_xia_info?(ids: Uint32Array): string;
   get_xia_face?(xia_id: number): number;
   get_xia_for_face?(face_id_raw: number): number;
+  /** ADR-203 δ — face → owning Shape (u32::MAX when none). */
+  getShapeForFace?(face_id_raw: number): number;
+  /** ADR-203 δ — element classification. */
+  setXiaElementKind?(xiaId: number, kind: string): boolean;
+  setShapeElementKind?(shapeId: number, kind: string): boolean;
+  getXiaElementKind?(xiaId: number): string;
+  getShapeElementKind?(shapeId: number): string;
+  ifcElementKinds?(): string;
   is_face_locked?(face_id_raw: number): boolean;
   // Boolean
   boolean_op?(a: Uint32Array, b: Uint32Array, op: string): string;
@@ -6640,6 +6648,86 @@ export class WasmBridge {
       return (result === undefined || result >= 0xFFFFFFFF) ? -1 : result;
     } catch {
       return -1;
+    }
+  }
+
+  /**
+   * ADR-203 δ — which Form citizen owns a face (-1 when none). Mirror of
+   * {@link getXiaForFace}; the Inspector needs it to classify a drawn Shape.
+   */
+  getShapeForFace(faceId: number): number {
+    if (!this.engine?.getShapeForFace) return -1;
+    try {
+      const r = this.engine.getShapeForFace(faceId);
+      return r === undefined || r >= 0xffffffff ? -1 : r;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * ADR-203 δ — classify a member so it exports as a slab / column / beam
+   * instead of an `IfcWall`.
+   *
+   * Accepts a key (`"slab"`) or an IFC tag (`"IFCSLAB"`); `''` clears it.
+   * Returns false for an unknown kind — the engine refuses rather than
+   * storing something the exporter cannot use.
+   */
+  setXiaElementKind(xiaId: number, kind: string): boolean {
+    if (!this.engine?.setXiaElementKind) return false;
+    try {
+      return !!this.engine.setXiaElementKind(xiaId, kind);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Form-citizen counterpart of {@link setXiaElementKind}. */
+  setShapeElementKind(shapeId: number, kind: string): boolean {
+    if (!this.engine?.setShapeElementKind) return false;
+    try {
+      return !!this.engine.setShapeElementKind(shapeId, kind);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The member's classification key, or '' when unassigned (exports as a wall). */
+  getXiaElementKind(xiaId: number): string {
+    if (!this.engine?.getXiaElementKind) return '';
+    try {
+      return this.engine.getXiaElementKind(xiaId) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /** Form-citizen counterpart of {@link getXiaElementKind}. */
+  getShapeElementKind(shapeId: number): string {
+    if (!this.engine?.getShapeElementKind) return '';
+    try {
+      return this.engine.getShapeElementKind(shapeId) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Every classification a member can be given, as `{key, tag}`. The picker is
+   * built from this so UI and engine cannot drift into separate vocabularies.
+   */
+  ifcElementKinds(): { key: string; tag: string }[] {
+    if (!this.engine?.ifcElementKinds) return [];
+    try {
+      return (this.engine.ifcElementKinds() ?? '')
+        .split('\n')
+        .filter((l: string) => l.includes('|'))
+        .map((l: string) => {
+          const [key, tag] = l.split('|');
+          return { key, tag };
+        });
+    } catch {
+      return [];
     }
   }
 

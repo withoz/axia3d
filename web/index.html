@@ -3065,6 +3065,16 @@
                 </div>
               </div>
 
+              <!-- ADR-203 δ — 부재 종류. 지정하지 않으면 IFC 로 내보낼 때
+                   모두 벽이 된다. -->
+              <div class="xi-prop-row">
+                <span class="xi-prop-label">부재 종류</span>
+                <select class="xi-prop-value" id="xi-element-kind" style="cursor:pointer; flex:1;"
+                        title="IFC 로 내보낼 때의 부재 종류 (지정하지 않으면 벽)">
+                  <option value="">— 지정 안 함 (벽) —</option>
+                </select>
+              </div>
+
               <!-- 재질이 부여된 후에만 표시 -->
               <div id="xi-material-props" style="display:none;">
                 <div class="xi-prop-row">

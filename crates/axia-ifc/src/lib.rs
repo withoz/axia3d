@@ -22,6 +22,7 @@
 pub mod guid;
 pub mod ifc_advancedbrep;
 pub mod ifc_analyze;
+pub mod ifc_element_kind;
 pub mod ifc_elements;
 pub mod ifc_geometry;
 pub mod ifc_placement;
@@ -37,6 +38,7 @@ pub use ifc_advancedbrep::{
     emit_advanced_brep, emit_advanced_brep_from_mesh, AdvancedFace, EdgeCurve, IfcEdge,
 };
 pub use ifc_analyze::{analyze_ifc, IfcAnalysis};
+pub use ifc_element_kind::IfcElementKind;
 pub use ifc_elements::{classify_ifc, ElementReport, GeometryRef, ImportedElement};
 pub use ifc_geometry::{import_ifc_geometry, ElementGeometry, FaceLoops, GeometryImport};
 pub use ifc_placement::{axis_placement, resolve_placement, Placement};

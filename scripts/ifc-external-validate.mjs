@@ -93,6 +93,19 @@ const corpus = [
     },
   },
   {
+    // δ — members export as what they are. Before this, a floor slab and a
+    // column both left as IfcWall: geometry right, meaning wrong.
+    file: 'typed.ifc',
+    what: 'classified members (slab + column, not everything a wall)',
+    build: (e) => {
+      e.create_box(0, 0, 0, 4000, 4000, 200);      // floor
+      e.create_box(0, 0, 3000, 300, 300, 3000);    // column
+      const ids = Array.from(e.getXiaIds());
+      e.setXiaElementKind(ids[0], 'slab');
+      e.setXiaElementKind(ids[1], 'column');
+    },
+  },
+  {
     // β-3b — a closed-Bezier face (ADR-089 A-ω): its boundary is a spline, so
     // the export must use IFCBSPLINECURVEWITHKNOTS instead of falling back.
     file: 'spline.ifc',
@@ -157,14 +170,20 @@ for (const c of corpus) {
   for (const t of ['IFCPROJECT', 'IFCSITE', 'IFCBUILDING', 'IFCBUILDINGSTOREY']) {
     check(typeCount(api, modelID, t) === 1, `exactly one ${t}`);
   }
-  const walls = typeCount(api, modelID, 'IFCWALL');
-  check(walls >= 1, 'at least one IfcWall', `${walls}`);
+  // A member is whatever kind it was classified as (δ) — counting only walls
+  // would fail the moment a file legitimately has none.
+  const MEMBER_TYPES = ['IFCWALL', 'IFCSLAB', 'IFCCOLUMN', 'IFCBEAM', 'IFCROOF',
+    'IFCSTAIR', 'IFCRAMP', 'IFCRAILING', 'IFCCOVERING', 'IFCMEMBER', 'IFCPLATE',
+    'IFCFOOTING', 'IFCBUILDINGELEMENTPROXY'];
+  const members = MEMBER_TYPES.reduce((n, t) => n + typeCount(api, modelID, t), 0);
+  check(members >= 1, 'at least one building element', `${members}`);
   check(typeCount(api, modelID, 'IFCADVANCEDBREP') >= 1, 'analytic IfcAdvancedBrep (not faceted)');
   check(typeCount(api, modelID, 'IFCFACETEDBREP') === 0, 'no faceted fallback');
 
   // names survive the round-trip through a foreign reader
-  const wallNames = namesOfType(api, modelID, 'IFCWALL');
-  check(wallNames.every((n) => n && n !== '(unnamed)'), 'every wall has a readable name', JSON.stringify(wallNames));
+  const memberNames = MEMBER_TYPES.flatMap((t) => namesOfType(api, modelID, t));
+  check(memberNames.every((n) => n && n !== '(unnamed)'),
+    'every member has a readable name', JSON.stringify(memberNames));
 
   // geometry: the foreign kernel must tessellate our analytic B-rep
   let tris = 0, meshes = 0;
@@ -200,6 +219,16 @@ for (const c of corpus) {
       + typeCount(api, modelID, 'IFCRATIONALBSPLINECURVEWITHKNOTS');
     check(spline >= 1, 'foreign parser reads IfcBSplineCurveWithKnots', `${spline}`);
     check(typeCount(api, modelID, 'IFCLINE') === 0, 'spline boundary is not degraded to lines');
+  }
+
+  if (c.file === 'typed.ifc') {
+    check(typeCount(api, modelID, 'IFCSLAB') === 1, 'the floor is an IfcSlab',
+      `${typeCount(api, modelID, 'IFCSLAB')}`);
+    check(typeCount(api, modelID, 'IFCCOLUMN') === 1, 'the column is an IfcColumn',
+      `${typeCount(api, modelID, 'IFCCOLUMN')}`);
+    check(typeCount(api, modelID, 'IFCWALL') === 0, 'nothing was left mislabelled as a wall',
+      `${typeCount(api, modelID, 'IFCWALL')}`);
+    check(tris > 0, 'the foreign kernel tessellates the typed members too', `${tris}`);
   }
 
   if (c.file === 'bim.ifc') {

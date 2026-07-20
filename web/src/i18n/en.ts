@@ -2232,6 +2232,24 @@ export const EN: Record<string, string> = {
   '가져왔습니다: 부재 {elements}개, 면 {faces}개, 정점 {vertices}개': 'Imported: {elements} elements, {faces} faces, {vertices} vertices',
   // ADR-203 I-4 — members land where the file says.
   '{placed}개 부재를 배치 정보대로 놓았습니다.': 'Placed {placed} member(s) using their placement.',
+  // ADR-203 δ — members export as what they are, not all as walls.
+  '부재 종류': 'Element type',
+  '— 지정 안 함 (벽) —': '— Unassigned (wall) —',
+  'IFC 로 내보낼 때의 부재 종류 (지정하지 않으면 벽)': 'What this member exports as in IFC (a wall unless set)',
+  // '벽' is already defined above (wall tool).
+  '슬래브': 'Slab',
+  '기둥': 'Column',
+  '보': 'Beam',
+  '지붕': 'Roof',
+  '계단': 'Stair',
+  '경사로': 'Ramp',
+  '난간': 'Railing',
+  '마감': 'Covering',
+  '부재': 'Member',
+  '판': 'Plate',
+  '기초': 'Footing',
+  '미분류': 'Unclassified',
+  '이 부재 종류는 아직 지원하지 않습니다.': 'That element type is not supported yet.',
   // ADR-203 I-5 — the spatial tree becomes scene groups.
   '공간 구조를 그룹 {groups}개로 만들었습니다 (층·건물·부재).': 'Built {groups} groups from the spatial structure (storeys, buildings, members).',
   '형상을 가져오지 못했습니다: {reason}': 'No geometry was imported: {reason}',
