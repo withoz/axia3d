@@ -5575,7 +5575,8 @@ impl AxiaEngine {
     /// leaves the scene exactly as it was.
     ///
     /// Returns JSON — `{"ok":true,"elements":N,"faces":F,"vertices":V,
-    /// "scaleToMm":S,"warnings":[…]}` or `{"ok":false,"error":"…"}`.
+    /// "scaleToMm":S,"placed":P,"warnings":[…]}` or `{"ok":false,"error":"…"}`.
+    /// `placed` counts members moved by an `IfcLocalPlacement` chain (I-4).
     #[wasm_bindgen(js_name = "importIfc")]
     pub fn import_ifc(&mut self, text: String) -> String {
         let g = match axia_ifc::import_ifc_geometry(&text) {
@@ -5658,11 +5659,12 @@ impl AxiaEngine {
             .collect();
 
         format!(
-            r#"{{"ok":true,"elements":{},"faces":{},"vertices":{},"scaleToMm":{},"warnings":[{}]}}"#,
+            r#"{{"ok":true,"elements":{},"faces":{},"vertices":{},"scaleToMm":{},"placed":{},"warnings":[{}]}}"#,
             g.elements.len(),
             added_faces,
             added_verts,
             g.scale_to_mm,
+            g.placed,
             warn_json.join(","),
         )
     }

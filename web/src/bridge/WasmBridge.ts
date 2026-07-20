@@ -7557,6 +7557,11 @@ export interface IfcImportResult {
   vertices?: number;
   /** Length-unit factor used to reach engine mm. */
   scaleToMm?: number;
+  /**
+   * ADR-203 I-4 — members moved by an `IfcLocalPlacement` chain. Zero for our
+   * own files, which bake world coordinates and emit an identity placement.
+   */
+  placed?: number;
   /** Anything skipped or unreadable — never silent. */
   warnings?: string[];
 }

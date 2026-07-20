@@ -117,6 +117,12 @@ export function importIfcFile(deps: IfcImportDeps): void {
             vertices: imported.vertices ?? 0,
           }),
         );
+        // I-4 — distinguish "placed where the file says" from "everything at
+        // the origin", which is what an unapplied placement chain looks like.
+        const placed = imported.placed ?? 0;
+        if (placed > 0) {
+          lines.push(t('{placed}개 부재를 배치 정보대로 놓았습니다.', { placed }));
+        }
         for (const w of (imported.warnings ?? []).slice(0, 3)) lines.push(`· ${w}`);
         Toast.success(lines.join('\n'), 9000);
       } else {

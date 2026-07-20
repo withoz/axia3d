@@ -35,6 +35,18 @@ pub struct FaceLoops {
 }
 
 impl FaceLoops {
+    /// Move every loop point through a placement (I-4).
+    pub fn transform(&mut self, p: &crate::ifc_placement::Placement) {
+        for v in &mut self.outer {
+            *v = p.apply(*v);
+        }
+        for ring in &mut self.inners {
+            for v in ring {
+                *v = p.apply(*v);
+            }
+        }
+    }
+
     /// The plane this face lies in, as an [`AnalyticSurface`].
     ///
     /// An imported face has to carry a surface like any other face in the
@@ -108,6 +120,9 @@ pub struct GeometryImport {
     pub elements: Vec<ElementGeometry>,
     /// Length unit → mm factor actually used.
     pub scale_to_mm: f64,
+    /// How many members were moved by a non-identity placement chain (I-4).
+    /// Zero for our own files, which bake world coordinates.
+    pub placed: usize,
     /// Things we could not read, in file order. Never silent.
     pub warnings: Vec<String>,
 }
@@ -171,9 +186,21 @@ pub fn import_ifc_geometry(src: &str) -> Result<GeometryImport, String> {
 pub fn from_file(file: &StepFile) -> GeometryImport {
     let mut warnings = Vec::new();
     let scale = length_scale_to_mm(file, &mut warnings);
+
+    // A non-identity WorldCoordinateSystem shifts the whole model. It is
+    // almost always the identity; when it is not, say so rather than importing
+    // everything quietly offset.
+    if let Some(wcs) = crate::ifc_placement::world_coordinate_system(file, scale) {
+        warnings.push(format!(
+            "file sets a non-identity WorldCoordinateSystem (origin {:.1},{:.1},{:.1} mm) — not applied",
+            wcs.origin.x, wcs.origin.y, wcs.origin.z
+        ));
+    }
+
     let report = crate::ifc_elements::classify(file);
 
     let mut elements = Vec::new();
+    let mut placed = 0usize;
     for el in &report.elements {
         let label = || match &el.name {
             Some(n) if !n.is_empty() => format!("#{} '{}'", el.id, n),
@@ -182,6 +209,16 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
         let mut faces = Vec::new();
         let mut supported_geometry = 0usize;
         let mut dropped_faces = 0usize;
+        // I-4 — a member's B-rep is written in its own coordinate system and
+        // located by a placement chain. Our own files use the identity (we bake
+        // world coordinates), so this is free for them and correct for Revit /
+        // ArchiCAD, where skipping it piles every member on the origin.
+        let placement = el
+            .object_placement
+            .map(|pid| crate::ifc_placement::resolve_placement(file, pid, scale))
+            .unwrap_or_default();
+        let mut moved = false;
+
         for g in &el.geometry {
             if !g.supported {
                 continue; // I-2 already reported it
@@ -189,6 +226,12 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             supported_geometry += 1;
             match brep_face_loops_counted(file, g.id, scale) {
                 Ok((mut fs, dropped)) => {
+                    if !placement.is_identity() {
+                        for f in &mut fs {
+                            f.transform(&placement);
+                        }
+                        moved = true;
+                    }
                     faces.append(&mut fs);
                     dropped_faces += dropped;
                 }
@@ -210,6 +253,9 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             }
             continue;
         }
+        if moved {
+            placed += 1;
+        }
         elements.push(ElementGeometry {
             element_id: el.id,
             name: el.name.clone(),
@@ -217,7 +263,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             faces,
         });
     }
-    GeometryImport { elements, scale_to_mm: scale, warnings }
+    GeometryImport { elements, scale_to_mm: scale, placed, warnings }
 }
 
 /// Face loops of one `IfcFacetedBrep` / `IfcAdvancedBrep`.
@@ -556,6 +602,130 @@ END-ISO-10303-21;
         assert!(
             joined.contains("no usable faces"),
             "and so is the member that ended up empty: {joined}"
+        );
+    }
+
+    #[test]
+    fn a_member_is_placed_by_its_local_placement_chain() {
+        // I-4. The triangle is written at the member's own origin; the chain
+        // says the storey is 3 m up and the wall 1 m along +X, yawed 90°.
+        // Without the chain this lands at the origin — the bug I-4 fixes.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#2=IFCCARTESIANPOINT((0.,0.,3.));
+#3=IFCAXIS2PLACEMENT3D(#2,$,$);
+#4=IFCLOCALPLACEMENT($,#3);
+#5=IFCCARTESIANPOINT((1.,0.,0.));
+#6=IFCDIRECTION((0.,0.,1.));
+#7=IFCDIRECTION((0.,1.,0.));
+#8=IFCAXIS2PLACEMENT3D(#5,#6,#7);
+#9=IFCLOCALPLACEMENT(#4,#8);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCCARTESIANPOINT((2.,0.,0.));
+#12=IFCCARTESIANPOINT((0.,1.,0.));
+#13=IFCPOLYLOOP((#10,#11,#12));
+#14=IFCFACEOUTERBOUND(#13,.T.);
+#15=IFCFACE((#14));
+#16=IFCCLOSEDSHELL((#15));
+#17=IFCFACETEDBREP(#16);
+#18=IFCSHAPEREPRESENTATION($,'Body','Brep',(#17));
+#19=IFCPRODUCTDEFINITIONSHAPE($,$,(#18));
+#20=IFCWALL('gid',$,'Placed',$,$,#9,#19,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        let f = &g.elements[0].faces[0];
+
+        // Wall origin: storey (0,0,3000) + yawed offset (1000,0,0)→(1000,0,0)
+        // — the parent is unrotated, so the offset stays on +X.
+        assert!(
+            (f.outer[0] - DVec3::new(1000.0, 0.0, 3000.0)).length() < 1e-6,
+            "local origin lands at the wall's placed origin: {:?}",
+            f.outer[0]
+        );
+        // Local +X (2 m) is yawed 90° by the wall's own placement → world +Y.
+        assert!(
+            (f.outer[1] - DVec3::new(1000.0, 2000.0, 3000.0)).length() < 1e-6,
+            "local +X becomes world +Y: {:?}",
+            f.outer[1]
+        );
+        // Local +Y (1 m) → world −X.
+        assert!(
+            (f.outer[2] - DVec3::new(0.0, 0.0, 3000.0)).length() < 1e-6,
+            "local +Y becomes world −X: {:?}",
+            f.outer[2]
+        );
+
+        // The face still knows its plane after being moved.
+        assert!(f.plane().is_some(), "a placed face keeps a usable plane");
+    }
+
+    #[test]
+    fn identity_placement_leaves_our_own_files_untouched() {
+        // We bake world coordinates and emit an identity placement, so I-4 must
+        // be a no-op for our own export — this is the regression that catches a
+        // double transform.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#2=IFCCARTESIANPOINT((0.,0.,0.));
+#3=IFCAXIS2PLACEMENT3D(#2,#20,#21);
+#4=IFCLOCALPLACEMENT($,#3);
+#20=IFCDIRECTION((0.,0.,1.));
+#21=IFCDIRECTION((1.,0.,0.));
+#10=IFCCARTESIANPOINT((0.8,1.6,2.7));
+#11=IFCCARTESIANPOINT((1.2,1.6,2.7));
+#12=IFCCARTESIANPOINT((1.2,2.4,2.7));
+#13=IFCPOLYLOOP((#10,#11,#12));
+#14=IFCFACEOUTERBOUND(#13,.T.);
+#15=IFCFACE((#14));
+#16=IFCCLOSEDSHELL((#15));
+#17=IFCFACETEDBREP(#16);
+#18=IFCSHAPEREPRESENTATION($,'Body','Brep',(#17));
+#19=IFCPRODUCTDEFINITIONSHAPE($,$,(#18));
+#22=IFCWALL('gid',$,'Baked',$,$,#4,#19,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        let f = &g.elements[0].faces[0];
+        assert_eq!(f.outer[0], DVec3::new(800.0, 1600.0, 2700.0));
+        assert_eq!(f.outer[2], DVec3::new(1200.0, 2400.0, 2700.0));
+        assert!(g.warnings.is_empty(), "no warning for an identity file: {:?}", g.warnings);
+    }
+
+    #[test]
+    fn a_shifted_world_coordinate_system_is_reported() {
+        // We do not apply the context WCS; a file that sets one must not import
+        // silently as if it had not.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#2=IFCCARTESIANPOINT((100.,0.,0.));
+#3=IFCAXIS2PLACEMENT3D(#2,$,$);
+#4=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#3,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("WorldCoordinateSystem")),
+            "warnings: {:?}",
+            g.warnings
         );
     }
 

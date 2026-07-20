@@ -70,6 +70,9 @@ pub struct ImportedElement {
     pub global_id: Option<String>,
     /// Material name via `IfcRelAssociatesMaterial` → `IfcMaterial`.
     pub material: Option<String>,
+    /// `IfcProduct.ObjectPlacement` (attribute 5) — head of the
+    /// `IfcLocalPlacement` chain that locates this member (I-4).
+    pub object_placement: Option<u32>,
     /// Geometry items, in file order.
     pub geometry: Vec<GeometryRef>,
 }
@@ -167,6 +170,9 @@ pub fn classify(file: &StepFile) -> ElementReport {
             name: arg_str(ent, 2),
             global_id: arg_str(ent, 0),
             material: materials.get(&id).cloned(),
+            // IfcProduct: 0 GlobalId, 1 OwnerHistory, 2 Name, 3 Description,
+            // 4 ObjectType, 5 ObjectPlacement, 6 Representation.
+            object_placement: ent.args.get(5).and_then(|v| v.as_ref()),
             geometry,
         });
     }
