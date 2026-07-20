@@ -557,6 +557,8 @@ type AxiaEngineExtended = AxiaEngine & {
   // IFC export (ADR-203 γ) — semantic model: one IfcWall per member (Xia →
   // material, Shape) with analytic geometry; "" → caller falls back to exportIfc
   exportIfcModel?(name: string): string;
+  // IFC import (ADR-203 I-1) — read-only analysis of an .ifc file → JSON report
+  analyzeIfc?(text: string): string;
   // Transform operations
   translate_faces?(ids: Uint32Array, dx: number, dy: number, dz: number): boolean;
   rotate_faces?(ids: Uint32Array, cx: number, cy: number, cz: number, ax: number, ay: number, az: number, angleDeg: number): boolean;
@@ -6111,6 +6113,22 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * ADR-203 I-1 — read an `.ifc` file and report what it contains (schema,
+   * entity histogram, element/material counts). Read-only: the scene is
+   * untouched. Returns null if the engine is absent or the report is unusable.
+   */
+  analyzeIfc(text: string): IfcAnalysisReport | null {
+    if (!this.engine?.analyzeIfc) return null;
+    try {
+      const parsed = JSON.parse(this.engine.analyzeIfc(text)) as IfcAnalysisReport;
+      return parsed && typeof parsed.ok === 'boolean' ? parsed : null;
+    } catch (e) {
+      console.error('[WasmBridge] analyzeIfc failed:', e);
+      return null;
+    }
+  }
+
   /** 바이너리 스냅샷으로부터 메시 복원 */
   importSnapshot(data: Uint8Array): boolean {
     if (!this.engine) return false;
@@ -7451,6 +7469,23 @@ export interface GroupInfo {
   locked: boolean;
   isComponent: boolean;
   error?: string;
+}
+
+/**
+ * ADR-203 I-1 — what an `.ifc` file contains, as read by the engine's parser.
+ * Read-only inspection; no geometry is imported yet.
+ */
+export interface IfcAnalysisReport {
+  ok: boolean;
+  error?: string;
+  /** `FILE_SCHEMA`, e.g. `"IFC4X3"`. */
+  schema?: string | null;
+  description?: string | null;
+  entityCount?: number;
+  /** Counts a BIM user cares about — only non-zero entries are present. */
+  notable?: Record<string, number>;
+  /** `[entityTag, count]`, most frequent first. */
+  topTypes?: [string, number][];
 }
 
 export interface DxfImportResult {

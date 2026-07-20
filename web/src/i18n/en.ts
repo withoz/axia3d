@@ -2221,8 +2221,14 @@ export const EN: Record<string, string> = {
   // The strong guard only read 'single quotes', so 185 `${n}개 …`
   // templates sat in files the ledger called done. Guard now reads
   // backticks too; these are the keys that turned up.
-  'IFC 가져오기는 준비중입니다.\n': 'IFC import is not ready yet.\n',
-  '대안: Revit / ArchiCAD 에서 OBJ 또는 DXF 로 내보낸 뒤 가져오세요.': 'Alternative: export to OBJ or DXF from Revit / ArchiCAD, then import that.',
+  // ADR-203 I-1 — IFC import step 1: read the file and report its contents.
+  'IFC 읽기 실패: 엔진이 준비되지 않았습니다.': 'Could not read the IFC: the engine is not ready.',
+  'IFC 파싱 실패: {error}': 'IFC parsing failed: {error}',
+  'IFC 가져오기 중 오류: {error}': 'Error while importing the IFC: {error}',
+  '{fileName} — {schema}, 엔티티 {entityCount}개': '{fileName} — {schema}, {entityCount} entities',
+  '스키마 미상': 'unknown schema',
+  '식별된 BIM 부재 없음': 'no recognizable BIM elements',
+  '현재는 내용 확인만 가능합니다 (형상 가져오기는 준비 중).': 'For now this only inspects the file — bringing the geometry in is still to come.',
 
   // ══════════════════════════════════════════════════════════════════════
   // batch 13 — the status-bar tool label (toolDisplayNames.ts)
