@@ -775,3 +775,65 @@ Revit 이나 ArchiCAD 에서 열면 **온통 벽으로 지은 건물**로 보였
 - 종류별 `PredefinedType`(예 `IfcSlabTypeEnum.FLOOR`)은 아직 `$`.
 - 자동 추론은 하지 않는다 — 사용자가 지정한 것만 쓴다 (메타-원칙 #16).
 - 미지정 부재는 여전히 벽으로 나간다 (기존 파일 동작 보존).
+
+---
+
+## 21. δ-2 Acceptance — 문과 창
+
+δ 는 문·창을 **일부러 거부**했다. `IfcDoor` / `IfcWindow` 는 속성이 9개가
+아니라 **13개**라, 벽 모양 자리에 그대로 넣으면 **어떤 IFC 리더도 받지 않는
+엔티티**가 나온다. 추측 대신 거부하고 후속으로 남겼던 것 — 그 형태를 맞췄다.
+
+```
+공통 8   GlobalId OwnerHistory Name Description ObjectType ObjectPlacement Representation Tag
+9-arg    + PredefinedType
+Door     + OverallHeight OverallWidth PredefinedType OperationType         UserDefinedOperationType
+Window   + OverallHeight OverallWidth PredefinedType PartitioningType      UserDefinedPartitioningType
+```
+
+- **`IfcElementKind::attribute_count()` / `has_overall_size()`** 신설. emitter
+  가 하드코딩된 9 대신 **종류에게 물어본다**. 나머지 11종은 9로 고정 —
+  회귀가 그것을 잠근다 (여기가 흔들리면 지금까지 쓴 모든 벽·슬래브의 형태가
+  조용히 바뀐다).
+- **`OverallHeight` / `OverallWidth` 를 실측해서 채운다.** BIM 도구가 문·창
+  크기로 보여주는 값이라 `$` 로 두면 합법이지만 쓸모가 없다. 높이 = **Z
+  extent**(Z-up 이라 모호하지 않음, LOCKED #43), 폭 = **큰 쪽 수평 extent**
+  (작은 쪽은 판 두께). 이건 *의도 추론* 이 아니라 **사용자가 이미 만든 형상의
+  측정** 이다 — 메타-원칙 #16 과 무관.
+- **퇴화 형상은 `$`**: `IfcPositiveLengthMeasure` 는 0 이 불법이라, 0 을 실제
+  치수처럼 쓰지 않고 생략한다.
+- 9-arg 경로는 **손대지 않았다** — 기존 바이트 동일 테스트 그대로 통과.
+
+### 만들면서 잡은 것
+
+**테스트가 실패했는데 emitter 가 아니라 내 fixture 가 틀렸다.** 창을
+`create_box(c, 1200, 100, 900)` 로 만들고 높이 0.9m 를 기대했는데 0.1m 가
+나왔다 — `create_box(center, width→X, height→Z, depth→Y)` 라 내가 축을 잘못
+알고 있었다. 코드를 고치기 전에 시그니처를 읽어서 **fixture 를** 고쳤다.
+
+### 라이브 검증
+
+| 층위 | 결과 |
+|---|---|
+| 엔진 회귀 | `IFCDOOR` **13 속성**, `IFCWALL` 은 **9 로 불변**; 창 = 높이 0.9 / 폭 1.2 (두께 0.1 아님) |
+| 실제 앱 (:4188) | 픽커에 문·창 추가 → "문" 선택 → `#267=IFCDOOR(...,$,2.1,0.9,$,$,$)` **13 속성 + 실측 2.1×0.9 m**, 콘솔 오류 0 |
+| 우리 왕복 | 분류기 `IFCDOOR` / `IFCWINDOW`, 분석기 doors 1 / windows 1, convertible 2/2 |
+| **외부 커널 (web-ifc)** | `typed.ifc` 코퍼스에 문·창 추가 → **IfcDoor 1 / IfcWindow 1 / 벽 0**, 4 부재 **48 삼각형 삼각분할** |
+
+부재 카운트 검사에 `IFCDOOR`/`IFCWINDOW` 가 빠져 있어 4개 중 2개만 세던 것도
+같이 고쳤다.
+
+### 회귀
+
+- axia-ifc **+3** (104→107): 문·창 13속성 선언 + 나머지 11종 9 고정 /
+  `IFCDOOR` 13 · `IFCWALL` 9 동시 검증 / 창의 실측 치수(두께가 아니라 폭).
+- 워크스페이스 **3150 passed / 0 failed / 1 ignored**(doc fence, `#[ignore]`
+  아님), vitest **2940**, tsc·build·ADR 카탈로그·외부 IFC 검증 모두 통과.
+
+### 남은 것
+
+- `PredefinedType`(`IfcDoorTypeEnum.DOOR` 등) · `OperationType`(여닫이 방향)
+  · `PartitioningType` 은 아직 `$` — 엔진에 그 정보가 없다.
+- 문·창을 **벽의 개구부에 연결**(`IfcRelFillsElement` / `IfcOpeningElement`)
+  하지 않는다. 지금은 독립 부재다. Window·Door 도구가 만드는 실제 개구부와
+  묶는 것은 별도 트랙.

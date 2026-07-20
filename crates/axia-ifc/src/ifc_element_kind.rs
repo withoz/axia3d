@@ -4,13 +4,16 @@
 //! ArchiCAD that reads as a building made entirely of walls: a floor slab is a
 //! wall, a column is a wall. The geometry was right and the meaning was wrong.
 //!
-//! These are the IFC element types that share `IfcWall`'s attribute shape —
-//! `(GlobalId, OwnerHistory, Name, Description, ObjectType, ObjectPlacement,
-//! Representation, Tag, PredefinedType)`, nine attributes. `IfcDoor` and
-//! `IfcWindow` are deliberately absent: they carry four more attributes
-//! (`OverallHeight`, `OverallWidth`, `OperationType`,
-//! `UserDefinedOperationType`), so emitting them here would produce a
-//! malformed entity. They stay a follow-up rather than a guess.
+//! Most of these share `IfcWall`'s attribute shape — the eight every
+//! `IfcElement` has (`GlobalId, OwnerHistory, Name, Description, ObjectType,
+//! ObjectPlacement, Representation, Tag`) plus `PredefinedType`, nine in all.
+//!
+//! `IfcDoor` and `IfcWindow` do not: they carry four more, and the last two
+//! differ between them (`OperationType` / `UserDefinedOperationType` on a door,
+//! `PartitioningType` / `UserDefinedPartitioningType` on a window). δ refused
+//! them rather than emit a malformed entity; they are shaped correctly now,
+//! which is why [`Self::attribute_count`] exists instead of a single hard-coded
+//! nine.
 
 /// A building element type we can export faithfully.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,6 +32,10 @@ pub enum IfcElementKind {
     Member,
     Plate,
     Footing,
+    /// Thirteen attributes, not nine — see [`Self::attribute_count`].
+    Door,
+    /// Thirteen attributes, not nine — see [`Self::attribute_count`].
+    Window,
     /// "A building element we are not classifying" — the IFC-sanctioned way to
     /// say so, rather than mislabelling it as something specific.
     Proxy,
@@ -50,6 +57,8 @@ impl IfcElementKind {
             Self::Member => "IFCMEMBER",
             Self::Plate => "IFCPLATE",
             Self::Footing => "IFCFOOTING",
+            Self::Door => "IFCDOOR",
+            Self::Window => "IFCWINDOW",
             Self::Proxy => "IFCBUILDINGELEMENTPROXY",
         }
     }
@@ -74,6 +83,8 @@ impl IfcElementKind {
             "MEMBER" | "MEMBERSTANDARDCASE" => Self::Member,
             "PLATE" | "PLATESTANDARDCASE" => Self::Plate,
             "FOOTING" => Self::Footing,
+            "DOOR" | "DOORSTANDARDCASE" => Self::Door,
+            "WINDOW" | "WINDOWSTANDARDCASE" => Self::Window,
             "BUILDINGELEMENTPROXY" | "PROXY" => Self::Proxy,
             _ => return None,
         })
@@ -94,8 +105,32 @@ impl IfcElementKind {
             Self::Member => "member",
             Self::Plate => "plate",
             Self::Footing => "footing",
+            Self::Door => "door",
+            Self::Window => "window",
             Self::Proxy => "proxy",
         }
+    }
+
+    /// How many attributes this entity takes.
+    ///
+    /// Nine for the `IfcWall` family (the eight common `IfcElement` ones plus
+    /// `PredefinedType`); thirteen for a door or a window, which insert
+    /// `OverallHeight` and `OverallWidth` before `PredefinedType` and then add
+    /// two type-specific fields. Emitting the wrong count is not a cosmetic
+    /// error — it produces an entity no IFC reader will accept.
+    pub fn attribute_count(self) -> usize {
+        if self.has_overall_size() {
+            13
+        } else {
+            9
+        }
+    }
+
+    /// True when the entity carries `OverallHeight` / `OverallWidth` — the two
+    /// opening elements. BIM tools show those as the door or window size, so we
+    /// fill them from the member's own bounding box rather than leaving `$`.
+    pub fn has_overall_size(self) -> bool {
+        matches!(self, Self::Door | Self::Window)
     }
 
     /// Every kind, in the order a picker should show them.
@@ -112,6 +147,8 @@ impl IfcElementKind {
         Self::Member,
         Self::Plate,
         Self::Footing,
+        Self::Door,
+        Self::Window,
         Self::Proxy,
     ];
 }
@@ -151,13 +188,33 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_unsupported_tags_are_rejected_not_guessed() {
+    fn unknown_tags_are_rejected_not_guessed() {
         assert_eq!(IfcElementKind::from_tag("IFCNOSUCHTHING"), None);
         assert_eq!(IfcElementKind::from_tag(""), None);
-        // Door and window carry four more attributes; refusing them here is
-        // what keeps us from emitting a malformed entity.
-        assert_eq!(IfcElementKind::from_tag("IFCDOOR"), None);
-        assert_eq!(IfcElementKind::from_tag("IFCWINDOW"), None);
+        assert_eq!(IfcElementKind::from_tag("IFCSPACE"), None, "a container is not a member");
+    }
+
+    #[test]
+    fn doors_and_windows_declare_their_larger_attribute_shape() {
+        // δ refused these because emitting them in a nine-attribute slot makes
+        // an entity no reader accepts. They are supported now — but only
+        // because the emitter asks how many attributes they take.
+        assert_eq!(IfcElementKind::from_tag("IFCDOOR"), Some(IfcElementKind::Door));
+        assert_eq!(IfcElementKind::from_tag("IFCWINDOW"), Some(IfcElementKind::Window));
+        assert_eq!(IfcElementKind::Door.attribute_count(), 13);
+        assert_eq!(IfcElementKind::Window.attribute_count(), 13);
+        assert!(IfcElementKind::Door.has_overall_size());
+        assert!(IfcElementKind::Window.has_overall_size());
+
+        // Everything else stays at nine — a regression here would silently
+        // reshape every wall and slab we have ever written.
+        for k in IfcElementKind::ALL {
+            if matches!(k, IfcElementKind::Door | IfcElementKind::Window) {
+                continue;
+            }
+            assert_eq!(k.attribute_count(), 9, "{} must stay nine-attribute", k.tag());
+            assert!(!k.has_overall_size(), "{} has no overall size", k.tag());
+        }
     }
 
     #[test]

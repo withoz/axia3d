@@ -94,15 +94,21 @@ const corpus = [
   },
   {
     // δ — members export as what they are. Before this, a floor slab and a
-    // column both left as IfcWall: geometry right, meaning wrong.
+    // column both left as IfcWall: geometry right, meaning wrong. Door and
+    // window came later: they take thirteen attributes, not nine, and a
+    // foreign parser is the real judge of whether we got that shape right.
     file: 'typed.ifc',
-    what: 'classified members (slab + column, not everything a wall)',
+    what: 'classified members (slab + column + door + window, not everything a wall)',
     build: (e) => {
-      e.create_box(0, 0, 0, 4000, 4000, 200);      // floor
-      e.create_box(0, 0, 3000, 300, 300, 3000);    // column
+      e.create_box(0, 0, 0, 4000, 4000, 200);       // floor
+      e.create_box(0, 0, 3000, 300, 300, 3000);     // column
+      e.create_box(6000, 0, 1000, 900, 2100, 60);   // door leaf  (X 900, Z 2100)
+      e.create_box(9000, 0, 1500, 1200, 900, 60);   // window sash (X 1200, Z 900)
       const ids = Array.from(e.getXiaIds());
       e.setXiaElementKind(ids[0], 'slab');
       e.setXiaElementKind(ids[1], 'column');
+      e.setXiaElementKind(ids[2], 'door');
+      e.setXiaElementKind(ids[3], 'window');
     },
   },
   {
@@ -174,7 +180,7 @@ for (const c of corpus) {
   // would fail the moment a file legitimately has none.
   const MEMBER_TYPES = ['IFCWALL', 'IFCSLAB', 'IFCCOLUMN', 'IFCBEAM', 'IFCROOF',
     'IFCSTAIR', 'IFCRAMP', 'IFCRAILING', 'IFCCOVERING', 'IFCMEMBER', 'IFCPLATE',
-    'IFCFOOTING', 'IFCBUILDINGELEMENTPROXY'];
+    'IFCFOOTING', 'IFCDOOR', 'IFCWINDOW', 'IFCBUILDINGELEMENTPROXY'];
   const members = MEMBER_TYPES.reduce((n, t) => n + typeCount(api, modelID, t), 0);
   check(members >= 1, 'at least one building element', `${members}`);
   check(typeCount(api, modelID, 'IFCADVANCEDBREP') >= 1, 'analytic IfcAdvancedBrep (not faceted)');
@@ -228,6 +234,12 @@ for (const c of corpus) {
       `${typeCount(api, modelID, 'IFCCOLUMN')}`);
     check(typeCount(api, modelID, 'IFCWALL') === 0, 'nothing was left mislabelled as a wall',
       `${typeCount(api, modelID, 'IFCWALL')}`);
+    // Door and window take thirteen attributes, not nine. A foreign parser is
+    // the real judge of whether we got that shape right.
+    check(typeCount(api, modelID, 'IFCDOOR') === 1, 'the door is an IfcDoor',
+      `${typeCount(api, modelID, 'IFCDOOR')}`);
+    check(typeCount(api, modelID, 'IFCWINDOW') === 1, 'the window is an IfcWindow',
+      `${typeCount(api, modelID, 'IFCWINDOW')}`);
     check(tris > 0, 'the foreign kernel tessellates the typed members too', `${tris}`);
   }
 
