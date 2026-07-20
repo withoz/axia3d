@@ -407,3 +407,37 @@ face 가 있으면 β-1.5 faceted 로 자동 fallback.
   `ifcopenshell` 교차 검증 (Python wheel 가용 시 두 번째 독립 구현체). 곡면
   interop 모드. IFC **import** 는 여전히 미착수 (별도 트랙, 계획은
   `docs/plans/IFC-IMPORT-EXPORT-PLAN-2026-07-19.html`).
+
+## 14. β-3b Acceptance (2026-07-20) — spline edges + NURBS-class surfaces
+
+β-3 까지 Bezier/BSpline/NURBS 는 **거부 → faceted fallback** 이었다. β-3b 로
+export 기하의 마지막 gap 을 닫는다 — 이제 모든 axia-geo curve/surface variant
+가 analytic IFC 로 나간다.
+
+- **Edges**: `AnalyticCurve::{Bezier, BSpline, NURBS}` → 통합
+  `EdgeCurve::BSpline { control_pts, knots, degree, weights }` →
+  `IFCBSPLINECURVEWITHKNOTS` (weights 있으면 `IFCRATIONALBSPLINECURVEWITHKNOTS`).
+  Bezier 는 clamped knot vector 합성 (`degree = n-1`, `[0]×(d+1) ++ [1]×(d+1)`).
+- **Surfaces**: `BezierPatch` / `BSplineSurface` / `NURBSSurface` →
+  `IFCBSPLINESURFACEWITHKNOTS` / `IFCRATIONALBSPLINESURFACEWITHKNOTS`.
+  BezierPatch 는 grid 크기에서 degree 유도 + clamped knots 합성.
+- **Knot 표현 변환**: 엔진은 flat knot vector (반복 포함), IFC 는 *distinct
+  values + multiplicities* → `compress_knots` 로 변환
+  (`[0,0,0,.5,1,1,1]` → `(0,.5,1)` + `(3,1,3)`).
+- **방어**: weights/control_pts 길이 불일치, ragged control grid, 빈 knots,
+  control point < 2 → 모두 Err (조용한 잘못된 export 대신 faceted fallback).
+- **외부 검증** (ε 인프라 재사용): closed-Bezier / closed-BSpline face 를
+  실제 엔진으로 생성 → web-ifc 가 `IFCBSPLINECURVEWITHKNOTS` 를 **인식하고
+  기하까지 생성** (`unexpected surface type` 에러 0). β-3b 이전에는 같은
+  모델이 `exportIfcModel` = `""` (faceted fallback) 이었다.
+- **ε 게이트 확장**: `scripts/ifc-external-validate.mjs` 에 `spline.ifc` 코퍼스
+  추가 — 외부 파서가 spline curve 를 읽는지 + **line 으로 격하되지 않았는지**
+  (`IFCLINE` 0) 회귀 검사.
+- **회귀**: axia-ifc **+5** (47→52, 절대 #[ignore] 금지): spline edge 매핑
+  (Bezier clamped knot 합성 / BSpline passthrough / NURBS weights / 길이 불일치
+  거부) / knot 압축 / `IFCBSPLINECURVEWITHKNOTS` emit / rational weights emit /
+  NURBS surface → rational surface / BSpline+Bezier surface / ragged grid 거부.
+  기존 "거부" 테스트 2건은 **지원** 단언으로 재작성 (동작 변경 명시).
+- **한계 (후속)**: `NURBSSurface.trim_loops` 는 미emit (경계는 DCEL edge loop
+  이 담당 — `IfcRectangularTrimmedSurface` / pcurve 는 별도 트랙). 상용 BIM
+  실오픈 미검증. IFC **import** 미착수.
