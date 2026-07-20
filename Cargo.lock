@@ -71,6 +71,7 @@ dependencies = [
 name = "axia-ifc"
 version = "0.1.0"
 dependencies = [
+ "axia-foreign",
  "axia-geo",
  "glam",
 ]

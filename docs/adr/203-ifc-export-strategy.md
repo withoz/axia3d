@@ -441,3 +441,32 @@ export 기하의 마지막 gap 을 닫는다 — 이제 모든 axia-geo curve/su
 - **한계 (후속)**: `NURBSSurface.trim_loops` 는 미emit (경계는 DCEL edge loop
   이 담당 — `IfcRectangularTrimmedSurface` / pcurve 는 별도 트랙). 상용 BIM
   실오픈 미검증. IFC **import** 미착수.
+
+## 15. I-1 Acceptance (2026-07-20) — IFC import 착수: 파일을 *읽는다*
+
+Import 트랙의 첫 원자 단계. 계획(`docs/plans/IFC-IMPORT-EXPORT-PLAN-2026-07-19.html`)
+의 de-risk 가 성립함을 코드로 확인 — **새 파서는 필요 없다**.
+
+- **de-risk 확정**: `axia-foreign::step_parser::parse` 는 완전 schema-agnostic
+  (ISO envelope strip → tokenize → `#N=TYPE(args);`). `FILE_SCHEMA` 는 단순
+  헤더 엔티티일 뿐 gate 가 아니다 → IFC4X3 파일이 그대로 파싱된다.
+- **axia-ifc `ifc_analyze.rs`**: `analyze_ifc(src) -> IfcAnalysis`
+  { schema, description, entity_count, type_counts(BTreeMap=결정적) } +
+  `count()` / `top_types()` / `to_json()`. IFC 지식은 axia-ifc 에 두고
+  **axia-foreign 는 IFC-unaware 인 채로 재사용** (파서만 빌려옴).
+- **axia-wasm** `analyzeIfc(text) -> JSON` (read-only, scene 무변경).
+  **web**: `WasmBridge.analyzeIfc` + `IfcImportHandler.ts` (DxfImportHandler
+  패턴 답습) + MenuBar `import-ifc` 의 "준비중" placeholder 제거.
+- **정직한 UX**: Toast 가 스키마/엔티티 수/부재 카운트를 보여주고
+  "현재는 내용 확인만 가능 (형상 가져오기는 준비 중)" 을 명시 — 모델이
+  들어온 것처럼 오해시키지 않는다.
+- **라운드트립**: 우리 exporter 출력이 우리 parser 로 읽힌다 (가장 강한 스모크).
+  라이브 확인 — box/curved/bim/bezier 코퍼스 4종 모두 `ok=true schema=IFC4X3`,
+  walls/materials/advancedBreps 정확, 쓰레기 입력은 `ok:false` 로 안전 거부.
+- **CI 갭 2건 해소**: `cargo test -p axia-ifc` 에 이어 **`-p axia-foreign`**
+  (138 tests) 도 CI 미실행이었다 → ci.yml 에 추가.
+- **회귀**: axia-ifc **+6** (52→58, 절대 #[ignore] 금지): 자체 export
+  라운드트립 / 시맨틱 모델(walls+materials+advancedBrep) / top_types 빈도순+
+  결정성 / 태그 대소문자 무관 / 쓰레기 입력 거부 / JSON escape.
+- **다음 (I-2~I-5)**: entity classifier (IfcWall/IfcSlab → 부재) → brep→DCEL
+  promote (IfcAdvancedBrep/IfcFacetedBrep → mesh) → spatial → Scene 배치.

@@ -274,17 +274,18 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'file-import':
         break;
 
-      // ── 가져오기 IFC (준비중) ──
-      // export-step / export-iges below have said "준비중" via Toast since
-      // Stage 5; import-ifc is the same kind of placeholder but had no case, so
-      // it did nothing — and the palette recorded it as a success.
-      case 'import-ifc':
-        Toast.info(
-          t('IFC 가져오기는 준비중입니다.\n') +
-          t('대안: Revit / ArchiCAD 에서 OBJ 또는 DXF 로 내보낸 뒤 가져오세요.'),
-          5000,
-        );
+      // ── 가져오기 IFC (ADR-203 I-1 — 파일 내용 확인) ──
+      // Reads the .ifc with the engine's STEP-21 parser and reports what it
+      // holds. Geometry (IFC B-rep → DCEL) is the next step, and the toast says
+      // so rather than implying the model was placed.
+      case 'import-ifc': {
+        import('./IfcImportHandler').then(({ importIfcFile }) => {
+          importIfcFile({ bridge });
+        }).catch((err: Error) => {
+          console.error('[MenuBar] IFC Import 실패:', err);
+        });
         break;
+      }
 
       // ── 내보내기 STEP/IGES (Stage 5 placeholder) ──
       case 'export-step':

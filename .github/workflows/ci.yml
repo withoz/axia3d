@@ -75,9 +75,14 @@ jobs:
       - name: cargo test -p axia-wasm --tests
         run: cargo test -p axia-wasm --tests
 
-      # ADR-203 IFC exporter (β-1.5 FacetedBrep, β-2 IfcAdvancedBrep).
+      # ADR-203 IFC exporter (β-1.5 FacetedBrep, β-2 IfcAdvancedBrep) + the
+      # I-1 importer analysis, which reuses the axia-foreign STEP-21 parser.
       - name: cargo test -p axia-ifc --lib
         run: cargo test -p axia-ifc --lib
+
+      # axia-foreign (STEP/IGES import parser) had no CI coverage either.
+      - name: cargo test -p axia-foreign --lib
+        run: cargo test -p axia-foreign --lib
 
   # ───────────────────────────────────────────────────────────────
   # Browser E2E — Playwright Chromium round-trip.

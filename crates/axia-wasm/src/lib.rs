@@ -5531,6 +5531,23 @@ impl AxiaEngine {
         axia_ifc::emit_ifc_model(&scene.mesh, &elements, MM_TO_M, nm).unwrap_or_default()
     }
 
+    /// ADR-203 I-1 — read an `.ifc` file and report what is inside it: schema,
+    /// entity count, an entity histogram, and the element/material counts a BIM
+    /// user cares about. Read-only: the scene is untouched.
+    ///
+    /// Returns JSON — `{"ok":true,"schema":…,"entityCount":N,"notable":{…},
+    /// "topTypes":[[tag,count],…]}` or `{"ok":false,"error":"…"}`.
+    ///
+    /// Geometry import (IFC B-rep → DCEL) is the next step; this one proves the
+    /// file is readable and tells the user what it holds.
+    #[wasm_bindgen(js_name = "analyzeIfc")]
+    pub fn analyze_ifc(&self, text: String) -> String {
+        match axia_ifc::analyze_ifc(&text) {
+            Ok(a) => a.to_json(),
+            Err(e) => axia_ifc::ifc_analyze::error_json(&e),
+        }
+    }
+
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
     pub fn get_face_map(&mut self) -> Vec<u32> {
