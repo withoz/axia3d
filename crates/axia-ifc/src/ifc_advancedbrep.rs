@@ -7,18 +7,19 @@
 //! [`AnalyticSurface`]) and whose boundaries are `IfcEdgeLoop`s of
 //! `IfcOrientedEdge` → `IfcEdgeCurve`.
 //!
-//! **β-2 scope**: edge geometry is straight `IfcLine` only (β-2 roadmap).
-//! - **Planar faces are geometrically exact** — a box exports as 6 clean
-//!   `IfcAdvancedFace(IfcPlane)` instead of β-1.5's 12 triangles.
-//! - Curved-surface faces get an exact analytic **surface** but line-approximate
-//!   trim **edges**; proper curved edges (`IfcCircle`/`IfcBSplineCurve`) are β-3.
+//! **Coverage** (β-2 planar → β-3 circular → β-3b spline):
+//! - Surfaces: `Plane` / `Cylinder` / `Sphere` / `Cone` / `Torus` → the matching
+//!   elementary IFC surface; `BezierPatch` / `BSplineSurface` / `NURBSSurface` →
+//!   `IFCBSPLINESURFACEWITHKNOTS` (rational form when weighted).
+//! - Edges: `Line` → `IFCLINE`, `Circle`/`Arc` → `IFCCIRCLE` (trimmed by the
+//!   edge's vertices), `Bezier`/`BSpline`/`NURBS` → `IFCBSPLINECURVEWITHKNOTS`
+//!   (rational form when weighted). A Bezier is emitted as a B-spline with
+//!   synthesized clamped knots.
+//! - Knots are compressed to IFC's distinct-values + multiplicities form.
 //!
 //! **Units**: face fields (surface + loop verts) are in engine units (mm); the
 //! emitter multiplies every position/radius by `scale` (0.001 for mm→metre).
-//! Directions (axes) and angles are unit/radian and are *not* scaled.
-//!
-//! NURBS-class surfaces (BezierPatch/BSplineSurface/NURBSSurface) are rejected
-//! with an error in β-2 — they need `IfcBSplineSurfaceWithKnots` (β-3+).
+//! Directions, angles, knots and weights are unitless and are *not* scaled.
 
 use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, dir, placement_axes, pt};
 use crate::step_value::{EntityRef, StepValue};
@@ -27,7 +28,8 @@ use axia_geo::{AnalyticCurve, AnalyticSurface, HeId, Mesh};
 use glam::DVec3;
 
 /// Geometry of one boundary edge (ADR-203 β-3). β-3 maps `Line` + `Circle`/`Arc`;
-/// Bezier/BSpline/NURBS edges are β-3b (`IfcBSplineCurveWithKnots`).
+/// Spline edges (Bezier/BSpline/NURBS) map to `IfcBSplineCurveWithKnots`
+/// (β-3b); NURBS-class surfaces map to `IfcBSplineSurfaceWithKnots`.
 #[derive(Clone, Debug)]
 pub enum EdgeCurve {
     /// Straight segment (the default edge). Emits `IFCLINE`.
@@ -39,6 +41,15 @@ pub enum EdgeCurve {
     /// Circular arc — same `IFCCIRCLE` support, trimmed by the edge vertices.
     /// `ccw` (end_angle ≥ start_angle) sets `IfcEdgeCurve.SameSense`.
     Arc { center: DVec3, radius: f64, normal: DVec3, basis_u: DVec3, ccw: bool },
+    /// ADR-203 β-3b — spline edge. Bezier/BSpline/NURBS all land here: a Bezier
+    /// is a BSpline with synthesized clamped knots, a NURBS carries `weights`.
+    /// Emits `IFCBSPLINECURVEWITHKNOTS` (or the `RATIONAL` form when weighted).
+    BSpline {
+        control_pts: Vec<DVec3>,
+        knots: Vec<f64>,
+        degree: u32,
+        weights: Option<Vec<f64>>,
+    },
 }
 
 /// One ordered boundary edge: its two vertices + geometry. `start == end` for a
@@ -252,7 +263,7 @@ fn loop_edges(mesh: &Mesh, start: HeId) -> Result<Vec<IfcEdge>, String> {
 }
 
 /// Map an [`AnalyticCurve`] (or `None` = plain straight edge) to an [`EdgeCurve`].
-/// Bezier/BSpline/NURBS are β-3b → error (→ caller's faceted fallback).
+/// Bezier/BSpline/NURBS become a unified [`EdgeCurve::BSpline`] (β-3b).
 fn edge_curve_to_ifc(c: Option<&AnalyticCurve>) -> Result<EdgeCurve, String> {
     match c {
         None | Some(AnalyticCurve::Line { .. }) => Ok(EdgeCurve::Line),
@@ -271,12 +282,102 @@ fn edge_curve_to_ifc(c: Option<&AnalyticCurve>) -> Result<EdgeCurve, String> {
                 ccw: end_angle >= start_angle,
             })
         }
-        Some(AnalyticCurve::Bezier { .. })
-        | Some(AnalyticCurve::BSpline { .. })
-        | Some(AnalyticCurve::NURBS { .. }) => {
-            Err("Bezier/BSpline/NURBS edge needs IfcBSplineCurveWithKnots (β-3b)".into())
+        // β-3b — a Bezier is a BSpline whose knot vector is clamped [0,1].
+        Some(AnalyticCurve::Bezier { control_pts }) => {
+            if control_pts.len() < 2 {
+                return Err("Bezier edge needs ≥ 2 control points".into());
+            }
+            let degree = (control_pts.len() - 1) as u32;
+            Ok(EdgeCurve::BSpline {
+                control_pts: control_pts.clone(),
+                knots: clamped_knots(degree),
+                degree,
+                weights: None,
+            })
+        }
+        Some(AnalyticCurve::BSpline { control_pts, knots, degree }) => Ok(EdgeCurve::BSpline {
+            control_pts: control_pts.clone(),
+            knots: knots.clone(),
+            degree: *degree,
+            weights: None,
+        }),
+        Some(AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
+            if weights.len() != control_pts.len() {
+                return Err("NURBS edge: weights/control_pts length mismatch".into());
+            }
+            Ok(EdgeCurve::BSpline {
+                control_pts: control_pts.clone(),
+                knots: knots.clone(),
+                degree: *degree,
+                weights: Some(weights.clone()),
+            })
         }
     }
+}
+
+/// Clamped knot vector for a single Bezier span of `degree`: `degree+1` zeros
+/// then `degree+1` ones (the IFC/NURBS canonical form).
+fn clamped_knots(degree: u32) -> Vec<f64> {
+    let d = degree as usize + 1;
+    let mut k = vec![0.0; d];
+    k.extend(std::iter::repeat(1.0).take(d));
+    k
+}
+
+/// IFC stores knots as *distinct* values + multiplicities; our engine (like most
+/// NURBS kernels) stores the flat vector with repeats. Compress it.
+fn compress_knots(knots: &[f64]) -> (Vec<f64>, Vec<i64>) {
+    let mut vals: Vec<f64> = Vec::new();
+    let mut mults: Vec<i64> = Vec::new();
+    for &k in knots {
+        match vals.last() {
+            Some(&last) if (k - last).abs() < 1e-12 => *mults.last_mut().unwrap() += 1,
+            _ => {
+                vals.push(k);
+                mults.push(1);
+            }
+        }
+    }
+    (vals, mults)
+}
+
+/// Emit `IFCBSPLINECURVEWITHKNOTS` / `IFCRATIONALBSPLINECURVEWITHKNOTS`.
+fn emit_bspline_curve(
+    w: &mut StepWriter,
+    control_pts: &[DVec3],
+    knots: &[f64],
+    degree: u32,
+    weights: Option<&[f64]>,
+    scale: f64,
+) -> Result<EntityRef, String> {
+    if control_pts.len() < 2 {
+        return Err("spline edge needs ≥ 2 control points".into());
+    }
+    if knots.is_empty() {
+        return Err("spline edge has no knots".into());
+    }
+    let pts: Vec<StepValue> = control_pts
+        .iter()
+        .map(|&p| StepValue::Ref(pt(w, p * scale)))
+        .collect();
+    let (kvals, kmults) = compress_knots(knots);
+    let mut args = vec![
+        StepValue::Int(degree as i64),
+        StepValue::List(pts),
+        StepValue::Enum("UNSPECIFIED".into()), // CurveForm
+        StepValue::Enum("U".into()),           // ClosedCurve (LOGICAL unknown)
+        StepValue::Enum("U".into()),           // SelfIntersect
+        StepValue::List(kmults.iter().map(|&m| StepValue::Int(m)).collect()),
+        StepValue::List(kvals.iter().map(|&v| StepValue::Real(v)).collect()),
+        StepValue::Enum("UNSPECIFIED".into()), // KnotSpec
+    ];
+    Ok(match weights {
+        None => w.add("IFCBSPLINECURVEWITHKNOTS", args),
+        Some(ws) => {
+            args.push(StepValue::List(ws.iter().map(|&x| StepValue::Real(x)).collect()));
+            w.add("IFCRATIONALBSPLINECURVEWITHKNOTS", args)
+        }
+    })
 }
 
 /// `IfcAdvancedFace.SameSense`: does the face's outward normal (Newell of the
@@ -363,12 +464,99 @@ fn emit_surface(w: &mut StepWriter, s: &AnalyticSurface, scale: f64) -> Result<E
                 ],
             ))
         }
-        AnalyticSurface::BezierPatch { .. }
-        | AnalyticSurface::BSplineSurface { .. }
-        | AnalyticSurface::NURBSSurface { .. } => Err(
-            "NURBS-class surface needs IfcBSplineSurfaceWithKnots (β-3)".into(),
+        // β-3b — NURBS-class surfaces. A Bezier patch is a B-spline surface with
+        // synthesized clamped knots; a NURBS surface carries a weight grid.
+        AnalyticSurface::BezierPatch { ctrl_grid } => {
+            let (du, dv) = grid_degrees(ctrl_grid)?;
+            emit_bspline_surface(
+                w, ctrl_grid, &clamped_knots(du), &clamped_knots(dv), du, dv, None, scale,
+            )
+        }
+        AnalyticSurface::BSplineSurface { ctrl_grid, knots_u, knots_v, deg_u, deg_v } => {
+            emit_bspline_surface(w, ctrl_grid, knots_u, knots_v, *deg_u, *deg_v, None, scale)
+        }
+        AnalyticSurface::NURBSSurface {
+            ctrl_grid, weights, knots_u, knots_v, deg_u, deg_v, ..
+        } => emit_bspline_surface(
+            w, ctrl_grid, knots_u, knots_v, *deg_u, *deg_v, Some(weights), scale,
         ),
     }
+}
+
+/// Degrees implied by a Bezier control grid (`(deg_u+1) × (deg_v+1)`).
+fn grid_degrees(grid: &[Vec<DVec3>]) -> Result<(u32, u32), String> {
+    let nu = grid.len();
+    let nv = grid.first().map_or(0, |r| r.len());
+    if nu < 2 || nv < 2 {
+        return Err(format!("Bezier patch grid too small ({}×{})", nu, nv));
+    }
+    Ok(((nu - 1) as u32, (nv - 1) as u32))
+}
+
+/// Emit `IFCBSPLINESURFACEWITHKNOTS` / `IFCRATIONALBSPLINESURFACEWITHKNOTS`.
+/// `ctrl_grid` rows are the u direction (IFC `ControlPointsList` is u-major).
+#[allow(clippy::too_many_arguments)]
+fn emit_bspline_surface(
+    w: &mut StepWriter,
+    ctrl_grid: &[Vec<DVec3>],
+    knots_u: &[f64],
+    knots_v: &[f64],
+    deg_u: u32,
+    deg_v: u32,
+    weights: Option<&Vec<Vec<f64>>>,
+    scale: f64,
+) -> Result<EntityRef, String> {
+    let nu = ctrl_grid.len();
+    let nv = ctrl_grid.first().map_or(0, |r| r.len());
+    if nu < 2 || nv < 2 {
+        return Err(format!("spline surface grid too small ({}×{})", nu, nv));
+    }
+    if ctrl_grid.iter().any(|r| r.len() != nv) {
+        return Err("spline surface control grid is ragged".into());
+    }
+    if knots_u.is_empty() || knots_v.is_empty() {
+        return Err("spline surface has no knots".into());
+    }
+    if let Some(ws) = weights {
+        if ws.len() != nu || ws.iter().any(|r| r.len() != nv) {
+            return Err("spline surface: weight grid shape ≠ control grid".into());
+        }
+    }
+
+    // Control points, row (u) major.
+    let mut rows = Vec::with_capacity(nu);
+    for row in ctrl_grid {
+        let pts: Vec<StepValue> = row.iter().map(|&p| StepValue::Ref(pt(w, p * scale))).collect();
+        rows.push(StepValue::List(pts));
+    }
+    let (uvals, umults) = compress_knots(knots_u);
+    let (vvals, vmults) = compress_knots(knots_v);
+
+    let mut args = vec![
+        StepValue::Int(deg_u as i64),
+        StepValue::Int(deg_v as i64),
+        StepValue::List(rows),
+        StepValue::Enum("UNSPECIFIED".into()), // SurfaceForm
+        StepValue::Enum("U".into()),           // UClosed (LOGICAL unknown)
+        StepValue::Enum("U".into()),           // VClosed
+        StepValue::Enum("U".into()),           // SelfIntersect
+        StepValue::List(umults.iter().map(|&m| StepValue::Int(m)).collect()),
+        StepValue::List(vmults.iter().map(|&m| StepValue::Int(m)).collect()),
+        StepValue::List(uvals.iter().map(|&v| StepValue::Real(v)).collect()),
+        StepValue::List(vvals.iter().map(|&v| StepValue::Real(v)).collect()),
+        StepValue::Enum("UNSPECIFIED".into()), // KnotSpec
+    ];
+    Ok(match weights {
+        None => w.add("IFCBSPLINESURFACEWITHKNOTS", args),
+        Some(ws) => {
+            let grid: Vec<StepValue> = ws
+                .iter()
+                .map(|row| StepValue::List(row.iter().map(|&x| StepValue::Real(x)).collect()))
+                .collect();
+            args.push(StepValue::List(grid));
+            w.add("IFCRATIONALBSPLINESURFACEWITHKNOTS", args)
+        }
+    })
 }
 
 /// Build an `IfcEdgeLoop` from ordered [`IfcEdge`]s (engine units, scaled by
@@ -422,6 +610,10 @@ fn emit_edge_loop(w: &mut StepWriter, edges: &[IfcEdge], scale: f64) -> Result<E
                 let pl = placement_axes(w, *center * scale, *normal, *basis_u);
                 let circ = w.add("IFCCIRCLE", vec![StepValue::Ref(pl), StepValue::Real(radius * scale)]);
                 (circ, *ccw)
+            }
+            EdgeCurve::BSpline { control_pts, knots, degree, weights } => {
+                let c = emit_bspline_curve(w, control_pts, knots, *degree, weights.as_deref(), scale)?;
+                (c, true)
             }
         };
         let edge = w.add(
@@ -658,18 +850,73 @@ mod tests {
     }
 
     #[test]
-    fn nurbs_surface_rejected() {
+    fn nurbs_surface_maps_to_rational_bspline_surface() {
+        // β-3b — a weighted control grid → IFCRATIONALBSPLINESURFACEWITHKNOTS.
+        let grid = vec![
+            vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 1000.0, 0.0)],
+            vec![DVec3::new(1000.0, 0.0, 0.0), DVec3::new(1000.0, 1000.0, 500.0)],
+        ];
         let surf = AnalyticSurface::NURBSSurface {
-            ctrl_grid: vec![vec![DVec3::ZERO; 2]; 2],
-            weights: vec![vec![1.0; 2]; 2],
+            ctrl_grid: grid,
+            weights: vec![vec![1.0, 0.5], vec![0.5, 1.0]],
             knots_u: vec![0.0, 0.0, 1.0, 1.0],
             knots_v: vec![0.0, 0.0, 1.0, 1.0],
             deg_u: 1,
             deg_v: 1,
             trim_loops: vec![],
         };
-        let err = emit_advanced_brep(&one_face(surf), 0.001, "n").unwrap_err();
-        assert!(err.contains("β-3") || err.contains("NURBS"), "err: {}", err);
+        let s = emit_advanced_brep(&one_face(surf), 0.001, "n").unwrap();
+        assert_eq!(s.matches("=IFCRATIONALBSPLINESURFACEWITHKNOTS(").count(), 1);
+        assert!(s.contains("IFCRATIONALBSPLINESURFACEWITHKNOTS(1,1,"), "u/v degree first: {}", s);
+        assert!(s.contains("((1.,0.5),(0.5,1.))"), "weight grid: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn bspline_and_bezier_surfaces_map_to_bspline_surface() {
+        let grid = vec![
+            vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 1000.0, 0.0)],
+            vec![DVec3::new(1000.0, 0.0, 0.0), DVec3::new(1000.0, 1000.0, 0.0)],
+        ];
+        // non-rational B-spline surface
+        let s = emit_advanced_brep(
+            &one_face(AnalyticSurface::BSplineSurface {
+                ctrl_grid: grid.clone(),
+                knots_u: vec![0.0, 0.0, 1.0, 1.0],
+                knots_v: vec![0.0, 0.0, 1.0, 1.0],
+                deg_u: 1,
+                deg_v: 1,
+            }),
+            0.001,
+            "bs",
+        )
+        .unwrap();
+        assert_eq!(s.matches("=IFCBSPLINESURFACEWITHKNOTS(").count(), 1);
+        assert_eq!(s.matches("=IFCRATIONALBSPLINESURFACEWITHKNOTS(").count(), 0);
+        assert_refs_resolve(&s);
+
+        // Bezier patch → degrees from the grid, clamped knots synthesized
+        let b = emit_advanced_brep(
+            &one_face(AnalyticSurface::BezierPatch { ctrl_grid: grid }),
+            0.001,
+            "bez",
+        )
+        .unwrap();
+        assert_eq!(b.matches("=IFCBSPLINESURFACEWITHKNOTS(").count(), 1);
+        assert!(b.contains("IFCBSPLINESURFACEWITHKNOTS(1,1,"), "1×1 degrees: {}", b);
+        assert_refs_resolve(&b);
+    }
+
+    #[test]
+    fn ragged_control_grid_rejected() {
+        let surf = AnalyticSurface::BSplineSurface {
+            ctrl_grid: vec![vec![DVec3::ZERO; 2], vec![DVec3::ZERO; 3]], // ragged
+            knots_u: vec![0.0, 0.0, 1.0, 1.0],
+            knots_v: vec![0.0, 0.0, 1.0, 1.0],
+            deg_u: 1,
+            deg_v: 1,
+        };
+        assert!(emit_advanced_brep(&one_face(surf), 0.001, "r").is_err());
     }
 
     #[test]
@@ -818,21 +1065,123 @@ mod tests {
     }
 
     #[test]
-    fn bezier_bspline_nurbs_edge_curves_deferred_to_beta3b() {
+    fn spline_edge_curves_map_to_bspline() {
         use axia_geo::AnalyticCurve;
-        // β-3 maps Line/Circle/Arc; NURBS-class edges error → faceted fallback.
-        assert!(edge_curve_to_ifc(None).is_ok());
         assert!(matches!(edge_curve_to_ifc(None).unwrap(), EdgeCurve::Line));
-        assert!(edge_curve_to_ifc(Some(&AnalyticCurve::Bezier {
+
+        // β-3b — a Bezier becomes a BSpline with synthesized clamped knots.
+        match edge_curve_to_ifc(Some(&AnalyticCurve::Bezier {
             control_pts: vec![DVec3::ZERO, DVec3::X, DVec3::Y],
         }))
-        .is_err());
-        assert!(edge_curve_to_ifc(Some(&AnalyticCurve::BSpline {
+        .unwrap()
+        {
+            EdgeCurve::BSpline { degree, knots, weights, control_pts } => {
+                assert_eq!(degree, 2, "3 control points → degree 2");
+                assert_eq!(knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+                assert_eq!(control_pts.len(), 3);
+                assert!(weights.is_none(), "Bezier is non-rational");
+            }
+            other => panic!("expected BSpline, got {:?}", other),
+        }
+
+        // A B-spline passes its own knots/degree through, still non-rational.
+        match edge_curve_to_ifc(Some(&AnalyticCurve::BSpline {
             control_pts: vec![DVec3::ZERO, DVec3::X],
             knots: vec![0.0, 0.0, 1.0, 1.0],
             degree: 1,
         }))
+        .unwrap()
+        {
+            EdgeCurve::BSpline { degree, knots, weights, .. } => {
+                assert_eq!(degree, 1);
+                assert_eq!(knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert!(weights.is_none());
+            }
+            other => panic!("expected BSpline, got {:?}", other),
+        }
+
+        // A NURBS carries its weights (→ rational IFC entity).
+        match edge_curve_to_ifc(Some(&AnalyticCurve::NURBS {
+            control_pts: vec![DVec3::ZERO, DVec3::X],
+            weights: vec![1.0, 0.5],
+            knots: vec![0.0, 0.0, 1.0, 1.0],
+            degree: 1,
+        }))
+        .unwrap()
+        {
+            EdgeCurve::BSpline { weights, .. } => assert_eq!(weights, Some(vec![1.0, 0.5])),
+            other => panic!("expected BSpline, got {:?}", other),
+        }
+
+        // Length mismatch is rejected rather than silently emitted.
+        assert!(edge_curve_to_ifc(Some(&AnalyticCurve::NURBS {
+            control_pts: vec![DVec3::ZERO, DVec3::X],
+            weights: vec![1.0],
+            knots: vec![0.0, 0.0, 1.0, 1.0],
+            degree: 1,
+        }))
         .is_err());
+    }
+
+    #[test]
+    fn knot_vector_compresses_to_values_and_multiplicities() {
+        // IFC stores distinct knots + multiplicities; we store the flat vector.
+        let (v, m) = compress_knots(&[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]);
+        assert_eq!(v, vec![0.0, 0.5, 1.0]);
+        assert_eq!(m, vec![3, 1, 3]);
+        assert_eq!(clamped_knots(3), vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn spline_edge_emits_bspline_curve_entity() {
+        // A face bounded by one closed spline edge → IFCBSPLINECURVEWITHKNOTS.
+        let a = DVec3::new(1000.0, 0.0, 0.0);
+        let face = AdvancedFace {
+            surface: plane(DVec3::ZERO, DVec3::Z, DVec3::X),
+            outer: vec![IfcEdge {
+                start: a,
+                end: a,
+                curve: EdgeCurve::BSpline {
+                    control_pts: vec![a, DVec3::new(0.0, 1000.0, 0.0), DVec3::new(-1000.0, 0.0, 0.0), a],
+                    knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    degree: 3,
+                    weights: None,
+                },
+            }],
+            inners: vec![],
+            same_sense: true,
+        };
+        let s = emit_advanced_brep(&[face], 0.001, "spline").unwrap();
+        assert_eq!(s.matches("=IFCBSPLINECURVEWITHKNOTS(").count(), 1);
+        assert_eq!(s.matches("=IFCRATIONALBSPLINECURVEWITHKNOTS(").count(), 0);
+        // degree 3, knots compressed to (0,1) with multiplicity 4 each
+        assert!(s.contains("IFCBSPLINECURVEWITHKNOTS(3,"), "degree first: {}", s);
+        assert!(s.contains("(4,4),(0.,1.)"), "compressed knots: {}", s);
+        assert_refs_resolve(&s);
+    }
+
+    #[test]
+    fn rational_spline_edge_emits_weights() {
+        let a = DVec3::new(1000.0, 0.0, 0.0);
+        let face = AdvancedFace {
+            surface: plane(DVec3::ZERO, DVec3::Z, DVec3::X),
+            outer: vec![IfcEdge {
+                start: a,
+                end: a,
+                curve: EdgeCurve::BSpline {
+                    control_pts: vec![a, DVec3::new(0.0, 1000.0, 0.0), a],
+                    knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    degree: 2,
+                    weights: Some(vec![1.0, 0.7071, 1.0]),
+                },
+            }],
+            inners: vec![],
+            same_sense: true,
+        };
+        let s = emit_advanced_brep(&[face], 0.001, "rational").unwrap();
+        assert_eq!(s.matches("=IFCRATIONALBSPLINECURVEWITHKNOTS(").count(), 1);
+        assert!(s.contains("0.7071"), "weights emitted: {}", s);
+        assert_refs_resolve(&s);
     }
 
     #[test]

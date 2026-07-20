@@ -92,6 +92,21 @@ const corpus = [
       e.promoteShapeToXia(shapeId, 1); // material 1 = 강철 / Steel
     },
   },
+  {
+    // β-3b — a closed-Bezier face (ADR-089 A-ω): its boundary is a spline, so
+    // the export must use IFCBSPLINECURVEWITHKNOTS instead of falling back.
+    file: 'spline.ifc',
+    what: 'spline boundary (Bezier edge → IfcBSplineCurveWithKnots)',
+    build: (e) => {
+      e.drawClosedBezierAsCurve(new Float64Array([
+        1000, 0, 0,
+        1000, 1400, 0,
+        -1000, 1400, 0,
+        -1000, 0, 0,
+        1000, 0, 0, // closed: last == first
+      ]));
+    },
+  },
 ];
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'axia-ifc-'));
@@ -178,6 +193,13 @@ for (const c of corpus) {
     check(typeCount(api, modelID, 'IFCCIRCLE') >= 1, 'IfcCircle rim edges present');
     notes.push('curved: web-ifc tessellates IfcPlane/IfcCylindricalSurface only; ' +
       'IfcSphericalSurface/Conical/Toroidal are emitted + parsed but skipped by that kernel.');
+  }
+
+  if (c.file === 'spline.ifc') {
+    const spline = typeCount(api, modelID, 'IFCBSPLINECURVEWITHKNOTS')
+      + typeCount(api, modelID, 'IFCRATIONALBSPLINECURVEWITHKNOTS');
+    check(spline >= 1, 'foreign parser reads IfcBSplineCurveWithKnots', `${spline}`);
+    check(typeCount(api, modelID, 'IFCLINE') === 0, 'spline boundary is not degraded to lines');
   }
 
   if (c.file === 'bim.ifc') {
