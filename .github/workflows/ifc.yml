@@ -1,0 +1,78 @@
+name: IFC export (ADR-203)
+
+# ε — hand our exported IFC to an INDEPENDENT implementation (web-ifc, the C++
+# IFC engine behind IFC.js / ThatOpen) and check it reads back: schema, spatial
+# hierarchy, wall + material names, and real tessellated geometry from our
+# analytic B-rep. Everything before ε only checked the file against our own
+# idea of the format.
+on:
+  push:
+    branches: [main, develop, 'claude/**', 'feature/**']
+    paths:
+      - 'crates/axia-ifc/**'
+      - 'crates/axia-wasm/**'
+      - 'crates/axia-core/**'
+      - 'crates/axia-geo/**'
+      - 'scripts/ifc-external-validate.mjs'
+      - 'package.json'
+      - '.github/workflows/ifc.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'crates/axia-ifc/**'
+      - 'crates/axia-wasm/**'
+      - 'crates/axia-core/**'
+      - 'crates/axia-geo/**'
+      - 'scripts/ifc-external-validate.mjs'
+      - 'package.json'
+      - '.github/workflows/ifc.yml'
+
+concurrency:
+  group: ifc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  external-validation:
+    name: External IFC validation (web-ifc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-wasm-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-wasm-
+
+      - name: Install wasm-pack
+        run: |
+          if ! command -v wasm-pack &>/dev/null; then
+            cargo install wasm-pack --version 0.14.0
+          fi
+
+      # The corpus is generated headlessly from the real engine, so the check
+      # is a true round-trip: engine -> .ifc -> foreign parser.
+      - name: Build axia-wasm (Node target)
+        working-directory: ./crates/axia-wasm
+        run: wasm-pack build --target nodejs --out-dir ../../packages/axia-wasm-node/dist
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - name: Install root deps (web-ifc)
+        run: npm ci
+
+      - name: Validate exported IFC with web-ifc
+        run: npm run validate:ifc

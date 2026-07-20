@@ -361,3 +361,49 @@ face 가 있으면 β-1.5 faceted 로 자동 fallback.
   (한 element 라도 비지원 → 전체 faceted fallback; per-element faceted 는 후속).
   재질은 name 만 (색상/물성/layered → IfcMaterialProperties 후속). β-3b NURBS
   edge/surface. 외부 IFC 검증 (ε).
+
+## 13. ε Acceptance (2026-07-20) — 외부 IFC 엔진 검증 (L-203-5 closure)
+
+β-1.5~γ 의 검증은 전부 **우리가 생각하는 IFC** 기준 (자체 구조 well-formedness
++ 라이브 엔진 카운트) 이었다. ε 는 파일을 **독립 구현체** 에 넘겨 실제로 읽히는지
+확인한다 — L-203-5 가 ε 로 명시 defer 했던 항목.
+
+- **외부 엔진**: `web-ifc` 0.0.77 (IFC.js / ThatOpen 뷰어의 C++ IFC 엔진, npm).
+  우리 코드와 완전 독립. *환경 제약*: Revit/ArchiCAD/FreeCAD 는 데스크톱 상용/
+  GUI 라 CI 불가, `ifcopenshell` 은 이 환경의 Python 3.14 용 wheel 부재 →
+  **web-ifc 가 현실적으로 가장 강한 독립 검증**. 상용 BIM 실검증은 사용자 시연 몫.
+- **하네스** (재현 가능, `npm run validate:ifc` / CI `.github/workflows/ifc.yml`):
+  `scripts/ifc-external-validate.mjs` 가 **실엔진(wasm-pack --target nodejs)** 으로
+  코퍼스를 헤드리스 생성 → web-ifc 로 파싱 → 스키마/계층/이름/**기하 tessellation**
+  까지 assert. 진짜 round-trip (engine → .ifc → foreign parser). `web-ifc` 는
+  루트 devDependency (0.0.77 핀).
+- **결과 — 통과 (전 항목)**:
+  | 코퍼스 | 외부 파서 결과 |
+  |---|---|
+  | box (평면 solid) | 열림 · **schema IFC4X3 인식** · Project/Site/Building/Storey 각 1 · IfcWall "Box" · 6 IfcPlane · **기하 12 삼각형 (박스 정확)** |
+  | curved (Path B 원통+구) | 열림 · IfcWall "Cylinder"/"Sphere" · IfcCylindricalSurface + IfcSphericalSurface + IfcCircle 파싱 · 기하 62 삼각형 |
+  | bim (Xia+재질) | 열림 · IfcWall "Rectangle" · **IfcMaterial "강철" — 한글 `\X2\` 인코딩이 외부 리더에서 정확 역디코딩** · IfcRelAssociatesMaterial 1 |
+  - 세 코퍼스 모두 `IfcAdvancedBrep` (faceted fallback 0) 로 나가고 외부 커널이
+    tessellate 함 → **analytic B-rep 이 실제로 소비 가능**함이 처음 증명됨.
+- **발견 — 외부 커널 surface 지원 매트릭스** (per-surface 격리 측정):
+  | surface | web-ifc |
+  |---|---|
+  | `IfcPlane` | ✅ tessellate |
+  | `IfcCylindricalSurface` | ✅ tessellate (42 tri) |
+  | `IfcSphericalSurface` | ⚠️ `GetSurface() unexpected surface type` → skip |
+  | `IfcConicalSurface` | ⚠️ 동일 |
+  | `IfcToroidalSurface` | ⚠️ 동일 |
+  - **우리 파일은 spec-valid** (IFC4 elementary surface 를 `IfcAdvancedFace.
+    FaceSurface` 로 정상 사용). web-ifc 의 geometry kernel 이 Plane/Cylinder 만
+    구현한 **downstream 커버리지 갭**. 파싱·엔티티 열거는 정상.
+  - **결정: fidelity 다운그레이드 안 함** — 한 도구의 갭 때문에 β-3 이 확보한
+    analytic 정밀도를 faceted 로 되돌리지 않는다. "interop 우선 모드"(구/원뿔/
+    토러스만 faceted) 가 필요하면 별도 ADR (fidelity ↔ interop trade-off).
+- **회귀**: 신규 CI job `External IFC validation (web-ifc)` — `crates/axia-ifc`
+  /`axia-wasm`/`axia-core`/`axia-geo`/스크립트/package.json 변경 시 자동 실행.
+  IFC exporter 의 spec 회귀를 외부 구현체로 상시 감시 (기존 axia-ifc 47 단위
+  테스트는 우리 기준, 본 job 은 남의 기준).
+- **한계 (후속)**: 상용 BIM (Revit/ArchiCAD) 실오픈 미검증 (사용자 시연 게이트).
+  `ifcopenshell` 교차 검증 (Python wheel 가용 시 두 번째 독립 구현체). 곡면
+  interop 모드. IFC **import** 는 여전히 미착수 (별도 트랙, 계획은
+  `docs/plans/IFC-IMPORT-EXPORT-PLAN-2026-07-19.html`).
