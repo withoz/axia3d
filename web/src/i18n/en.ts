@@ -2232,6 +2232,8 @@ export const EN: Record<string, string> = {
   '가져왔습니다: 부재 {elements}개, 면 {faces}개, 정점 {vertices}개': 'Imported: {elements} elements, {faces} faces, {vertices} vertices',
   // ADR-203 I-4 — members land where the file says.
   '{placed}개 부재를 배치 정보대로 놓았습니다.': 'Placed {placed} member(s) using their placement.',
+  // ADR-203 I-5 — the spatial tree becomes scene groups.
+  '공간 구조를 그룹 {groups}개로 만들었습니다 (층·건물·부재).': 'Built {groups} groups from the spatial structure (storeys, buildings, members).',
   '형상을 가져오지 못했습니다: {reason}': 'No geometry was imported: {reason}',
   '지원하는 B-rep 형상이 없습니다': 'the file has no supported B-rep geometry',
   // ADR-203 I-2 — element classification (members, materials, geometry kind).

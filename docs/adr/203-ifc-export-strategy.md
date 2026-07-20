@@ -637,3 +637,67 @@ IfcWall.ObjectPlacement → IfcLocalPlacement ─RelativePlacement→ IfcAxis2Pl
 - `IfcGridPlacement` 미지원 (identity 처리).
 
 - **다음 (I-5)**: 공간 계층을 씬 그룹으로 — 층/건물별로 묶어서 보이기.
+
+---
+
+## 19. I-5 Acceptance — 공간 구조가 씬 그룹이 된다
+
+I-4 로 부재는 제자리에 놓였지만 여전히 **면 더미**였다. 어느 층에 속한 벽인지
+씬이 모르니 층을 숨길 수도, 벽 하나를 통째로 고를 수도 없었다. IFC 는 그
+구조를 이미 두 관계로 들고 있다.
+
+```
+IfcProject ─IfcRelAggregates→ IfcSite ─IfcRelAggregates→ IfcBuilding
+                                                        └→ IfcBuildingStorey
+IfcBuildingStorey ←IfcRelContainedInSpatialStructure─ IfcWall, IfcSlab, …
+```
+
+- **axia-ifc `ifc_spatial.rs`**: `spatial_tree(file) -> SpatialTree`
+  (`nodes: {id → SpatialNode{ifc_type, name, parent}}`, `container_of:
+  {element → container}`). 속성 순서는 우리 emitter 로 확인 —
+  `IfcRelAggregates(…,4 RelatingObject,5 RelatedObjects)` /
+  `IfcRelContainedInSpatialStructure(…,4 RelatedElements,5 RelatingStructure)`.
+- **`topological()`** 이 부모-먼저 순서를 준다 → 소비자가 그룹을 만들고 곧바로
+  이미 만들어진 부모에 붙일 수 있다. 순환이 있어도 **노드를 잃지 않는다**
+  (남은 것은 id 순으로 방출).
+- **부재도 그룹이 된다.** 이게 실제 가치 — "벽 하나 통째 선택" 과 "이 층만
+  숨기기" 가 가능해진다. 컨테이너 그룹은 비어 있고 면은 부재 그룹을 통해 붙는다.
+- **단일 Undo**: 그룹 생성이 `scene.execute` 가 아니라 `scene.groups` 직접
+  호출이라 임포트 트랜잭션 **안에서** 일어난다 → Undo 한 번에 형상과 그룹이
+  함께 사라진다.
+- **없는 구조는 만들지 않는다**: 관계가 없는 부재는 컨테이너 없이 최상위로
+  간다. 파일이 말하지 않은 층을 지어내지 않는다.
+
+### 라이브 검증 (실제 엔진, node WASM)
+
+2층 파일 (층마다 벽 하나, 형상은 local + I-4 체인):
+
+```
+Tower(project) → Site → Building ├ Level 1 → Wall A (1면)
+                                 └ Level 2 → Wall B (1면)
+```
+`{"elements":2,"faces":2,"placed":1,"groups":7}` · Undo → 면 0 / 그룹 0.
+
+우리 자신의 export (박스 2개): `groups:6` — Own → Site → Building → Storey →
+Box(6면) × 2. `get_group_for_face(0)` → 5 로 면↔그룹 역인덱스도 정상.
+
+### 회귀
+
+- axia-ifc **+9** (90→99): spatial 7 — 체인·소속 읽기 / 부모-먼저 정렬 /
+  ancestry / **이름 없는 컨테이너 라벨** / 관계 없는 파일 / **순환 aggregation
+  이 멈추고 노드를 잃지 않음** / 자기-aggregation 무시. geometry 2 — 부재가
+  컨테이너를 안다(mutation 확인) / 컨테이너 없는 부재는 그대로 둠.
+- 작성한 테스트가 **진짜 버그 2개**를 잡았다: 태그를 대문자로 저장해 CamelCase
+  분해가 무의미했던 라벨(고정 표 조회로 교체), ancestry 가드 off-by-one(길이
+  상한 대신 방문 노드 검사로 교체).
+- 워크스페이스 **2966 passed / 0 failed / 0 ignored**, vitest 2935, tsc·build·
+  ADR 카탈로그 통과. 절대 #[ignore] 금지.
+
+### 알려진 한계
+
+- `IfcSpace` 는 컨테이너로 읽지만 **면적·용도 등 속성은 안 읽는다**.
+- 그룹 가시성/잠금은 기존 UI 를 그대로 쓴다 — 임포트가 따로 설정하지 않는다.
+- `IfcRelReferencedInSpatialStructure`(참조 소속) 미지원 — 주 소속만.
+
+- **다음 (δ)**: 부재 타입 분화 — 지금은 모두 `IfcWall` 로 나간다. 슬래브·기둥·
+  보를 제 타입으로 내보내기.
