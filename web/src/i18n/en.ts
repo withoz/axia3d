@@ -2230,6 +2230,8 @@ export const EN: Record<string, string> = {
   '식별된 BIM 부재 없음': 'no recognizable BIM elements',
   // ADR-203 I-3 — the geometry actually arrives.
   '가져왔습니다: 부재 {elements}개, 면 {faces}개, 정점 {vertices}개': 'Imported: {elements} elements, {faces} faces, {vertices} vertices',
+  // ADR-203 I-4 — members land where the file says.
+  '{placed}개 부재를 배치 정보대로 놓았습니다.': 'Placed {placed} member(s) using their placement.',
   '형상을 가져오지 못했습니다: {reason}': 'No geometry was imported: {reason}',
   '지원하는 B-rep 형상이 없습니다': 'the file has no supported B-rep geometry',
   // ADR-203 I-2 — element classification (members, materials, geometry kind).
