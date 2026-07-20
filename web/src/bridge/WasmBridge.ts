@@ -559,6 +559,8 @@ type AxiaEngineExtended = AxiaEngine & {
   exportIfcModel?(name: string): string;
   // IFC import (ADR-203 I-1) — read-only analysis of an .ifc file → JSON report
   analyzeIfc?(text: string): string;
+  // IFC import (ADR-203 I-2) — classify the file's building elements → JSON
+  classifyIfc?(text: string): string;
   // Transform operations
   translate_faces?(ids: Uint32Array, dx: number, dy: number, dz: number): boolean;
   rotate_faces?(ids: Uint32Array, cx: number, cy: number, cz: number, ax: number, ay: number, az: number, angleDeg: number): boolean;
@@ -6129,6 +6131,22 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * ADR-203 I-2 — classify an `.ifc` file's building elements (type, name,
+   * material, geometry references). Read-only. Returns null if the engine is
+   * absent or the report is unusable.
+   */
+  classifyIfc(text: string): IfcElementReport | null {
+    if (!this.engine?.classifyIfc) return null;
+    try {
+      const parsed = JSON.parse(this.engine.classifyIfc(text)) as IfcElementReport;
+      return parsed && typeof parsed.ok === 'boolean' ? parsed : null;
+    } catch (e) {
+      console.error('[WasmBridge] classifyIfc failed:', e);
+      return null;
+    }
+  }
+
   /** 바이너리 스냅샷으로부터 메시 복원 */
   importSnapshot(data: Uint8Array): boolean {
     if (!this.engine) return false;
@@ -7486,6 +7504,27 @@ export interface IfcAnalysisReport {
   notable?: Record<string, number>;
   /** `[entityTag, count]`, most frequent first. */
   topTypes?: [string, number][];
+}
+
+/**
+ * ADR-203 I-2 — the building elements found in an `.ifc` file. `supported`
+ * marks geometry the next step (I-3) will be able to convert into DCEL faces.
+ */
+export interface IfcElementReport {
+  ok: boolean;
+  error?: string;
+  elementCount?: number;
+  /** How many elements have at least one convertible geometry item. */
+  convertible?: number;
+  elements?: {
+    id: number;
+    type: string;
+    name: string | null;
+    material: string | null;
+    geometry: { id: number; kind: string; representationType: string | null; supported: boolean }[];
+  }[];
+  /** Geometry entity tags I-3 cannot handle yet, with counts. */
+  unsupportedGeometry?: Record<string, number>;
 }
 
 export interface DxfImportResult {

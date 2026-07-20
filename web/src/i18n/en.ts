@@ -2229,6 +2229,10 @@ export const EN: Record<string, string> = {
   '스키마 미상': 'unknown schema',
   '식별된 BIM 부재 없음': 'no recognizable BIM elements',
   '현재는 내용 확인만 가능합니다 (형상 가져오기는 준비 중).': 'For now this only inspects the file — bringing the geometry in is still to come.',
+  // ADR-203 I-2 — element classification (members, materials, geometry kind).
+  '가져올 수 있는 형상: {convertible} / {total} 부재': 'Convertible geometry: {convertible} of {total} elements',
+  ' 외 {rest}개': ' +{rest} more',
+  '아직 못 읽는 형상: {kinds}': 'Not readable yet: {kinds}',
 
   // ══════════════════════════════════════════════════════════════════════
   // batch 13 — the status-bar tool label (toolDisplayNames.ts)

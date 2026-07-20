@@ -122,7 +122,7 @@ fn first_string(v: &Value) -> Option<String> {
     }
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {
@@ -140,7 +140,7 @@ fn json_str(s: &str) -> String {
     out
 }
 
-fn opt_json(v: Option<&str>) -> String {
+pub(crate) fn opt_json(v: Option<&str>) -> String {
     match v {
         Some(s) => json_str(s),
         None => "null".to_string(),

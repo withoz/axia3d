@@ -470,3 +470,40 @@ Import 트랙의 첫 원자 단계. 계획(`docs/plans/IFC-IMPORT-EXPORT-PLAN-20
   결정성 / 태그 대소문자 무관 / 쓰레기 입력 거부 / JSON escape.
 - **다음 (I-2~I-5)**: entity classifier (IfcWall/IfcSlab → 부재) → brep→DCEL
   promote (IfcAdvancedBrep/IfcFacetedBrep → mesh) → spatial → Scene 배치.
+
+## 16. I-2 Acceptance (2026-07-20) — 부재 분류 (element classifier)
+
+I-1 이 파일을 히스토그램으로 요약했다면, I-2 는 **부재 목록**으로 답한다 —
+각 부재의 타입·이름·재질과, 그것이 가리키는 형상까지 IFC 참조 사슬을 따라간다.
+
+```
+IfcWall ─Representation→ IfcProductDefinitionShape
+         ─Representations→ IfcShapeRepresentation ─Items→ IfcAdvancedBrep / …
+IfcRelAssociatesMaterial ─RelatedObjects→ 부재  ─RelatingMaterial→ IfcMaterial
+```
+
+- **axia-ifc `ifc_elements.rs`**: `classify_ifc(src) -> ElementReport`.
+  `ImportedElement { id, ifc_type, name, global_id, material, geometry }` +
+  `GeometryRef { id, kind, representation_type, supported }`.
+  17 IFC product 타입 인식 (Wall/Slab/Beam/Column/Door/Window/… + Proxy).
+- **정직한 미지원 보고**: I-3 가 변환 가능한 것은 `IfcAdvancedBrep` /
+  `IfcFacetedBrep` 뿐. 나머지(예 `IfcExtrudedAreaSolid`)는 조용히 버리지 않고
+  `unsupportedGeometry: {tag: count}` 로 노출 + `convertible / total` 집계.
+- **결정성**: 부재는 entity id 로 정렬 (HashMap 순회는 무순서).
+- **axia-wasm** `classifyIfc(text) -> JSON` (read-only). **web**:
+  `WasmBridge.classifyIfc` + Toast 가 "가져올 수 있는 형상: M / N 부재" 와
+  부재 미리보기(이름/재질)를 표시.
+- **발견하고 고친 진짜 결함 — STEP 문자열 디코딩**: 우리 exporter 는 한글을
+  ISO-10303-21 `\X2\HHHH\X0\` 로 쓰는데(외부 web-ifc 는 이를 해독했다),
+  **우리 lexer 는 `''` 만 처리하고 제어 지시자를 미해독**해 재질명이
+  `\X2\AC15CCA0\X0\` 원문으로 나왔다. 표준 위반이자 STEP import 에도 있던
+  버그 → `axia-foreign` lexer 에 `\X2\`(UTF-16, surrogate pair 포함) /
+  `\X\HH`(ISO 8859-1) / `\S\c` 해독 추가. 미지·불량 지시자는 **문자를 잃는
+  대신 원문 유지**. 라이브 재확인: `Rectangle/강철`.
+- **회귀**: axia-ifc **+8** (58→66) — 부재/재질/형상 분류, faceted 경로,
+  결정적 정렬, 미지원 형상 보고, 비-부재 무시, JSON 형태, 한글 라운드트립,
+  쓰레기 거부. axia-foreign **+3** (138→141) — `\X2\`/`\X\`/`\S\` 해독 +
+  미지 지시자 보존. 절대 #[ignore] 금지.
+- **다음 (I-3)**: `GeometryRef.supported` 인 항목을 DCEL 로 승격 —
+  `IfcAdvancedBrep`/`IfcFacetedBrep` → face/edge/vertex. 형상이 실제로
+  들어오는 단계.
