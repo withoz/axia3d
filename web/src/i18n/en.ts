@@ -2248,6 +2248,8 @@ export const EN: Record<string, string> = {
   '부재': 'Member',
   '판': 'Plate',
   '기초': 'Footing',
+  '문': 'Door',
+  // '창' is already defined above (window tool).
   '미분류': 'Unclassified',
   '이 부재 종류는 아직 지원하지 않습니다.': 'That element type is not supported yet.',
   // ADR-203 I-5 — the spatial tree becomes scene groups.

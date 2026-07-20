@@ -28,6 +28,37 @@ pub struct IfcElement {
     pub face_ids: Vec<FaceId>,
 }
 
+/// `OverallHeight` / `OverallWidth` for an opening element, from the faces it
+/// owns.
+///
+/// Height is the Z extent — unambiguous under Z-up (LOCKED #43). Width is the
+/// larger of the two horizontal extents, the smaller being the panel's
+/// thickness. Both come back `Unset` if the member has no measurable box, so a
+/// degenerate element writes `$` instead of a zero that reads as a real size.
+fn overall_size(faces: &[crate::ifc_advancedbrep::AdvancedFace], scale: f64) -> (StepValue, StepValue) {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for f in faces {
+        for e in f.outer.iter().chain(f.inners.iter().flatten()) {
+            for p in [e.start, e.end] {
+                for (i, v) in [p.x, p.y, p.z].into_iter().enumerate() {
+                    lo[i] = lo[i].min(v);
+                    hi[i] = hi[i].max(v);
+                }
+            }
+        }
+    }
+    if !lo.iter().chain(hi.iter()).all(|v| v.is_finite()) {
+        return (StepValue::Unset, StepValue::Unset);
+    }
+    let (dx, dy, dz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    let height = dz * scale;
+    let width = dx.max(dy) * scale;
+    // IfcPositiveLengthMeasure — zero is not a legal value, so omit instead.
+    let pos = |v: f64| if v > 0.0 { StepValue::Real(v) } else { StepValue::Unset };
+    (pos(height), pos(width))
+}
+
 fn next_guid(gi: &mut u64) -> StepValue {
     let v = *gi;
     *gi += 1;
@@ -134,14 +165,33 @@ pub fn emit_ifc_model(
             "IFCPRODUCTDEFINITIONSHAPE",
             vec![StepValue::Unset, StepValue::Unset, StepValue::List(vec![StepValue::Ref(shape_rep)])],
         );
-        let wall = w.add(
-            el.kind.tag(),
-            vec![
-                next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Str(el.name.clone().into()),
-                StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
-                StepValue::Ref(prod_def), StepValue::Unset, StepValue::Unset,
-            ],
-        );
+        // The eight attributes every IfcElement has, then whatever this kind
+        // adds. A door or a window takes thirteen, not nine — emitting them in
+        // the wall-shaped slot produces an entity no reader accepts.
+        let mut args = vec![
+            next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Str(el.name.clone().into()),
+            StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl),
+            StepValue::Ref(prod_def), StepValue::Unset,
+        ];
+        if el.kind.has_overall_size() {
+            // OverallHeight / OverallWidth — BIM tools show these as the
+            // opening's size, so fill them from the member's own bounds rather
+            // than leaving `$`. Height is the Z extent (Z-up, LOCKED #43);
+            // width is the larger horizontal extent, the other one being the
+            // panel's thickness. A degenerate box leaves both unset.
+            let (h, wd) = overall_size(&faces, scale);
+            args.push(h);
+            args.push(wd);
+        }
+        args.push(StepValue::Unset); // PredefinedType
+        if el.kind.has_overall_size() {
+            // Door: OperationType + UserDefinedOperationType.
+            // Window: PartitioningType + UserDefinedPartitioningType.
+            args.push(StepValue::Unset);
+            args.push(StepValue::Unset);
+        }
+        debug_assert_eq!(args.len(), el.kind.attribute_count(), "{} arity", el.kind.tag());
+        let wall = w.add(el.kind.tag(), args);
         walls.push(wall);
 
         if let Some(mat_name) = &el.material_name {
@@ -223,6 +273,74 @@ mod tests {
             .create_box(DVec3::new(2000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
             .unwrap();
         (mesh, a, b)
+    }
+
+    /// Count the comma-separated attributes of the first `TAG(` entity.
+    fn arity_of(src: &str, tag: &str) -> usize {
+        let start = src.find(&format!("={tag}(")).unwrap_or_else(|| panic!("no {tag}"));
+        let open = src[start..].find('(').unwrap() + start + 1;
+        let mut depth = 0usize;
+        let mut n = 1usize;
+        let mut in_str = false;
+        for c in src[open..].chars() {
+            match c {
+                '\'' => in_str = !in_str,
+                '(' if !in_str => depth += 1,
+                ')' if !in_str => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if !in_str && depth == 0 => n += 1,
+                _ => {}
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn a_door_takes_thirteen_attributes_and_a_wall_still_takes_nine() {
+        // δ refused doors because emitting one in the nine-attribute wall slot
+        // makes an entity no IFC reader accepts. This is the shape that lets
+        // them through.
+        let (mesh, a, b) = two_box_mesh();
+        let elements = vec![
+            IfcElement { name: "Front Door".into(), material_name: None, kind: crate::IfcElementKind::Door, face_ids: a },
+            IfcElement { name: "Plain Wall".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+        ];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
+
+        assert_eq!(s.matches("=IFCDOOR(").count(), 1);
+        assert_eq!(arity_of(&s, "IFCDOOR"), 13, "door: 8 common + height + width + 3");
+        assert_eq!(arity_of(&s, "IFCWALL"), 9, "the wall shape must not move");
+    }
+
+    #[test]
+    fn a_window_carries_its_measured_size() {
+        // OverallHeight / OverallWidth are what a BIM tool shows as the
+        // opening's size. Leaving them `$` is legal but useless, so they come
+        // from the member's own bounds: height is the Z extent, width the
+        // larger horizontal one.
+        let mut mesh = Mesh::new();
+        // create_box(center, width→X, height→Z, depth→Y): 1200 wide, 900 tall,
+        // 100 thick — a window panel.
+        let f = mesh
+            .create_box(DVec3::ZERO, 1200.0, 900.0, 100.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "W1".into(),
+            material_name: None,
+            kind: crate::IfcElementKind::Window,
+            face_ids: f,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
+
+        assert_eq!(arity_of(&s, "IFCWINDOW"), 13);
+        let line = s.lines().find(|l| l.contains("=IFCWINDOW(")).expect("window line");
+        // metres after the 0.001 scale — height then width, in that order.
+        assert!(line.contains("0.9"), "height 900mm -> 0.9m: {line}");
+        assert!(line.contains("1.2"), "width 1200mm -> 1.2m (not the 0.1m thickness): {line}");
     }
 
     #[test]

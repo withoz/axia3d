@@ -353,7 +353,8 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
   const KIND_LABELS: Record<string, string> = {
     wall: '벽', slab: '슬래브', column: '기둥', beam: '보', roof: '지붕',
     stair: '계단', ramp: '경사로', railing: '난간', covering: '마감',
-    member: '부재', plate: '판', footing: '기초', proxy: '미분류',
+    member: '부재', plate: '판', footing: '기초',
+    door: '문', window: '창', proxy: '미분류',
   };
   if (kindSelect) {
     // 목록은 엔진이 준다 — UI 와 엔진이 서로 다른 어휘로 갈라지지 않도록.
