@@ -23,6 +23,7 @@ pub mod guid;
 pub mod ifc_advancedbrep;
 pub mod ifc_analyze;
 pub mod ifc_elements;
+pub mod ifc_geometry;
 mod ifc_common;
 pub mod ifc_facetedbrep;
 pub mod ifc_model;
@@ -35,6 +36,7 @@ pub use ifc_advancedbrep::{
 };
 pub use ifc_analyze::{analyze_ifc, IfcAnalysis};
 pub use ifc_elements::{classify_ifc, ElementReport, GeometryRef, ImportedElement};
+pub use ifc_geometry::{import_ifc_geometry, ElementGeometry, FaceLoops, GeometryImport};
 pub use ifc_model::{emit_ifc_model, IfcElement};
 pub use ifc_facetedbrep::{emit_box, emit_brep, emit_faceted_brep, emit_unit_cube};
 pub use step_value::{EntityRef, StepValue};

@@ -507,3 +507,75 @@ IfcRelAssociatesMaterial ─RelatedObjects→ 부재  ─RelatingMaterial→ Ifc
 - **다음 (I-3)**: `GeometryRef.supported` 인 항목을 DCEL 로 승격 —
   `IfcAdvancedBrep`/`IfcFacetedBrep` → face/edge/vertex. 형상이 실제로
   들어오는 단계.
+
+---
+
+## 17. I-3 Acceptance — B-rep → DCEL (형상이 실제로 들어온다)
+
+I-2 가 "무엇이 있는지" 를 말했다면, I-3 은 그것을 **씬에 올린다**. IFC 파일을
+열면 부재의 면이 엔진의 면이 된다.
+
+```
+IfcFacetedBrep  → IfcClosedShell → IfcFace         → IfcFaceOuterBound/Bound → IfcPolyLoop
+IfcAdvancedBrep → IfcClosedShell → IfcAdvancedFace → IfcFaceOuterBound/Bound → IfcEdgeLoop
+                                                                              → IfcOrientedEdge
+                                                                              → IfcEdgeCurve → IfcVertexPoint
+```
+
+- **axia-ifc `ifc_geometry.rs`**: `import_ifc_geometry(src) -> GeometryImport`
+  (`elements[] { element_id, name, material, faces[] { outer, inners } }`,
+  `scale_to_mm`, `warnings`). 단위는 `IfcSIUnit` 의 접두어(MILLI/CENTI/KILO…)
+  에서 읽어 mm 로 환산 — 단위가 없으면 metre 로 가정하고 경고를 남긴다.
+- **면은 평면을 달고 들어온다** — `FaceLoops::plane()` (Newell). surface 없는
+  면은 Push/Pull·Boolean·Offset·advanced 재-export 가 **모두 거부**한다
+  (ADR-087 K-ε, LOCKED #34). Newell 을 쓴 이유는 비볼록 loop 와 첫 세 점이
+  일직선인 loop 에서도 법선이 정확해서다.
+- **axia-wasm `importIfc(text) -> JSON`**: 트랜잭션 1건으로 감싸 **Undo 한
+  번**에 통째로 사라진다. 면이 하나도 못 들어오면 스냅샷 복원 + 취소 →
+  **씬 무변경**. 성공 시 `{elements, faces, vertices, scaleToMm, warnings}`.
+- **web**: `WasmBridge.importIfc` + `IfcImportHandler` 가 분석(I-1) → 분류(I-2)
+  → 가져오기(I-3) 후 `syncMesh()`. 실패는 "가져왔습니다" 대신 **이유를 말한다**.
+
+### 발견하고 고친 진짜 결함 — 구멍 뚫은 면이 surface 를 잃었다
+
+라운드트립을 실측하다 **구멍 뚫은 상자를 IFC 로 내보내면 빈 파일**이 나오는
+것을 발견했다. 원인은 IFC 가 아니라 엔진이었다 — `punch_rect_hole` /
+`punch_circular_hole` / `punch_polygon_hole` 세 곳 모두 host 면을 지우고
+다시 만들면서 **material 만 물려주고 analytic surface 를 버렸다**.
+ADR-089 A-χ(분할 면의 surface 상속)가 punch 계열에는 적용돼 있지 않았다.
+
+영향은 IFC 보다 넓다. surface 없는 면은 Push/Pull 이 `NoProfileSurface` 로
+거부하고(ADR-190 P0.1), Boolean·Offset 도 마찬가지다 — **창을 뚫은 벽은 그
+뒤로 밀 수 없었다**. 세 곳에 surface + `face_surface_owner_id` 상속을 추가.
+회귀 `punching_a_hole_keeps_the_host_surface` 는 수정을 제거하면 실제로
+실패하는 것까지 확인했다.
+
+내보내기 쪽도 같이 정직해졌다. `exportIfcModel` 이 실패하면 빈 문자열을
+돌려주는데 `??` 는 빈 문자열을 잡지 못해 "내보낼 형상이 없습니다" 라는
+틀린 메시지가 떴다 → **faceted 로 실제 fallback** 하도록 고쳤다.
+
+### 라이브 검증 (실제 엔진, node WASM)
+
+| 항목 | 결과 |
+|---|---|
+| 좌표 정확도 (박스) | src bbox == dst bbox **완전 일치** |
+| 커널 연산 | 가져온 면에 Push/Pull **동작** (bbox 이동, `isClosedSolid=true`, 위반 0) |
+| 구멍 | src 6면(inner 1) → dst 6면(inner 1), bbox 동일 |
+| 다각형 원통 (24분할) | 26면/48정점 → **26면/48정점** |
+| 커널-네이티브 원 (Path B) | 거부 + 이유 명시, **씬 무변경** (0면/0정점) |
+| 재-export | 9,430 bytes, `convertible 1/1` |
+| Undo | 1회로 전부 복원 (0면/0정점) |
+| 쓰레기 입력 | `ok:false` + 씬 무변경 |
+
+### 알려진 한계 (정직하게)
+
+- **커널-네이티브 곡선 경계는 못 읽는다.** `IfcCircle` 은 끝점으로만 읽혀
+  자기-루프 rim 이 한 점으로 붕괴 → 그 면은 **버리고 경고**한다. 다각형화된
+  곡면은 그대로 들어온다.
+- **공간 계층은 아직 안 쓴다** (I-4/I-5). 부재는 좌표 그대로 놓인다.
+- `IfcExtrudedAreaSolid` 등 비-B-rep 형상은 I-2 가 보고만 한다.
+
+- **회귀**: axia-ifc **+11** (66→77) — 폴리루프/구멍/축척/단위 없음/퇴화 거부
+  (+경고 명시)/평면 유도(Newell·일직선 3점·퇴화)/누락 참조. axia-geo **+1**
+  (2270→2271) — punch 3종 surface 상속. 절대 #[ignore] 금지.
+- **다음 (I-4)**: `IfcLocalPlacement` 체인을 읽어 부재를 제자리에 놓기.

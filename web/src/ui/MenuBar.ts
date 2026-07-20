@@ -280,7 +280,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
       // so rather than implying the model was placed.
       case 'import-ifc': {
         import('./IfcImportHandler').then(({ importIfcFile }) => {
-          importIfcFile({ bridge });
+          importIfcFile({ bridge, toolManager });
         }).catch((err: Error) => {
           console.error('[MenuBar] IFC Import 실패:', err);
         });
@@ -333,13 +333,18 @@ export function initMenuBar(deps: MenuBarDeps): void {
       // ── 내보내기 IFC (ADR-203) — 부재별 IfcWall + 재질 (γ) 우선,
       //    비지원 face 있으면 IfcFacetedBrep (β-1.5) 로 fallback ──
       case 'export-ifc': {
+        // The analytic emitter needs every face to carry its surface; when one
+        // does not it returns an empty string, which `??` would let through
+        // (empty is not nullish). Fall through to the faceted writer so the
+        // user still gets a valid file instead of "there is no geometry".
         const model = bridge.exportIfcModel('AXiA Model');
-        const ifc = model ?? bridge.exportIfc('AXiA Model');
+        const analytic = !!model;
+        const ifc = analytic ? model : bridge.exportIfc('AXiA Model');
         if (!ifc) { Toast.warning(t('내보낼 형상이 없습니다.')); break; }
         import('../export/ExportUtils')
           .then(({ downloadText }) => {
             downloadText(ifc, timestampedName('ifc'), 'application/x-step');
-            Toast.success(model ? t('IFC 내보내기 완료 (analytic)') : t('IFC 내보내기 완료'));
+            Toast.success(analytic ? t('IFC 내보내기 완료 (analytic)') : t('IFC 내보내기 완료'));
           })
           .catch((err) => { console.error('[MenuBar] IFC 내보내기 실패:', err); alert(t('IFC 내보내기에 실패했습니다')); });
         break;

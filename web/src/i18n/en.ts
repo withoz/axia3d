@@ -2228,7 +2228,10 @@ export const EN: Record<string, string> = {
   '{fileName} — {schema}, 엔티티 {entityCount}개': '{fileName} — {schema}, {entityCount} entities',
   '스키마 미상': 'unknown schema',
   '식별된 BIM 부재 없음': 'no recognizable BIM elements',
-  '현재는 내용 확인만 가능합니다 (형상 가져오기는 준비 중).': 'For now this only inspects the file — bringing the geometry in is still to come.',
+  // ADR-203 I-3 — the geometry actually arrives.
+  '가져왔습니다: 부재 {elements}개, 면 {faces}개, 정점 {vertices}개': 'Imported: {elements} elements, {faces} faces, {vertices} vertices',
+  '형상을 가져오지 못했습니다: {reason}': 'No geometry was imported: {reason}',
+  '지원하는 B-rep 형상이 없습니다': 'the file has no supported B-rep geometry',
   // ADR-203 I-2 — element classification (members, materials, geometry kind).
   '가져올 수 있는 형상: {convertible} / {total} 부재': 'Convertible geometry: {convertible} of {total} elements',
   ' 외 {rest}개': ' +{rest} more',

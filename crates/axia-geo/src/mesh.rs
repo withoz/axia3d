@@ -12095,7 +12095,12 @@ impl Mesh {
         }
 
         // 5. Re-derive the host face with the new hole + preserved existing holes.
+        //    The host's analytic surface has to survive the rebuild (ADR-089 A-χ
+        //    inheritance, LOCKED #34/#35): a surface-less face is refused by
+        //    Push/Pull, Boolean, Offset and IfcAdvancedBrep export alike.
         let material = self.faces[host].material();
+        let parent_surface = self.faces[host].surface().cloned();
+        let parent_owner = self.face_surface_owner_id(host);
         self.faces.remove(host);
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&circle_verts);
@@ -12103,6 +12108,12 @@ impl Mesh {
             hole_slices.push(h);
         }
         let new_face = self.add_face_with_holes(&host_verts, &hole_slices, material)?;
+        if let Some(s) = parent_surface {
+            self.set_face_surface(new_face, Some(s));
+        }
+        if let Some(owner) = parent_owner {
+            self.set_face_surface_owner_id(new_face, Some(owner));
+        }
 
         // ADR-222 Phase 0 / ADR-230 Phase 0.5 — annotate the punched hole's
         // inner-loop edges with a PER-SEGMENT AnalyticCurve::Arc + a shared
@@ -12382,7 +12393,11 @@ impl Mesh {
         }
 
         // 5. Re-derive host with the new hole + preserved existing holes.
+        //    Carry the host's surface across the rebuild (ADR-089 A-χ) — see
+        //    `punch_circular_hole`.
         let material = self.faces[host].material();
+        let parent_surface = self.faces[host].surface().cloned();
+        let parent_owner = self.face_surface_owner_id(host);
         self.faces.remove(host);
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&rect_verts);
@@ -12390,6 +12405,12 @@ impl Mesh {
             hole_slices.push(h);
         }
         let new_face = self.add_face_with_holes(&host_verts, &hole_slices, material)?;
+        if let Some(s) = parent_surface {
+            self.set_face_surface(new_face, Some(s));
+        }
+        if let Some(owner) = parent_owner {
+            self.set_face_surface_owner_id(new_face, Some(owner));
+        }
         self.debug_verify_invariants();
         Ok(new_face)
     }
@@ -12593,7 +12614,11 @@ impl Mesh {
         }
 
         // 5. Re-derive the host with the new hole + preserved existing holes.
+        //    Carry the host's surface across the rebuild (ADR-089 A-χ) — see
+        //    `punch_circular_hole`.
         let material = self.faces[host].material();
+        let parent_surface = self.faces[host].surface().cloned();
+        let parent_owner = self.face_surface_owner_id(host);
         self.faces.remove(host);
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&loop_verts);
@@ -12601,6 +12626,12 @@ impl Mesh {
             hole_slices.push(h);
         }
         let new_face = self.add_face_with_holes(&host_verts, &hole_slices, material)?;
+        if let Some(s) = parent_surface {
+            self.set_face_surface(new_face, Some(s));
+        }
+        if let Some(owner) = parent_owner {
+            self.set_face_surface_owner_id(new_face, Some(owner));
+        }
         self.debug_verify_invariants();
         Ok(new_face)
     }
@@ -15607,6 +15638,61 @@ mod tests {
             .expect("a rect window inside the face should succeed");
         assert_eq!(mesh.faces[new_face].inners().len(), 1, "host becomes ring-with-hole");
         assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    #[test]
+    fn punching_a_hole_keeps_the_host_surface() {
+        // A punch rebuilds the host face. If the rebuild drops the analytic
+        // surface, the punched wall silently stops working everywhere that
+        // needs one — Push/Pull and Boolean refuse it (ADR-190 P0.1) and
+        // IfcAdvancedBrep export produces an empty file. ADR-089 A-χ says a
+        // re-derived face inherits its parent's surface; all three punches
+        // must obey it.
+        let plane = crate::surfaces::AnalyticSurface::Plane {
+            origin: DVec3::ZERO,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+            u_range: (-1e6, 1e6),
+            v_range: (-1e6, 1e6),
+        };
+
+        // rect
+        let mut mesh = Mesh::new();
+        let host = demo_rect_face(&mut mesh);
+        mesh.set_face_surface(host, Some(plane.clone()));
+        mesh.set_face_surface_owner_id(host, Some(77));
+        let f = mesh
+            .punch_rect_hole(
+                DVec3::new(-300.0, -400.0, 0.0),
+                DVec3::new(300.0, 400.0, 0.0),
+                DVec3::Z,
+            )
+            .expect("rect window");
+        assert_eq!(mesh.face_surface(f), Some(&plane), "rect punch keeps the surface");
+        assert_eq!(mesh.face_surface_owner_id(f), Some(77), "and its owner group");
+
+        // circular
+        let mut mesh = Mesh::new();
+        let host = demo_rect_face(&mut mesh);
+        mesh.set_face_surface(host, Some(plane.clone()));
+        let f = mesh
+            .punch_circular_hole(DVec3::ZERO, DVec3::Z, 200.0, 16)
+            .expect("circular window");
+        assert_eq!(mesh.face_surface(f), Some(&plane), "circular punch keeps the surface");
+
+        // polygon
+        let mut mesh = Mesh::new();
+        let host = demo_rect_face(&mut mesh);
+        mesh.set_face_surface(host, Some(plane.clone()));
+        let tri = [
+            DVec3::new(-200.0, -200.0, 0.0),
+            DVec3::new(200.0, -200.0, 0.0),
+            DVec3::new(0.0, 200.0, 0.0),
+        ];
+        let f = mesh
+            .punch_polygon_hole(&tri, DVec3::Z)
+            .expect("polygon window");
+        assert_eq!(mesh.face_surface(f), Some(&plane), "polygon punch keeps the surface");
     }
 
     #[test]

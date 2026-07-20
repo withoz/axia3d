@@ -561,6 +561,8 @@ type AxiaEngineExtended = AxiaEngine & {
   analyzeIfc?(text: string): string;
   // IFC import (ADR-203 I-2) — classify the file's building elements → JSON
   classifyIfc?(text: string): string;
+  // IFC import (ADR-203 I-3) — convert the B-reps into DCEL faces in the scene
+  importIfc?(text: string): string;
   // Transform operations
   translate_faces?(ids: Uint32Array, dx: number, dy: number, dz: number): boolean;
   rotate_faces?(ids: Uint32Array, cx: number, cy: number, cz: number, ax: number, ay: number, az: number, angleDeg: number): boolean;
@@ -6147,6 +6149,22 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * ADR-203 I-3 — import an `.ifc`: its B-reps become DCEL faces in the scene.
+   * One undo step; on failure the scene is left untouched. Returns null if the
+   * engine is absent or the report is unusable.
+   */
+  importIfc(text: string): IfcImportResult | null {
+    if (!this.engine?.importIfc) return null;
+    try {
+      const parsed = JSON.parse(this.engine.importIfc(text)) as IfcImportResult;
+      return parsed && typeof parsed.ok === 'boolean' ? parsed : null;
+    } catch (e) {
+      console.error('[WasmBridge] importIfc failed:', e);
+      return null;
+    }
+  }
+
   /** 바이너리 스냅샷으로부터 메시 복원 */
   importSnapshot(data: Uint8Array): boolean {
     if (!this.engine) return false;
@@ -7525,6 +7543,22 @@ export interface IfcElementReport {
   }[];
   /** Geometry entity tags I-3 cannot handle yet, with counts. */
   unsupportedGeometry?: Record<string, number>;
+}
+
+/**
+ * ADR-203 I-3 — what actually landed in the scene from an `.ifc` import.
+ */
+export interface IfcImportResult {
+  ok: boolean;
+  error?: string;
+  /** Elements whose geometry produced faces. */
+  elements?: number;
+  faces?: number;
+  vertices?: number;
+  /** Length-unit factor used to reach engine mm. */
+  scaleToMm?: number;
+  /** Anything skipped or unreadable — never silent. */
+  warnings?: string[];
 }
 
 export interface DxfImportResult {
