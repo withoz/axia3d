@@ -7562,6 +7562,11 @@ export interface IfcImportResult {
    * own files, which bake world coordinates and emit an identity placement.
    */
   placed?: number;
+  /**
+   * ADR-203 I-5 — scene groups built from the file's spatial tree (site,
+   * building, storey) plus one per member.
+   */
+  groups?: number;
   /** Anything skipped or unreadable — never silent. */
   warnings?: string[];
 }

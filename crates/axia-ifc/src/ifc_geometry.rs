@@ -111,6 +111,9 @@ pub struct ElementGeometry {
     pub element_id: u32,
     pub name: Option<String>,
     pub material: Option<String>,
+    /// `#N` of the spatial container holding this member, if the file says
+    /// (`IfcRelContainedInSpatialStructure`, I-5).
+    pub container: Option<u32>,
     pub faces: Vec<FaceLoops>,
 }
 
@@ -118,6 +121,8 @@ pub struct ElementGeometry {
 #[derive(Clone, Debug, Default)]
 pub struct GeometryImport {
     pub elements: Vec<ElementGeometry>,
+    /// Site / building / storey structure, and which container holds what (I-5).
+    pub spatial: crate::ifc_spatial::SpatialTree,
     /// Length unit → mm factor actually used.
     pub scale_to_mm: f64,
     /// How many members were moved by a non-identity placement chain (I-4).
@@ -197,6 +202,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
         ));
     }
 
+    let spatial = crate::ifc_spatial::spatial_tree(file);
     let report = crate::ifc_elements::classify(file);
 
     let mut elements = Vec::new();
@@ -260,10 +266,11 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             element_id: el.id,
             name: el.name.clone(),
             material: el.material.clone(),
+            container: spatial.container_of.get(&el.id).copied(),
             faces,
         });
     }
-    GeometryImport { elements, scale_to_mm: scale, placed, warnings }
+    GeometryImport { elements, spatial, scale_to_mm: scale, placed, warnings }
 }
 
 /// Face loops of one `IfcFacetedBrep` / `IfcAdvancedBrep`.
@@ -702,6 +709,71 @@ END-ISO-10303-21;
         assert_eq!(f.outer[0], DVec3::new(800.0, 1600.0, 2700.0));
         assert_eq!(f.outer[2], DVec3::new(1200.0, 2400.0, 2700.0));
         assert!(g.warnings.is_empty(), "no warning for an identity file: {:?}", g.warnings);
+    }
+
+    #[test]
+    fn a_member_carries_its_spatial_container() {
+        // I-5. Without this the model arrives as one flat pile — no way to hide
+        // a floor or select a whole member.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#2=IFCBUILDING('b',$,'Building',$,$,$,$,$,.ELEMENT.,$,$,$);
+#3=IFCBUILDINGSTOREY('l1',$,'Level 1',$,$,$,$,$,.ELEMENT.,$);
+#4=IFCRELAGGREGATES('a',$,$,$,#2,(#3));
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCCARTESIANPOINT((1.,0.,0.));
+#12=IFCCARTESIANPOINT((1.,1.,0.));
+#13=IFCPOLYLOOP((#10,#11,#12));
+#14=IFCFACEOUTERBOUND(#13,.T.);
+#15=IFCFACE((#14));
+#16=IFCCLOSEDSHELL((#15));
+#17=IFCFACETEDBREP(#16);
+#18=IFCSHAPEREPRESENTATION($,'Body','Brep',(#17));
+#19=IFCPRODUCTDEFINITIONSHAPE($,$,(#18));
+#20=IFCWALL('w',$,'Wall A',$,$,$,#19,$,$);
+#21=IFCRELCONTAINEDINSPATIALSTRUCTURE('c',$,$,$,(#20),#3);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        assert_eq!(g.elements[0].container, Some(3), "the wall knows its storey");
+        assert_eq!(g.spatial.nodes[&3].parent, Some(2), "and the storey its building");
+        assert_eq!(g.spatial.nodes[&3].label(), "Level 1");
+    }
+
+    #[test]
+    fn a_member_with_no_container_is_left_unfiled() {
+        // Not every file carries the relation; inventing a container would be
+        // worse than leaving the member at the top level.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCCARTESIANPOINT((1.,0.,0.));
+#12=IFCCARTESIANPOINT((1.,1.,0.));
+#13=IFCPOLYLOOP((#10,#11,#12));
+#14=IFCFACEOUTERBOUND(#13,.T.);
+#15=IFCFACE((#14));
+#16=IFCCLOSEDSHELL((#15));
+#17=IFCFACETEDBREP(#16);
+#18=IFCSHAPEREPRESENTATION($,'Body','Brep',(#17));
+#19=IFCPRODUCTDEFINITIONSHAPE($,$,(#18));
+#20=IFCWALL('w',$,'Lonely',$,$,$,#19,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        assert_eq!(g.elements[0].container, None);
+        assert!(g.spatial.is_empty(), "no containers invented");
     }
 
     #[test]

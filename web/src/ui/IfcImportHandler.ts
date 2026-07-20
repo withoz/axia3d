@@ -123,6 +123,12 @@ export function importIfcFile(deps: IfcImportDeps): void {
         if (placed > 0) {
           lines.push(t('{placed}개 부재를 배치 정보대로 놓았습니다.', { placed }));
         }
+        // I-5 — the spatial tree became scene groups, so say the model is
+        // browsable by storey rather than a flat pile of faces.
+        const groups = imported.groups ?? 0;
+        if (groups > 0) {
+          lines.push(t('공간 구조를 그룹 {groups}개로 만들었습니다 (층·건물·부재).', { groups }));
+        }
         for (const w of (imported.warnings ?? []).slice(0, 3)) lines.push(`· ${w}`);
         Toast.success(lines.join('\n'), 9000);
       } else {

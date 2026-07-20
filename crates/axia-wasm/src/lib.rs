@@ -5575,8 +5575,9 @@ impl AxiaEngine {
     /// leaves the scene exactly as it was.
     ///
     /// Returns JSON — `{"ok":true,"elements":N,"faces":F,"vertices":V,
-    /// "scaleToMm":S,"placed":P,"warnings":[…]}` or `{"ok":false,"error":"…"}`.
-    /// `placed` counts members moved by an `IfcLocalPlacement` chain (I-4).
+    /// "scaleToMm":S,"placed":P,"groups":G,"warnings":[…]}` or `{"ok":false,"error":"…"}`.
+    /// `placed` counts members moved by an `IfcLocalPlacement` chain (I-4);
+    /// `groups` counts the scene groups built from the spatial tree (I-5).
     #[wasm_bindgen(js_name = "importIfc")]
     pub fn import_ifc(&mut self, text: String) -> String {
         let g = match axia_ifc::import_ifc_geometry(&text) {
@@ -5602,7 +5603,11 @@ impl AxiaEngine {
 
         let material = axia_core::FORM_MATERIAL;
         let mut failed: Vec<String> = Vec::new();
-        for el in &g.elements {
+        // I-5 — remember each member's faces so the spatial tree can be
+        // rebuilt as scene groups once everything is in.
+        let mut element_faces: Vec<(usize, Vec<axia_geo::FaceId>)> = Vec::new();
+        for (ei, el) in g.elements.iter().enumerate() {
+            let mut mine: Vec<axia_geo::FaceId> = Vec::new();
             for f in &el.faces {
                 let outer: Vec<_> =
                     f.outer.iter().map(|&p| self.scene.mesh.add_vertex(p)).collect();
@@ -5620,6 +5625,7 @@ impl AxiaEngine {
                         if let Some(plane) = f.plane() {
                             self.scene.mesh.set_face_surface(face_id, Some(plane));
                         }
+                        mine.push(face_id);
                     }
                     Err(e) => failed.push(format!(
                         "element #{} '{}': {}",
@@ -5628,6 +5634,9 @@ impl AxiaEngine {
                         e
                     )),
                 }
+            }
+            if !mine.is_empty() {
+                element_faces.push((ei, mine));
             }
         }
 
@@ -5645,6 +5654,37 @@ impl AxiaEngine {
             return axia_ifc::ifc_analyze::error_json(&msg);
         }
 
+        // I-5 — mirror the file's spatial structure as scene groups, inside the
+        // same transaction so one Undo removes the groups with the geometry.
+        // Members become groups too: that is what makes "select the whole wall"
+        // and "hide this storey" possible.
+        let mut groups_made = 0usize;
+        let mut container_group: std::collections::BTreeMap<u32, u32> =
+            std::collections::BTreeMap::new();
+        for node in g.spatial.topological() {
+            // Containers start empty; faces arrive via their member groups.
+            let gid = self.scene.groups.create_group(node.label(), Vec::new());
+            container_group.insert(node.id, gid);
+            groups_made += 1;
+            if let Some(parent) = node.parent.and_then(|p| container_group.get(&p)).copied() {
+                self.scene.groups.set_parent(gid, Some(parent));
+            }
+        }
+        for (ei, faces) in &element_faces {
+            let el = &g.elements[*ei];
+            let label = match &el.name {
+                Some(n) if !n.trim().is_empty() => n.clone(),
+                _ => format!("#{}", el.element_id),
+            };
+            let gid = self.scene.groups.create_group(label, faces.clone());
+            groups_made += 1;
+            // A member with no container stays at the top level rather than
+            // being filed under a container the file never named.
+            if let Some(parent) = el.container.and_then(|c| container_group.get(&c)).copied() {
+                self.scene.groups.set_parent(gid, Some(parent));
+            }
+        }
+
         self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
         self.scene.transactions.commit();
         self.mark_topology_changed();
@@ -5659,12 +5699,13 @@ impl AxiaEngine {
             .collect();
 
         format!(
-            r#"{{"ok":true,"elements":{},"faces":{},"vertices":{},"scaleToMm":{},"placed":{},"warnings":[{}]}}"#,
+            r#"{{"ok":true,"elements":{},"faces":{},"vertices":{},"scaleToMm":{},"placed":{},"groups":{},"warnings":[{}]}}"#,
             g.elements.len(),
             added_faces,
             added_verts,
             g.scale_to_mm,
             g.placed,
+            groups_made,
             warn_json.join(","),
         )
     }
