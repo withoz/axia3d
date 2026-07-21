@@ -384,10 +384,15 @@ fn loop_points(file: &StepFile, loop_id: u32, scale: f64) -> Option<Vec<DVec3>> 
                 }
             }
             // A curved edge is not the straight line between its endpoints. Walk
-            // it, or the arc silently becomes a chord — a face that looks fine
-            // and is the wrong shape.
+            // it — a circle, or a spline (Bezier / B-spline / NURBS / ellipse,
+            // all of which our exporter and most tools write as an
+            // IfcBSplineCurveWithKnots) — or it silently becomes a chord, a face
+            // that looks fine and is the wrong shape. A spline self-loop read by
+            // its one vertex collapses the face entirely.
             if let (Some(p0), Some(p1)) = (start, end) {
-                if let Some(mid) = arc_interior_points(file, edge, p0, p1, orientation, scale) {
+                if let Some(mid) = arc_interior_points(file, edge, p0, p1, orientation, scale)
+                    .or_else(|| spline_interior_points(file, edge, p0, p1, scale))
+                {
                     pts.extend(mid);
                 }
             }
@@ -548,6 +553,94 @@ fn trim_angle(file: &StepFile, trim: &Value, place: &Placement, scale: f64) -> O
     }
     // IfcParameterValue — the angle itself, for a circle.
     items.iter().find_map(|it| it.as_f64())
+}
+
+/// The points *between* a spline edge's endpoints, or `None` when the geometry
+/// is not a B-spline.
+///
+/// Bezier, B-spline, NURBS and even an ellipse all reach IFC as an
+/// `IfcBSplineCurveWithKnots` (or the `RATIONAL` form when weighted) — that is
+/// what our own exporter writes and what most tools do. Read by its endpoints
+/// the curve is a chord; a *closed* spline (a self-loop edge, EdgeStart ==
+/// EdgeEnd) collapses to a single point and the whole face is dropped, which is
+/// the gap this closes.
+///
+/// The engine's own tessellator is reused (`bspline` / `nurbs`), so an imported
+/// spline is sampled exactly as a drawn one, at the same chord tolerance.
+fn spline_interior_points(
+    file: &StepFile,
+    edge: &Entity,
+    start: DVec3,
+    end: DVec3,
+    scale: f64,
+) -> Option<Vec<DVec3>> {
+    use axia_geo::curves::{bspline, nurbs};
+
+    let geom_id = edge.args.get(2).and_then(|v| v.as_ref())?;
+    let mut curve = file.entity(geom_id)?;
+    // A spline may be wrapped in an IfcTrimmedCurve; we walk the whole basis.
+    if curve.tag.eq_ignore_ascii_case("IFCTRIMMEDCURVE") {
+        let basis = curve.args.first().and_then(|v| v.as_ref())?;
+        curve = file.entity(basis)?;
+    }
+    let rational = curve.tag.eq_ignore_ascii_case("IFCRATIONALBSPLINECURVEWITHKNOTS");
+    if !rational && !curve.tag.eq_ignore_ascii_case("IFCBSPLINECURVEWITHKNOTS") {
+        return None;
+    }
+
+    // IfcBSplineCurveWithKnots(Degree, ControlPointsList, CurveForm, ClosedCurve,
+    //   SelfIntersect, KnotMultiplicities, Knots, KnotSpec [, WeightsData])
+    let degree = curve.args.first().and_then(|v| v.as_f64())? as usize;
+    let control_pts: Vec<DVec3> = curve
+        .args
+        .get(1)?
+        .as_list()?
+        .iter()
+        .filter_map(|v| v.as_ref().and_then(|id| cartesian_point(file, id, scale)))
+        .collect();
+    let mults: Vec<usize> = curve
+        .args
+        .get(5)?
+        .as_list()?
+        .iter()
+        .filter_map(|v| v.as_f64().map(|m| m as usize))
+        .collect();
+    let distinct: Vec<f64> = curve.args.get(6)?.as_list()?.iter().filter_map(|v| v.as_f64()).collect();
+    if control_pts.len() < 2 || mults.len() != distinct.len() {
+        return None;
+    }
+
+    // Expand distinct knots + multiplicities back into the flat vector the
+    // tessellator wants — the inverse of the exporter's `compress_knots`.
+    let mut knots: Vec<f64> = Vec::new();
+    for (k, m) in distinct.iter().zip(&mults) {
+        knots.extend(std::iter::repeat(*k).take(*m));
+    }
+    if knots.len() != control_pts.len() + degree + 1 {
+        return None; // malformed — leave the face surface-less rather than guess
+    }
+
+    let full = if rational {
+        let weights: Vec<f64> = curve.args.get(8)?.as_list()?.iter().filter_map(|v| v.as_f64()).collect();
+        if weights.len() != control_pts.len() {
+            return None;
+        }
+        nurbs::tessellate(&control_pts, &weights, &knots, degree, ARC_CHORD_TOL_MM).ok()?
+    } else {
+        bspline::tessellate(&control_pts, &knots, degree, ARC_CHORD_TOL_MM).ok()?
+    };
+    if full.len() < 3 {
+        return None;
+    }
+
+    // Interior only — the endpoints are already the loop's vertices — oriented to
+    // the loop's own start→end traversal.
+    let forward = (full[0] - start).length_squared() <= (full[0] - end).length_squared();
+    let mut interior: Vec<DVec3> = full[1..full.len() - 1].to_vec();
+    if !forward {
+        interior.reverse();
+    }
+    Some(interior)
 }
 
 /// `IfcVertexPoint` → its `IfcCartesianPoint`.
@@ -739,6 +832,90 @@ END-ISO-10303-21;
 ",
             curve = curve
         )
+    }
+
+    /// Build a mesh holding one closed-spline face and export it, so the
+    /// importer meets a real `IfcBSplineCurveWithKnots` self-loop — the form our
+    /// exporter and most tools use for Bezier / B-spline / NURBS / ellipse.
+    fn closed_spline_ifc(rational: bool) -> String {
+        use axia_geo::curves::AnalyticCurve;
+        // A clamped quadratic closed loop: first control point repeated at the
+        // end, clamped end knots (ADR-089 A-Α / A-Β).
+        let cps = vec![
+            DVec3::new(500.0, 0.0, 0.0),
+            DVec3::new(500.0, 500.0, 0.0),
+            DVec3::new(-500.0, 500.0, 0.0),
+            DVec3::new(-500.0, 0.0, 0.0),
+            DVec3::new(500.0, 0.0, 0.0),
+        ];
+        // 5 control points, degree 2 → 5 + 2 + 1 = 8 knots (clamped ends).
+        let knots = vec![0.0, 0.0, 0.0, 0.33, 0.66, 1.0, 1.0, 1.0];
+        let degree = 2;
+        let curve = if rational {
+            AnalyticCurve::NURBS { control_pts: cps, weights: vec![1.0; 5], knots, degree }
+        } else {
+            AnalyticCurve::BSpline { control_pts: cps, knots, degree }
+        };
+
+        let mut mesh = Mesh::new();
+        let anchor = mesh.add_vertex(DVec3::new(500.0, 0.0, 0.0));
+        let f = mesh
+            .add_face_closed_curve(anchor, curve, MaterialId::new(0))
+            .expect("closed spline face");
+        emit_ifc_model(
+            &mesh,
+            &[IfcElement {
+                name: "Spline".into(),
+                material_name: None,
+                kind: crate::IfcElementKind::Wall,
+                face_ids: vec![f],
+            }],
+            0.001,
+            "Spline",
+        )
+        .expect("emit")
+    }
+
+    #[test]
+    fn a_closed_spline_self_loop_becomes_a_ring() {
+        // Bezier / B-spline / NURBS / ellipse all reach IFC as an
+        // IfcBSplineCurveWithKnots. A self-loop of one — start == end — used to
+        // collapse to a point and drop the face. It must walk the whole curve,
+        // in both the plain and the rational (weighted) forms.
+        for rational in [false, true] {
+            let ifc = closed_spline_ifc(rational);
+            assert!(
+                ifc.contains(if rational {
+                    "IFCRATIONALBSPLINECURVEWITHKNOTS"
+                } else {
+                    "IFCBSPLINECURVEWITHKNOTS"
+                }),
+                "the fixture really is a {} spline",
+                if rational { "rational" } else { "plain" }
+            );
+
+            let g = import_ifc_geometry(&ifc).unwrap();
+            assert_eq!(g.elements.len(), 1, "the spline face imports (rational={rational})");
+            let f = &g.elements[0].faces[0];
+            assert!(
+                f.outer.len() > 16,
+                "walked to a ring, not collapsed to a point (rational={rational}): {}",
+                f.outer.len()
+            );
+
+            // The loop closes and stays near the control hull (a sanity bound —
+            // no point flies off), and it is genuinely 2D-spread, not a spike.
+            let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+            for p in &f.outer {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+            assert!(hi.x - lo.x > 300.0 && hi.y - lo.y > 300.0, "spread in X and Y (rational={rational})");
+            assert!(
+                f.outer.iter().all(|p| p.x.abs() < 700.0 && p.y.abs() < 700.0),
+                "no point escapes the control hull (rational={rational})"
+            );
+        }
     }
 
     #[test]
