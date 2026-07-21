@@ -5715,6 +5715,25 @@ impl AxiaEngine {
         for (ei, el) in g.elements.iter().enumerate() {
             let mut mine: Vec<axia_geo::FaceId> = Vec::new();
             for f in &el.faces {
+                // A single closed-curve disk — a drawn circle / ellipse / spline
+                // — is rebuilt kernel-native: one anchor + one self-loop edge
+                // carrying the exact curve, the same thing the draw tools make,
+                // instead of baking the tessellated polygon into the DCEL. Any
+                // failure falls straight through to the polygon path below.
+                if let Some(curve) = &f.closed_curve {
+                    let anchor = self.scene.mesh.add_vertex(curve_anchor(curve));
+                    if let Ok(face_id) =
+                        self.scene
+                            .mesh
+                            .add_face_closed_curve(anchor, curve.clone(), material)
+                    {
+                        mine.push(face_id);
+                        continue;
+                    }
+                    // Fell through: drop the half-built anchor is not possible,
+                    // but add_face_with_holes below re-uses it via the dedup, so
+                    // the polygon path still produces a valid face.
+                }
                 let outer: Vec<_> =
                     f.outer.iter().map(|&p| self.scene.mesh.add_vertex(p)).collect();
                 let inner_ids: Vec<Vec<_>> = f
@@ -13180,6 +13199,24 @@ fn find_field_f64_in(json: &str, field: &str) -> Result<f64, String> {
     val_rest[..end]
         .parse::<f64>()
         .map_err(|e| format!("invalid f64 for '{}': {}", field, e))
+}
+
+/// A point on a closed curve to anchor its self-loop face (ADR-203 I-3
+/// kernel-native import). The curve's parametric start: the reference point of
+/// a circle, the first control point of a spline (which, for a closed clamped
+/// curve, is also its last).
+fn curve_anchor(curve: &axia_geo::AnalyticCurve) -> glam::DVec3 {
+    use axia_geo::AnalyticCurve;
+    match curve {
+        AnalyticCurve::Circle { center, radius, basis_u, .. } => *center + *basis_u * *radius,
+        AnalyticCurve::Bezier { control_pts }
+        | AnalyticCurve::BSpline { control_pts, .. }
+        | AnalyticCurve::NURBS { control_pts, .. } => {
+            control_pts.first().copied().unwrap_or(glam::DVec3::ZERO)
+        }
+        // Line / Arc never reach here (not closed disks); safe fallback.
+        _ => glam::DVec3::ZERO,
+    }
 }
 
 #[cfg(test)]
