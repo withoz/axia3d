@@ -938,3 +938,66 @@ Path B 원 → 우리 export → 재-import: **1면 352정점, 면적 785356 ≈
   tolerance (0.02mm) 와 동일 밀도.
 - **타원 self-loop** (`IfcEllipse`) / 스플라인 self-loop 는 아직 점으로 붕괴 →
   면 버림. 이 작업은 `IfcCircle` self-loop 만.
+
+---
+
+## 24. I-3-spline Acceptance — 타원·스플라인 self-loop 을 걷는다
+
+곡선 임포트의 마지막 구멍: Bezier / B-spline / NURBS, 그리고 **타원**. 측정해
+보니 우리 exporter (그리고 대부분의 도구) 는 이들을 전부
+`IfcBSplineCurveWithKnots` (weight 있으면 `RATIONAL` 형) 로 쓴다 — 타원조차
+`IFCRATIONALBSPLINECURVEWITHKNOTS` (ADR-158, 타원 = NURBS). 자기 루프
+(`EdgeStart == EdgeEnd`) 로 오면 정점 하나로 붕괴 → 면 **통째로 버려짐**, 게다가
+**경고도 없었다**.
+
+- **`spline_interior_points`**: 엣지 기하가 `IfcBSplineCurveWithKnots` /
+  `RATIONAL` 이면 degree · control points · **distinct knots + multiplicities**
+  (exporter 의 `compress_knots` 역함수로 flat vector 복원) · (rational 이면)
+  weights 를 읽어 **엔진의 테셀레이터** (`axia_geo::curves::bspline` /
+  `nurbs`) 로 건다. 임포트된 스플라인이 그려진 스플라인과 **정확히 같은 밀도** 로
+  샘플링된다 (SSOT).
+- **자기 루프 = 전체 링**: 열린 스플라인은 start↔end 매칭으로 방향 정렬, 닫힌
+  것은 전체 곡선을 emit.
+- **malformed 는 거부**: `knots.len() != control.len() + degree + 1` 이거나
+  weights 길이 불일치면 `None` → 면은 surface 없이 남지 조작된 형상을
+  만들지 않는다.
+
+### 실파일·시각 검증
+
+네 곡선족 모두 export → re-import 왕복 (전부 `faces=1 valid viol=0`):
+- **Ellipse 800×400**: bbox 정확 `[-800,-400,0]~[800,400,0]`, 실제 앱에서
+  매끈한 타원 면으로 렌더 (이전엔 버려짐).
+- closed Bezier / BSpline / NURBS: 전부 링, invariants valid.
+
+### 정점 밀도 (정직하게)
+
+임포트된 스플라인은 **4096정점** (엔진의 bspline 테셀레이터가 0.02mm 에서
+`init_n` cap 4096 에 도달). 원본 엔진이 같은 타원을 렌더할 때도 **4097정점** —
+즉 import 는 엔진 자체 밀도와 **일치** (SSOT). 원 (352) 과 차이나는 건 엔진이
+원엔 별도 (원 전용) 경로를 쓰기 때문이지 import 결정이 아니다. 밀도를 낮추면
+그려진 곡선과 임포트된 곡선이 달라져 SSOT 가 깨진다 — 유지.
+
+### 회귀
+
+- axia-ifc **+1** (112→113): `a_closed_spline_self_loop_becomes_a_ring` —
+  엔진으로 닫힌 bspline/nurbs 면을 만들어 emit→import, plain·rational 두 형태
+  모두 링이 되고(붕괴 X) X·Y 로 퍼지며 control hull 밖으로 안 튄다. mutation
+  확인: 스플라인 walk 를 없애면 실제로 실패한다.
+- 워크스페이스 **3156 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그 통과.
+
+### 🎉 곡선 경계 임포트 완결 (다각형 tessellation 수준)
+
+| 곡선 | import |
+|---|---|
+| 열린 호 (Circle/Arc) | ✅ §22 (방향 트림 점) |
+| 닫힌 원 self-loop | ✅ §23 (전체 링) |
+| **타원 / Bezier / BSpline / NURBS self-loop** | ✅ §24 (엔진 테셀레이터) |
+
+### 남은 한계
+
+- 전부 **다각형으로 tessellate** — 임포트 엣지에 `AnalyticCurve` 를 붙이는 진짜
+  kernel-native 재구성 (원 = 1 self-loop, 스플라인 = curve metadata) 은 별도
+  트랙. 지금은 렌더 밀도 (352~4096정점) 가 DCEL 경계로 구워진다.
+- 외부 파일의 `IFCELLIPSE` (bspline 아닌 직접 형) / `IFCPOLYLINE` 곡선 경계는
+  아직 미지원 — 우리 파일은 전부 bspline 형이라 해당 없음.
