@@ -44,8 +44,13 @@ const ELEMENT_TYPES: &[&str] = &[
 
 /// Geometry representation items I-3 will be able to turn into DCEL faces.
 /// Everything else is reported as unsupported rather than silently dropped.
-const SUPPORTED_GEOMETRY: &[&str] =
-    &["IFCADVANCEDBREP", "IFCFACETEDBREP", "IFCEXTRUDEDAREASOLID"];
+const SUPPORTED_GEOMETRY: &[&str] = &[
+    "IFCADVANCEDBREP",
+    "IFCFACETEDBREP",
+    "IFCEXTRUDEDAREASOLID",
+    "IFCBOOLEANRESULT",
+    "IFCBOOLEANCLIPPINGRESULT",
+];
 
 /// One geometry item hanging off an element's shape representation.
 #[derive(Clone, Debug, PartialEq)]

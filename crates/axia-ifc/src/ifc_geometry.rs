@@ -115,6 +115,54 @@ impl FaceLoops {
     }
 }
 
+/// A CSG operator from an `IfcBooleanResult` — how two operands combine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoolOp {
+    Union,
+    /// `.DIFFERENCE.` — the first operand minus the second (a wall minus its
+    /// opening, the common case).
+    Subtract,
+    Intersect,
+}
+
+/// One operand of a boolean result: a solid, or a nested boolean.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CsgOperand {
+    Solid(Vec<FaceLoops>),
+    Node(Box<CsgNode>),
+}
+
+/// An `IfcBooleanResult`: two operands combined by an operator. This is how real
+/// BIM tools write a wall *with an opening* — the wall solid minus the opening
+/// solid — so the tree is walked and evaluated with the engine's own boolean.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CsgNode {
+    pub op: BoolOp,
+    pub first: CsgOperand,
+    pub second: CsgOperand,
+}
+
+impl CsgOperand {
+    fn transform(&mut self, p: &crate::ifc_placement::Placement) {
+        match self {
+            CsgOperand::Solid(fs) => {
+                for f in fs {
+                    f.transform(p);
+                    f.closed_curve = None;
+                }
+            }
+            CsgOperand::Node(n) => n.transform(p),
+        }
+    }
+}
+
+impl CsgNode {
+    fn transform(&mut self, p: &crate::ifc_placement::Placement) {
+        self.first.transform(p);
+        self.second.transform(p);
+    }
+}
+
 /// Geometry extracted for one element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElementGeometry {
@@ -126,6 +174,9 @@ pub struct ElementGeometry {
     /// (`IfcRelContainedInSpatialStructure`, I-5).
     pub container: Option<u32>,
     pub faces: Vec<FaceLoops>,
+    /// `IfcBooleanResult` trees — a wall with an opening, evaluated with the
+    /// engine's boolean when the member is imported.
+    pub booleans: Vec<CsgNode>,
 }
 
 /// Result of reading a whole file's geometry.
@@ -236,11 +287,31 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             .unwrap_or_default();
         let mut moved = false;
 
+        let mut booleans: Vec<CsgNode> = Vec::new();
         for g in &el.geometry {
             if !g.supported {
                 continue; // I-2 already reported it
             }
             supported_geometry += 1;
+            // An IfcBooleanResult (a wall with an opening) is a CSG tree, not a
+            // face list — parse it and evaluate it at import time.
+            let gtag = file.entity(g.id).map(|e| e.tag.to_ascii_uppercase()).unwrap_or_default();
+            if gtag == "IFCBOOLEANRESULT" || gtag == "IFCBOOLEANCLIPPINGRESULT" {
+                match parse_boolean(file, g.id, scale) {
+                    Some(mut node) => {
+                        if !placement.is_identity() {
+                            node.transform(&placement);
+                            moved = true;
+                        }
+                        booleans.push(node);
+                    }
+                    None => warnings.push(format!(
+                        "{}: boolean geometry has an operand we cannot read yet (a half-space, or an unsupported solid)",
+                        label()
+                    )),
+                }
+                continue;
+            }
             match geometry_face_loops_counted(file, g.id, scale) {
                 Ok((mut fs, dropped)) => {
                     if !placement.is_identity() {
@@ -268,7 +339,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 dropped_faces
             ));
         }
-        if faces.is_empty() {
+        if faces.is_empty() && booleans.is_empty() {
             if supported_geometry > 0 {
                 warnings.push(format!("{}: no usable faces", label()));
             }
@@ -283,6 +354,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             material: el.material.clone(),
             container: spatial.container_of.get(&el.id).copied(),
             faces,
+            booleans,
         });
     }
     GeometryImport { elements, spatial, scale_to_mm: scale, placed, warnings }
@@ -416,6 +488,42 @@ fn extruded_area_solid_loops(
         });
     }
     Ok((faces, 0))
+}
+
+/// An `IfcBooleanResult` / `IfcBooleanClippingResult` → a CSG tree. `None` when
+/// an operand is a half-space or a solid we cannot build, so the caller reports
+/// the whole member as unreadable rather than importing a wrong shape.
+fn parse_boolean(file: &StepFile, id: u32, scale: f64) -> Option<CsgNode> {
+    let e = file.entity(id)?;
+    let tag = e.tag.to_ascii_uppercase();
+    if tag != "IFCBOOLEANRESULT" && tag != "IFCBOOLEANCLIPPINGRESULT" {
+        return None;
+    }
+    // (Operator, FirstOperand, SecondOperand)
+    let op = match e.args.first()?.as_enum()?.to_ascii_uppercase().as_str() {
+        "UNION" => BoolOp::Union,
+        "DIFFERENCE" => BoolOp::Subtract,
+        "INTERSECTION" => BoolOp::Intersect,
+        _ => return None,
+    };
+    let first = parse_boolean_operand(file, e.args.get(1).and_then(|v| v.as_ref())?, scale)?;
+    let second = parse_boolean_operand(file, e.args.get(2).and_then(|v| v.as_ref())?, scale)?;
+    Some(CsgNode { op, first, second })
+}
+
+/// One boolean operand: a nested result, or a solid (extruded / brep). A
+/// half-space (`IfcHalfSpaceSolid`) or anything that does not build a closed
+/// solid returns `None`.
+fn parse_boolean_operand(file: &StepFile, id: u32, scale: f64) -> Option<CsgOperand> {
+    let tag = file.entity(id)?.tag.to_ascii_uppercase();
+    if tag == "IFCBOOLEANRESULT" || tag == "IFCBOOLEANCLIPPINGRESULT" {
+        return Some(CsgOperand::Node(Box::new(parse_boolean(file, id, scale)?)));
+    }
+    let (loops, _) = geometry_face_loops_counted(file, id, scale).ok()?;
+    if loops.len() < 4 {
+        return None; // not a closed solid — a half-space, or degenerate
+    }
+    Some(CsgOperand::Solid(loops))
 }
 
 /// A profile's outer boundary as 2D points in its own plane (engine units).
@@ -1701,6 +1809,94 @@ END-ISO-10303-21;
         // Circle profile tessellates to many sides — a round column.
         let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCCIRCLEPROFILEDEF(.AREA.,$,$,0.3);")).unwrap();
         assert!(g.elements[0].faces.len() > 20, "a circle profile is many-sided: {}", g.elements[0].faces.len());
+    }
+
+    /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real
+    /// BIM tools write an opening: an `IfcBooleanClippingResult` of the wall solid
+    /// minus an opening solid. The opening's own `Position` places it at sill
+    /// height and it is thicker than the wall so it punches clean through.
+    fn wall_with_window_ifc() -> String {
+        "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.8));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#62=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#63=IFCEXTRUDEDAREASOLID(#62,#61,$,1.2);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#63);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string()
+    }
+
+    #[test]
+    fn a_boolean_clipping_result_parses_as_a_subtract_of_two_solids() {
+        // The wall-with-opening case. The member carries no plain faces — its
+        // shape is the boolean tree, which must survive as a Subtract of two
+        // buildable solids (an empty `booleans` would silently drop the wall).
+        let g = import_ifc_geometry(&wall_with_window_ifc()).unwrap();
+        let el = &g.elements[0];
+        assert!(el.faces.is_empty(), "the shape is a boolean, not bare faces");
+        assert_eq!(el.booleans.len(), 1, "one IfcBooleanClippingResult");
+
+        let node = &el.booleans[0];
+        assert_eq!(node.op, BoolOp::Subtract, ".DIFFERENCE. → Subtract");
+        // Both operands are extruded prisms (6 faces each) — real solids the
+        // engine can boolean, not half-spaces (which we reject).
+        for operand in [&node.first, &node.second] {
+            match operand {
+                CsgOperand::Solid(loops) => assert_eq!(loops.len(), 6, "a rectangular prism"),
+                CsgOperand::Node(_) => panic!("both operands are plain solids here"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_half_space_operand_makes_the_boolean_unreadable() {
+        // We do not build half-spaces yet, so a boolean whose second operand is
+        // one must report the member as unreadable rather than import a wall with
+        // no opening (a silently wrong shape).
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.));
+#61=IFCDIRECTION((0.,0.,1.));
+#62=IFCAXIS2PLACEMENT3D(#60,#61,$);
+#63=IFCPLANE(#62);
+#64=IFCHALFSPACESOLID(#63,.F.);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#64);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        // With no buildable geometry the member is not placed in the scene, but
+        // it is *warned* about — never dropped silently as a wall with no opening.
+        assert!(g.elements.is_empty(), "no buildable geometry → nothing imported");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("boolean geometry")),
+            "the unreadable boolean is warned about: {:?}",
+            g.warnings
+        );
     }
 
     #[test]
