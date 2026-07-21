@@ -40,7 +40,9 @@ pub use ifc_advancedbrep::{
 pub use ifc_analyze::{analyze_ifc, IfcAnalysis};
 pub use ifc_element_kind::IfcElementKind;
 pub use ifc_elements::{classify_ifc, ElementReport, GeometryRef, ImportedElement};
-pub use ifc_geometry::{import_ifc_geometry, ElementGeometry, FaceLoops, GeometryImport};
+pub use ifc_geometry::{
+    import_ifc_geometry, BoolOp, CsgNode, CsgOperand, ElementGeometry, FaceLoops, GeometryImport,
+};
 pub use ifc_placement::{axis_placement, resolve_placement, Placement};
 pub use ifc_spatial::{spatial_tree, SpatialNode, SpatialTree};
 pub use ifc_model::{emit_ifc_model, IfcElement};

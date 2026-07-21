@@ -5760,6 +5760,25 @@ impl AxiaEngine {
                     )),
                 }
             }
+            // IfcBooleanResult — a wall with an opening. Build each operand solid
+            // and combine them with the engine's own boolean. eval_csg adds the
+            // operand faces *before* the boolean runs; if the boolean can't be
+            // evaluated they must not linger as loose solids (a wall + an opening
+            // block — a wrong shape), so snapshot around it and rewind on failure.
+            for node in &el.booleans {
+                let pre = self.scene.scene_snapshot();
+                match eval_csg(&mut self.scene.mesh, node, material) {
+                    Some(fids) => mine.extend(fids),
+                    None => {
+                        self.scene.restore_scene_snapshot(&pre);
+                        failed.push(format!(
+                            "element #{} '{}': boolean geometry could not be evaluated",
+                            el.element_id,
+                            el.name.clone().unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
             if !mine.is_empty() {
                 element_faces.push((ei, mine));
             }
@@ -13201,6 +13220,61 @@ fn find_field_f64_in(json: &str, field: &str) -> Result<f64, String> {
         .map_err(|e| format!("invalid f64 for '{}': {}", field, e))
 }
 
+/// Evaluate an IfcBooleanResult tree (ADR-203 I-3) into the faces of the
+/// resulting solid — a wall with an opening, say. Each operand is built as a
+/// solid in the mesh, then combined with the engine's own boolean; `None` when
+/// an operand cannot be built or the boolean's validity gate rejects the result.
+fn eval_csg(
+    mesh: &mut axia_geo::Mesh,
+    node: &axia_ifc::CsgNode,
+    mat: axia_geo::MaterialId,
+) -> Option<Vec<axia_geo::FaceId>> {
+    let a = build_csg_operand(mesh, &node.first, mat)?;
+    let b = build_csg_operand(mesh, &node.second, mat)?;
+    let op = match node.op {
+        axia_ifc::BoolOp::Union => axia_geo::operations::boolean::BoolOp::Union,
+        axia_ifc::BoolOp::Subtract => axia_geo::operations::boolean::BoolOp::Subtract,
+        axia_ifc::BoolOp::Intersect => axia_geo::operations::boolean::BoolOp::Intersect,
+    };
+    mesh.boolean_solid(&a, &b, op, mat).ok().map(|res| res.faces)
+}
+
+/// Build one boolean operand as a solid in the mesh, returning its face ids.
+/// A nested boolean recurses; a solid adds its faces (with their planes, so the
+/// boolean has surfaces to work with).
+fn build_csg_operand(
+    mesh: &mut axia_geo::Mesh,
+    operand: &axia_ifc::CsgOperand,
+    mat: axia_geo::MaterialId,
+) -> Option<Vec<axia_geo::FaceId>> {
+    match operand {
+        axia_ifc::CsgOperand::Node(n) => eval_csg(mesh, n, mat),
+        axia_ifc::CsgOperand::Solid(loops) => {
+            let mut ids = Vec::new();
+            for f in loops {
+                let outer: Vec<_> = f.outer.iter().map(|&p| mesh.add_vertex(p)).collect();
+                let inner_ids: Vec<Vec<_>> = f
+                    .inners
+                    .iter()
+                    .map(|ring| ring.iter().map(|&p| mesh.add_vertex(p)).collect())
+                    .collect();
+                let hole_refs: Vec<&[_]> = inner_ids.iter().map(|v| v.as_slice()).collect();
+                if let Ok(fid) = mesh.add_face_with_holes(&outer, &hole_refs, mat) {
+                    if let Some(plane) = f.plane() {
+                        mesh.set_face_surface(fid, Some(plane));
+                    }
+                    ids.push(fid);
+                }
+            }
+            if ids.len() < 4 {
+                None // did not build a closed solid
+            } else {
+                Some(ids)
+            }
+        }
+    }
+}
+
 /// A point on a closed curve to anchor its self-loop face (ADR-203 I-3
 /// kernel-native import). The curve's parametric start: the reference point of
 /// a circle, the first control point of a spline (which, for a closed clamped
@@ -13394,6 +13468,117 @@ mod erase_face_only_tests {
                 && engine.scene.mesh.edges[EdgeId::new(edge)].is_active();
             assert!(!still_has || res[0] > 0, "shared edge erase did something (merged={})", res[0]);
         }
+    }
+}
+
+#[cfg(test)]
+mod ifc_boolean_import_tests {
+    use super::*;
+
+    const PLAIN_WALL: &str = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Swept',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+
+    // A wall with a window written the real-BIM way: the wall solid minus an
+    // opening solid, an IfcBooleanClippingResult. The opening is thicker than the
+    // wall so it punches clean through.
+    const WALL_WITH_WINDOW: &str = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.8));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#62=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#63=IFCEXTRUDEDAREASOLID(#62,#61,$,1.2);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#63);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+
+    fn active_faces(e: &AxiaEngine) -> usize {
+        e.scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count()
+    }
+
+    /// A wall-with-opening IfcBooleanResult must import as a *watertight solid
+    /// with a hole* — the engine's own boolean run at import time, not the two
+    /// operands left lying in the scene. The opening adds tunnel walls, so the
+    /// result has more faces than a plain wall, and it is still a closed solid.
+    #[test]
+    fn boolean_clipping_result_imports_as_a_holed_solid() {
+        let mut plain = AxiaEngine::new();
+        plain.import_ifc(PLAIN_WALL.to_string());
+        let plain_faces = active_faces(&plain);
+        assert_eq!(plain_faces, 6, "a plain wall is a six-faced prism");
+
+        let mut holed = AxiaEngine::new();
+        holed.import_ifc(WALL_WITH_WINDOW.to_string());
+        let holed_faces = active_faces(&holed);
+
+        // A rectangular through-hole = the prism's front/back carry the opening
+        // plus four tunnel walls. The exact count is 10, and it must exceed the
+        // plain wall — an empty boolean would have left just the two operands or
+        // nothing at all.
+        assert!(
+            holed_faces > plain_faces,
+            "the opening adds geometry: plain {} vs holed {}",
+            plain_faces,
+            holed_faces
+        );
+
+        // And it is a real watertight solid, not a self-intersecting mess.
+        let report = holed.scene.mesh.verify_face_invariants();
+        assert!(report.is_valid(), "the holed wall is a valid solid: {:?}", report);
+    }
+
+    /// A boolean whose operand we cannot build (a half-space) must not import a
+    /// wall with no opening — a silently wrong shape. Nothing is added; the scene
+    /// is left as it was.
+    #[test]
+    fn boolean_with_a_half_space_operand_imports_nothing() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.));
+#61=IFCDIRECTION((0.,0.,1.));
+#62=IFCAXIS2PLACEMENT3D(#60,#61,$);
+#63=IFCPLANE(#62);
+#64=IFCHALFSPACESOLID(#63,.F.);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#64);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 0, "an unreadable boolean imports nothing");
     }
 }
 
