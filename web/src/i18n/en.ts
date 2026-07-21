@@ -54,7 +54,6 @@ export const EN: Record<string, string> = {
   'IGES (.iges, .igs) — 산업 CAD': 'IGES (.iges, .igs) — industry CAD',
   'STEP (.step) — 준비중 (Stage 5)': 'STEP (.step) — coming soon (Stage 5)',
   'IGES (.iges) — 준비중 (Stage 5)': 'IGES (.iges) — coming soon (Stage 5)',
-  'IFC (.ifc) — 준비중': 'IFC (.ifc) — coming soon',
   '참조 이미지 불러오기…': 'Load reference image…',
   '🖼️ 텍스처 이미지 업로드…': '🖼️ Upload texture image…',
 
