@@ -42,6 +42,7 @@ pub use ifc_element_kind::IfcElementKind;
 pub use ifc_elements::{classify_ifc, ElementReport, GeometryRef, ImportedElement};
 pub use ifc_geometry::{
     import_ifc_geometry, BoolOp, CsgNode, CsgOperand, ElementGeometry, FaceLoops, GeometryImport,
+    HalfSpace,
 };
 pub use ifc_placement::{axis_placement, resolve_placement, Placement};
 pub use ifc_spatial::{spatial_tree, SpatialNode, SpatialTree};
