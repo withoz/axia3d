@@ -13803,5 +13803,47 @@ END-ISO-10303-21;
         e.import_ifc(src.to_string());
         assert_eq!(active_faces(&e), 0, "a curved-base half-space imports nothing");
     }
+
+    /// A wall tied to an IfcOpeningElement by IfcRelVoidsElement gets a real
+    /// hole — the opening (placed relative to the wall, thicker than it so it
+    /// punches through) is subtracted at import. The opening is never a member;
+    /// the wall alone imports, as a watertight solid with more faces than a box.
+    #[test]
+    fn rel_voids_element_cuts_a_hole_in_the_wall() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#47=IFCAXIS2PLACEMENT3D(#24,$,$);
+#46=IFCLOCALPLACEMENT($,#47);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#71=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#70=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#71));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#70));
+#45=IFCWALL('w',$,'Wall',$,$,#46,#48,$,$);
+#83=IFCCARTESIANPOINT((1.,0.,0.8));
+#82=IFCAXIS2PLACEMENT3D(#83,$,$);
+#81=IFCLOCALPLACEMENT(#46,#82);
+#88=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#87=IFCEXTRUDEDAREASOLID(#88,$,$,1.);
+#86=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#87));
+#84=IFCPRODUCTDEFINITIONSHAPE($,$,(#86));
+#80=IFCOPENINGELEMENT('o',$,'Opening',$,$,#81,#84,$,.OPENING.);
+#85=IFCRELVOIDSELEMENT('rv',$,$,$,#45,#80);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        let n = active_faces(&e);
+        // A plain wall prism is 6 faces; the hole splits its faces and adds four
+        // tunnel walls. The opening itself never lands as a solid block.
+        assert!(n > 6, "the void cut a hole (faces {})", n);
+        assert!(e.scene.mesh.verify_face_invariants().is_valid(), "the holed wall is valid");
+    }
 }
 

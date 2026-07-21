@@ -1273,4 +1273,68 @@ BIM 벽/솔리드 형상의 주요 CSG 경로가 모두 임포트된다.
   평면 base 만 클립 (별도 트랙).
 - **prism 은 operand AABB 로 유한화** — 폴리곤 extrude 방향 (Position local Z) 이
   base plane 법선과 크게 어긋난 skew 케이스는 trim 이 처리하나, 극단적 skew 는 미검증.
-- 문·창 ↔ 개구부 연결 (`IfcRelVoidsElement` / `IfcRelFillsElement`) 은 여전히 별도 트랙.
+- 문·창 ↔ 개구부 연결 (`IfcRelVoidsElement` / `IfcRelFillsElement`) → **§29 에서 지원.**
+
+## 29. I-3-voids Acceptance — IfcRelVoidsElement (문·창 개구부 연결)
+
+**벽에 뚫린 문·창 구멍이 들어온다.** Revit/ArchiCAD 는 개구부를 벽의 shape 에 굽지
+않고 (§27 처럼) 별도 `IfcOpeningElement` 로 두고 `IfcRelVoidsElement` 로 벽에 묶는다
+— 벽은 그 개구부가 *빼내진 뒤에야* 구멍을 갖는다. §27 이 boolean 을 임포트했지만
+이 관계는 안 읽어서, 개구부가 있는 벽이 통짜로 들어오고 문·창이 그 위에 겹쳐 떠
+있었다. 본 절이 그 관계를 읽어 개구부를 벽에서 subtract 한다.
+
+- **`collect_voids`** (`ifc_geometry.rs`): 모든 `IfcRelVoidsElement(_, _, _, _,
+  RelatingBuildingElement, RelatedOpeningElement)` → `wall #N → [opening #M, …]` 맵.
+- **`opening_world_faces`**: `IfcOpeningElement` 의 representation (extruded/brep)
+  을 build 하고 그 **자체 placement chain** (벽을 거쳐 world 로) 적용 — 구멍이
+  파일이 놓은 자리에 정확히 뚫린다.
+- **평가 (from_file)**: 벽의 world faces 를 minuend 로, 각 opening world solid 를
+  left-nested `Subtract` CsgNode 로 접어 `booleans` 에 넣고 `faces` 를 비운다 →
+  §27 의 `eval_csg` 가 그대로 subtract (`mesh.boolean_solid`). 두 피연산자 모두
+  이미 world 라 추가 placement 없음. 개구부 여러 개면 순차 subtract.
+- **개구부는 부재가 아니다**: `IfcOpeningElement` 는 분류되지 않아 standalone
+  member 로 안 들어온다 (통짜 블록 누출 없음). 문·창은 자기 placement 가 개구부를
+  거쳐 chain 되므로 구멍 안에 정확히 앉는다 (별도 처리 불필요).
+
+### 실측 (RDF reference file — wall-with-opening-and-window)
+
+`IFC Engine DLL` 이 만든 표준 reference 파일 (벽 3000×300×2000, 개구부 1000×300×1000
+을 (1000,0,500) 벽-상대 배치, 창 채움):
+
+| | before | after |
+|---|---|---|
+| 임포트 부재 | wall + window (opening 제외) | 동일 |
+| 총 face | 12 (통짜 벽 6 + 창 6) | **16** (구멍 뚫린 벽 10 + 창 6) |
+| 벽 solid | valid, 구멍 없음 | **valid watertight, 관통 구멍** (cracks 0) |
+
+Live 앱 렌더: 벽에 사각 창 개구부가 뚫리고 그 안에 창이 앉음, 콘솔 오류 0.
+
+### 외부 커널 교차검증 (web-ifc)
+
+같은 RDF 파일을 web-ifc (C++ 커널) 로 메시화: wall #45 = **32 triangles** (통짜
+박스면 12) → 개구부가 빠져 구멍이 뚫림, window #102 별도 메시, opening #80 은 메시
+0 (void 라 렌더 안 함). 우리 임포터 (벽 구멍 / 창 별도 / 개구부 제외) 와 정확히 일치.
+
+### 회귀
+
+- axia-ifc **+1**: `a_rel_voids_element_synthesizes_a_subtract_of_wall_minus_opening`
+  (개구부 → Subtract 합성, 벽 faces 비워짐, 개구부 non-member).
+- axia-wasm **+1** (WASM 경로, CI 가시): `rel_voids_element_cuts_a_hole_in_the_wall`
+  (벽 >6면 + valid). mutation 확인: `collect_voids` 를 empty 로 하면 벽 6면 → 실패.
+- 워크스페이스 **3171 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그·외부 IFC(web-ifc) 통과. 양 WASM 타깃 byte-parity (4075170).
+
+### 사용자 가치 — 문·창 개구부 완성
+
+이전엔 문·창이 통짜 벽 위에 겹쳐 떠 있었다. 이제 `IfcRelVoidsElement` 를 따라 개구부가
+벽에서 빠져 실제 구멍이 되고, 문·창이 그 안에 앉는다. §27 (baked boolean) + §29
+(relationship-based opening) 로 상용 BIM 의 두 개구부 표현 방식이 모두 임포트된다.
+
+### 남은 한계
+
+- **`IfcRelFillsElement` 는 grouping 미적용** — 창이 개구부에 "속한다" 는 의미 링크
+  (창을 벽 그룹 하위로) 는 별도. 기하 결과 (벽 구멍 + 창) 는 완성.
+- **개구부가 boolean/half-space** 인 경우 (`opening_world_faces` 는 extruded/brep
+  solid 만) 미지원 — 표준은 extruded solid.
+- 벽 shape 이 이미 boolean 인데 RelVoids 도 있는 드문 경우: 단일 boolean 이면
+  그것을 minuend 로 subtract, 그 외는 경고 + 구멍 미적용.
