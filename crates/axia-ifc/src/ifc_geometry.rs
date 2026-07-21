@@ -125,11 +125,49 @@ pub enum BoolOp {
     Intersect,
 }
 
-/// One operand of a boolean result: a solid, or a nested boolean.
+/// One operand of a boolean result: a solid, a nested boolean, or a half-space
+/// clip. A half-space isn't a closed solid (it's unbounded), so it can only be
+/// the *subtrahend* — it clips the other operand rather than being built itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CsgOperand {
     Solid(Vec<FaceLoops>),
     Node(Box<CsgNode>),
+    HalfSpace(HalfSpace),
+}
+
+/// An `IfcHalfSpaceSolid` / `IfcPolygonalBoundedHalfSpace` — the half of space on
+/// one side of a plane, optionally bounded laterally by a polygon prism. Real BIM
+/// tools clip a wall with one (a sloped cut, a channel). It has no closed volume,
+/// so import evaluates it as a *trim*: unbounded ones cut the other operand by the
+/// plane; polygonally bounded ones cut it by the polygon's prism ∩ the half-space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HalfSpace {
+    /// A point on the base plane (world, engine units).
+    pub base_origin: DVec3,
+    /// The base plane's unit normal (world) — the `IfcPlane` local Z.
+    pub base_normal: DVec3,
+    /// IFC `AgreementFlag`: FALSE → the material is on the normal-positive side of
+    /// the plane, TRUE → the negative side.
+    pub agreement: bool,
+    /// `IfcPolygonalBoundedHalfSpace` only: `(polygon, extrude_dir)` — the boundary
+    /// polygon in world space and the perpendicular (Position local Z) it sweeps.
+    /// `None` for an unbounded `IfcHalfSpaceSolid`.
+    pub boundary: Option<(Vec<DVec3>, DVec3)>,
+}
+
+impl HalfSpace {
+    fn transform(&mut self, p: &crate::ifc_placement::Placement) {
+        // A point moves; a direction only rotates (apply minus the origin shift).
+        let rotate = |d: DVec3| (p.apply(d) - p.origin).normalize_or_zero();
+        self.base_origin = p.apply(self.base_origin);
+        self.base_normal = rotate(self.base_normal);
+        if let Some((poly, dir)) = &mut self.boundary {
+            for q in poly.iter_mut() {
+                *q = p.apply(*q);
+            }
+            *dir = rotate(*dir);
+        }
+    }
 }
 
 /// An `IfcBooleanResult`: two operands combined by an operator. This is how real
@@ -152,6 +190,7 @@ impl CsgOperand {
                 }
             }
             CsgOperand::Node(n) => n.transform(p),
+            CsgOperand::HalfSpace(h) => h.transform(p),
         }
     }
 }
@@ -511,19 +550,72 @@ fn parse_boolean(file: &StepFile, id: u32, scale: f64) -> Option<CsgNode> {
     Some(CsgNode { op, first, second })
 }
 
-/// One boolean operand: a nested result, or a solid (extruded / brep). A
-/// half-space (`IfcHalfSpaceSolid`) or anything that does not build a closed
-/// solid returns `None`.
+/// One boolean operand: a nested result, a half-space clip, or a solid (extruded
+/// / brep). Anything that is neither buildable nor a recognized half-space —
+/// including a solid whose faces don't close — returns `None`.
 fn parse_boolean_operand(file: &StepFile, id: u32, scale: f64) -> Option<CsgOperand> {
     let tag = file.entity(id)?.tag.to_ascii_uppercase();
     if tag == "IFCBOOLEANRESULT" || tag == "IFCBOOLEANCLIPPINGRESULT" {
         return Some(CsgOperand::Node(Box::new(parse_boolean(file, id, scale)?)));
     }
+    if tag == "IFCHALFSPACESOLID" || tag == "IFCPOLYGONALBOUNDEDHALFSPACE" {
+        return parse_half_space(file, id, scale).map(CsgOperand::HalfSpace);
+    }
     let (loops, _) = geometry_face_loops_counted(file, id, scale).ok()?;
     if loops.len() < 4 {
-        return None; // not a closed solid — a half-space, or degenerate
+        return None; // not a closed solid — degenerate
     }
     Some(CsgOperand::Solid(loops))
+}
+
+/// An `IfcHalfSpaceSolid(BaseSurface, AgreementFlag)` or its polygonally-bounded
+/// subtype `IfcPolygonalBoundedHalfSpace(BaseSurface, AgreementFlag, Position,
+/// PolygonalBoundary)`. The base surface must be a planar `IfcPlane`; a curved
+/// base or a missing polygon returns `None` (reported, never guessed).
+fn parse_half_space(file: &StepFile, id: u32, scale: f64) -> Option<HalfSpace> {
+    let e = file.entity(id)?;
+    let tag = e.tag.to_ascii_uppercase();
+
+    // BaseSurface = IfcPlane(Position) — the plane's Position gives origin + normal.
+    let plane = file.entity(e.args.first().and_then(|v| v.as_ref())?)?;
+    if plane.tag.to_ascii_uppercase() != "IFCPLANE" {
+        return None; // a curved base surface — not supported yet
+    }
+    let place = crate::ifc_placement::axis_placement(
+        file,
+        plane.args.first().and_then(|v| v.as_ref())?,
+        scale,
+    )?;
+    let base_origin = place.origin;
+    let base_normal = place.z.normalize_or_zero();
+    if base_normal.length_squared() < 0.5 {
+        return None;
+    }
+    let agreement = e.args.get(1).and_then(|v| v.as_enum()).map_or(false, |s| {
+        s.eq_ignore_ascii_case("T") || s.eq_ignore_ascii_case("TRUE")
+    });
+
+    let boundary = if tag == "IFCPOLYGONALBOUNDEDHALFSPACE" {
+        // Position places the boundary; PolygonalBoundary is a polyline in its XY.
+        let bplace = crate::ifc_placement::axis_placement(
+            file,
+            e.args.get(2).and_then(|v| v.as_ref())?,
+            scale,
+        )?;
+        let poly2d = polyline_2d(file, e.args.get(3).and_then(|v| v.as_ref())?, scale)?;
+        if poly2d.len() < 3 {
+            return None;
+        }
+        let world: Vec<DVec3> = poly2d
+            .iter()
+            .map(|&(u, v)| bplace.origin + bplace.x * u + bplace.y * v)
+            .collect();
+        Some((world, bplace.z.normalize_or_zero()))
+    } else {
+        None
+    };
+
+    Some(HalfSpace { base_origin, base_normal, agreement, boundary })
 }
 
 /// A profile's outer boundary as 2D points in its own plane (engine units).
@@ -1851,21 +1943,21 @@ END-ISO-10303-21;
 
         let node = &el.booleans[0];
         assert_eq!(node.op, BoolOp::Subtract, ".DIFFERENCE. → Subtract");
-        // Both operands are extruded prisms (6 faces each) — real solids the
-        // engine can boolean, not half-spaces (which we reject).
+        // Both operands are extruded prisms (6 faces each) — real solids, not
+        // nested booleans and not half-space clips.
         for operand in [&node.first, &node.second] {
             match operand {
                 CsgOperand::Solid(loops) => assert_eq!(loops.len(), 6, "a rectangular prism"),
-                CsgOperand::Node(_) => panic!("both operands are plain solids here"),
+                _ => panic!("both operands are plain solids here"),
             }
         }
     }
 
     #[test]
-    fn a_half_space_operand_makes_the_boolean_unreadable() {
-        // We do not build half-spaces yet, so a boolean whose second operand is
-        // one must report the member as unreadable rather than import a wall with
-        // no opening (a silently wrong shape).
+    fn an_unbounded_half_space_operand_parses_as_a_planar_clip() {
+        // A wall clipped by an unbounded IfcHalfSpaceSolid: the second operand is
+        // now readable — a plane (origin + normal) with an AgreementFlag, and no
+        // lateral boundary.
         let src = "\
 ISO-10303-21;
 HEADER;
@@ -1875,7 +1967,7 @@ DATA;
 #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
 #40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
 #50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
-#60=IFCCARTESIANPOINT((0.,0.,0.));
+#60=IFCCARTESIANPOINT((0.,0.,1.5));
 #61=IFCDIRECTION((0.,0.,1.));
 #62=IFCAXIS2PLACEMENT3D(#60,#61,$);
 #63=IFCPLANE(#62);
@@ -1889,9 +1981,92 @@ END-ISO-10303-21;
 "
         .to_string();
         let g = import_ifc_geometry(&src).unwrap();
-        // With no buildable geometry the member is not placed in the scene, but
-        // it is *warned* about — never dropped silently as a wall with no opening.
-        assert!(g.elements.is_empty(), "no buildable geometry → nothing imported");
+        let node = &g.elements[0].booleans[0];
+        assert_eq!(node.op, BoolOp::Subtract);
+        match &node.second {
+            CsgOperand::HalfSpace(hs) => {
+                assert!(hs.boundary.is_none(), "an unbounded half-space has no polygon");
+                assert!(!hs.agreement, ".F. → AgreementFlag false");
+                // Plane at z=1500 mm, +Z normal (metres → mm).
+                assert!((hs.base_origin.z - 1500.0).abs() < 1.0, "base z {}", hs.base_origin.z);
+                assert!((hs.base_normal.z - 1.0).abs() < 1e-6, "normal +Z {:?}", hs.base_normal);
+            }
+            _ => panic!("second operand is a half-space clip"),
+        }
+    }
+
+    #[test]
+    fn a_polygonal_bounded_half_space_operand_parses_with_its_polygon() {
+        // The common real clip (a channel, a sloped cut): IfcPolygonalBoundedHalfSpace
+        // carries a base plane *and* a lateral boundary polygon in world space.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#59=IFCDIRECTION((0.,0.,1.));
+#60=IFCCARTESIANPOINT((0.,0.,1.5));
+#61=IFCAXIS2PLACEMENT3D(#60,#59,$);
+#62=IFCPLANE(#61);
+#170=IFCCARTESIANPOINT((-1.,-1.));
+#171=IFCCARTESIANPOINT((1.,-1.));
+#172=IFCCARTESIANPOINT((1.,1.));
+#173=IFCCARTESIANPOINT((-1.,1.));
+#174=IFCPOLYLINE((#170,#171,#172,#173,#170));
+#175=IFCCARTESIANPOINT((0.,0.,0.));
+#176=IFCAXIS2PLACEMENT3D(#175,$,$);
+#43=IFCPOLYGONALBOUNDEDHALFSPACE(#62,.F.,#176,#174);
+#80=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#43);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#80));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        match &g.elements[0].booleans[0].second {
+            CsgOperand::HalfSpace(hs) => {
+                let (poly, dir) = hs.boundary.as_ref().expect("a bounded half-space has a polygon");
+                assert_eq!(poly.len(), 4, "the square boundary has four corners");
+                assert!((dir.z - 1.0).abs() < 1e-6, "extrude perpendicular to XY {:?}", dir);
+                assert!((hs.base_origin.z - 1500.0).abs() < 1.0);
+            }
+            _ => panic!("second operand is a bounded half-space"),
+        }
+    }
+
+    #[test]
+    fn a_curved_base_surface_half_space_is_unreadable() {
+        // We only clip by a *plane*. A half-space on a curved base surface (here a
+        // cylinder) is refused — reported, never guessed at.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#63=IFCCYLINDRICALSURFACE(#61,1.);
+#64=IFCHALFSPACESOLID(#63,.F.);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#64);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        assert!(g.elements.is_empty(), "a curved base surface is not buildable");
         assert!(
             g.warnings.iter().any(|w| w.contains("boolean geometry")),
             "the unreadable boolean is warned about: {:?}",

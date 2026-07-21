@@ -13220,28 +13220,37 @@ fn find_field_f64_in(json: &str, field: &str) -> Result<f64, String> {
         .map_err(|e| format!("invalid f64 for '{}': {}", field, e))
 }
 
+fn map_bool_op(op: axia_ifc::BoolOp) -> axia_geo::operations::boolean::BoolOp {
+    match op {
+        axia_ifc::BoolOp::Union => axia_geo::operations::boolean::BoolOp::Union,
+        axia_ifc::BoolOp::Subtract => axia_geo::operations::boolean::BoolOp::Subtract,
+        axia_ifc::BoolOp::Intersect => axia_geo::operations::boolean::BoolOp::Intersect,
+    }
+}
+
 /// Evaluate an IfcBooleanResult tree (ADR-203 I-3) into the faces of the
-/// resulting solid — a wall with an opening, say. Each operand is built as a
-/// solid in the mesh, then combined with the engine's own boolean; `None` when
-/// an operand cannot be built or the boolean's validity gate rejects the result.
+/// resulting solid — a wall with an opening, say. The first operand is built as a
+/// solid; the second either combines with it via the engine's own boolean, or —
+/// when it is a half-space — *clips* it (a wall cut by a plane or a channel).
+/// `None` when an operand cannot be built or the result fails its validity gate.
 fn eval_csg(
     mesh: &mut axia_geo::Mesh,
     node: &axia_ifc::CsgNode,
     mat: axia_geo::MaterialId,
 ) -> Option<Vec<axia_geo::FaceId>> {
     let a = build_csg_operand(mesh, &node.first, mat)?;
+    // A half-space is a clip, not a solid — trim the first operand by it.
+    if let axia_ifc::CsgOperand::HalfSpace(hs) = &node.second {
+        return apply_half_space(mesh, &a, hs, node.op, mat);
+    }
     let b = build_csg_operand(mesh, &node.second, mat)?;
-    let op = match node.op {
-        axia_ifc::BoolOp::Union => axia_geo::operations::boolean::BoolOp::Union,
-        axia_ifc::BoolOp::Subtract => axia_geo::operations::boolean::BoolOp::Subtract,
-        axia_ifc::BoolOp::Intersect => axia_geo::operations::boolean::BoolOp::Intersect,
-    };
-    mesh.boolean_solid(&a, &b, op, mat).ok().map(|res| res.faces)
+    mesh.boolean_solid(&a, &b, map_bool_op(node.op), mat).ok().map(|res| res.faces)
 }
 
 /// Build one boolean operand as a solid in the mesh, returning its face ids.
 /// A nested boolean recurses; a solid adds its faces (with their planes, so the
-/// boolean has surfaces to work with).
+/// boolean has surfaces to work with). A half-space cannot be a *minuend* (it is
+/// unbounded) — only `eval_csg`'s second-operand clip handles it — so it is None.
 fn build_csg_operand(
     mesh: &mut axia_geo::Mesh,
     operand: &axia_ifc::CsgOperand,
@@ -13249,6 +13258,7 @@ fn build_csg_operand(
 ) -> Option<Vec<axia_geo::FaceId>> {
     match operand {
         axia_ifc::CsgOperand::Node(n) => eval_csg(mesh, n, mat),
+        axia_ifc::CsgOperand::HalfSpace(_) => None,
         axia_ifc::CsgOperand::Solid(loops) => {
             let mut ids = Vec::new();
             for f in loops {
@@ -13273,6 +13283,130 @@ fn build_csg_operand(
             }
         }
     }
+}
+
+/// Clip the operand solid `a` by a half-space. An unbounded half-space trims the
+/// solid by its base plane, keeping whichever side the operator asks for. A
+/// polygonally-bounded one is a finite prism of the boundary (∩ the half-space),
+/// so it goes through the engine's boolean like any other solid. `None` on Union
+/// (a finite result minus/with an infinite half-space is ill-defined) or failure.
+fn apply_half_space(
+    mesh: &mut axia_geo::Mesh,
+    a: &[axia_geo::FaceId],
+    hs: &axia_ifc::HalfSpace,
+    op: axia_ifc::BoolOp,
+    mat: axia_geo::MaterialId,
+) -> Option<Vec<axia_geo::FaceId>> {
+    use axia_geo::operations::slice::SlicePlane;
+    // Which side of the base plane holds the half-space material?
+    // AgreementFlag FALSE → the normal-positive side; TRUE → the negative side.
+    let hs_on_positive = !hs.agreement;
+    let plane = SlicePlane::new(hs.base_origin, hs.base_normal).ok()?;
+
+    match &hs.boundary {
+        // Unbounded: trim the operand directly. `keep_above` keeps the
+        // normal-positive side (slice's Side::Above = positive signed distance).
+        None => {
+            let keep_positive = match op {
+                axia_ifc::BoolOp::Subtract => !hs_on_positive, // keep the non-material side
+                axia_ifc::BoolOp::Intersect => hs_on_positive, // keep the material side
+                axia_ifc::BoolOp::Union => return None,
+            };
+            mesh.trim_volume_by_plane(a, plane, keep_positive, mat).ok()
+        }
+        // Bounded: build the boundary prism ∩ the half-space as a finite clip
+        // solid, then boolean it with the operand.
+        Some((poly, extrude_dir)) => {
+            if matches!(op, axia_ifc::BoolOp::Union) {
+                return None;
+            }
+            let clip = build_halfspace_prism(mesh, a, poly, *extrude_dir, plane, hs_on_positive, mat)?;
+            if clip.is_empty() {
+                // The half-space misses the operand entirely: a Subtract removes
+                // nothing (keep the operand), an Intersect keeps nothing.
+                return match op {
+                    axia_ifc::BoolOp::Subtract => Some(a.to_vec()),
+                    _ => None,
+                };
+            }
+            mesh.boolean_solid(a, &clip, map_bool_op(op), mat).ok().map(|res| res.faces)
+        }
+    }
+}
+
+/// Build the finite clip solid for an `IfcPolygonalBoundedHalfSpace`: the boundary
+/// polygon swept along `extrude_dir` far enough to span the operand, then trimmed
+/// to the half-space side of `plane`. Returns the kept clip faces (possibly empty
+/// if the plane misses the prism).
+fn build_halfspace_prism(
+    mesh: &mut axia_geo::Mesh,
+    a: &[axia_geo::FaceId],
+    poly: &[glam::DVec3],
+    extrude_dir: glam::DVec3,
+    plane: axia_geo::operations::slice::SlicePlane,
+    keep_positive: bool,
+    mat: axia_geo::MaterialId,
+) -> Option<Vec<axia_geo::FaceId>> {
+    use axia_geo::operations::coplanar::face_world_aabb;
+    if poly.len() < 3 || extrude_dir.length_squared() < 0.5 {
+        return None;
+    }
+    // The operand's world AABB, so the prism spans it along `extrude_dir`.
+    let mut lo = glam::DVec3::splat(f64::INFINITY);
+    let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+    for &fid in a {
+        if let Some(bb) = face_world_aabb(mesh, fid) {
+            lo = lo.min(bb.min);
+            hi = hi.max(bb.max);
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return None;
+    }
+    // Project the 8 AABB corners onto `extrude_dir` to get the sweep extent, then
+    // pad so the prism clears the operand on both ends.
+    let corners = [
+        glam::DVec3::new(lo.x, lo.y, lo.z), glam::DVec3::new(hi.x, lo.y, lo.z),
+        glam::DVec3::new(lo.x, hi.y, lo.z), glam::DVec3::new(hi.x, hi.y, lo.z),
+        glam::DVec3::new(lo.x, lo.y, hi.z), glam::DVec3::new(hi.x, lo.y, hi.z),
+        glam::DVec3::new(lo.x, hi.y, hi.z), glam::DVec3::new(hi.x, hi.y, hi.z),
+    ];
+    let (mut tmin, mut tmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for c in corners {
+        let t = c.dot(extrude_dir);
+        tmin = tmin.min(t);
+        tmax = tmax.max(t);
+    }
+    let pad = ((hi - lo).length() * 0.05).max(1.0);
+    tmin -= pad;
+    tmax += pad;
+    // The polygon lies in a plane perpendicular to `extrude_dir`, so all its
+    // points share one projection — flatten to the two sweep planes.
+    let proj0 = poly[0].dot(extrude_dir);
+    let bottom: Vec<glam::DVec3> = poly.iter().map(|&q| q + extrude_dir * (tmin - proj0)).collect();
+    let top: Vec<glam::DVec3> = poly.iter().map(|&q| q + extrude_dir * (tmax - proj0)).collect();
+
+    // Build the prism: two caps + one quad per boundary edge. Winding is
+    // normalized to outward by the kernel (ADR-007), so consistent input suffices.
+    let mut prism: Vec<axia_geo::FaceId> = Vec::new();
+    let add = |mesh: &mut axia_geo::Mesh, ring: &[glam::DVec3], out: &mut Vec<axia_geo::FaceId>| {
+        let vs: Vec<_> = ring.iter().map(|&p| mesh.add_vertex(p)).collect();
+        if let Ok(fid) = mesh.add_face_with_holes(&vs, &[], mat) {
+            out.push(fid);
+        }
+    };
+    add(mesh, &bottom, &mut prism);
+    add(mesh, &top, &mut prism);
+    let n = poly.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        add(mesh, &[bottom[i], bottom[j], top[j], top[i]], &mut prism);
+    }
+    if prism.len() < 4 {
+        return None;
+    }
+    // Keep only the half of the prism on the half-space side of the base plane.
+    mesh.trim_volume_by_plane(&prism, plane, keep_positive, mat).ok()
 }
 
 /// A point on a closed curve to anchor its self-loop face (ADR-203 I-3
@@ -13550,11 +13684,11 @@ END-ISO-10303-21;
         assert!(report.is_valid(), "the holed wall is a valid solid: {:?}", report);
     }
 
-    /// A boolean whose operand we cannot build (a half-space) must not import a
-    /// wall with no opening — a silently wrong shape. Nothing is added; the scene
-    /// is left as it was.
+    /// An unbounded IfcHalfSpaceSolid clips the operand by its base plane. A box
+    /// Z[0,2000] minus a half-space at z=1000 (AgreementFlag .F. → material on the
+    /// +Z side) keeps the lower half — a valid closed solid at half the height.
     #[test]
-    fn boolean_with_a_half_space_operand_imports_nothing() {
+    fn unbounded_half_space_clips_the_operand_by_a_plane() {
         let src = "\
 ISO-10303-21;
 HEADER;
@@ -13562,11 +13696,11 @@ FILE_SCHEMA(('IFC4X3'));
 ENDSEC;
 DATA;
 #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
-#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
-#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
-#60=IFCCARTESIANPOINT((0.,0.,0.));
-#61=IFCDIRECTION((0.,0.,1.));
-#62=IFCAXIS2PLACEMENT3D(#60,#61,$);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,2.,2.);
+#59=IFCDIRECTION((0.,0.,1.));
+#50=IFCEXTRUDEDAREASOLID(#40,$,#59,2.);
+#60=IFCCARTESIANPOINT((0.,0.,1.));
+#62=IFCAXIS2PLACEMENT3D(#60,#59,$);
 #63=IFCPLANE(#62);
 #64=IFCHALFSPACESOLID(#63,.F.);
 #70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#64);
@@ -13578,7 +13712,96 @@ END-ISO-10303-21;
 ";
         let mut e = AxiaEngine::new();
         e.import_ifc(src.to_string());
-        assert_eq!(active_faces(&e), 0, "an unreadable boolean imports nothing");
+        assert_eq!(active_faces(&e), 6, "a clipped box is still a six-faced prism");
+        assert!(e.scene.mesh.verify_face_invariants().is_valid(), "the clip is a valid solid");
+        // The kept half tops out at z=1000 (the plane), not the box's z=2000.
+        // (Measure the *active* faces — the trim leaves the discarded half's
+        // vertices orphaned in the arena.)
+        let mut zmax = f64::NEG_INFINITY;
+        for (fid, face) in e.scene.mesh.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if let Some(bb) = axia_geo::operations::coplanar::face_world_aabb(&e.scene.mesh, fid) {
+                zmax = zmax.max(bb.max.z);
+            }
+        }
+        assert!((zmax - 1000.0).abs() < 1.0, "kept the lower half (active z_max {})", zmax);
+    }
+
+    /// A polygonally-bounded half-space cuts a channel: the box Z[0,1000] minus a
+    /// slot prism (x[750,1250], z>500) leaves a valid closed solid with a groove
+    /// across its top — more faces than the plain box.
+    #[test]
+    fn polygonal_bounded_half_space_cuts_a_channel() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#100=IFCCARTESIANPOINT((0.,0.));
+#101=IFCCARTESIANPOINT((2.,0.));
+#102=IFCCARTESIANPOINT((2.,2.));
+#103=IFCCARTESIANPOINT((0.,2.));
+#104=IFCPOLYLINE((#100,#101,#102,#103,#100));
+#105=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#104);
+#59=IFCDIRECTION((0.,0.,1.));
+#106=IFCCARTESIANPOINT((0.,0.,0.));
+#107=IFCAXIS2PLACEMENT3D(#106,$,$);
+#19=IFCEXTRUDEDAREASOLID(#105,#107,#59,1.);
+#40=IFCCARTESIANPOINT((0.,0.,0.5));
+#41=IFCAXIS2PLACEMENT3D(#40,#59,$);
+#42=IFCPLANE(#41);
+#50=IFCCARTESIANPOINT((0.75,-1.));
+#51=IFCCARTESIANPOINT((1.25,-1.));
+#52=IFCCARTESIANPOINT((1.25,3.));
+#53=IFCCARTESIANPOINT((0.75,3.));
+#54=IFCPOLYLINE((#50,#51,#52,#53,#50));
+#55=IFCAXIS2PLACEMENT3D(#106,$,$);
+#43=IFCPOLYGONALBOUNDEDHALFSPACE(#42,.F.,#55,#54);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#19,#43);
+#108=IFCSHAPEREPRESENTATION($,'Body','Clipping',(#70));
+#109=IFCPRODUCTDEFINITIONSHAPE($,$,(#108));
+#110=IFCWALL('w',$,'Clipped',$,$,$,#109,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        let n = active_faces(&e);
+        assert!(n > 6, "the channel adds geometry beyond a plain box (faces {})", n);
+        assert!(e.scene.mesh.verify_face_invariants().is_valid(), "the channel is a valid solid");
+    }
+
+    /// A half-space on a curved base surface can't be clipped by a plane, so the
+    /// member is dropped rather than mis-cut.
+    #[test]
+    fn half_space_on_a_curved_base_imports_nothing() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#63=IFCCYLINDRICALSURFACE(#61,1.);
+#64=IFCHALFSPACESOLID(#63,.F.);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#64);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 0, "a curved-base half-space imports nothing");
     }
 }
 
