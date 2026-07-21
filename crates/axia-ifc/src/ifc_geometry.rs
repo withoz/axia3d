@@ -23,7 +23,8 @@
 //! Faces arrive with their plane attached ([`FaceLoops::plane`]) because a
 //! surface-less face is refused by every kernel-aware op (ADR-087 K-ε).
 
-use axia_foreign::step_parser::{self, Entity, StepFile};
+use crate::ifc_placement::Placement;
+use axia_foreign::step_parser::{self, Entity, StepFile, Value};
 use axia_geo::AnalyticSurface;
 use glam::DVec3;
 
@@ -375,11 +376,19 @@ fn loop_points(file: &StepFile, loop_id: u32, scale: f64) -> Option<Vec<DVec3>> 
             // IfcEdge/IfcEdgeCurve(EdgeStart, EdgeEnd, …)
             let a = edge.args.first().and_then(|v| v.as_ref()).and_then(|id| vertex_point(file, id, scale));
             let b = edge.args.get(1).and_then(|v| v.as_ref()).and_then(|id| vertex_point(file, id, scale));
-            let (start, _end) = if orientation { (a, b) } else { (b, a) };
+            let (start, end) = if orientation { (a, b) } else { (b, a) };
             if let Some(p) = start {
                 // Skip a repeat of the previous point (closed rims repeat their anchor).
                 if pts.last().map_or(true, |q: &DVec3| (*q - p).length() > 1e-9) {
                     pts.push(p);
+                }
+            }
+            // A curved edge is not the straight line between its endpoints. Walk
+            // it, or the arc silently becomes a chord — a face that looks fine
+            // and is the wrong shape.
+            if let (Some(p0), Some(p1)) = (start, end) {
+                if let Some(mid) = arc_interior_points(file, edge, p0, p1, orientation, scale) {
+                    pts.extend(mid);
                 }
             }
         }
@@ -390,6 +399,138 @@ fn loop_points(file: &StepFile, loop_id: u32, scale: f64) -> Option<Vec<DVec3>> 
         return Some(pts);
     }
     None
+}
+
+/// Chord tolerance for walking an imported arc, in mm. Matches the render-side
+/// value (LOCKED #40) so an imported curve is as smooth as a drawn one.
+const ARC_CHORD_TOL_MM: f64 = 0.02;
+
+/// The points *between* a curved edge's endpoints, or `None` when the edge is
+/// straight.
+///
+/// An `IfcEdgeCurve` whose geometry is an `IfcCircle` (usually wrapped in an
+/// `IfcTrimmedCurve`) is an arc. Reading only its endpoints turns it into a
+/// chord: the face still imports, still looks plausible, and is the wrong
+/// shape — worse than being dropped, because nothing warns.
+///
+/// The endpoints alone cannot say *which* arc joins them — two points a
+/// diameter apart are joined by two different half-circles. Only the trimmed
+/// curve knows: `Trim1`, `Trim2`, and `SenseAgreement` fix the exact sweep, so
+/// this reads them rather than guessing a direction from the edge flags. The
+/// resulting arc is then oriented to the loop's own start→end traversal.
+fn arc_interior_points(
+    file: &StepFile,
+    edge: &Entity,
+    start: DVec3,
+    end: DVec3,
+    _orientation: bool,
+    scale: f64,
+) -> Option<Vec<DVec3>> {
+    // IfcEdgeCurve(EdgeStart, EdgeEnd, EdgeGeometry, SameSense)
+    let geom_id = edge.args.get(2).and_then(|v| v.as_ref())?;
+    let geom = file.entity(geom_id)?;
+
+    // Unwrap IfcTrimmedCurve → basis circle, keeping the two trims and the
+    // sense that together pin down which arc is meant.
+    let (circle, trims): (&Entity, Option<(&Value, &Value, bool)>) =
+        if geom.tag.eq_ignore_ascii_case("IFCTRIMMEDCURVE") {
+            // (BasisCurve, Trim1, Trim2, SenseAgreement, MasterRepresentation)
+            let basis = geom.args.first().and_then(|v| v.as_ref())?;
+            let t1 = geom.args.get(1)?;
+            let t2 = geom.args.get(2)?;
+            let sense = geom.args.get(3).and_then(|v| v.as_enum()).map(|s| s != "F").unwrap_or(true);
+            (file.entity(basis)?, Some((t1, t2, sense)))
+        } else {
+            (geom, None)
+        };
+    if !circle.tag.eq_ignore_ascii_case("IFCCIRCLE") {
+        return None; // straight, or a curve we do not walk yet
+    }
+
+    // IfcCircle(Position: IfcAxis2Placement3D, Radius)
+    let pos = circle.args.first().and_then(|v| v.as_ref())?;
+    let place = crate::ifc_placement::axis_placement(file, pos, scale)?;
+    let radius = circle.args.get(1).and_then(|v| v.as_f64())? * scale;
+    if !(radius > 0.0) {
+        return None;
+    }
+
+    let angle_of = |p: DVec3| -> f64 {
+        let d = p - place.origin;
+        d.dot(place.y).atan2(d.dot(place.x))
+    };
+
+    // Start/end angles come from the trims when present — that is what makes a
+    // half-circle unambiguous. A bare (untrimmed) circle falls back to the loop
+    // vertices and CCW, the only reasonable default.
+    let (a0, sweep_ccw) = if let Some((t1, _t2, sense)) = trims {
+        (trim_angle(file, t1, &place, scale).unwrap_or_else(|| angle_of(start)), sense)
+    } else {
+        (angle_of(start), true)
+    };
+    let a1 = if let Some((_t1, t2, _)) = trims {
+        trim_angle(file, t2, &place, scale).unwrap_or_else(|| angle_of(end))
+    } else {
+        angle_of(end)
+    };
+
+    // Sweep a0→a1 in the sense the trim declares.
+    let mut sweep = a1 - a0;
+    const TAU: f64 = std::f64::consts::TAU;
+    if sweep_ccw {
+        while sweep <= 1e-9 {
+            sweep += TAU;
+        }
+    } else {
+        while sweep >= -1e-9 {
+            sweep -= TAU;
+        }
+    }
+
+    // Segment count from the chord tolerance: cos(θ/2) = 1 - tol/r.
+    let ratio = (1.0 - ARC_CHORD_TOL_MM / radius).clamp(-1.0, 1.0);
+    let step = 2.0 * ratio.acos();
+    let segments = if step > 1e-9 {
+        ((sweep.abs() / step).ceil() as usize).clamp(2, 512)
+    } else {
+        16
+    };
+
+    let point_at =
+        |a: f64| place.origin + place.x * (radius * a.cos()) + place.y * (radius * a.sin());
+
+    // The arc runs Trim1→Trim2, but the loop is walked start→end. Trim1 sits on
+    // one of them; if it sits on `end`, reverse so the interior comes out in
+    // traversal order.
+    let forward = (point_at(a0) - start).length_squared() <= (point_at(a0) - end).length_squared();
+
+    // Interior only — the endpoints are already the loop's vertices.
+    let mut out = Vec::with_capacity(segments.saturating_sub(1));
+    for i in 1..segments {
+        let a = a0 + sweep * (i as f64) / (segments as f64);
+        out.push(point_at(a));
+    }
+    if !forward {
+        out.reverse();
+    }
+    Some(out)
+}
+
+/// The angle on the circle of one `IfcTrimmedCurve` trim (`Trim1` / `Trim2`).
+///
+/// A trim is a *set* — it may carry an `IfcCartesianPoint`, an
+/// `IfcParameterValue`, or both. The cartesian point is geometrically exact, so
+/// it wins; the parameter (an angle in radians for a circle) is the fallback.
+fn trim_angle(file: &StepFile, trim: &Value, place: &Placement, scale: f64) -> Option<f64> {
+    let items = trim.as_list()?;
+    for it in items {
+        if let Some(p) = it.as_ref().and_then(|id| cartesian_point(file, id, scale)) {
+            let d = p - place.origin;
+            return Some(d.dot(place.y).atan2(d.dot(place.x)));
+        }
+    }
+    // IfcParameterValue — the angle itself, for a circle.
+    items.iter().find_map(|it| it.as_f64())
 }
 
 /// `IfcVertexPoint` → its `IfcCartesianPoint`.
@@ -442,6 +583,101 @@ mod tests {
         // metres → mm: the far corner is (1000, 2000, 3000).
         let far = e.faces.iter().flat_map(|f| f.outer.iter()).fold(DVec3::ZERO, |a, &p| a.max(p));
         assert!((far - DVec3::new(1000.0, 2000.0, 3000.0)).length() < 1e-6, "far corner {:?}", far);
+    }
+
+    /// A semicircle face: an arc from A(4,0.5) to B(4,3.5) on the circle
+    /// centred (4,2) r=1.5, closed by the straight diameter B→A. `sense` is the
+    /// trimmed curve's `SenseAgreement` — the only thing that says which half.
+    fn semicircle_ifc(sense: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((4.,0.5,0.));
+#11=IFCCARTESIANPOINT((4.,3.5,0.));
+#12=IFCCARTESIANPOINT((4.,2.,0.));
+#13=IFCDIRECTION((0.,0.,1.));
+#14=IFCDIRECTION((1.,0.,0.));
+#15=IFCAXIS2PLACEMENT3D(#12,#13,#14);
+#16=IFCCIRCLE(#15,1.5);
+#20=IFCVERTEXPOINT(#10);
+#21=IFCVERTEXPOINT(#11);
+#22=IFCTRIMMEDCURVE(#16,(#10),(#11),{sense},.CARTESIAN.);
+#23=IFCEDGECURVE(#20,#21,#22,.T.);
+#25=IFCDIRECTION((0.,-1.,0.));
+#26=IFCVECTOR(#25,1.);
+#27=IFCLINE(#11,#26);
+#28=IFCEDGECURVE(#21,#20,#27,.T.);
+#30=IFCORIENTEDEDGE(*,*,#23,.T.);
+#31=IFCORIENTEDEDGE(*,*,#28,.T.);
+#32=IFCEDGELOOP((#30,#31));
+#33=IFCFACEOUTERBOUND(#32,.T.);
+#35=IFCPLANE(#15);
+#36=IFCADVANCEDFACE((#33),#35,.T.);
+#37=IFCCLOSEDSHELL((#36));
+#38=IFCADVANCEDBREP(#37);
+#39=IFCSHAPEREPRESENTATION($,'Body','AdvancedBrep',(#38));
+#40=IFCPRODUCTDEFINITIONSHAPE($,$,(#39));
+#41=IFCBUILDINGELEMENTPROXY('gid',$,'Arc',$,$,$,#40,$,.NOTDEFINED.);
+ENDSEC;
+END-ISO-10303-21;
+",
+            sense = sense
+        )
+    }
+
+    #[test]
+    fn an_arc_edge_is_walked_not_chorded() {
+        // A curved edge read by its endpoints alone is a straight chord — the
+        // face looks fine and is the wrong shape. The arc must gain interior
+        // points, all of them exactly on the circle.
+        let g = import_ifc_geometry(&semicircle_ifc(".T.")).unwrap();
+        let f = &g.elements[0].faces[0];
+        assert!(f.outer.len() > 4, "the arc added interior points: {}", f.outer.len());
+
+        let center = DVec3::new(4000.0, 2000.0, 0.0); // metres → mm
+        let mut on_arc = 0;
+        for p in &f.outer {
+            let r = (*p - center).length();
+            if (r - 1500.0).abs() < 1.0 {
+                on_arc += 1;
+            }
+        }
+        assert!(on_arc >= 8, "interior points sit on the r=1500 circle: {on_arc}");
+    }
+
+    #[test]
+    fn the_trim_sense_picks_which_half_circle() {
+        // Same two endpoints, a diameter apart — the sense is the *only* thing
+        // that says which half. This is exactly what reading endpoints (or
+        // guessing from edge flags) cannot get right.
+        let center = DVec3::new(4000.0, 2000.0, 0.0);
+        let right = DVec3::new(5500.0, 2000.0, 0.0); // angle 0
+        let left = DVec3::new(2500.0, 2000.0, 0.0); // angle π
+
+        let near = |loops: &FaceLoops, target: DVec3| {
+            loops.outer.iter().any(|p| (*p - target).length() < 10.0)
+        };
+
+        // SenseAgreement TRUE → CCW from bottom to top → through the right side.
+        let t = import_ifc_geometry(&semicircle_ifc(".T.")).unwrap();
+        let ft = &t.elements[0].faces[0];
+        assert!(near(ft, right), "sense .T. sweeps the right half (through {right:?})");
+        assert!(!near(ft, left), "and not the left");
+
+        // SenseAgreement FALSE → CW → through the left side. The opposite arc,
+        // from identical endpoints.
+        let f = import_ifc_geometry(&semicircle_ifc(".F.")).unwrap();
+        let ff = &f.elements[0].faces[0];
+        assert!(near(ff, left), "sense .F. sweeps the left half (through {left:?})");
+        assert!(!near(ff, right), "and not the right");
+
+        // The centre never moves — this is a direction flip, not a translation.
+        let _ = center;
     }
 
     #[test]

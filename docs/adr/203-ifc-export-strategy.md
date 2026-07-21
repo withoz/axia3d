@@ -837,3 +837,57 @@ Window   + OverallHeight OverallWidth PredefinedType PartitioningType      UserD
 - 문·창을 **벽의 개구부에 연결**(`IfcRelFillsElement` / `IfcOpeningElement`)
   하지 않는다. 지금은 독립 부재다. Window·Door 도구가 만드는 실제 개구부와
   묶는 것은 별도 트랙.
+
+---
+
+## 22. I-3-arc Acceptance — 곡선 경계를 걷는다 (직선 현이 아니라)
+
+I-3 은 `IfcEdgeCurve` 를 그 **두 끝점** 으로 읽었다. 기하가 `IfcCircle` (보통
+`IfcTrimmedCurve` 로 감싼) 인 엣지는 호(arc) 인데, 끝점만 읽으면 **직선 현**
+이 된다 — 면은 멀쩡히 들어오고 그럴듯해 보이지만 **틀린 형상** 이다. 아무
+경고도 없으니 버려지는 것보다 나쁘다. 2-엣지 루프(지름을 잇는 반원)는 점이
+2개뿐이라 아예 **퇴화로 버려졌다**.
+
+- **`arc_interior_points`**: `IfcCircle` 을 읽어 호를 chord tolerance(0.02mm,
+  렌더 값 LOCKED #40 과 동일)로 샘플링해 **끝점 사이 내부 점** 을 채운다.
+  면은 이제 진짜 곡선을 따르는 매끈한 다각형으로 들어온다.
+- **방향은 트림 점에서** (`trim_angle`): **끝점만으로는 어느 호인지 알 수
+  없다** — 지름만큼 떨어진 두 점은 서로 다른 두 반원으로 이어진다. 오직
+  `IfcTrimmedCurve` 의 `Trim1` / `Trim2` / `SenseAgreement` 만이 정확한 sweep 을
+  정한다. 그래서 엣지 플래그로 방향을 *추측* 하지 않고 트림 점을 **읽는다**.
+  나온 호는 루프의 start→end 순회 방향에 맞춰 정렬한다.
+- **파라미터 fallback**: 트림이 `IfcCartesianPoint` (기하학적으로 정확) 면 그것을
+  쓰고, 없으면 `IfcParameterValue` (원의 경우 라디안 각) 를 쓴다.
+
+### 실파일로 검증 (`D:\AixiAcad\engine`, 외부 `AixxiA Engine` 이 만든 파일)
+
+`advanced_brep_demo.ifc` — 이전엔 곡선 경계 면 1개를 통째로 버렸다(2면). 이제
+**3면 전부** 들어오고 호가 매끈하게 렌더된다 (`{cap:2 annulus:1}`, 경고 0,
+invariants valid). `untitled.ifc` (96면)는 호가 없어 영향 없음 — 그대로.
+
+### 정직한 정정
+
+처음엔 이 데모의 면 겹침(면적 합 26.4 > 외곽 22)을 **방향 버그** 로 봤다.
+트림 점을 읽고 브렙이 **z=0 완전 평면·부피 0** 임을 확인한 뒤 정정한다 —
+이 파일은 겹치는 3개 동일평면 면을 가진 **2D cut-circle 데모** 이고, 그 겹침은
+파일 자체의 내용이지 임포트 오류가 아니다. 이 파일은 엣지 플래그가 이미 트림과
+일치해서 수정 전후 기하가 동일하다. 수정의 가치는 *플래그로 방향이 결정되지
+않는* 경우(반원)에 있고, 그것은 회귀로 증명했다.
+
+### 회귀
+
+- axia-ifc **+2** (107→109): 호가 현이 아니라 곡선으로 걸린다(내부 점이 모두
+  r=1500 원 위) / **트림 sense 가 어느 반원인지 정한다** (같은 끝점, `.T.`→
+  오른쪽 반원, `.F.`→왼쪽 반원 — 끝점·플래그로는 못 얻는 것). mutation 확인:
+  트림 sense 를 무시(항상 CCW)하면 `.F.` 케이스가 실제로 실패한다.
+- 워크스페이스 **3152 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build 통과.
+
+### 남은 한계
+
+- **닫힌 원 자기-루프**(rim 전체가 한 self-loop 엣지, ADR-089 Path B)는 여전히
+  점 하나로 붕괴 → 면 버림 + 경고. 이 수정은 **두 정점 사이의 열린 호** 만
+  다룬다.
+- 호는 다각형으로 테셀레이트된다 — 임포트된 엣지에 `AnalyticCurve::Arc` 를
+  붙이는 것(진짜 kernel-native 재구성)은 별도 트랙.
+- 타원(`IfcEllipse`) / 스플라인(`IfcBSplineCurve`) 경계는 아직 현으로 들어온다.
