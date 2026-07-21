@@ -305,6 +305,9 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
 
     let spatial = crate::ifc_spatial::spatial_tree(file);
     let report = crate::ifc_elements::classify(file);
+    // Openings that void a wall (IfcRelVoidsElement) — subtracted below so a door
+    // or window opening becomes a real hole rather than a phantom overlap.
+    let voids = collect_voids(file);
 
     let mut elements = Vec::new();
     let mut placed = 0usize;
@@ -377,6 +380,56 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 label(),
                 dropped_faces
             ));
+        }
+        // IfcRelVoidsElement — cut this element's openings out of it. Both the
+        // wall (already world, above) and each opening (placed by its own chain,
+        // which runs through the wall) are in world space, so the synthesized
+        // Subtract needs no further placement and is added after the transform.
+        if let Some(opening_ids) = voids.get(&el.id) {
+            let mut opening_solids: Vec<Vec<FaceLoops>> = Vec::new();
+            for &op_id in opening_ids {
+                let of = opening_world_faces(file, op_id, scale);
+                if of.len() >= 4 {
+                    opening_solids.push(of);
+                } else {
+                    warnings.push(format!(
+                        "{}: opening #{} is not a buildable solid — hole not cut",
+                        label(),
+                        op_id
+                    ));
+                }
+            }
+            if !opening_solids.is_empty() {
+                // The minuend is the element's own solid (faces) or, if its shape
+                // was itself a boolean, that result. Fold each opening in as a
+                // left-nested Subtract, which eval_csg walks like any CSG tree.
+                let base: Option<CsgOperand> = if !faces.is_empty() {
+                    Some(CsgOperand::Solid(std::mem::take(&mut faces)))
+                } else if booleans.len() == 1 {
+                    Some(CsgOperand::Node(Box::new(booleans.remove(0))))
+                } else {
+                    None
+                };
+                match base {
+                    Some(base) => {
+                        let mut acc = base;
+                        for solid in opening_solids {
+                            acc = CsgOperand::Node(Box::new(CsgNode {
+                                op: BoolOp::Subtract,
+                                first: acc,
+                                second: CsgOperand::Solid(solid),
+                            }));
+                        }
+                        if let CsgOperand::Node(n) = acc {
+                            booleans.push(*n);
+                        }
+                    }
+                    None => warnings.push(format!(
+                        "{}: has openings but no single solid to cut them from — hole not cut",
+                        label()
+                    )),
+                }
+            }
         }
         if faces.is_empty() && booleans.is_empty() {
             if supported_geometry > 0 {
@@ -527,6 +580,67 @@ fn extruded_area_solid_loops(
         });
     }
     Ok((faces, 0))
+}
+
+/// `wall #N → [opening #M, …]` from every `IfcRelVoidsElement`. A door or window
+/// opening is usually not baked into the wall's own shape — it is a separate
+/// `IfcOpeningElement` tied to the wall by this relationship, and the wall only
+/// gets its hole once the opening is subtracted.
+fn collect_voids(file: &StepFile) -> std::collections::HashMap<u32, Vec<u32>> {
+    let mut voids: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for (_, e) in file.iter_entities() {
+        if !e.tag.eq_ignore_ascii_case("IFCRELVOIDSELEMENT") {
+            continue;
+        }
+        // (GlobalId, OwnerHistory, Name, Description, RelatingBuildingElement,
+        //  RelatedOpeningElement)
+        let wall = e.args.get(4).and_then(|v| v.as_ref());
+        let opening = e.args.get(5).and_then(|v| v.as_ref());
+        if let (Some(w), Some(o)) = (wall, opening) {
+            voids.entry(w).or_default().push(o);
+        }
+    }
+    voids
+}
+
+/// The world-space solid of an `IfcOpeningElement` — its representation items
+/// built and placed by its own placement chain (which runs through the wall, so
+/// the hole lands where the file put it). Empty if it isn't a buildable solid.
+fn opening_world_faces(file: &StepFile, opening_id: u32, scale: f64) -> Vec<FaceLoops> {
+    let mut out = Vec::new();
+    let Some(op) = file.entity(opening_id) else { return out };
+    // IfcOpeningElement: 5 ObjectPlacement, 6 Representation (an IfcElement).
+    let placement = op
+        .args
+        .get(5)
+        .and_then(|v| v.as_ref())
+        .map(|pid| crate::ifc_placement::resolve_placement(file, pid, scale))
+        .unwrap_or_default();
+    let Some(shape) = op.args.get(6).and_then(|v| v.as_ref()).and_then(|s| file.entity(s)) else {
+        return out;
+    };
+    if !shape.tag.eq_ignore_ascii_case("IFCPRODUCTDEFINITIONSHAPE") {
+        return out;
+    }
+    let Some(reps) = shape.args.get(2).and_then(|v| v.as_list()) else { return out };
+    for rep_val in reps {
+        let Some(rep) = rep_val.as_ref().and_then(|r| file.entity(r)) else { continue };
+        if !rep.tag.eq_ignore_ascii_case("IFCSHAPEREPRESENTATION") {
+            continue;
+        }
+        let Some(items) = rep.args.get(3).and_then(|v| v.as_list()) else { continue };
+        for item_val in items {
+            let Some(item_id) = item_val.as_ref() else { continue };
+            if let Ok((mut fs, _)) = geometry_face_loops_counted(file, item_id, scale) {
+                for f in &mut fs {
+                    f.transform(&placement);
+                    f.closed_curve = None;
+                }
+                out.append(&mut fs);
+            }
+        }
+    }
+    out
 }
 
 /// An `IfcBooleanResult` / `IfcBooleanClippingResult` → a CSG tree. `None` when
@@ -2072,6 +2186,63 @@ END-ISO-10303-21;
             "the unreadable boolean is warned about: {:?}",
             g.warnings
         );
+    }
+
+    /// A wall with an opening tied to it by IfcRelVoidsElement — the opening is a
+    /// separate IfcOpeningElement, placed relative to the wall, that must be cut
+    /// out so the wall gets a real hole. The synthesized shape is a Subtract of
+    /// the wall solid minus the opening solid, and the wall's plain faces move
+    /// into it (so the wall isn't imported solid *and* holed).
+    fn wall_voided_by_opening_ifc() -> String {
+        "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#47=IFCAXIS2PLACEMENT3D(#24,$,$);
+#46=IFCLOCALPLACEMENT($,#47);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#71=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#70=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#71));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#70));
+#45=IFCWALL('w',$,'Wall',$,$,#46,#48,$,$);
+#83=IFCCARTESIANPOINT((1.,0.,0.8));
+#82=IFCAXIS2PLACEMENT3D(#83,$,$);
+#81=IFCLOCALPLACEMENT(#46,#82);
+#88=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#87=IFCEXTRUDEDAREASOLID(#88,$,$,1.);
+#86=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#87));
+#84=IFCPRODUCTDEFINITIONSHAPE($,$,(#86));
+#80=IFCOPENINGELEMENT('o',$,'Opening',$,$,#81,#84,$,.OPENING.);
+#85=IFCRELVOIDSELEMENT('rv',$,$,$,#45,#80);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string()
+    }
+
+    #[test]
+    fn a_rel_voids_element_synthesizes_a_subtract_of_wall_minus_opening() {
+        let g = import_ifc_geometry(&wall_voided_by_opening_ifc()).unwrap();
+        // Only the wall is a member — the opening is a void, never imported alone.
+        assert_eq!(g.elements.len(), 1, "the opening is not a standalone member");
+        let el = &g.elements[0];
+        assert!(el.faces.is_empty(), "the wall's solid moved into the void boolean");
+        assert_eq!(el.booleans.len(), 1, "one synthesized void boolean");
+
+        let node = &el.booleans[0];
+        assert_eq!(node.op, BoolOp::Subtract, "a void is a subtraction");
+        // wall solid − opening solid, both six-faced prisms.
+        match (&node.first, &node.second) {
+            (CsgOperand::Solid(wall), CsgOperand::Solid(opening)) => {
+                assert_eq!(wall.len(), 6, "the wall prism");
+                assert_eq!(opening.len(), 6, "the opening prism");
+            }
+            _ => panic!("wall minus opening, both plain solids"),
+        }
     }
 
     #[test]
