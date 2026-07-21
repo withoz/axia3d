@@ -474,18 +474,35 @@ fn arc_interior_points(
         angle_of(end)
     };
 
-    // Sweep a0→a1 in the sense the trim declares.
-    let mut sweep = a1 - a0;
+    // A self-loop edge — start and end are the same vertex — is a *closed*
+    // circle: the whole rim carried in one edge, the way ADR-089 Path B and
+    // many BIM tools write a round disk or a circular hole. Read by its single
+    // vertex it collapses the face; it has to sweep the full turn. This is made
+    // explicit rather than left to fall out of the `<= 1e-9` roll-over below, so
+    // a future zero-length guard cannot silently un-close every circle.
     const TAU: f64 = std::f64::consts::TAU;
-    if sweep_ccw {
-        while sweep <= 1e-9 {
-            sweep += TAU;
+    let closed = (start - end).length_squared() < 1e-12;
+
+    // Otherwise sweep a0→a1 in the sense the trim declares.
+    let mut sweep = if closed {
+        if sweep_ccw {
+            TAU
+        } else {
+            -TAU
         }
     } else {
-        while sweep >= -1e-9 {
-            sweep -= TAU;
+        let mut s = a1 - a0;
+        if sweep_ccw {
+            while s <= 1e-9 {
+                s += TAU;
+            }
+        } else {
+            while s >= -1e-9 {
+                s -= TAU;
+            }
         }
-    }
+        s
+    };
 
     // Segment count from the chord tolerance: cos(θ/2) = 1 - tol/r.
     let ratio = (1.0 - ARC_CHORD_TOL_MM / radius).clamp(-1.0, 1.0);
@@ -678,6 +695,142 @@ END-ISO-10303-21;
 
         // The centre never moves — this is a direction flip, not a translation.
         let _ = center;
+    }
+
+    /// A closed-circle face: one self-loop edge (EdgeStart == EdgeEnd) whose
+    /// geometry is the circle — how ADR-089 Path B and BIM tools write a round
+    /// disk. `trimmed` toggles the two forms producers use.
+    fn closed_circle_ifc(trimmed: bool) -> String {
+        let curve = if trimmed {
+            // Trim1 == Trim2 (one point, full turn).
+            "#17=IFCTRIMMEDCURVE(#15,(#10),(#10),.T.,.CARTESIAN.);\n#18=IFCEDGECURVE(#16,#16,#17,.T.);"
+        } else {
+            // Bare circle, no trim.
+            "#18=IFCEDGECURVE(#16,#16,#15,.T.);"
+        };
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((1.5,0.,0.));
+#11=IFCCARTESIANPOINT((0.,0.,0.));
+#12=IFCDIRECTION((0.,0.,1.));
+#13=IFCDIRECTION((1.,0.,0.));
+#14=IFCAXIS2PLACEMENT3D(#11,#12,#13);
+#15=IFCCIRCLE(#14,1.5);
+#16=IFCVERTEXPOINT(#10);
+{curve}
+#19=IFCORIENTEDEDGE(*,*,#18,.T.);
+#20=IFCEDGELOOP((#19));
+#21=IFCFACEOUTERBOUND(#20,.T.);
+#22=IFCPLANE(#14);
+#23=IFCADVANCEDFACE((#21),#22,.T.);
+#24=IFCCLOSEDSHELL((#23));
+#25=IFCADVANCEDBREP(#24);
+#26=IFCSHAPEREPRESENTATION($,'Body','AdvancedBrep',(#25));
+#27=IFCPRODUCTDEFINITIONSHAPE($,$,(#26));
+#28=IFCBUILDINGELEMENTPROXY('g',$,'Disk',$,$,$,#27,$,.NOTDEFINED.);
+ENDSEC;
+END-ISO-10303-21;
+",
+            curve = curve
+        )
+    }
+
+    #[test]
+    fn a_closed_circle_self_loop_becomes_a_full_ring() {
+        // The whole rim lives in one edge whose start == end. Read by that
+        // single vertex it collapses to a point and the face is dropped — the
+        // bug this closes. It must sweep the full turn, both in the bare-circle
+        // form and the trim-to-the-same-point form producers use.
+        for trimmed in [false, true] {
+            let g = import_ifc_geometry(&closed_circle_ifc(trimmed)).unwrap();
+            assert_eq!(g.elements.len(), 1, "the disk imports (trimmed={trimmed})");
+            let f = &g.elements[0].faces[0];
+
+            // A ring, not a point: many vertices, every one on the r=1500 circle.
+            assert!(f.outer.len() > 32, "full ring, not a chord (trimmed={trimmed}): {}", f.outer.len());
+            let center = DVec3::ZERO;
+            assert!(
+                f.outer.iter().all(|p| ((*p - center).length() - 1500.0).abs() < 1.0),
+                "every point sits on the circle (trimmed={trimmed})"
+            );
+
+            // It spans the whole circle, not just an arc of it — points near
+            // all four cardinal directions.
+            let has = |tx: f64, ty: f64| {
+                f.outer.iter().any(|p| (p.x - tx).abs() < 30.0 && (p.y - ty).abs() < 30.0)
+            };
+            assert!(has(1500.0, 0.0) && has(-1500.0, 0.0), "reaches ±X (trimmed={trimmed})");
+            assert!(has(0.0, 1500.0) && has(0.0, -1500.0), "reaches ±Y (trimmed={trimmed})");
+        }
+    }
+
+    #[test]
+    fn a_circular_hole_self_loop_imports_as_an_inner_ring() {
+        // A round hole is the same self-loop, used as an inner bound. It has to
+        // arrive as a full inner ring, not a single collapsed point.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#30=IFCCARTESIANPOINT((-4.,-4.,0.));
+#31=IFCCARTESIANPOINT((4.,-4.,0.));
+#32=IFCCARTESIANPOINT((4.,4.,0.));
+#33=IFCCARTESIANPOINT((-4.,4.,0.));
+#34=IFCPOLYLOOP((#30,#31,#32,#33));
+#35=IFCFACEOUTERBOUND(#34,.T.);
+#40=IFCCARTESIANPOINT((1.5,0.,0.));
+#41=IFCCARTESIANPOINT((0.,0.,0.));
+#42=IFCDIRECTION((0.,0.,1.));
+#43=IFCDIRECTION((1.,0.,0.));
+#44=IFCAXIS2PLACEMENT3D(#41,#42,#43);
+#45=IFCCIRCLE(#44,1.5);
+#46=IFCVERTEXPOINT(#40);
+#47=IFCEDGECURVE(#46,#46,#45,.T.);
+#48=IFCORIENTEDEDGE(*,*,#47,.T.);
+#49=IFCEDGELOOP((#48));
+#50=IFCFACEBOUND(#49,.T.);
+#51=IFCPLANE(#44);
+#52=IFCADVANCEDFACE((#35,#50),#51,.T.);
+#53=IFCCLOSEDSHELL((#52));
+#54=IFCADVANCEDBREP(#53);
+#55=IFCSHAPEREPRESENTATION($,'Body','AdvancedBrep',(#54));
+#56=IFCPRODUCTDEFINITIONSHAPE($,$,(#55));
+#57=IFCBUILDINGELEMENTPROXY('g',$,'Holed',$,$,$,#56,$,.NOTDEFINED.);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        let f = &g.elements[0].faces[0];
+        assert_eq!(f.outer.len(), 4, "the square outer boundary");
+        assert_eq!(f.inners.len(), 1, "one hole");
+        let ring = &f.inners[0];
+        assert!(ring.len() > 32, "the hole is a full ring, not a point: {}", ring.len());
+        assert!(
+            ring.iter().all(|p| ((*p - DVec3::ZERO).length() - 1500.0).abs() < 1.0),
+            "every hole point sits on the r=1500 circle"
+        );
+    }
+
+    #[test]
+    fn an_open_arc_is_not_turned_into_a_full_circle() {
+        // Guard the other direction: the closed-loop path must not swallow an
+        // open arc. The semicircle has distinct endpoints and stays a half.
+        let g = import_ifc_geometry(&semicircle_ifc(".T.")).unwrap();
+        let f = &g.elements[0].faces[0];
+        // A full ring would reach the left side (−X); a right half does not.
+        assert!(
+            !f.outer.iter().any(|p| p.x < 3000.0),
+            "the open arc stayed a half-circle, no wrap to the far side"
+        );
     }
 
     #[test]
