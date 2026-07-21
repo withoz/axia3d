@@ -274,10 +274,11 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'file-import':
         break;
 
-      // ── 가져오기 IFC (ADR-203 I-1 — 파일 내용 확인) ──
-      // Reads the .ifc with the engine's STEP-21 parser and reports what it
-      // holds. Geometry (IFC B-rep → DCEL) is the next step, and the toast says
-      // so rather than implying the model was placed.
+      // ── 가져오기 IFC (ADR-203 I-1..I-5 + CSG) ──
+      // Reads the .ifc with the engine's STEP-21 parser and brings its geometry
+      // into the scene as DCEL faces — B-rep, extruded solids, curves, and
+      // boolean CSG (openings, half-space clips) — placed by its placement chain
+      // and grouped by its spatial tree. The toast reports what actually landed.
       case 'import-ifc': {
         import('./IfcImportHandler').then(({ importIfcFile }) => {
           importIfcFile({ bridge, toolManager });
