@@ -891,3 +891,50 @@ invariants valid). `untitled.ifc` (96면)는 호가 없어 영향 없음 — 그
 - 호는 다각형으로 테셀레이트된다 — 임포트된 엣지에 `AnalyticCurve::Arc` 를
   붙이는 것(진짜 kernel-native 재구성)은 별도 트랙.
 - 타원(`IfcEllipse`) / 스플라인(`IfcBSplineCurve`) 경계는 아직 현으로 들어온다.
+
+---
+
+## 23. I-3-arc-closed Acceptance — 닫힌 원 (self-loop) 을 링으로
+
+메모리에 "닫힌 원 self-loop 는 점으로 붕괴, 면 버림" 이라 적혀 있었다.
+측정해 보니 **이미 들어온다** — §22 의 아크 수정이 `IfcEdgeCurve` 의
+`EdgeStart == EdgeEnd`(자기 루프, 원 전체를 한 엣지로) 도 부수적으로 처리했다.
+`sweep = a1 - a0 = 0` 이 아래의 `while sweep <= 1e-9 { sweep += TAU }` 로
+굴러떨어져 한 바퀴가 됐다. 노트가 stale 이었다.
+
+문제는 그게 **우연** 이었다는 점이다. 누가 "길이 0 아크 = skip" 가드를 넣으면
+모든 닫힌 원이 조용히 깨진다. 그래서 이 작업의 산출물은 새 기능이 아니라
+**우연을 의도로** 바꾸는 것이다.
+
+- **`closed` 를 명시**: `arc_interior_points` 가 `start == end` 를 먼저 감지해
+  full turn (`±TAU`) 을 sweep 하도록 했다. 동작은 동일(둘 다 TAU) 하지만 이제
+  roll-over 우연에 의존하지 않는다.
+- **회귀로 잠금** (이전엔 닫힌 원 임포트 테스트가 **하나도 없었다**):
+  - `a_closed_circle_self_loop_becomes_a_full_ring` — bare 원 + trim-동일점 두
+    형태 모두, 링(정점 다수) 이 되고 모든 점이 r=1500 위 + ±X·±Y 도달.
+  - `a_circular_hole_self_loop_imports_as_an_inner_ring` — 원형 구멍이 inner
+    링으로 (점 하나로 안 무너짐).
+  - `an_open_arc_is_not_turned_into_a_full_circle` — 반대 방향 가드: 열린 호가
+    닫힌 원으로 삼켜지지 않음.
+
+### 실파일·왕복 검증
+
+Path B 원 → 우리 export → 재-import: **1면 352정점, 면적 785356 ≈ π·500²**
+(0.005% 오차), invariants valid. trimmed full circle (512정점, π·1500² 0.0025%)
++ 원형 구멍 (inner 링 512정점) 도 정상. `advanced_brep_demo.ifc` (열린 호) 는
+그대로 3면 경고 0.
+
+### 회귀
+
+- axia-ifc **+3** (109→112). mutation 확인: 내부 아크 점을 안 내보내면
+  (호=현) 5개 테스트가 실제로 실패한다.
+- 워크스페이스 **3155 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그 통과.
+
+### 남은 한계
+
+- 원은 **다각형으로 테셀레이트** (352~512정점) — 임포트 엣지에 `AnalyticCurve::
+  Circle` 을 붙이는 진짜 kernel-native 재구성은 별도 트랙. 정점 수는 렌더
+  tolerance (0.02mm) 와 동일 밀도.
+- **타원 self-loop** (`IfcEllipse`) / 스플라인 self-loop 는 아직 점으로 붕괴 →
+  면 버림. 이 작업은 `IfcCircle` self-loop 만.
