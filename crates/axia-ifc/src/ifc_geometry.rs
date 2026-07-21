@@ -241,7 +241,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 continue; // I-2 already reported it
             }
             supported_geometry += 1;
-            match brep_face_loops_counted(file, g.id, scale) {
+            match geometry_face_loops_counted(file, g.id, scale) {
                 Ok((mut fs, dropped)) => {
                     if !placement.is_identity() {
                         for f in &mut fs {
@@ -288,6 +288,25 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
     GeometryImport { elements, spatial, scale_to_mm: scale, placed, warnings }
 }
 
+/// Face loops of one geometry item — a B-rep or a swept solid. Dispatches on
+/// the entity tag so `from_file` does not care which representation a member
+/// uses.
+fn geometry_face_loops_counted(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let tag = file
+        .entity(id)
+        .map(|e| e.tag.to_ascii_uppercase())
+        .unwrap_or_default();
+    if tag == "IFCEXTRUDEDAREASOLID" {
+        extruded_area_solid_loops(file, id, scale)
+    } else {
+        brep_face_loops_counted(file, id, scale)
+    }
+}
+
 /// Face loops of one `IfcFacetedBrep` / `IfcAdvancedBrep`.
 pub fn brep_face_loops(file: &StepFile, brep_id: u32, scale: f64) -> Result<Vec<FaceLoops>, String> {
     brep_face_loops_counted(file, brep_id, scale).map(|(loops, _)| loops)
@@ -326,6 +345,218 @@ pub(crate) fn brep_face_loops_counted(
         }
     }
     Ok((out, dropped))
+}
+
+/// `IfcExtrudedAreaSolid` → the faces of the prism it sweeps.
+///
+/// This is the representation real BIM tools (Revit, ArchiCAD) use for almost
+/// every wall, slab and column: a 2D profile placed in space and extruded a
+/// depth along a direction. We read the profile, place it, and generate the two
+/// caps and the side walls as ordinary face loops — so the rest of the importer
+/// (the polygon path, spatial groups, re-export) treats it like any other
+/// solid. A profile we cannot read yet, or a degenerate depth, drops the item
+/// with a warning rather than inventing geometry.
+fn extruded_area_solid_loops(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let solid = file.entity(id).ok_or_else(|| format!("#{} missing", id))?;
+    // IfcExtrudedAreaSolid(SweptArea, Position, ExtrudedDirection, Depth)
+    let area_id = solid
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .ok_or_else(|| format!("#{} has no swept area", id))?;
+    let profile = match parse_profile(file, area_id, scale) {
+        Some(p) if p.len() >= 3 => p,
+        _ => return Ok((Vec::new(), 1)), // unsupported / degenerate profile
+    };
+    let depth = solid.args.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0) * scale;
+    if depth.abs() <= 1e-9 {
+        return Ok((Vec::new(), 1));
+    }
+
+    // The profile's 2D coordinates live in the swept solid's Position frame;
+    // the extrusion runs along ExtrudedDirection expressed in that same frame.
+    let place = solid
+        .args
+        .get(1)
+        .and_then(|v| v.as_ref())
+        .and_then(|pid| crate::ifc_placement::axis_placement(file, pid, scale))
+        .unwrap_or_default();
+    let dir_local = solid
+        .args
+        .get(2)
+        .and_then(|v| v.as_ref())
+        .and_then(|did| read_direction(file, did))
+        .unwrap_or(DVec3::Z);
+    let world_dir =
+        (place.x * dir_local.x + place.y * dir_local.y + place.z * dir_local.z).normalize_or_zero();
+    if world_dir.length_squared() < 0.5 {
+        return Ok((Vec::new(), 1));
+    }
+
+    let base: Vec<DVec3> = profile.iter().map(|&(u, v)| place.origin + place.x * u + place.y * v).collect();
+    let top: Vec<DVec3> = base.iter().map(|&p| p + world_dir * depth).collect();
+    let n = base.len();
+
+    // Two caps + one quad per profile edge. The engine normalizes winding to
+    // outward (ADR-007), so consistent-but-not-necessarily-outward input is
+    // enough to form a closed solid.
+    let mut faces = Vec::with_capacity(n + 2);
+    faces.push(FaceLoops { outer: base.clone(), inners: vec![], closed_curve: None });
+    faces.push(FaceLoops { outer: top.clone(), inners: vec![], closed_curve: None });
+    for i in 0..n {
+        let j = (i + 1) % n;
+        faces.push(FaceLoops {
+            outer: vec![base[i], base[j], top[j], top[i]],
+            inners: vec![],
+            closed_curve: None,
+        });
+    }
+    Ok((faces, 0))
+}
+
+/// A profile's outer boundary as 2D points in its own plane (engine units).
+/// Handles the shapes real files lean on: a rectangle, a circle (tessellated),
+/// and an arbitrary closed polyline. `None` for a profile we do not read yet
+/// (with voids, an I-beam, a composite curve) so the caller reports it.
+fn parse_profile(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> {
+    let p = file.entity(id)?;
+    let tag = p.tag.to_ascii_uppercase();
+
+    if tag == "IFCRECTANGLEPROFILEDEF" {
+        // (ProfileType, ProfileName, Position, XDim, YDim)
+        let xd = p.args.get(3).and_then(|v| v.as_f64())? * scale;
+        let yd = p.args.get(4).and_then(|v| v.as_f64())? * scale;
+        let (hx, hy) = (xd / 2.0, yd / 2.0);
+        let local = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)];
+        let (o, dx, dy) = profile_placement_2d(file, p.args.get(2).and_then(|v| v.as_ref()), scale);
+        return Some(local.iter().map(|&(u, v)| place2d((u, v), o, dx, dy)).collect());
+    }
+
+    if tag == "IFCCIRCLEPROFILEDEF" {
+        // (ProfileType, ProfileName, Position, Radius) — tessellated to a polygon.
+        let r = p.args.get(3).and_then(|v| v.as_f64())? * scale;
+        if !(r > 0.0) {
+            return None;
+        }
+        let (o, dx, dy) = profile_placement_2d(file, p.args.get(2).and_then(|v| v.as_ref()), scale);
+        let segments = circle_segments(r);
+        return Some(
+            (0..segments)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * (i as f64) / (segments as f64);
+                    place2d((r * a.cos(), r * a.sin()), o, dx, dy)
+                })
+                .collect(),
+        );
+    }
+
+    if tag == "IFCARBITRARYCLOSEDPROFILEDEF" || tag == "IFCARBITRARYPROFILEDEFWITHVOIDS" {
+        // (ProfileType, ProfileName, OuterCurve[, InnerCurves]) — voids ignored
+        // for now (the outer boundary still imports as a solid profile).
+        let outer = p.args.get(2).and_then(|v| v.as_ref())?;
+        return polyline_2d(file, outer, scale);
+    }
+    None
+}
+
+/// The outer curve of an arbitrary profile as 2D points, when it is an
+/// `IfcPolyline` (the common case). Composite/indexed curves are not read yet.
+fn polyline_2d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> {
+    let c = file.entity(id)?;
+    if !c.tag.eq_ignore_ascii_case("IFCPOLYLINE") {
+        return None;
+    }
+    let pts = c.args.first()?.as_list()?;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for pv in pts {
+        let e = pv.as_ref().and_then(|pid| file.entity(pid))?;
+        let coords = e.args.first()?.as_list()?;
+        let x = coords.first()?.as_f64()? * scale;
+        let y = coords.get(1)?.as_f64()? * scale;
+        // A closed polyline repeats its first point last; drop the duplicate.
+        if out.last().map_or(true, |&(lx, ly)| (lx - x).abs() > 1e-9 || (ly - y).abs() > 1e-9) {
+            out.push((x, y));
+        }
+    }
+    if out.len() >= 2 && {
+        let (fx, fy) = out[0];
+        let (lx, ly) = *out.last().unwrap();
+        (fx - lx).abs() <= 1e-9 && (fy - ly).abs() <= 1e-9
+    } {
+        out.pop();
+    }
+    Some(out)
+}
+
+/// An `IfcAxis2Placement2D` → (origin, x-axis, y-axis) in 2D, defaulting to the
+/// identity. The profile's local frame within the swept area.
+fn profile_placement_2d(
+    file: &StepFile,
+    id: Option<u32>,
+    scale: f64,
+) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    let default = ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0));
+    let Some(place) = id.and_then(|pid| file.entity(pid)) else { return default };
+    if !place.tag.eq_ignore_ascii_case("IFCAXIS2PLACEMENT2D") {
+        return default;
+    }
+    let origin = place
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .and_then(|pid| file.entity(pid))
+        .and_then(|e| {
+            let c = e.args.first()?.as_list()?;
+            Some((c.first()?.as_f64()? * scale, c.get(1)?.as_f64()? * scale))
+        })
+        .unwrap_or((0.0, 0.0));
+    let refd = place
+        .args
+        .get(1)
+        .and_then(|v| v.as_ref())
+        .and_then(|did| file.entity(did))
+        .and_then(|e| {
+            let c = e.args.first()?.as_list()?;
+            Some((c.first()?.as_f64()?, c.get(1)?.as_f64()?))
+        })
+        .unwrap_or((1.0, 0.0));
+    let len = (refd.0 * refd.0 + refd.1 * refd.1).sqrt();
+    let dx = if len > 1e-12 { (refd.0 / len, refd.1 / len) } else { (1.0, 0.0) };
+    let dy = (-dx.1, dx.0); // +90° so (dx, dy) is right-handed
+    (origin, dx, dy)
+}
+
+/// Apply a 2D placement to a local (u, v).
+fn place2d((u, v): (f64, f64), o: (f64, f64), dx: (f64, f64), dy: (f64, f64)) -> (f64, f64) {
+    (o.0 + dx.0 * u + dy.0 * v, o.1 + dx.1 * u + dy.1 * v)
+}
+
+/// `IfcDirection` → a vector (direction ratios are unitless).
+fn read_direction(file: &StepFile, id: u32) -> Option<DVec3> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCDIRECTION") {
+        return None;
+    }
+    let c = e.args.first()?.as_list()?;
+    let x = c.first()?.as_f64()?;
+    let y = c.get(1)?.as_f64()?;
+    let z = c.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    Some(DVec3::new(x, y, z))
+}
+
+/// Segment count to tessellate a profile circle at the render chord tolerance.
+fn circle_segments(radius: f64) -> usize {
+    let ratio = (1.0 - ARC_CHORD_TOL_MM / radius).clamp(-1.0, 1.0);
+    let step = 2.0 * ratio.acos();
+    if step > 1e-9 {
+        ((std::f64::consts::TAU / step).ceil() as usize).clamp(8, 512)
+    } else {
+        32
+    }
 }
 
 /// `IfcFace` / `IfcAdvancedFace` → outer + inner loops.
@@ -1412,6 +1643,64 @@ END-ISO-10303-21;
         assert_eq!(f.outer[0], DVec3::new(800.0, 1600.0, 2700.0));
         assert_eq!(f.outer[2], DVec3::new(1200.0, 2400.0, 2700.0));
         assert!(g.warnings.is_empty(), "no warning for an identity file: {:?}", g.warnings);
+    }
+
+    /// A member whose body is an `IfcExtrudedAreaSolid` with the given profile,
+    /// extruded 3 m up.
+    fn extruded_wall_ifc(profile: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+{profile}
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Swept',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        )
+    }
+
+    #[test]
+    fn an_extruded_rectangle_becomes_a_prism() {
+        // The dominant real-BIM representation: a 2D profile swept a depth. A
+        // 4 m x 0.2 m rectangle extruded 3 m is a wall — two caps + four walls.
+        let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);")).unwrap();
+        let el = &g.elements[0];
+        assert_eq!(el.faces.len(), 6, "rectangle prism = 6 faces");
+
+        let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for f in &el.faces {
+            for p in &f.outer {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        // metres → mm: 4000 x 200 footprint, 3000 tall (extruded up +Z).
+        assert!((hi.x - lo.x - 4000.0).abs() < 1.0, "x span {}", hi.x - lo.x);
+        assert!((hi.y - lo.y - 200.0).abs() < 1.0, "y span {}", hi.y - lo.y);
+        assert!((hi.z - lo.z - 3000.0).abs() < 1.0, "extruded 3 m up: {}", hi.z - lo.z);
+    }
+
+    #[test]
+    fn an_extruded_polyline_becomes_a_prism_and_a_circle_is_round() {
+        // Arbitrary closed profile: a triangle → a 3-sided prism (5 faces).
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#30=IFCCARTESIANPOINT((0.,0.));\n#31=IFCCARTESIANPOINT((4.,0.));\n#32=IFCCARTESIANPOINT((0.,3.));\n\
+             #33=IFCPOLYLINE((#30,#31,#32,#30));\n#40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#33);",
+        ))
+        .unwrap();
+        assert_eq!(g.elements[0].faces.len(), 5, "triangle prism = 2 caps + 3 sides");
+
+        // Circle profile tessellates to many sides — a round column.
+        let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCCIRCLEPROFILEDEF(.AREA.,$,$,0.3);")).unwrap();
+        assert!(g.elements[0].faces.len() > 20, "a circle profile is many-sided: {}", g.elements[0].faces.len());
     }
 
     #[test]

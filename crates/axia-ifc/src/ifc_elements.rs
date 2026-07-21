@@ -44,7 +44,8 @@ const ELEMENT_TYPES: &[&str] = &[
 
 /// Geometry representation items I-3 will be able to turn into DCEL faces.
 /// Everything else is reported as unsupported rather than silently dropped.
-const SUPPORTED_GEOMETRY: &[&str] = &["IFCADVANCEDBREP", "IFCFACETEDBREP"];
+const SUPPORTED_GEOMETRY: &[&str] =
+    &["IFCADVANCEDBREP", "IFCFACETEDBREP", "IFCEXTRUDEDAREASOLID"];
 
 /// One geometry item hanging off an element's shape representation.
 #[derive(Clone, Debug, PartialEq)]
@@ -354,16 +355,17 @@ mod tests {
 
     #[test]
     fn unsupported_geometry_is_reported_not_dropped() {
-        // A hand-written wall whose body is an IfcExtrudedAreaSolid — valid IFC
-        // that I-3 cannot convert yet. It must show up as unsupported.
+        // A wall whose body is an IfcSweptDiskSolid (a pipe swept along a
+        // curve) — valid IFC that I-3 cannot convert. It must show up as
+        // unsupported rather than vanish.
         let src = "\
 ISO-10303-21;
 HEADER;
 FILE_SCHEMA(('IFC4X3'));
 ENDSEC;
 DATA;
-#1=IFCEXTRUDEDAREASOLID($,$,$,1.);
-#2=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#1));
+#1=IFCSWEPTDISKSOLID($,10.,$,$,$);
+#2=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#1));
 #3=IFCPRODUCTDEFINITIONSHAPE($,$,(#2));
 #4=IFCWALL('2aBcD',$,'Swept Wall',$,$,$,#3,$,$);
 ENDSEC;
@@ -375,11 +377,36 @@ END-ISO-10303-21;
         assert_eq!(e.name.as_deref(), Some("Swept Wall"));
         assert_eq!(e.global_id.as_deref(), Some("2aBcD"));
         assert_eq!(e.geometry.len(), 1);
-        assert_eq!(e.geometry[0].kind, "IFCEXTRUDEDAREASOLID");
+        assert_eq!(e.geometry[0].kind, "IFCSWEPTDISKSOLID");
         assert!(!e.geometry[0].supported);
         assert!(!e.has_supported_geometry());
         assert_eq!(r.convertible_count(), 0);
-        assert_eq!(r.unsupported_geometry.get("IFCEXTRUDEDAREASOLID"), Some(&1));
+        assert_eq!(r.unsupported_geometry.get("IFCSWEPTDISKSOLID"), Some(&1));
+    }
+
+    #[test]
+    fn an_extruded_area_solid_is_supported_geometry() {
+        // The representation real BIM tools use for almost every wall / slab /
+        // column. δ-era it was reported unsupported; I-3 imports it now.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4000.,200.);
+#2=IFCEXTRUDEDAREASOLID(#1,$,$,3000.);
+#3=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#2));
+#4=IFCPRODUCTDEFINITIONSHAPE($,$,(#3));
+#5=IFCWALL('2aBcD',$,'Swept Wall',$,$,$,#4,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let r = classify_ifc(src).unwrap();
+        let e = &r.elements[0];
+        assert_eq!(e.geometry[0].kind, "IFCEXTRUDEDAREASOLID");
+        assert!(e.geometry[0].supported, "extruded area solids are convertible now");
+        assert_eq!(r.convertible_count(), 1);
     }
 
     #[test]
