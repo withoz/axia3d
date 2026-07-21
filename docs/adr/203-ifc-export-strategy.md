@@ -1001,3 +1001,66 @@ Path B 원 → 우리 export → 재-import: **1면 352정점, 면적 785356 ≈
   트랙. 지금은 렌더 밀도 (352~4096정점) 가 DCEL 경계로 구워진다.
 - 외부 파일의 `IFCELLIPSE` (bspline 아닌 직접 형) / `IFCPOLYLINE` 곡선 경계는
   아직 미지원 — 우리 파일은 전부 bspline 형이라 해당 없음.
+
+---
+
+## 25. I-3-kernel-native Acceptance — 임포트된 곡선을 진짜 곡선으로
+
+§22–§24 는 곡선 경계를 임포트했지만 **다각형** 으로 — 원 352정점, 타원·스플라인
+4096정점이 DCEL 경계로 구워졌다. 그려진 곡선 (Path B: 1 anchor + 1 self-loop
+edge + `AnalyticCurve`) 과 임포트된 곡선이 서로 다른 것이었다. 이제 같아진다.
+
+- **`FaceLoops.closed_curve: Option<AnalyticCurve>`**: 면이 **단일 닫힌곡선
+  disk** (bound 1개 · edge loop 1개 · self-loop edge 1개 · 홀 없음) 이면
+  `single_closed_curve` 가 정확한 `AnalyticCurve` 를 만든다 — `IFCCIRCLE` →
+  Circle, `IFCBSPLINECURVEWITHKNOTS` → BSpline, `RATIONAL` → NURBS (타원 포함).
+  `parse_bspline` 는 §24 의 파싱을 공유 (tessellation 과 curve 재구성 둘 다).
+- **`importIfc` kernel-native 분기**: `closed_curve` 가 Some 이면 anchor 1개 +
+  `add_face_closed_curve` (그려진 곡선과 **같은 엔진 API**). 실패하면 폴리곤
+  경로로 그대로 fall-through — 안전.
+- **철저히 additive**: `closed_curve` 는 곡선 disk 에만 Some. 박스·홀 있는 면·
+  다중 엣지 경계는 전부 None → 폴리곤 경로 **무변경** (회귀 검증: 박스 6면/
+  8정점, 실파일 96면·3면 그대로).
+- **비-identity 배치는 폴리곤**: 곡선은 placement 로 이동 안 하므로, 배치가
+  identity 아니면 `closed_curve = None` 으로 (이미 이동된) 폴리곤 사용.
+
+### 왕복 검증 (실측)
+
+| 곡선 | 이전 (다각형) | 이제 (kernel-native) | 재-export |
+|---|---|---|---|
+| Circle r500 | 352정점 | **1정점** valid | `IFCCIRCLE` |
+| Ellipse 800×400 | 4096정점 | **1정점** valid | `IFCRATIONALBSPLINE…` |
+| closed BSpline | 4096정점 | **1정점** valid | `IFCBSPLINE…` |
+| closed NURBS | 4096정점 | **1정점** valid | `IFCRATIONALBSPLINE…` |
+
+임포트된 원/타원/스플라인이 **그려진 것과 동일** (1 self-loop + AnalyticCurve),
+재-export 가 원래 곡선 엔티티를 그대로 생성, 실제 앱에서 매끈하게 렌더.
+Push/Pull·Boolean 등 kernel op 가 다각형 근사가 아닌 **정확한 곡선** 위에서 동작.
+
+### 회귀
+
+- axia-ifc **+1** (113→114): `a_curve_disk_carries_its_exact_curve_a_box_does_
+  not` — 원 disk → `Circle` (반지름 보존), rational 스플라인 disk → `NURBS`,
+  박스 면 → 전부 None (kernel-native 경로가 일반 형상으로 새지 않음). mutation
+  확인: 감지를 끄면 실패.
+- axia-wasm step6 **+1**: `importIfc` 가 `closed_curve` 를 읽고
+  `add_face_closed_curve` 를 쓰며 폴리곤 경로도 유지하는지 source guard.
+- 워크스페이스 **3158 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그 통과.
+
+### 🎉 곡선 임포트 완전 완결
+
+| | import |
+|---|---|
+| 열린 호 (Circle/Arc) | ✅ §22 (트림 점 방향) |
+| 닫힌 원 self-loop | ✅ §23 → **§25 kernel-native** |
+| 타원 / spline self-loop | ✅ §24 → **§25 kernel-native** |
+| 폴리곤 곡면 경계 (홀 등) | ✅ §22–§24 (다각형, 정확) |
+
+### 남은 한계
+
+- **홀·다중 엣지 경계의 곡선** 은 여전히 다각형 (kernel-native 는 단일
+  closed-curve disk 전용 — `add_face_closed_curve` 의 계약). 곡선 홀의
+  kernel-native 화는 별도 트랙.
+- 외부 파일의 bare `IfcEllipse` / `IfcPolyline` 형은 미지원 (우리 파일은 전부
+  bspline 형).

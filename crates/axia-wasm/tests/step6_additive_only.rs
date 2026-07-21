@@ -2008,3 +2008,35 @@ fn adr203_delta_element_kind_endpoints_wired_and_normalized() {
         "export_ifc_model must pass the kind into IfcElement"
     );
 }
+
+// ── ADR-203 I-3 — imported curve disks are kernel-native ─────────────
+//
+// A single closed-curve disk (a drawn circle / ellipse / spline) must be
+// rebuilt as one anchor + one self-loop edge carrying the exact curve, not
+// baked as a tessellated polygon. import_ifc has to consult the curve and use
+// add_face_closed_curve, and it must fall through to the polygon path so the
+// box/holed cases (which carry no curve) are untouched.
+#[test]
+fn adr203_import_ifc_uses_kernel_native_curve_when_present() {
+    let body = {
+        let l = lib_src();
+        let src: &str = &l;
+        let sig = "fn import_ifc(";
+        let start = src.find(sig).expect("import_ifc");
+        let rest = &src[start + sig.len()..];
+        let end = rest.find("\n    pub fn ").map(|e| e + sig.len()).unwrap_or(src.len() - start);
+        src[start..start + end].to_string()
+    };
+    assert!(
+        body.contains("closed_curve"),
+        "import_ifc must consult FaceLoops::closed_curve"
+    );
+    assert!(
+        body.contains("add_face_closed_curve"),
+        "import_ifc must build the kernel-native face from the curve"
+    );
+    assert!(
+        body.contains("add_face_with_holes"),
+        "and still keep the polygon path for everything else"
+    );
+}

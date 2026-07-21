@@ -33,6 +33,16 @@ use glam::DVec3;
 pub struct FaceLoops {
     pub outer: Vec<DVec3>,
     pub inners: Vec<Vec<DVec3>>,
+    /// The exact curve when this whole face is a single closed-curve disk — one
+    /// self-loop edge, no holes (ADR-089 Path B). Present, the importer can
+    /// build a *kernel-native* face (one anchor + one self-loop edge carrying
+    /// the curve) instead of baking the tessellated `outer` polygon into the
+    /// DCEL, so a drawn circle and an imported one are the same thing.
+    ///
+    /// `outer` is still filled (the tessellation) as a fallback for when the
+    /// kernel-native build is not applicable — e.g. under a non-identity
+    /// placement, which moves the polygon but not this curve.
+    pub closed_curve: Option<axia_geo::AnalyticCurve>,
 }
 
 impl FaceLoops {
@@ -236,6 +246,10 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                     if !placement.is_identity() {
                         for f in &mut fs {
                             f.transform(&placement);
+                            // The polygon moved but the analytic curve did not;
+                            // fall back to the (transformed) polygon rather than
+                            // place the curve wrong.
+                            f.closed_curve = None;
                         }
                         moved = true;
                     }
@@ -343,7 +357,132 @@ fn face_bounds(file: &StepFile, face: &Entity, scale: f64) -> Option<FaceLoops> 
         (None, false) => inners.remove(0),
         (None, true) => return None,
     };
-    Some(FaceLoops { outer, inners })
+    // A disk — one bound, one self-loop curve edge, no holes — can be rebuilt
+    // as its exact curve instead of the tessellated polygon.
+    let closed_curve = if inners.is_empty() {
+        single_closed_curve(file, face, scale)
+    } else {
+        None
+    };
+    Some(FaceLoops { outer, inners, closed_curve })
+}
+
+/// The exact curve when a face is a single closed-curve disk: exactly one
+/// bound, one edge loop, one self-loop edge (`EdgeStart == EdgeEnd`) whose
+/// geometry is a circle or a B-spline. `None` for anything else — a box, a
+/// holed face, a multi-edge boundary — so the importer keeps its polygon path
+/// for all of those.
+fn single_closed_curve(file: &StepFile, face: &Entity, scale: f64) -> Option<axia_geo::AnalyticCurve> {
+    let bounds = face.args.first()?.as_list()?;
+    if bounds.len() != 1 {
+        return None;
+    }
+    let bound = file.entity(bounds[0].as_ref()?)?;
+    let lp = file.entity(bound.args.first().and_then(|v| v.as_ref())?)?;
+    if !lp.tag.eq_ignore_ascii_case("IFCEDGELOOP") {
+        return None;
+    }
+    let edges = lp.args.first()?.as_list()?;
+    if edges.len() != 1 {
+        return None;
+    }
+    let oe = file.entity(edges[0].as_ref()?)?;
+    // IfcOrientedEdge.EdgeElement is attribute 2; a bare edge is itself.
+    let edge = if oe.tag.eq_ignore_ascii_case("IFCORIENTEDEDGE") {
+        file.entity(oe.args.get(2).and_then(|v| v.as_ref())?)?
+    } else {
+        oe
+    };
+    // Self-loop only: the whole rim in one edge.
+    let a = edge.args.first().and_then(|v| v.as_ref()).and_then(|id| vertex_point(file, id, scale))?;
+    let b = edge.args.get(1).and_then(|v| v.as_ref()).and_then(|id| vertex_point(file, id, scale))?;
+    if (a - b).length_squared() > 1e-9 {
+        return None;
+    }
+    edge_closed_curve(file, edge, scale)
+}
+
+/// Build the exact [`AnalyticCurve`] for a self-loop curve edge — circle,
+/// B-spline, or rational B-spline (NURBS / ellipse). `None` for a line or an
+/// unhandled geometry.
+fn edge_closed_curve(file: &StepFile, edge: &Entity, scale: f64) -> Option<axia_geo::AnalyticCurve> {
+    use axia_geo::AnalyticCurve;
+
+    let geom_id = edge.args.get(2).and_then(|v| v.as_ref())?;
+    let mut curve = file.entity(geom_id)?;
+    if curve.tag.eq_ignore_ascii_case("IFCTRIMMEDCURVE") {
+        curve = file.entity(curve.args.first().and_then(|v| v.as_ref())?)?;
+    }
+
+    if curve.tag.eq_ignore_ascii_case("IFCCIRCLE") {
+        let pos = curve.args.first().and_then(|v| v.as_ref())?;
+        let place = crate::ifc_placement::axis_placement(file, pos, scale)?;
+        let radius = curve.args.get(1).and_then(|v| v.as_f64())? * scale;
+        if !(radius > 0.0) {
+            return None;
+        }
+        return Some(AnalyticCurve::Circle {
+            center: place.origin,
+            radius,
+            normal: place.z,
+            basis_u: place.x,
+        });
+    }
+
+    let rational = curve.tag.eq_ignore_ascii_case("IFCRATIONALBSPLINECURVEWITHKNOTS");
+    if rational || curve.tag.eq_ignore_ascii_case("IFCBSPLINECURVEWITHKNOTS") {
+        let (control_pts, knots, degree, weights) = parse_bspline(file, curve, scale)?;
+        return Some(if let Some(weights) = weights.filter(|_| rational) {
+            AnalyticCurve::NURBS { control_pts, weights, knots, degree: degree as u32 }
+        } else {
+            AnalyticCurve::BSpline { control_pts, knots, degree: degree as u32 }
+        });
+    }
+    None
+}
+
+/// Parse an `IfcBSplineCurveWithKnots` (or `RATIONAL`) into the pieces the
+/// engine's curve types want: control points (scaled), the *flat* knot vector
+/// (distinct knots expanded by their multiplicities — the inverse of the
+/// exporter's `compress_knots`), the degree, and weights when present.
+fn parse_bspline(
+    file: &StepFile,
+    curve: &Entity,
+    scale: f64,
+) -> Option<(Vec<DVec3>, Vec<f64>, usize, Option<Vec<f64>>)> {
+    let degree = curve.args.first().and_then(|v| v.as_f64())? as usize;
+    let control_pts: Vec<DVec3> = curve
+        .args
+        .get(1)?
+        .as_list()?
+        .iter()
+        .filter_map(|v| v.as_ref().and_then(|id| cartesian_point(file, id, scale)))
+        .collect();
+    let mults: Vec<usize> = curve
+        .args
+        .get(5)?
+        .as_list()?
+        .iter()
+        .filter_map(|v| v.as_f64().map(|m| m as usize))
+        .collect();
+    let distinct: Vec<f64> = curve.args.get(6)?.as_list()?.iter().filter_map(|v| v.as_f64()).collect();
+    if control_pts.len() < 2 || mults.len() != distinct.len() {
+        return None;
+    }
+    let mut knots: Vec<f64> = Vec::new();
+    for (k, m) in distinct.iter().zip(&mults) {
+        knots.extend(std::iter::repeat(*k).take(*m));
+    }
+    if knots.len() != control_pts.len() + degree + 1 {
+        return None;
+    }
+    let weights = curve
+        .args
+        .get(8)
+        .and_then(|v| v.as_list())
+        .map(|l| l.iter().filter_map(|v| v.as_f64()).collect::<Vec<f64>>())
+        .filter(|w| w.len() == control_pts.len());
+    Some((control_pts, knots, degree, weights))
 }
 
 /// `IfcPolyLoop` or `IfcEdgeLoop` → ordered points (engine units).
@@ -588,43 +727,8 @@ fn spline_interior_points(
         return None;
     }
 
-    // IfcBSplineCurveWithKnots(Degree, ControlPointsList, CurveForm, ClosedCurve,
-    //   SelfIntersect, KnotMultiplicities, Knots, KnotSpec [, WeightsData])
-    let degree = curve.args.first().and_then(|v| v.as_f64())? as usize;
-    let control_pts: Vec<DVec3> = curve
-        .args
-        .get(1)?
-        .as_list()?
-        .iter()
-        .filter_map(|v| v.as_ref().and_then(|id| cartesian_point(file, id, scale)))
-        .collect();
-    let mults: Vec<usize> = curve
-        .args
-        .get(5)?
-        .as_list()?
-        .iter()
-        .filter_map(|v| v.as_f64().map(|m| m as usize))
-        .collect();
-    let distinct: Vec<f64> = curve.args.get(6)?.as_list()?.iter().filter_map(|v| v.as_f64()).collect();
-    if control_pts.len() < 2 || mults.len() != distinct.len() {
-        return None;
-    }
-
-    // Expand distinct knots + multiplicities back into the flat vector the
-    // tessellator wants — the inverse of the exporter's `compress_knots`.
-    let mut knots: Vec<f64> = Vec::new();
-    for (k, m) in distinct.iter().zip(&mults) {
-        knots.extend(std::iter::repeat(*k).take(*m));
-    }
-    if knots.len() != control_pts.len() + degree + 1 {
-        return None; // malformed — leave the face surface-less rather than guess
-    }
-
-    let full = if rational {
-        let weights: Vec<f64> = curve.args.get(8)?.as_list()?.iter().filter_map(|v| v.as_f64()).collect();
-        if weights.len() != control_pts.len() {
-            return None;
-        }
+    let (control_pts, knots, degree, weights) = parse_bspline(file, curve, scale)?;
+    let full = if let Some(weights) = weights.filter(|_| rational) {
         nurbs::tessellate(&control_pts, &weights, &knots, degree, ARC_CHORD_TOL_MM).ok()?
     } else {
         bspline::tessellate(&control_pts, &knots, degree, ARC_CHORD_TOL_MM).ok()?
@@ -874,6 +978,39 @@ END-ISO-10303-21;
             "Spline",
         )
         .expect("emit")
+    }
+
+    #[test]
+    fn a_curve_disk_carries_its_exact_curve_a_box_does_not() {
+        use axia_geo::AnalyticCurve;
+
+        // A single closed-curve disk hands the importer the *exact* curve, so it
+        // can build a kernel-native face (one anchor + one self-loop edge)
+        // instead of baking the tessellated polygon. A circle disk:
+        let g = import_ifc_geometry(&closed_circle_ifc(false)).unwrap();
+        match &g.elements[0].faces[0].closed_curve {
+            Some(AnalyticCurve::Circle { radius, .. }) => {
+                assert!((radius - 1500.0).abs() < 1.0, "the circle's radius survives: {radius}")
+            }
+            other => panic!("expected a Circle, got {other:?}"),
+        }
+
+        // A spline disk (rational — an ellipse's form):
+        let g = import_ifc_geometry(&closed_spline_ifc(true)).unwrap();
+        assert!(
+            matches!(g.elements[0].faces[0].closed_curve, Some(AnalyticCurve::NURBS { .. })),
+            "a rational spline disk carries a NURBS curve"
+        );
+
+        // A box face is a polygon — no exact curve, so the importer keeps its
+        // (unchanged) polygon path. This is the guard against the kernel-native
+        // path leaking onto ordinary geometry.
+        let ifc = emit_box(DVec3::ZERO, DVec3::new(1.0, 2.0, 3.0), "Box");
+        let g = import_ifc_geometry(&ifc).unwrap();
+        assert!(
+            g.elements[0].faces.iter().all(|f| f.closed_curve.is_none()),
+            "no box face pretends to be a curve"
+        );
     }
 
     #[test]
@@ -1389,6 +1526,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 4.0, 5.0),
             ],
             inners: vec![],
+            closed_curve: None,
         };
         match f.plane().expect("planar loop yields a plane") {
             AnalyticSurface::Plane {
@@ -1419,6 +1557,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 3.0, 0.0),
             ],
             inners: vec![],
+            closed_curve: None,
         };
         let AnalyticSurface::Plane { normal, .. } = f.plane().expect("plane") else {
             panic!("expected a plane");
@@ -1437,12 +1576,14 @@ END-ISO-10303-21;
                 DVec3::new(2.0, 0.0, 0.0),
             ],
             inners: vec![],
+            closed_curve: None,
         };
         assert!(line.plane().is_none(), "collinear loop has no plane");
 
         let two = FaceLoops {
             outer: vec![DVec3::ZERO, DVec3::X],
             inners: vec![],
+            closed_curve: None,
         };
         assert!(two.plane().is_none(), "2 points cannot span a plane");
     }
