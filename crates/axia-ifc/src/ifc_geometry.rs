@@ -474,9 +474,86 @@ fn geometry_face_loops_counted(
         .unwrap_or_default();
     if tag == "IFCEXTRUDEDAREASOLID" {
         extruded_area_solid_loops(file, id, scale)
+    } else if tag == "IFCTRIANGULATEDFACESET" {
+        triangulated_face_set_loops(file, id, scale)
     } else {
         brep_face_loops_counted(file, id, scale)
     }
+}
+
+/// The 3D points of an `IfcCartesianPointList3D` — an inline `((x,y,z), …)`
+/// list rather than a list of `IfcCartesianPoint` refs, which is what the
+/// tessellated formats use to keep the file small.
+fn cartesian_point_list_3d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCCARTESIANPOINTLIST3D") {
+        return None;
+    }
+    let coords = e.args.first()?.as_list()?;
+    let mut out = Vec::with_capacity(coords.len());
+    for c in coords {
+        let t = c.as_list()?;
+        let x = t.first()?.as_f64()? * scale;
+        let y = t.get(1)?.as_f64()? * scale;
+        let z = t.get(2)?.as_f64()? * scale;
+        out.push(DVec3::new(x, y, z));
+    }
+    Some(out)
+}
+
+/// An `IfcTriangulatedFaceSet` — a triangle mesh (SketchUp / Revit tessellated
+/// exports). Each triangle becomes a three-vertex face; the shared-vertex dedup
+/// welds them into one mesh and the render hides the coplanar diagonals, so a
+/// tessellated quad reads as a quad. Degenerate triangles are counted, not
+/// silently dropped.
+fn triangulated_face_set_loops(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let set = file.entity(id).ok_or_else(|| format!("#{} missing", id))?;
+    // IfcTriangulatedFaceSet(Coordinates, Normals, Closed, CoordIndex, PnIndex).
+    let coords_id = set
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .ok_or_else(|| format!("#{} has no coordinates", id))?;
+    let points = cartesian_point_list_3d(file, coords_id, scale)
+        .ok_or_else(|| format!("#{} coordinates are not an IfcCartesianPointList3D", id))?;
+    let tris = set
+        .args
+        .get(3)
+        .and_then(|v| v.as_list())
+        .ok_or_else(|| format!("#{} has no triangle index", id))?;
+
+    let mut faces = Vec::with_capacity(tris.len());
+    let mut dropped = 0usize;
+    for tri in tris {
+        let idx = match tri.as_list() {
+            Some(i) if i.len() >= 3 => i,
+            _ => {
+                dropped += 1;
+                continue;
+            }
+        };
+        // 1-based indices into the coordinate list.
+        let pick = |k: usize| -> Option<DVec3> {
+            let raw = idx[k].as_f64()? as i64;
+            if raw < 1 {
+                return None;
+            }
+            points.get((raw - 1) as usize).copied()
+        };
+        match (pick(0), pick(1), pick(2)) {
+            (Some(a), Some(b), Some(c))
+                if (b - a).cross(c - a).length_squared() > 1e-12 =>
+            {
+                faces.push(FaceLoops { outer: vec![a, b, c], inners: vec![], closed_curve: None });
+            }
+            _ => dropped += 1, // out-of-range index or a zero-area sliver
+        }
+    }
+    Ok((faces, dropped))
 }
 
 /// Face loops of one `IfcFacetedBrep` / `IfcAdvancedBrep`.
@@ -2059,6 +2136,49 @@ END-ISO-10303-21;
         // Circle profile tessellates to many sides — a round column.
         let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCCIRCLEPROFILEDEF(.AREA.,$,$,0.3);")).unwrap();
         assert!(g.elements[0].faces.len() > 20, "a circle profile is many-sided: {}", g.elements[0].faces.len());
+    }
+
+    /// A cube as an IfcTriangulatedFaceSet (SketchUp / Revit tessellated export):
+    /// eight points, twelve triangles indexed 1-based. Each triangle becomes a
+    /// face, and out-of-range or zero-area triangles are counted, not imported.
+    fn tri_cube_ifc(triangles: &str, close_paren: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#75=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.),(0.,0.,1.),(1.,0.,1.),(1.,1.,1.),(0.,1.,1.)));
+#74=IFCTRIANGULATEDFACESET(#75,$,.T.,({triangles}),$);
+#78=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#74));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'TriCube',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+{close_paren}"
+        )
+    }
+
+    #[test]
+    fn a_triangulated_face_set_becomes_one_face_per_triangle() {
+        let cube = "(1,2,3),(1,3,4),(5,6,7),(5,7,8),(1,5,6),(1,6,2),\
+                    (4,3,7),(4,7,8),(1,4,8),(1,8,5),(2,6,7),(2,7,3)";
+        let g = import_ifc_geometry(&tri_cube_ifc(cube, "")).unwrap();
+        let el = &g.elements[0];
+        assert_eq!(el.faces.len(), 12, "twelve triangles → twelve faces");
+        // Each face is a triangle; the shared corners dedup at import (8 points).
+        assert!(el.faces.iter().all(|f| f.outer.len() == 3), "every face is a triangle");
+    }
+
+    #[test]
+    fn a_triangulated_face_set_skips_bad_triangles() {
+        // A degenerate (repeated index → zero area) and an out-of-range index are
+        // both dropped rather than importing a broken face.
+        let tris = "(1,2,3),(1,1,2),(1,2,99)";
+        let g = import_ifc_geometry(&tri_cube_ifc(tris, "")).unwrap();
+        assert_eq!(g.elements[0].faces.len(), 1, "only the one good triangle survives");
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real
