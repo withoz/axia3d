@@ -5814,6 +5814,11 @@ impl AxiaEngine {
                 self.scene.groups.set_parent(gid, Some(parent));
             }
         }
+        // A group per imported member, recorded by element id so a door or
+        // window can later be filed under the wall it fills (two passes: the
+        // wall's group must exist before its filler is parented to it).
+        let mut element_group: std::collections::BTreeMap<u32, u32> =
+            std::collections::BTreeMap::new();
         for (ei, faces) in &element_faces {
             let el = &g.elements[*ei];
             let label = match &el.name {
@@ -5822,9 +5827,20 @@ impl AxiaEngine {
             };
             let gid = self.scene.groups.create_group(label, faces.clone());
             groups_made += 1;
-            // A member with no container stays at the top level rather than
-            // being filed under a container the file never named.
-            if let Some(parent) = el.container.and_then(|c| container_group.get(&c)).copied() {
+            element_group.insert(el.element_id, gid);
+        }
+        for (ei, _faces) in &element_faces {
+            let el = &g.elements[*ei];
+            let Some(&gid) = element_group.get(&el.element_id) else { continue };
+            // A window or door fills an opening in a wall (IfcRelFillsElement) —
+            // group it under that wall. Otherwise file it under its spatial
+            // container; a member with neither stays at the top level rather than
+            // under a container the file never named.
+            let parent = el
+                .fills_wall
+                .and_then(|w| element_group.get(&w).copied())
+                .or_else(|| el.container.and_then(|c| container_group.get(&c).copied()));
+            if let Some(parent) = parent {
                 self.scene.groups.set_parent(gid, Some(parent));
             }
         }
@@ -13844,6 +13860,64 @@ END-ISO-10303-21;
         // tunnel walls. The opening itself never lands as a solid block.
         assert!(n > 6, "the void cut a hole (faces {})", n);
         assert!(e.scene.mesh.verify_face_invariants().is_valid(), "the holed wall is valid");
+    }
+
+    /// IfcRelFillsElement — a window that fills an opening in a wall is grouped
+    /// *under* that wall, not left loose in the storey. So selecting the wall
+    /// takes its windows with it.
+    #[test]
+    fn a_window_is_grouped_under_the_wall_it_fills() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#47=IFCAXIS2PLACEMENT3D(#24,$,$);
+#46=IFCLOCALPLACEMENT($,#47);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#71=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#70=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#71));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#70));
+#45=IFCWALL('w',$,'Wall',$,$,#46,#48,$,$);
+#83=IFCCARTESIANPOINT((1.,0.,0.8));
+#82=IFCAXIS2PLACEMENT3D(#83,$,$);
+#81=IFCLOCALPLACEMENT(#46,#82);
+#88=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#87=IFCEXTRUDEDAREASOLID(#88,$,$,1.);
+#86=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#87));
+#84=IFCPRODUCTDEFINITIONSHAPE($,$,(#86));
+#80=IFCOPENINGELEMENT('o',$,'Opening',$,$,#81,#84,$,.OPENING.);
+#85=IFCRELVOIDSELEMENT('rv',$,$,$,#45,#80);
+#103=IFCLOCALPLACEMENT(#81,#82);
+#92=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,0.9,0.1);
+#91=IFCEXTRUDEDAREASOLID(#92,$,$,0.9);
+#90=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#91));
+#89=IFCPRODUCTDEFINITIONSHAPE($,$,(#90));
+#102=IFCWINDOW('win',$,'Window',$,$,#103,#89,$,0.9,0.9,$,$,$);
+#112=IFCRELFILLSELEMENT('rf',$,$,$,#80,#102);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        let find = |needle: &str| {
+            e.scene
+                .groups
+                .groups
+                .iter()
+                .find(|(_, g)| g.name.contains(needle))
+                .map(|(id, g)| (*id, g.parent))
+        };
+        let (wall_gid, _) = find("Wall").expect("wall group");
+        let (_, window_parent) = find("Window").expect("window group");
+        assert_eq!(
+            window_parent,
+            Some(wall_gid),
+            "the window is nested under the wall it fills"
+        );
     }
 }
 

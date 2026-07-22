@@ -216,6 +216,10 @@ pub struct ElementGeometry {
     /// `IfcBooleanResult` trees — a wall with an opening, evaluated with the
     /// engine's boolean when the member is imported.
     pub booleans: Vec<CsgNode>,
+    /// The wall this member fills an opening in (`IfcRelFillsElement` →
+    /// `IfcRelVoidsElement`, I-5). A door or window is grouped under that wall
+    /// rather than sitting loose in the storey. `None` for a plain member.
+    pub fills_wall: Option<u32>,
 }
 
 /// Result of reading a whole file's geometry.
@@ -308,6 +312,9 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
     // Openings that void a wall (IfcRelVoidsElement) — subtracted below so a door
     // or window opening becomes a real hole rather than a phantom overlap.
     let voids = collect_voids(file);
+    // Which wall each door / window fills an opening in (IfcRelFillsElement) —
+    // used to group the filler under its wall (I-5).
+    let fills = collect_fills(file);
 
     let mut elements = Vec::new();
     let mut placed = 0usize;
@@ -447,6 +454,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             container: spatial.container_of.get(&el.id).copied(),
             faces,
             booleans,
+            fills_wall: fills.get(&el.id).copied(),
         });
     }
     GeometryImport { elements, spatial, scale_to_mm: scale, placed, warnings }
@@ -601,6 +609,42 @@ fn collect_voids(file: &StepFile) -> std::collections::HashMap<u32, Vec<u32>> {
         }
     }
     voids
+}
+
+/// `filler #N → wall #M` — the door or window that fills an opening, and the
+/// wall that opening voids. Composes `IfcRelFillsElement` (opening → filler)
+/// with `IfcRelVoidsElement` (opening → wall), so a window imported as its own
+/// member can be grouped under the wall it belongs to.
+fn collect_fills(file: &StepFile) -> std::collections::HashMap<u32, u32> {
+    // opening → wall, from the void relationships.
+    let mut opening_wall: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for (_, e) in file.iter_entities() {
+        if e.tag.eq_ignore_ascii_case("IFCRELVOIDSELEMENT") {
+            let wall = e.args.get(4).and_then(|v| v.as_ref());
+            let opening = e.args.get(5).and_then(|v| v.as_ref());
+            if let (Some(w), Some(o)) = (wall, opening) {
+                opening_wall.insert(o, w);
+            }
+        }
+    }
+    let mut fills: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for (_, e) in file.iter_entities() {
+        if !e.tag.eq_ignore_ascii_case("IFCRELFILLSELEMENT") {
+            continue;
+        }
+        // (GlobalId, OwnerHistory, Name, Description, RelatingOpeningElement,
+        //  RelatedBuildingElement)
+        let opening = e.args.get(4).and_then(|v| v.as_ref());
+        let filler = e.args.get(5).and_then(|v| v.as_ref());
+        if let (Some(o), Some(f)) = (opening, filler) {
+            if let Some(&w) = opening_wall.get(&o) {
+                if w != f {
+                    fills.insert(f, w);
+                }
+            }
+        }
+    }
+    fills
 }
 
 /// The world-space solid of an `IfcOpeningElement` — its representation items
@@ -2243,6 +2287,53 @@ END-ISO-10303-21;
             }
             _ => panic!("wall minus opening, both plain solids"),
         }
+    }
+
+    #[test]
+    fn a_window_filling_an_opening_records_the_wall_it_belongs_to() {
+        // IfcRelFillsElement(opening, window) ∘ IfcRelVoidsElement(wall, opening)
+        // → the window's fills_wall is the wall, so it can be grouped under it.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#47=IFCAXIS2PLACEMENT3D(#24,$,$);
+#46=IFCLOCALPLACEMENT($,#47);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#71=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#70=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#71));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#70));
+#45=IFCWALL('w',$,'Wall',$,$,#46,#48,$,$);
+#83=IFCCARTESIANPOINT((1.,0.,0.8));
+#82=IFCAXIS2PLACEMENT3D(#83,$,$);
+#81=IFCLOCALPLACEMENT(#46,#82);
+#88=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#87=IFCEXTRUDEDAREASOLID(#88,$,$,1.);
+#86=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#87));
+#84=IFCPRODUCTDEFINITIONSHAPE($,$,(#86));
+#80=IFCOPENINGELEMENT('o',$,'Opening',$,$,#81,#84,$,.OPENING.);
+#85=IFCRELVOIDSELEMENT('rv',$,$,$,#45,#80);
+#103=IFCLOCALPLACEMENT(#81,#82);
+#92=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,0.9,0.1);
+#91=IFCEXTRUDEDAREASOLID(#92,$,$,0.9);
+#90=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#91));
+#89=IFCPRODUCTDEFINITIONSHAPE($,$,(#90));
+#102=IFCWINDOW('win',$,'Window',$,$,#103,#89,$,0.9,0.9,$,$,$);
+#112=IFCRELFILLSELEMENT('rf',$,$,$,#80,#102);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        // Wall and window import; the opening does not.
+        let wall = g.elements.iter().find(|e| e.element_id == 45).expect("wall imported");
+        let window = g.elements.iter().find(|e| e.element_id == 102).expect("window imported");
+        assert_eq!(wall.fills_wall, None, "the wall fills nothing");
+        assert_eq!(window.fills_wall, Some(45), "the window belongs to the wall it fills");
     }
 
     #[test]
