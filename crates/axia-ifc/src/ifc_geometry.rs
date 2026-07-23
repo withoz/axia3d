@@ -733,16 +733,31 @@ fn extruded_area_solid_loops(
         return Ok((Vec::new(), 1));
     }
 
-    let base: Vec<DVec3> = profile.iter().map(|&(u, v)| place.origin + place.x * u + place.y * v).collect();
+    let to_3d = |u: f64, v: f64| place.origin + place.x * u + place.y * v;
+    let base: Vec<DVec3> = profile.iter().map(|&(u, v)| to_3d(u, v)).collect();
     let top: Vec<DVec3> = base.iter().map(|&p| p + world_dir * depth).collect();
     let n = base.len();
 
-    // Two caps + one quad per profile edge. The engine normalizes winding to
-    // outward (ADR-007), so consistent-but-not-necessarily-outward input is
-    // enough to form a closed solid.
-    let mut faces = Vec::with_capacity(n + 2);
-    faces.push(FaceLoops { outer: base.clone(), inners: vec![], closed_curve: None });
-    faces.push(FaceLoops { outer: top.clone(), inners: vec![], closed_curve: None });
+    // Voids (IfcArbitraryProfileDefWithVoids) → through-holes: each becomes a hole
+    // in both caps and a wall of its own, so a profile-with-a-void extrudes to a
+    // genus-1 closed solid (a tube).
+    let voids = parse_profile_voids(file, area_id, scale);
+    let void_base: Vec<Vec<DVec3>> = voids
+        .iter()
+        .map(|loop_| loop_.iter().map(|&(u, v)| to_3d(u, v)).collect())
+        .collect();
+    let void_top: Vec<Vec<DVec3>> = void_base
+        .iter()
+        .map(|ring| ring.iter().map(|&p| p + world_dir * depth).collect())
+        .collect();
+
+    // Two caps (each carrying the voids as holes) + one quad per outer edge + one
+    // quad per void edge. The engine normalizes winding to outward (ADR-007), so
+    // consistent-but-not-necessarily-outward input is enough to form a closed solid.
+    let wall_quads = n + void_base.iter().map(|r| r.len()).sum::<usize>();
+    let mut faces = Vec::with_capacity(wall_quads + 2);
+    faces.push(FaceLoops { outer: base.clone(), inners: void_base.clone(), closed_curve: None });
+    faces.push(FaceLoops { outer: top.clone(), inners: void_top.clone(), closed_curve: None });
     for i in 0..n {
         let j = (i + 1) % n;
         faces.push(FaceLoops {
@@ -750,6 +765,20 @@ fn extruded_area_solid_loops(
             inners: vec![],
             closed_curve: None,
         });
+    }
+    // A wall around each void, wound opposite to the outer wall so its normal faces
+    // into the hole; its edges coincide with the caps' hole loops (watertight) —
+    // the same pattern the hollow swept disk uses for its inner wall.
+    for (vb, vt) in void_base.iter().zip(&void_top) {
+        let vn = vb.len();
+        for i in 0..vn {
+            let j = (i + 1) % vn;
+            faces.push(FaceLoops {
+                outer: vec![vb[i], vt[i], vt[j], vb[j]],
+                inners: vec![],
+                closed_curve: None,
+            });
+        }
     }
     Ok((faces, 0))
 }
@@ -1543,12 +1572,35 @@ fn parse_profile(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>
     }
 
     if tag == "IFCARBITRARYCLOSEDPROFILEDEF" || tag == "IFCARBITRARYPROFILEDEFWITHVOIDS" {
-        // (ProfileType, ProfileName, OuterCurve[, InnerCurves]) — voids ignored
-        // for now (the outer boundary still imports as a solid profile).
+        // (ProfileType, ProfileName, OuterCurve[, InnerCurves]) — the outer boundary.
+        // The voids (InnerCurves) are read separately by `parse_profile_voids`, so a
+        // caller that can punch holes (extrude) does and one that can't stays solid.
         let outer = p.args.get(2).and_then(|v| v.as_ref())?;
         return polyline_2d(file, outer, scale);
     }
     None
+}
+
+/// The inner curves (voids) of an `IfcArbitraryProfileDefWithVoids`, each as a 2D
+/// polyline loop in the profile's own frame. Empty for any other profile (it has no
+/// voids) or when an inner curve is not a readable closed polyline.
+fn parse_profile_voids(file: &StepFile, id: u32, scale: f64) -> Vec<Vec<(f64, f64)>> {
+    let Some(p) = file.entity(id) else {
+        return Vec::new();
+    };
+    if !p.tag.eq_ignore_ascii_case("IFCARBITRARYPROFILEDEFWITHVOIDS") {
+        return Vec::new();
+    }
+    // (ProfileType, ProfileName, OuterCurve, InnerCurves).
+    let Some(inner_curves) = p.args.get(3).and_then(|v| v.as_list()) else {
+        return Vec::new();
+    };
+    inner_curves
+        .iter()
+        .filter_map(|c| c.as_ref())
+        .filter_map(|cid| polyline_2d(file, cid, scale))
+        .filter(|loop_| loop_.len() >= 3)
+        .collect()
 }
 
 /// The outer curve of an arbitrary profile as 2D points, when it is an
@@ -2795,6 +2847,29 @@ END-ISO-10303-21;
         // Circle profile tessellates to many sides — a round column.
         let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCCIRCLEPROFILEDEF(.AREA.,$,$,0.3);")).unwrap();
         assert!(g.elements[0].faces.len() > 20, "a circle profile is many-sided: {}", g.elements[0].faces.len());
+    }
+
+    #[test]
+    fn an_extruded_profile_with_a_void_becomes_a_tube() {
+        // IfcArbitraryProfileDefWithVoids — a 4 m × 2 m rectangle with a 2 m × 1 m
+        // rectangular void, extruded 3 m → a rectangular tube (a through-hole).
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#30=IFCCARTESIANPOINT((0.,0.));\n#31=IFCCARTESIANPOINT((4.,0.));\n\
+             #32=IFCCARTESIANPOINT((4.,2.));\n#39=IFCCARTESIANPOINT((0.,2.));\n\
+             #33=IFCPOLYLINE((#30,#31,#32,#39,#30));\n\
+             #34=IFCCARTESIANPOINT((1.,0.5));\n#35=IFCCARTESIANPOINT((3.,0.5));\n\
+             #36=IFCCARTESIANPOINT((3.,1.5));\n#37=IFCCARTESIANPOINT((1.,1.5));\n\
+             #38=IFCPOLYLINE((#34,#35,#36,#37,#34));\n\
+             #40=IFCARBITRARYPROFILEDEFWITHVOIDS(.AREA.,$,#33,(#38));",
+        ))
+        .unwrap();
+        let el = &g.elements[0];
+        // 2 caps + 4 outer side quads + 4 void side quads.
+        assert_eq!(el.faces.len(), 10, "rect tube = 2 caps + 4 outer + 4 void walls");
+        // Exactly the two caps carry the void as a 4-point hole.
+        let capped: Vec<_> = el.faces.iter().filter(|f| f.inners.len() == 1).collect();
+        assert_eq!(capped.len(), 2, "two caps, each with one hole");
+        assert!(capped.iter().all(|f| f.inners[0].len() == 4), "the hole is the square void");
     }
 
     /// A cube as an IfcTriangulatedFaceSet (SketchUp / Revit tessellated export):

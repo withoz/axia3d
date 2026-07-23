@@ -14213,5 +14213,59 @@ END-ISO-10303-21;
             "the parameter-trimmed line pipe is a valid watertight solid"
         );
     }
+
+    /// An IfcArbitraryProfileDefWithVoids extruded → a rectangular tube: a 4×2 m
+    /// rectangle with a 2×1 m void, pulled up 3 m. It imports as a valid watertight
+    /// genus-1 solid (a through-hole), spanning the outer footprint.
+    #[test]
+    fn an_extruded_profile_with_a_void_imports_as_a_valid_tube() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#30=IFCCARTESIANPOINT((0.,0.));
+#31=IFCCARTESIANPOINT((4.,0.));
+#32=IFCCARTESIANPOINT((4.,2.));
+#39=IFCCARTESIANPOINT((0.,2.));
+#33=IFCPOLYLINE((#30,#31,#32,#39,#30));
+#34=IFCCARTESIANPOINT((1.,0.5));
+#35=IFCCARTESIANPOINT((3.,0.5));
+#36=IFCCARTESIANPOINT((3.,1.5));
+#37=IFCCARTESIANPOINT((1.,1.5));
+#38=IFCPOLYLINE((#34,#35,#36,#37,#34));
+#40=IFCARBITRARYPROFILEDEFWITHVOIDS(.AREA.,$,#33,(#38));
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Tube',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 10, "2 caps + 4 outer + 4 void walls");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the voided extrusion is a valid watertight tube"
+        );
+        // Outer footprint: 4 m in X, 2 m in Y, extruded 3 m up in Z.
+        let mut lo = glam::DVec3::splat(f64::INFINITY);
+        let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+        for (fid, face) in e.scene.mesh.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if let Some(bb) = axia_geo::operations::coplanar::face_world_aabb(&e.scene.mesh, fid) {
+                lo = lo.min(bb.min);
+                hi = hi.max(bb.max);
+            }
+        }
+        assert!((hi.x - lo.x - 4000.0).abs() < 1.0, "4 m outer width in X: {}", hi.x - lo.x);
+        assert!((hi.y - lo.y - 2000.0).abs() < 1.0, "2 m outer depth in Y: {}", hi.y - lo.y);
+        assert!((hi.z - lo.z - 3000.0).abs() < 1.0, "3 m extrusion in Z: {}", hi.z - lo.z);
+    }
 }
 
