@@ -13949,5 +13949,41 @@ END-ISO-10303-21;
             "a closed triangle mesh is a valid solid"
         );
     }
+
+    /// An IfcPolygonalFaceSet imports each face as one N-gon — a cube as six quad
+    /// IfcIndexedPolygonalFace, not twelve triangles — welding into a watertight
+    /// closed solid.
+    #[test]
+    fn a_polygonal_face_set_imports_as_quads() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#75=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.),(0.,0.,1.),(1.,0.,1.),(1.,1.,1.),(0.,1.,1.)));
+#60=IFCINDEXEDPOLYGONALFACE((1,4,3,2));
+#61=IFCINDEXEDPOLYGONALFACE((5,6,7,8));
+#62=IFCINDEXEDPOLYGONALFACE((1,2,6,5));
+#63=IFCINDEXEDPOLYGONALFACE((2,3,7,6));
+#64=IFCINDEXEDPOLYGONALFACE((3,4,8,7));
+#65=IFCINDEXEDPOLYGONALFACE((4,1,5,8));
+#74=IFCPOLYGONALFACESET(#75,.T.,(#60,#61,#62,#63,#64,#65),$);
+#78=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#74));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'PolyCube',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 6, "six quads, not twelve triangles");
+        assert_eq!(e.scene.mesh.vert_count(), 8, "the shared corners weld to eight vertices");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "a closed quad mesh is a valid solid"
+        );
+    }
 }
 
