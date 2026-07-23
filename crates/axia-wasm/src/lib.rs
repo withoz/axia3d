@@ -14338,5 +14338,37 @@ END-ISO-10303-21;
             "the indexed-polycurve profile extrudes to a valid watertight solid"
         );
     }
+
+    /// The named steel sections (I/H, T, U/channel, L/angle) extruded from their
+    /// parametric definition each import as a valid watertight prism.
+    #[test]
+    fn parametric_steel_sections_import_as_valid_prisms() {
+        let wrap = |profile: &str| {
+            format!(
+                "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n\
+                 #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);\n{profile}\n\
+                 #50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);\n\
+                 #51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));\n\
+                 #52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));\n\
+                 #53=IFCBEAM('b',$,'Steel',$,$,$,#52,$,$);\nENDSEC;\nEND-ISO-10303-21;\n"
+            )
+        };
+        // (profile entity, expected faces = 2 caps + one side quad per outline vertex)
+        let cases = [
+            ("#40=IFCISHAPEPROFILEDEF(.AREA.,$,$,0.2,0.4,0.01,0.015);", 14usize),
+            ("#40=IFCTSHAPEPROFILEDEF(.AREA.,$,$,0.4,0.3,0.02,0.03);", 10),
+            ("#40=IFCUSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.15,0.02,0.02);", 10),
+            ("#40=IFCLSHAPEPROFILEDEF(.AREA.,$,$,0.2,0.15,0.02);", 8),
+        ];
+        for (profile, want_faces) in cases {
+            let mut e = AxiaEngine::new();
+            e.import_ifc(wrap(profile));
+            assert_eq!(active_faces(&e), want_faces, "section {profile} face count");
+            assert!(
+                e.scene.mesh.verify_face_invariants().is_valid(),
+                "section {profile} is a valid watertight prism"
+            );
+        }
+    }
 }
 
