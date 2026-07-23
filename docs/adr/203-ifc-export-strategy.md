@@ -1466,3 +1466,62 @@ well-formed IFC 임을 확인.
 
 - **PnIndex remap** 미사용 (§30 과 동일 — 직접 index). PnIndex 사용 파일은 remap 필요.
 - 대형 mesh 는 여전히 per-face DCEL (§30 과 동일 — coplanar merge 는 future).
+
+## 32. I-3-revolved Acceptance — IfcRevolvedAreaSolid (회전체)
+
+**회전체가 들어온다.** 2D 프로파일을 축 둘레로 돌린 solid — 링·파이프 벤드·원형
+난간 등 곡면 부재의 표준 표현. `IfcExtrudedAreaSolid` (§26) 가 프로파일을 *평행이동*
+하듯, 회전체는 프로파일을 *회전*시킨다. 이전엔 "no convertible geometry".
+
+- **`revolved_area_solid_loops`** (`ifc_geometry.rs`): `IfcRevolvedAreaSolid
+  (SweptArea, Position, Axis, Angle)` — 프로파일(§26 `parse_profile` 재사용)을
+  Position 평면에 놓고, `Axis`(`IfcAxis1Placement`) 둘레로 각도 step 마다 회전
+  (`rotate_around_axis`, Rodrigues). 연속 ring 을 quad side face 로 잇는다.
+- **부분 vs 전체**: < 360° 는 시작·끝 프로파일로 cap. 360° 는 자기 자신으로 닫혀
+  (마지막 ring == 첫 ring) cap 없음. step ≈ 15°/step.
+- **plane angle unit** (`plane_angle_scale_to_radians`): `IfcConversionBasedUnit`
+  (degree) 가 참조하는 SI radian 을 *이긴다* — 파일이 assign 하는 건 conversion
+  unit, SI radian 은 그 base 일 뿐. degree → ×π/180, 그 외 radian.
+- **`IfcAxis1Placement`** (`read_axis1_placement`): Location(점) + Axis(방향, 기본
+  +Z). classifier `SUPPORTED_GEOMETRY` += `IFCREVOLVEDAREASOLID`.
+
+### 실측
+
+| 입력 | 결과 |
+|---|---|
+| 사각 프로파일(x∈[2,3], y∈[0,1]) 을 Y축 둘레 **360° (2π rad)** | **96 face / 96 vert**, **valid watertight ring**, AABB X·Z ∈ [±3000] (외경 3 m) / Y ∈ [0,1000] (높이 1 m) — 정확 |
+| **90°** 부분 회전 | 30 face (side quad + 2 cap), valid closedSolid |
+| **360° (DEGREE unit)** | 96 face — 2π radian ring 과 동일 (unit 변환 정확) |
+
+Live 앱 렌더: 사각단면 링(외경 3 m, 내경 2 m, 높이 1 m, 가운데 구멍), 콘솔 오류 0.
+
+### 외부 커널 교차검증 (web-ifc) — inconclusive
+
+web-ifc 는 `IfcRevolvedAreaSolid` 를 tessellate 하지 않는다 (0 triangle — 그 커널의
+gap). 따라서 revolution 은 web-ifc 교차검증 불가. 검증은 **valid watertight solid +
+정확한 AABB(외경/높이 프로파일 일치) + 올바른 렌더 형상 + degree/radian 일치** 로
+확보 (§30-31 의 web-ifc 대조와 달리 이 형식은 자체 기하 검증).
+
+### 회귀
+
+- axia-ifc **+3**: `a_revolved_area_solid_sweeps_a_closed_ring` (full, quad only,
+  no cap) + `a_partial_revolution_adds_end_caps` (부분 → cap) + `a_revolution_
+  angle_in_degrees_matches_radians` (degree unit).
+- axia-wasm **+1** (WASM 경로, CI 가시): `a_revolved_area_solid_imports_as_a_valid_
+  ring` (valid + AABB 외경 3 m / 높이 1 m). mutation 확인: `revolved_area_solid_
+  loops` 를 empty 로 하면 0 face → 실패.
+- 워크스페이스 **3183 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그·외부 IFC 통과. 양 WASM 타깃 byte-parity (4086761).
+
+### 사용자 가치 — 회전체 형상 임포트
+
+이전엔 회전체(링·파이프 벤드·원형 단면) 가 통째로 거부됐다. 이제 들어온다. §26 (압출)
++ §32 (회전) 로 IFC 의 두 swept solid 형식이 모두 임포트된다.
+
+### 남은 한계
+
+- **step tessellation** 고정(~15°). LOD/정밀도 옵션은 별도.
+- 프로파일이 축을 가로지르면(straddle) 회전 시 self-intersect — 축 위 점은 반경 0
+  degenerate face 로 skip 되나 표준(축에서 offset)만 검증. `IfcSweptDiskSolid` (원형
+  단면 파이프) 는 별도.
+- 프로파일 **hole** (`IfcArbitraryProfileDefWithVoids`) 미반영 — outer 만 회전.

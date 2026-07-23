@@ -13985,5 +13985,60 @@ END-ISO-10303-21;
             "a closed quad mesh is a valid solid"
         );
     }
+
+    /// An IfcRevolvedAreaSolid revolves a 2D profile around an axis. A 2-3 m
+    /// square offset from the Y axis, swept a full turn, is a rectangular-section
+    /// ring — a watertight solid spanning the outer radius in X and Z and the
+    /// profile height in Y.
+    #[test]
+    fn a_revolved_area_solid_imports_as_a_valid_ring() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#34=IFCCARTESIANPOINT((2.,0.));
+#35=IFCCARTESIANPOINT((3.,0.));
+#36=IFCCARTESIANPOINT((3.,1.));
+#37=IFCCARTESIANPOINT((2.,1.));
+#33=IFCPOLYLINE((#34,#35,#36,#37,#34));
+#40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#33);
+#51=IFCAXIS2PLACEMENT3D(#24,$,$);
+#53=IFCDIRECTION((0.,1.,0.));
+#52=IFCAXIS1PLACEMENT(#24,#53);
+#50=IFCREVOLVEDAREASOLID(#40,#51,#52,6.283185307);
+#78=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'Ring',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert!(active_faces(&e) >= 48, "a many-faced ring (faces {})", active_faces(&e));
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the revolved ring is a valid watertight solid"
+        );
+        // The ring's outer radius is 3 m and its height is the 1 m profile — the
+        // profile's x becomes the radius (X/Z), its y stays the height (Y).
+        let mut lo = glam::DVec3::splat(f64::INFINITY);
+        let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+        for (fid, face) in e.scene.mesh.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if let Some(bb) = axia_geo::operations::coplanar::face_world_aabb(&e.scene.mesh, fid) {
+                lo = lo.min(bb.min);
+                hi = hi.max(bb.max);
+            }
+        }
+        assert!((hi.x - 3000.0).abs() < 50.0 && (lo.x + 3000.0).abs() < 50.0, "outer radius 3 m in X");
+        assert!((hi.z - 3000.0).abs() < 50.0 && (lo.z + 3000.0).abs() < 50.0, "outer radius 3 m in Z");
+        assert!((lo.y).abs() < 1.0 && (hi.y - 1000.0).abs() < 1.0, "profile height 1 m in Y");
+    }
 }
 

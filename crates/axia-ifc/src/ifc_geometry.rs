@@ -474,6 +474,8 @@ fn geometry_face_loops_counted(
         .unwrap_or_default();
     if tag == "IFCEXTRUDEDAREASOLID" {
         extruded_area_solid_loops(file, id, scale)
+    } else if tag == "IFCREVOLVEDAREASOLID" {
+        revolved_area_solid_loops(file, id, scale)
     } else if tag == "IFCTRIANGULATEDFACESET" {
         triangulated_face_set_loops(file, id, scale)
     } else if tag == "IFCPOLYGONALFACESET" {
@@ -743,6 +745,136 @@ fn extruded_area_solid_loops(
         let j = (i + 1) % n;
         faces.push(FaceLoops {
             outer: vec![base[i], base[j], top[j], top[i]],
+            inners: vec![],
+            closed_curve: None,
+        });
+    }
+    Ok((faces, 0))
+}
+
+/// The factor from the file's plane-angle unit to radians. A conversion-based
+/// unit (degrees) *wins* over the SI radian it references — the file assigns the
+/// conversion unit, the SI radian is only its base. Defaults to radians.
+fn plane_angle_scale_to_radians(file: &StepFile) -> f64 {
+    for (_, ent) in file.iter_entities() {
+        let is_angle = ent
+            .args
+            .get(1)
+            .and_then(|v| v.as_enum())
+            .map(|e| e.eq_ignore_ascii_case("PLANEANGLEUNIT"))
+            .unwrap_or(false);
+        if !is_angle {
+            continue;
+        }
+        // A conversion-based plane-angle unit is degrees in practice.
+        if ent.tag.eq_ignore_ascii_case("IFCCONVERSIONBASEDUNIT") {
+            return std::f64::consts::PI / 180.0;
+        }
+    }
+    1.0 // SI radian (the IFC default)
+}
+
+/// An `IfcAxis1Placement(Location, Axis)` → (point, unit direction). The axis
+/// defaults to +Z when omitted.
+fn read_axis1_placement(file: &StepFile, id: u32, scale: f64) -> Option<(DVec3, DVec3)> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCAXIS1PLACEMENT") {
+        return None;
+    }
+    let loc = e.args.first().and_then(|v| v.as_ref()).and_then(|p| cartesian_point(file, p, scale))?;
+    let dir = e
+        .args
+        .get(1)
+        .and_then(|v| v.as_ref())
+        .and_then(|d| read_direction(file, d))
+        .unwrap_or(DVec3::Z)
+        .normalize_or_zero();
+    if dir.length_squared() < 0.5 {
+        return None;
+    }
+    Some((loc, dir))
+}
+
+/// Rotate a point around an axis (Rodrigues) — the sweep of a revolved solid.
+fn rotate_around_axis(p: DVec3, axis_pt: DVec3, axis_dir: DVec3, angle: f64) -> DVec3 {
+    let v = p - axis_pt;
+    let v_par = axis_dir * v.dot(axis_dir);
+    let v_perp = v - v_par;
+    axis_pt + v_par + v_perp * angle.cos() + axis_dir.cross(v_perp) * angle.sin()
+}
+
+/// An `IfcRevolvedAreaSolid(SweptArea, Position, Axis, Angle)` — a 2D profile
+/// revolved around an axis. The profile is placed in its Position frame, then
+/// swept in angular steps; consecutive rings are joined by quad side faces, and a
+/// partial (< 360°) revolution is capped by the start and end profiles. A full
+/// turn closes on itself with no caps.
+fn revolved_area_solid_loops(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let solid = file.entity(id).ok_or_else(|| format!("#{} missing", id))?;
+    let area_id = solid
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .ok_or_else(|| format!("#{} has no swept area", id))?;
+    let profile = match parse_profile(file, area_id, scale) {
+        Some(p) if p.len() >= 3 => p,
+        _ => return Ok((Vec::new(), 1)),
+    };
+    let place = solid
+        .args
+        .get(1)
+        .and_then(|v| v.as_ref())
+        .and_then(|pid| crate::ifc_placement::axis_placement(file, pid, scale))
+        .unwrap_or_default();
+    let (axis_pt, axis_dir) = solid
+        .args
+        .get(2)
+        .and_then(|v| v.as_ref())
+        .and_then(|aid| read_axis1_placement(file, aid, scale))
+        .ok_or_else(|| format!("#{} has no revolution axis", id))?;
+    let angle = solid.args.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0)
+        * plane_angle_scale_to_radians(file);
+    if angle.abs() <= 1e-6 {
+        return Ok((Vec::new(), 1));
+    }
+
+    // The profile in world space, in its Position plane.
+    let base: Vec<DVec3> =
+        profile.iter().map(|&(u, v)| place.origin + place.x * u + place.y * v).collect();
+    let n = base.len();
+
+    // ~15° per step; a full turn closes on itself (last ring == first).
+    let full = (angle.abs() - std::f64::consts::TAU).abs() < 1e-4;
+    let steps = ((angle.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).max(2);
+    let ring_count = if full { steps } else { steps + 1 };
+    let rings: Vec<Vec<DVec3>> = (0..ring_count)
+        .map(|i| {
+            let a = angle * (i as f64) / (steps as f64);
+            base.iter().map(|&p| rotate_around_axis(p, axis_pt, axis_dir, a)).collect()
+        })
+        .collect();
+
+    let mut faces = Vec::with_capacity(steps * n + 2);
+    for i in 0..steps {
+        let r0 = &rings[i];
+        let r1 = if full && i == steps - 1 { &rings[0] } else { &rings[i + 1] };
+        for j in 0..n {
+            let k = (j + 1) % n;
+            faces.push(FaceLoops {
+                outer: vec![r0[j], r0[k], r1[k], r1[j]],
+                inners: vec![],
+                closed_curve: None,
+            });
+        }
+    }
+    // A partial revolution is closed by the start and end profile caps.
+    if !full {
+        faces.push(FaceLoops { outer: rings[0].clone(), inners: vec![], closed_curve: None });
+        faces.push(FaceLoops {
+            outer: rings[ring_count - 1].clone(),
             inners: vec![],
             closed_curve: None,
         });
@@ -2322,6 +2454,74 @@ END-ISO-10303-21;
         assert_eq!(el.faces[0].outer.len(), 4, "a square outer boundary");
         assert_eq!(el.faces[0].inners.len(), 1, "one hole");
         assert_eq!(el.faces[0].inners[0].len(), 4, "a square hole");
+    }
+
+    /// A square profile offset from the axis, revolved a `revolution` around the
+    /// Y axis. Full turn → a rectangular-section ring; the `unit`/`angle` slot
+    /// lets a test choose radians or a declared degree unit.
+    fn revolved_ring_ifc(unit: &str, angle: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+{unit}
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#34=IFCCARTESIANPOINT((2.,0.));
+#35=IFCCARTESIANPOINT((3.,0.));
+#36=IFCCARTESIANPOINT((3.,1.));
+#37=IFCCARTESIANPOINT((2.,1.));
+#33=IFCPOLYLINE((#34,#35,#36,#37,#34));
+#40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#33);
+#51=IFCAXIS2PLACEMENT3D(#24,$,$);
+#53=IFCDIRECTION((0.,1.,0.));
+#52=IFCAXIS1PLACEMENT(#24,#53);
+#50=IFCREVOLVEDAREASOLID(#40,#51,#52,{angle});
+#78=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'Ring',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        )
+    }
+
+    #[test]
+    fn a_revolved_area_solid_sweeps_a_closed_ring() {
+        // Full 360° (2π rad) → side quads all the way round, no caps.
+        let g = import_ifc_geometry(&revolved_ring_ifc("", "6.283185307")).unwrap();
+        let el = &g.elements[0];
+        assert!(el.faces.len() >= 48, "many side faces around the ring: {}", el.faces.len());
+        assert_eq!(el.faces.len() % 4, 0, "four profile edges × N steps, no caps");
+        assert!(el.faces.iter().all(|f| f.outer.len() == 4), "every side face is a quad");
+    }
+
+    #[test]
+    fn a_partial_revolution_adds_end_caps() {
+        // A quarter turn is capped at both ends, so it has two more faces than the
+        // bare side quads (4 edges × steps).
+        let g = import_ifc_geometry(&revolved_ring_ifc("", "1.570796327")).unwrap();
+        let count = g.elements[0].faces.len();
+        assert_eq!(count % 4, 2, "4×steps side quads + 2 caps: {}", count);
+    }
+
+    #[test]
+    fn a_revolution_angle_in_degrees_matches_radians() {
+        // 360 DEGREE (via IfcConversionBasedUnit) is the same full turn as 2π rad.
+        let deg_unit = "#11=IFCCONVERSIONBASEDUNIT(#12,.PLANEANGLEUNIT.,'DEGREE',#13);\n\
+                        #12=IFCDIMENSIONALEXPONENTS(0,0,0,0,0,0,0);\n\
+                        #13=IFCMEASUREWITHUNIT(IFCPLANEANGLEMEASURE(1.745E-2),#14);\n\
+                        #14=IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.);";
+        let deg = import_ifc_geometry(&revolved_ring_ifc(deg_unit, "360.")).unwrap();
+        let rad = import_ifc_geometry(&revolved_ring_ifc("", "6.283185307")).unwrap();
+        assert_eq!(
+            deg.elements[0].faces.len(),
+            rad.elements[0].faces.len(),
+            "360° and 2π revolve to the same ring"
+        );
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real
