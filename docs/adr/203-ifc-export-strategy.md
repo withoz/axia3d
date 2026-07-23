@@ -1523,5 +1523,66 @@ gap). 따라서 revolution 은 web-ifc 교차검증 불가. 검증은 **valid wa
 - **step tessellation** 고정(~15°). LOD/정밀도 옵션은 별도.
 - 프로파일이 축을 가로지르면(straddle) 회전 시 self-intersect — 축 위 점은 반경 0
   degenerate face 로 skip 되나 표준(축에서 offset)만 검증. `IfcSweptDiskSolid` (원형
-  단면 파이프) 는 별도.
+  단면 파이프) → **§33 에서 지원.**
 - 프로파일 **hole** (`IfcArbitraryProfileDefWithVoids`) 미반영 — outer 만 회전.
+
+## 33. I-3-sweptdisk Acceptance — IfcSweptDiskSolid (파이프·튜브)
+
+**파이프가 들어온다.** 원형 단면(disk)을 곡선(directrix)을 따라 쓸어낸 solid —
+배관·난간·튜브의 표준 표현. `IfcRevolvedAreaSolid`(§32)가 프로파일을 축 둘레로
+돌린다면, swept disk 는 원을 경로를 따라 쓸어낸다. 이전엔 "no convertible geometry".
+
+- **`swept_disk_solid_loops`** (`ifc_geometry.rs`): `IfcSweptDiskSolid(Directrix,
+  Radius, InnerRadius, StartParam, EndParam)` — directrix 를 polyline 으로 샘플
+  (`polyline_3d`), 각 점에서 twist-minimizing frame (이전 normal 을 새 단면 평면에
+  projection — 직선 구간 no twist, bend gentle) 을 carry, 원형 단면(16 seg) ring 을
+  놓고 연속 ring 을 quad 로 잇는다. open pipe 는 양 끝 disk cap.
+- **hollow tube**: `InnerRadius` 있으면 inner wall + **annular cap** (outer ring 을
+  inner ring 구멍으로 → `add_face_with_holes`).
+- **`read_axis1_placement`** 등 §32 자산 재사용. directrix 는 현재 `IfcPolyline`
+  만 (파이프·난간의 표준). classifier `SUPPORTED_GEOMETRY` += `IFCSWEPTDISKSOLID`.
+- **element type**: swept disk 는 이미 분류된 `IfcMember`·`IfcRailing`·
+  `IfcBuildingElementProxy` (튜브 부재·난간·일반) 로 도달 가능. MEP `IfcPipeSegment`·
+  `IfcDuctSegment` 분류는 별도 트랙.
+
+### 실측
+
+| 입력 | 결과 |
+|---|---|
+| 직선 directrix, radius 0.5 m, 길이 3 m | **18 face** (16 side quad + 2 cap), **valid watertight cylinder**, AABB X·Y ∈ [±500] (반경 0.5 m) / Z ∈ [0,3000] (길이 3 m) — 정확 |
+| L-bend directrix (2 seg), radius 0.3 m | 34 face (2×16 side + 2 cap), valid closedSolid |
+| hollow tube (inner 0.3 m) | 34 face (outer 16 + inner 16 + 2 annular cap), valid |
+
+Live 앱 렌더: L-bend 원형 파이프 (수직 + 수평 구간이 bend 에서 연결), 콘솔 오류 0.
+
+### 외부 커널 교차검증 (web-ifc)
+
+직선 파이프를 web-ifc 로: **1 mesh / 22 triangle** — swept disk 를 파이프로 메시화
+(§32 revolution 의 0 triangle 과 달리 web-ifc 가 이 형식은 지원). 우리 18 face(16
+seg) vs web-ifc coarser tessellation — 같은 파이프, 밀도만 다름.
+
+### 회귀
+
+- axia-ifc **+2**: `a_swept_disk_solid_is_a_pipe` (직선 18 face + L-bend 34 face) +
+  `a_hollow_swept_disk_has_annular_end_caps` (inner → annular cap). 기존 unsupported
+  예시 테스트는 `IfcSurfaceCurveSweptAreaSolid` 로 교체 (swept disk 가 이제 supported).
+- axia-wasm **+1** (WASM 경로, CI 가시): `a_swept_disk_solid_imports_as_a_valid_pipe`
+  (18 face + AABB 반경 0.5 m / 길이 3 m). mutation 확인: `swept_disk_solid_loops`
+  를 empty 로 하면 0 face → 실패.
+- 워크스페이스 **3186 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그·외부 IFC(web-ifc) 통과. 양 WASM 타깃 byte-parity (4095110).
+
+### 사용자 가치 — 파이프·튜브 임포트
+
+이전엔 파이프·난간·튜브(swept disk) 가 통째로 거부됐다. 이제 직선·bend·hollow 모두
+들어온다. §26 압출 + §32 회전 + §33 swept disk 로 IFC 의 세 swept solid 형식이 모두
+임포트된다.
+
+### 남은 한계
+
+- **directrix = polyline 만** — `IfcTrimmedCurve`(호)·`IfcCompositeCurve`·`IfcIndexed
+  PolyCurve` directrix 는 별도 (curve 샘플링 필요).
+- **frame = projection RMF** (급격한 bend 는 miter 부정확 가능). closed-loop directrix
+  는 open 으로 처리 (cap 겹침) — 표준 open pipe 만 검증.
+- MEP element type (`IfcPipeSegment`·`IfcDuctSegment`) 분류 별도 — 현재 `IfcMember`·
+  `IfcRailing`·`IfcBuildingElementProxy` 로 도달.
