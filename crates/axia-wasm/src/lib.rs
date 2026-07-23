@@ -14119,5 +14119,99 @@ END-ISO-10303-21;
             "the arc-swept elbow is a valid watertight solid"
         );
     }
+
+    /// A swept disk whose directrix is an IfcIndexedPolyCurve — a straight run then a
+    /// 3-point arc off one shared point list — imports as a valid watertight solid.
+    #[test]
+    fn a_swept_disk_along_an_indexed_polycurve_is_valid() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINTLIST3D(((0.,0.,-3.),(5.,0.,0.),(3.8302,0.,3.2139),(-0.8682,0.,4.9240)));
+#11=IFCINDEXEDPOLYCURVE(#10,(IFCLINEINDEX((1,2)),IFCARCINDEX((2,3,4))),.F.);
+#50=IFCSWEPTDISKSOLID(#11,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'IndexedPipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert!(active_faces(&e) > 18, "a line span plus an arc has many spans");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the indexed-polycurve pipe is a valid watertight solid"
+        );
+    }
+
+    /// A swept disk along a cubic B-spline directrix imports as a valid watertight
+    /// solid, curved (more than a straight span) and bounded (never exploded).
+    #[test]
+    fn a_swept_disk_along_a_spline_is_valid() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCCARTESIANPOINT((0.,0.,1.));
+#12=IFCCARTESIANPOINT((2.,0.,2.));
+#13=IFCCARTESIANPOINT((2.,0.,4.));
+#14=IFCBSPLINECURVEWITHKNOTS(3,(#10,#11,#12,#13),.UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);
+#50=IFCSWEPTDISKSOLID(#14,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'SplinePipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        let n = active_faces(&e);
+        assert!(n > 18 && n <= 1026, "curved but bounded, got {n}");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the spline-swept pipe is a valid watertight solid"
+        );
+    }
+
+    /// A swept disk along a line directrix trimmed by parameter (Pnt + u·Dir, not
+    /// cartesian endpoints) imports as the same valid 3 m straight pipe.
+    #[test]
+    fn a_swept_disk_along_a_parameter_trimmed_line_is_valid() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCDIRECTION((0.,0.,1.));
+#12=IFCVECTOR(#11,1.);
+#13=IFCLINE(#10,#12);
+#14=IFCTRIMMEDCURVE(#13,(IFCPARAMETERVALUE(0.)),(IFCPARAMETERVALUE(3.)),.T.,.PARAMETER.);
+#50=IFCSWEPTDISKSOLID(#14,0.5);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'ParamLinePipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 18, "16 side quads + 2 caps, 3 m run");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the parameter-trimmed line pipe is a valid watertight solid"
+        );
+    }
 }
 

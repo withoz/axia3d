@@ -6166,7 +6166,12 @@ export class WasmBridge {
     if (!this.engine?.importIfc) return null;
     try {
       const parsed = JSON.parse(this.engine.importIfc(text)) as IfcImportResult;
-      return parsed && typeof parsed.ok === 'boolean' ? parsed : null;
+      if (!parsed || typeof parsed.ok !== 'boolean') return null;
+      // A successful import adds faces to the scene — invalidate the buffer
+      // cache so the next syncMesh does a full rebuild and the geometry shows.
+      // (A failed import leaves the scene untouched, so the cache stays valid.)
+      if (parsed.ok) this.markDirty();
+      return parsed;
     } catch (e) {
       console.error('[WasmBridge] importIfc failed:', e);
       return null;
