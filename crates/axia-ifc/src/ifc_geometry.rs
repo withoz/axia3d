@@ -905,6 +905,105 @@ fn polyline_3d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> {
     }
 }
 
+/// The cartesian point of an `IfcTrimmedCurve` trim, if it carries one.
+fn trim_point(file: &StepFile, trim: &Value, scale: f64) -> Option<DVec3> {
+    trim.as_list()?
+        .iter()
+        .find_map(|it| it.as_ref().and_then(|id| cartesian_point(file, id, scale)))
+}
+
+/// A directrix sampled to a 3D polyline — the sweep only ever needs points, so an
+/// arc, a line, or a chain of them collapses to the same thing a polyline does.
+/// Handles `IfcPolyline`, `IfcTrimmedCurve` (a circle arc or a line), and
+/// `IfcCompositeCurve` (the standard pipe path — straight runs joined by bends).
+fn sample_directrix(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> {
+    let e = file.entity(id)?;
+    match e.tag.to_ascii_uppercase().as_str() {
+        "IFCPOLYLINE" => polyline_3d(file, id, scale),
+        "IFCTRIMMEDCURVE" => sample_trimmed_curve(file, e, scale),
+        "IFCCOMPOSITECURVE" => sample_composite_curve(file, e, scale),
+        _ => None,
+    }
+}
+
+/// An `IfcTrimmedCurve` directrix — a circle arc (sampled at the chord tolerance,
+/// both endpoints included) or a straight line between its trim points.
+fn sample_trimmed_curve(file: &StepFile, trimmed: &Entity, scale: f64) -> Option<Vec<DVec3>> {
+    // (BasisCurve, Trim1, Trim2, SenseAgreement, MasterRepresentation)
+    let basis = trimmed.args.first().and_then(|v| v.as_ref()).and_then(|b| file.entity(b))?;
+    let t1 = trimmed.args.get(1)?;
+    let t2 = trimmed.args.get(2)?;
+    let sense = trimmed.args.get(3).and_then(|v| v.as_enum()).map(|s| s != "F").unwrap_or(true);
+    let btag = basis.tag.to_ascii_uppercase();
+
+    if btag == "IFCCIRCLE" {
+        // IfcCircle(Position, Radius) — sweep from Trim1's angle to Trim2's.
+        let pos = basis.args.first().and_then(|v| v.as_ref())?;
+        let place = crate::ifc_placement::axis_placement(file, pos, scale)?;
+        let radius = basis.args.get(1).and_then(|v| v.as_f64())? * scale;
+        if !(radius > 0.0) {
+            return None;
+        }
+        let a0 = trim_angle(file, t1, &place, scale)?;
+        let a1 = trim_angle(file, t2, &place, scale)?;
+        let mut sweep = a1 - a0;
+        if sense {
+            while sweep <= 1e-9 {
+                sweep += std::f64::consts::TAU;
+            }
+        } else {
+            while sweep >= -1e-9 {
+                sweep -= std::f64::consts::TAU;
+            }
+        }
+        // ~15° per step — a pipe path needs angular resolution, not the sub-mm
+        // chord tolerance a rendered boundary curve uses (which would put hundreds
+        // of rings on a metre-scale elbow).
+        let segments =
+            ((sweep.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).clamp(2, 64);
+        let point_at =
+            |a: f64| place.origin + place.x * (radius * a.cos()) + place.y * (radius * a.sin());
+        // Both endpoints — a directrix carries its whole run, not just the interior.
+        Some((0..=segments).map(|i| point_at(a0 + sweep * (i as f64) / (segments as f64))).collect())
+    } else if btag == "IFCLINE" {
+        // A straight run — its trim points are its ends (the common CARTESIAN form).
+        Some(vec![trim_point(file, t1, scale)?, trim_point(file, t2, scale)?])
+    } else {
+        None // a basis curve we do not sample yet
+    }
+}
+
+/// An `IfcCompositeCurve` directrix — its segments' parent curves sampled and
+/// concatenated, each reversed when the segment runs against its parent, with the
+/// shared junction points de-duplicated.
+fn sample_composite_curve(file: &StepFile, cc: &Entity, scale: f64) -> Option<Vec<DVec3>> {
+    let segments = cc.args.first()?.as_list()?;
+    let mut out: Vec<DVec3> = Vec::new();
+    for sv in segments {
+        let Some(seg) = sv.as_ref().and_then(|s| file.entity(s)) else { continue };
+        if !seg.tag.eq_ignore_ascii_case("IFCCOMPOSITECURVESEGMENT") {
+            continue;
+        }
+        // IfcCompositeCurveSegment(Transition, SameSense, ParentCurve)
+        let same_sense = seg.args.get(1).and_then(|v| v.as_enum()).map(|s| s != "F").unwrap_or(true);
+        let Some(parent) = seg.args.get(2).and_then(|v| v.as_ref()) else { continue };
+        let Some(mut pts) = sample_directrix(file, parent, scale) else { continue };
+        if !same_sense {
+            pts.reverse();
+        }
+        for p in pts {
+            if out.last().map_or(true, |&last| (last - p).length_squared() > 1e-12) {
+                out.push(p);
+            }
+        }
+    }
+    if out.len() >= 2 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 /// A unit vector perpendicular to `t` — the seed of a sweep cross-section frame.
 fn perpendicular(t: DVec3) -> DVec3 {
     let seed = if t.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
@@ -928,8 +1027,8 @@ fn swept_disk_solid_loops(
         .first()
         .and_then(|v| v.as_ref())
         .ok_or_else(|| format!("#{} has no directrix", id))?;
-    let path = polyline_3d(file, directrix_id, scale)
-        .ok_or_else(|| format!("#{} directrix is not a polyline we can sweep yet", id))?;
+    let path = sample_directrix(file, directrix_id, scale)
+        .ok_or_else(|| format!("#{} directrix is a curve we cannot sweep yet", id))?;
     let radius = solid.args.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) * scale;
     if !(radius > 0.0) {
         return Ok((Vec::new(), 1));
@@ -2720,6 +2819,71 @@ END-ISO-10303-21;
         assert_eq!(faces.len(), 34, "16 outer + 16 inner + 2 annular caps");
         let capped = faces.iter().filter(|f| f.inners.len() == 1).count();
         assert_eq!(capped, 2, "two annular caps, each with an inner hole");
+    }
+
+    #[test]
+    fn a_swept_disk_follows_an_arc_directrix() {
+        // A 90° arc directrix (radius 2 m) → a curved elbow. The arc is sampled at
+        // ~15°/step (6 spans), so many more side quads than a straight run — not
+        // the hundreds a sub-mm chord tolerance would give.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((2.,0.,0.));
+#11=IFCCARTESIANPOINT((0.,2.,0.));
+#14=IFCCARTESIANPOINT((0.,0.,0.));
+#15=IFCAXIS2PLACEMENT3D(#14,$,$);
+#16=IFCCIRCLE(#15,2.);
+#33=IFCTRIMMEDCURVE(#16,(#10),(#11),.T.,.CARTESIAN.);
+#50=IFCSWEPTDISKSOLID(#33,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'ArcPipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        // 90° / 15° = 6 spans × 16 section segments + 2 caps.
+        assert_eq!(g.elements[0].faces.len(), 98, "6 arc spans × 16 + 2 caps");
+    }
+
+    #[test]
+    fn a_swept_disk_follows_a_composite_curve() {
+        // A composite directrix — the 90° arc, then a straight run — is sampled as
+        // one path, its shared junction de-duplicated. More spans than the arc
+        // alone (it gains the straight segment).
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((2.,0.,0.));
+#11=IFCCARTESIANPOINT((0.,2.,0.));
+#12=IFCCARTESIANPOINT((0.,5.,0.));
+#14=IFCCARTESIANPOINT((0.,0.,0.));
+#15=IFCAXIS2PLACEMENT3D(#14,$,$);
+#16=IFCCIRCLE(#15,2.);
+#20=IFCTRIMMEDCURVE(#16,(#10),(#11),.T.,.CARTESIAN.);
+#30=IFCPOLYLINE((#11,#12));
+#40=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#20);
+#41=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#30);
+#33=IFCCOMPOSITECURVE((#40,#41),.F.);
+#50=IFCSWEPTDISKSOLID(#33,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'CompositePipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        // 6 arc spans + 1 straight span = 7 × 16 + 2 caps.
+        assert_eq!(g.elements[0].faces.len(), 114, "arc + straight, junction merged");
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real
