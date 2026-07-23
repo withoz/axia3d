@@ -912,6 +912,172 @@ fn trim_point(file: &StepFile, trim: &Value, scale: f64) -> Option<DVec3> {
         .find_map(|it| it.as_ref().and_then(|id| cartesian_point(file, id, scale)))
 }
 
+/// The vector of an `IfcVector` — its direction scaled by its magnitude — in mm.
+fn read_vector(file: &StepFile, id: u32, scale: f64) -> Option<DVec3> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCVECTOR") {
+        return None;
+    }
+    // (Orientation: IfcDirection, Magnitude: length).
+    let dir = e
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .and_then(|d| read_direction(file, d))?
+        .normalize_or_zero();
+    if dir.length_squared() < 1e-18 {
+        return None;
+    }
+    let mag = e.args.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) * scale;
+    Some(dir * mag)
+}
+
+/// A parameter value out of a trim list — a bare number or an `IfcParameterValue`.
+/// (The cartesian-point form is handled by `trim_point`.)
+fn trim_param(trim: &Value) -> Option<f64> {
+    trim.as_list()?.iter().find_map(|it| match it {
+        Value::Float(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        Value::Typed { tag, args } if tag.eq_ignore_ascii_case("IFCPARAMETERVALUE") => {
+            args.first().and_then(|v| v.as_f64())
+        }
+        _ => None,
+    })
+}
+
+/// A 2D cartesian point list read into the XY plane (z = 0), in mm. `IfcIndexedPolyCurve`
+/// may carry its points as 2D.
+fn cartesian_point_list_2d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCCARTESIANPOINTLIST2D") {
+        return None;
+    }
+    let coords = e.args.first()?.as_list()?;
+    let mut out = Vec::with_capacity(coords.len());
+    for c in coords {
+        let t = c.as_list()?;
+        let x = t.first()?.as_f64()? * scale;
+        let y = t.get(1)?.as_f64()? * scale;
+        out.push(DVec3::new(x, y, 0.0));
+    }
+    Some(out)
+}
+
+/// A B-spline / NURBS directrix sampled to a polyline — the whole run, at a chord
+/// tolerance coarse enough to keep a metre-scale pipe path from exploding into
+/// hundreds of rings.
+fn sample_spline_directrix(file: &StepFile, curve: &Entity, scale: f64) -> Option<Vec<DVec3>> {
+    use axia_geo::curves::{bspline, nurbs};
+    let rational = curve.tag.eq_ignore_ascii_case("IFCRATIONALBSPLINECURVEWITHKNOTS");
+    if !rational && !curve.tag.eq_ignore_ascii_case("IFCBSPLINECURVEWITHKNOTS") {
+        return None;
+    }
+    let (control_pts, knots, degree, weights) = parse_bspline(file, curve, scale)?;
+    let full = if let Some(w) = weights.filter(|_| rational) {
+        nurbs::tessellate(&control_pts, &w, &knots, degree, DIRECTRIX_SPLINE_TOL_MM).ok()?
+    } else {
+        bspline::tessellate(&control_pts, &knots, degree, DIRECTRIX_SPLINE_TOL_MM).ok()?
+    };
+    if full.len() < 2 {
+        return None;
+    }
+    Some(decimate_polyline(full, 64))
+}
+
+/// Keep a polyline's endpoints but thin its interior to at most `max` points.
+fn decimate_polyline(pts: Vec<DVec3>, max: usize) -> Vec<DVec3> {
+    if pts.len() <= max || max < 2 {
+        return pts;
+    }
+    let last = pts.len() - 1;
+    (0..max).map(|i| pts[i * last / (max - 1)]).collect()
+}
+
+/// The circular arc through three points, sampled at ~15°/step from `a` to `b`
+/// the way that passes through `m`. Collinear points fall back to the straight
+/// chain a→m→b.
+fn sample_arc_3pt(a: DVec3, m: DVec3, b: DVec3) -> Vec<DVec3> {
+    let u = m - a;
+    let v = b - a;
+    let n = u.cross(v);
+    let n2 = n.length_squared();
+    if n2 < 1e-18 {
+        return vec![a, m, b];
+    }
+    // Circumcenter: c = a + ((|u|²v − |v|²u) × (u×v)) / (2|u×v|²).
+    let center = a + (v * u.length_squared() - u * v.length_squared()).cross(n) / (2.0 * n2);
+    let radius = (a - center).length();
+    if !(radius > 1e-9) {
+        return vec![a, m, b];
+    }
+    let ex = (a - center).normalize();
+    let ey = n.normalize().cross(ex);
+    let angle_of = |p: DVec3| {
+        let d = p - center;
+        d.dot(ey).atan2(d.dot(ex))
+    };
+    let two_pi = std::f64::consts::TAU;
+    let wrap = |x: f64| ((x % two_pi) + two_pi) % two_pi;
+    let am = wrap(angle_of(m)); // `a` sits at angle 0 by construction
+    let ab = wrap(angle_of(b));
+    // Sweep 0→ab passing through the mid: CCW if the mid is between, else CW.
+    let sweep = if am > 1e-9 && am < ab { ab } else { ab - two_pi };
+    let segments = ((sweep.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).clamp(2, 64);
+    (0..=segments)
+        .map(|i| {
+            let t = sweep * (i as f64) / (segments as f64);
+            center + ex * (radius * t.cos()) + ey * (radius * t.sin())
+        })
+        .collect()
+}
+
+/// An `IfcIndexedPolyCurve` directrix — a shared point list indexed by straight
+/// (`IfcLineIndex`) and 3-point-arc (`IfcArcIndex`) segments. With no segments it
+/// is a plain polyline through every point.
+fn sample_indexed_polycurve(file: &StepFile, pc: &Entity, scale: f64) -> Option<Vec<DVec3>> {
+    // (Points, Segments, SelfIntersect).
+    let pts_id = pc.args.first().and_then(|v| v.as_ref())?;
+    let points = cartesian_point_list_3d(file, pts_id, scale)
+        .or_else(|| cartesian_point_list_2d(file, pts_id, scale))?;
+    let at = |i: f64| -> Option<DVec3> {
+        let idx = i as i64;
+        (idx >= 1).then(|| points.get((idx - 1) as usize).copied()).flatten()
+    };
+    let push = |out: &mut Vec<DVec3>, p: DVec3| {
+        if out.last().map(|q| (*q - p).length_squared() > 1e-12).unwrap_or(true) {
+            out.push(p);
+        }
+    };
+
+    match pc.args.get(1).and_then(|v| v.as_list()) {
+        // No segments — the point list is the polyline.
+        None => (points.len() >= 2).then_some(points),
+        Some(segs) if segs.is_empty() => (points.len() >= 2).then_some(points),
+        Some(segs) => {
+            let mut out: Vec<DVec3> = Vec::new();
+            for sv in segs {
+                if let Value::Typed { tag, args } = sv {
+                    let idx = args.first().and_then(|v| v.as_list())?;
+                    if tag.eq_ignore_ascii_case("IFCARCINDEX") {
+                        let a = at(idx.first()?.as_f64()?)?;
+                        let m = at(idx.get(1)?.as_f64()?)?;
+                        let b = at(idx.get(2)?.as_f64()?)?;
+                        for p in sample_arc_3pt(a, m, b) {
+                            push(&mut out, p);
+                        }
+                    } else {
+                        // IfcLineIndex (or any straight run) — its points, in order.
+                        for iv in idx {
+                            push(&mut out, at(iv.as_f64()?)?);
+                        }
+                    }
+                }
+            }
+            (out.len() >= 2).then_some(out)
+        }
+    }
+}
+
 /// A directrix sampled to a 3D polyline — the sweep only ever needs points, so an
 /// arc, a line, or a chain of them collapses to the same thing a polyline does.
 /// Handles `IfcPolyline`, `IfcTrimmedCurve` (a circle arc or a line), and
@@ -922,6 +1088,10 @@ fn sample_directrix(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> 
         "IFCPOLYLINE" => polyline_3d(file, id, scale),
         "IFCTRIMMEDCURVE" => sample_trimmed_curve(file, e, scale),
         "IFCCOMPOSITECURVE" => sample_composite_curve(file, e, scale),
+        "IFCINDEXEDPOLYCURVE" => sample_indexed_polycurve(file, e, scale),
+        "IFCBSPLINECURVEWITHKNOTS" | "IFCRATIONALBSPLINECURVEWITHKNOTS" => {
+            sample_spline_directrix(file, e, scale)
+        }
         _ => None,
     }
 }
@@ -966,8 +1136,30 @@ fn sample_trimmed_curve(file: &StepFile, trimmed: &Entity, scale: f64) -> Option
         // Both endpoints — a directrix carries its whole run, not just the interior.
         Some((0..=segments).map(|i| point_at(a0 + sweep * (i as f64) / (segments as f64))).collect())
     } else if btag == "IFCLINE" {
-        // A straight run — its trim points are its ends (the common CARTESIAN form).
-        Some(vec![trim_point(file, t1, scale)?, trim_point(file, t2, scale)?])
+        // A straight run. Its trim can be the two endpoints (the common CARTESIAN
+        // form) or a pair of parameters along Pnt + u·Dir.
+        if let (Some(a), Some(b)) = (trim_point(file, t1, scale), trim_point(file, t2, scale)) {
+            return Some(vec![a, b]);
+        }
+        // IfcLine(Pnt, Dir: IfcVector) — the point at parameter u is Pnt + u·Dir.
+        let pnt = basis
+            .args
+            .first()
+            .and_then(|v| v.as_ref())
+            .and_then(|p| cartesian_point(file, p, scale))?;
+        let dir = basis
+            .args
+            .get(1)
+            .and_then(|v| v.as_ref())
+            .and_then(|d| read_vector(file, d, scale))?;
+        let u0 = trim_param(t1)?;
+        let u1 = trim_param(t2)?;
+        Some(vec![pnt + dir * u0, pnt + dir * u1])
+    } else if btag == "IFCBSPLINECURVEWITHKNOTS" || btag == "IFCRATIONALBSPLINECURVEWITHKNOTS" {
+        // A trimmed spline directrix — the sweep needs the whole run, and pipe
+        // splines are in practice authored to their full parameter range, so we
+        // sample the basis rather than honour the (usually full-range) trims.
+        sample_spline_directrix(file, basis, scale)
     } else {
         None // a basis curve we do not sample yet
     }
@@ -1675,6 +1867,12 @@ fn loop_points(file: &StepFile, loop_id: u32, scale: f64) -> Option<Vec<DVec3>> 
 /// Chord tolerance for walking an imported arc, in mm. Matches the render-side
 /// value (LOCKED #40) so an imported curve is as smooth as a drawn one.
 const ARC_CHORD_TOL_MM: f64 = 0.02;
+
+/// Chord tolerance for a spline used as a *directrix* (a sweep path), in mm.
+/// Coarser than a rendered edge: the fine boundary tolerance would put hundreds
+/// of cross-section rings on a metre-scale pipe, so a path only needs to be
+/// smooth to a couple of millimetres.
+const DIRECTRIX_SPLINE_TOL_MM: f64 = 2.0;
 
 /// The points *between* a curved edge's endpoints, or `None` when the edge is
 /// straight.
@@ -2884,6 +3082,117 @@ END-ISO-10303-21;
         let g = import_ifc_geometry(src).unwrap();
         // 6 arc spans + 1 straight span = 7 × 16 + 2 caps.
         assert_eq!(g.elements[0].faces.len(), 114, "arc + straight, junction merged");
+    }
+
+    #[test]
+    fn arc_through_three_points_recovers_the_circle() {
+        // Three points on a radius-5 circle in the XZ plane, at 0°, 40°, 100°.
+        let on = |deg: f64| {
+            let r = deg.to_radians();
+            DVec3::new(5.0 * r.cos(), 0.0, 5.0 * r.sin())
+        };
+        let (a, m, b) = (on(0.0), on(40.0), on(100.0));
+        let pts = sample_arc_3pt(a, m, b);
+        // Endpoints land exactly; the mid decides the way round (the short arc).
+        assert!((*pts.first().unwrap() - a).length() < 1e-6);
+        assert!((*pts.last().unwrap() - b).length() < 1e-6);
+        // Every sample sits on the recovered circle (centre at the origin, r = 5).
+        for p in &pts {
+            assert!((p.length() - 5.0).abs() < 1e-6, "off the circle: {p:?}");
+        }
+        // 100° / 15° → 7 spans → 8 points. Collinear points fall back to a line.
+        assert_eq!(pts.len(), 8);
+        let line = sample_arc_3pt(
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(2.0, 0.0, 0.0),
+        );
+        assert_eq!(line.len(), 3, "collinear → the straight chain a→m→b");
+    }
+
+    #[test]
+    fn a_swept_disk_follows_an_indexed_polycurve() {
+        // A directrix that is a straight run then a 3-point arc, indexed off one
+        // shared point list — the CAD-standard way to author a pipe path.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINTLIST3D(((0.,0.,-3.),(5.,0.,0.),(3.8302,0.,3.2139),(-0.8682,0.,4.9240)));
+#11=IFCINDEXEDPOLYCURVE(#10,(IFCLINEINDEX((1,2)),IFCARCINDEX((2,3,4))),.F.);
+#50=IFCSWEPTDISKSOLID(#11,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'IndexedPipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        // 1 straight span + 7 arc spans (100° / 15°) = 8 × 16 side quads + 2 caps.
+        assert_eq!(g.elements[0].faces.len(), 130, "line span + 7 arc spans");
+    }
+
+    #[test]
+    fn a_swept_disk_follows_a_spline_directrix() {
+        // A cubic B-spline directrix — sampled to a polyline (its whole run) at the
+        // coarse path tolerance, so it curves without exploding into hundreds of rings.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCCARTESIANPOINT((0.,0.,1.));
+#12=IFCCARTESIANPOINT((2.,0.,2.));
+#13=IFCCARTESIANPOINT((2.,0.,4.));
+#14=IFCBSPLINECURVEWITHKNOTS(3,(#10,#11,#12,#13),.UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);
+#50=IFCSWEPTDISKSOLID(#14,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'SplinePipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        let faces = g.elements[0].faces.len();
+        // More than a single straight span (18) — the curve was sampled — and bounded
+        // by the 64-point decimation cap (64 × 16 + 2 = 1026), never exploded.
+        assert!(faces > 18, "curved spline gives several spans, got {faces}");
+        assert!(faces <= 1026, "decimation caps the ring count, got {faces}");
+        assert_eq!((faces - 2) % 16, 0, "whole side spans + 2 caps");
+    }
+
+    #[test]
+    fn a_swept_disk_line_directrix_uses_parameter_trims() {
+        // A line directrix trimmed by parameter (not cartesian points): the point at
+        // parameter u is Pnt + u·Dir. Trims 0 → 3 along a unit +Z vector give a 3 m
+        // straight pipe — the same 18 faces a cartesian straight run gives.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCDIRECTION((0.,0.,1.));
+#12=IFCVECTOR(#11,1.);
+#13=IFCLINE(#10,#12);
+#14=IFCTRIMMEDCURVE(#13,(IFCPARAMETERVALUE(0.)),(IFCPARAMETERVALUE(3.)),.T.,.PARAMETER.);
+#50=IFCSWEPTDISKSOLID(#14,0.5);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'ParamLinePipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let g = import_ifc_geometry(src).unwrap();
+        assert_eq!(g.elements[0].faces.len(), 18, "16 side quads + 2 caps, 3 m run");
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real

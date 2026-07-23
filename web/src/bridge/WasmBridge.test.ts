@@ -57,6 +57,11 @@ const mockEngine: Record<string, any> = {
   get_all_groups: vi.fn().mockReturnValue('[]'),
   group_count: vi.fn().mockReturnValue(1),
   import_dxf: vi.fn().mockReturnValue('{"faces":10}'),
+  importIfc: vi
+    .fn()
+    .mockReturnValue(
+      '{"ok":true,"elements":1,"faces":6,"vertices":8,"scaleToMm":1000,"placed":0,"groups":1,"warnings":[]}',
+    ),
 };
 
 // Mock the WASM module — AxiaEngine as a real class constructor
@@ -113,6 +118,30 @@ describe('WasmBridge', () => {
       const b2 = bridge.getMeshBuffers();
       // Positions should be same reference (cached)
       expect(b1!.positions).toBe(b2!.positions);
+    });
+  });
+
+  // ADR-203 — a successful IFC import must invalidate the buffer cache, or the
+  // viewport keeps rendering the stale mesh and the import is invisible.
+  describe('importIfc invalidates the buffer cache', () => {
+    it('a successful import marks buffers dirty', () => {
+      bridge.getMeshBuffers(); // clears the dirty flag
+      expect((bridge as any).bufferCache.dirty).toBe(false);
+      const res = bridge.importIfc('IFC TEXT');
+      expect(res?.ok).toBe(true);
+      // Dirty again → the next syncMesh does a full rebuild and the mesh shows.
+      expect((bridge as any).bufferCache.dirty).toBe(true);
+    });
+
+    it('a failed import leaves the cache valid', () => {
+      (mockEngine.importIfc as any).mockReturnValueOnce(
+        '{"ok":false,"elements":0,"faces":0,"vertices":0,"error":"no B-rep"}',
+      );
+      bridge.getMeshBuffers(); // clears the dirty flag
+      const res = bridge.importIfc('IFC TEXT');
+      expect(res?.ok).toBe(false);
+      // Scene untouched → cache stays valid, no needless rebuild.
+      expect((bridge as any).bufferCache.dirty).toBe(false);
     });
   });
 

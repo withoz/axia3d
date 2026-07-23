@@ -1602,10 +1602,56 @@ disk_follows_an_arc_directrix` 98 / `a_swept_disk_follows_a_composite_curve` 114
 WASM `a_swept_disk_along_an_arc_is_a_valid_elbow`). mutation: `sample_trimmed_curve`
 를 None 으로 하면 호·composite 둘 다 실패.
 
+### §33-amendment-2 — 나머지 directrix 곡선 (indexed poly-curve · spline · param-only line)
+
+호·composite 다음으로 남았던 directrix 곡선 세 형식을 모두 채웠다. sweep 은
+여전히 점 리스트만 필요하므로 `sample_directrix` 에 dispatch 만 늘리고 sweep
+본체는 그대로 재사용.
+
+- **`IfcIndexedPolyCurve`** (`sample_indexed_polycurve`): 공유 점 리스트
+  (`IfcCartesianPointList3D`/`2D`) 를 `IfcLineIndex` (직선 run) 와 `IfcArcIndex`
+  (3점 호) 세그먼트로 인덱싱하는 CAD 표준 파이프 경로. 세그먼트가 없으면 전체
+  점을 잇는 polyline.
+- **3점 호** (`sample_arc_3pt`): 세 점을 지나는 원을 circumcenter 공식
+  `c = a + ((|u|²v − |v|²u)×(u×v)) / (2|u×v|²)` 로 복원하고, 중간점이 있는 쪽으로
+  시작→끝을 **~15°/step** 샘플 (§33-amendment 의 각도 해상도 정합). 공선(collinear)
+  이면 직선 chain a→m→b 로 폴백. 순수 기하 회귀 `arc_through_three_points_recovers_
+  the_circle` 로 복원한 원(반경·양 끝점·중간 방향) 검증.
+- **spline** (`sample_spline_directrix`): `IfcBSplineCurveWithKnots` /
+  `IfcRationalBSplineCurveWithKnots` 를 `parse_bspline` (I-3-curves 자산) +
+  `bspline`/`nurbs::tessellate` 로 전 구간 샘플. 단 **경로용 chord tolerance**
+  (`DIRECTRIX_SPLINE_TOL_MM` 2mm, 경계 렌더용 0.02mm 와 분리) + **64점 decimation
+  cap** 으로 metre 급 파이프가 수백 ring 으로 폭발하지 않게.
+- **param-only line** (`sample_trimmed_curve` IFCLINE 확장): trim 이 CARTESIAN 점이
+  아니라 파라미터(`IfcParameterValue`)면 `IfcLine(Pnt, Dir: IfcVector)` 를 따라
+  `P(u) = Pnt + u·Dir` 로 양 끝 계산. `read_vector` (IfcVector = 방향×크기) +
+  `trim_param` 추가. 트리밍된 spline directrix 도 basis 를 전 구간 샘플.
+
+실측 (모두 valid watertight, Euler χ = V−E+F = 2 확인): indexed poly-curve
+(직선 + 100° 호) → **130 face** (1 line span + 7 arc span × 16 + 2 cap) ·
+cubic B-spline directrix → **1010 face** (곡선, ≤1026 cap 안) · param-trim line
+(3 m) → **18 face** (직선 파이프와 동일). 회귀 **+8** (`ifc_geometry` 5:
+arc-3pt 기하 + indexed 130 + spline curved-bounded + param-line 18 + collinear
+fallback / WASM `import_ifc` 3: indexed·spline·param-line 모두 manifold valid).
+mutation: 호 방향을 항상 long-way 로 바꾸면 arc-3pt(19≠8)·indexed(306≠130) 둘 다
+실패. node round-trip + live 앱 import 모두 세 형식 valid=true·면수 정합.
+
+### §33-fix — IFC import 가 viewport 를 갱신하지 않던 배선 버그
+
+live-render 확인 중 발견: `WasmBridge.importIfc` 가 성공 후 **`markDirty()` 를
+호출하지 않아** 버퍼 캐시가 stale 로 남고, `syncMesh` 가 옛 메시를 다시 그려
+**import 결과가 화면에 안 보였다** (`importSnapshot` 등 다른 모든 mutator 는
+`markDirty` 를 부른다). 한 줄 수정 — 성공(`ok:true`)한 import 뒤 `markDirty()`
+호출 (실패는 씬을 안 건드리므로 캐시 유지). 확인: 수정 전 render vert 가 import
+간에 1104 로 고정 → 수정 후 import 마다 갱신 (200→8328→8528, 누적). 회귀
+`importIfc invalidates the buffer cache` 2 (성공 dirty / 실패 유지), mutation 으로
+`markDirty` 제거 시 실패 확인.
+
 ### 남은 한계
 
-- **호·composite 만** — `IfcIndexedPolyCurve` (arc/line index segment) 와 spline
-  directrix 는 별도. line 은 CARTESIAN trim 점 형태만 (param-only line 미지원).
+- **directrix 곡선 5형식 완비** (`IfcPolyline`·`IfcTrimmedCurve` 호/line[cartesian·
+  param]·`IfcCompositeCurve`·`IfcIndexedPolyCurve`·spline). 트리밍된 spline 은 전
+  구간 샘플 (실무상 full-range) — 부분 파라미터 trim 은 미반영.
 - **frame = projection RMF** (급격한 bend 는 miter 부정확 가능). closed-loop directrix
   는 open 으로 처리 (cap 겹침) — 표준 open pipe 만 검증.
 - MEP element type (`IfcPipeSegment`·`IfcDuctSegment`) 분류 별도 — 현재 `IfcMember`·
