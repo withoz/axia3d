@@ -49,6 +49,7 @@ const SUPPORTED_GEOMETRY: &[&str] = &[
     "IFCFACETEDBREP",
     "IFCEXTRUDEDAREASOLID",
     "IFCREVOLVEDAREASOLID",
+    "IFCSWEPTDISKSOLID",
     "IFCBOOLEANRESULT",
     "IFCBOOLEANCLIPPINGRESULT",
     "IFCTRIANGULATEDFACESET",
@@ -363,16 +364,16 @@ mod tests {
 
     #[test]
     fn unsupported_geometry_is_reported_not_dropped() {
-        // A wall whose body is an IfcSweptDiskSolid (a pipe swept along a
-        // curve) — valid IFC that I-3 cannot convert. It must show up as
-        // unsupported rather than vanish.
+        // A wall whose body is an IfcSurfaceCurveSweptAreaSolid (a profile swept
+        // along a curve on a surface) — valid IFC that I-3 cannot convert. It must
+        // show up as unsupported rather than vanish.
         let src = "\
 ISO-10303-21;
 HEADER;
 FILE_SCHEMA(('IFC4X3'));
 ENDSEC;
 DATA;
-#1=IFCSWEPTDISKSOLID($,10.,$,$,$);
+#1=IFCSURFACECURVESWEPTAREASOLID($,$,$,$,$,$);
 #2=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#1));
 #3=IFCPRODUCTDEFINITIONSHAPE($,$,(#2));
 #4=IFCWALL('2aBcD',$,'Swept Wall',$,$,$,#3,$,$);
@@ -385,11 +386,11 @@ END-ISO-10303-21;
         assert_eq!(e.name.as_deref(), Some("Swept Wall"));
         assert_eq!(e.global_id.as_deref(), Some("2aBcD"));
         assert_eq!(e.geometry.len(), 1);
-        assert_eq!(e.geometry[0].kind, "IFCSWEPTDISKSOLID");
+        assert_eq!(e.geometry[0].kind, "IFCSURFACECURVESWEPTAREASOLID");
         assert!(!e.geometry[0].supported);
         assert!(!e.has_supported_geometry());
         assert_eq!(r.convertible_count(), 0);
-        assert_eq!(r.unsupported_geometry.get("IFCSWEPTDISKSOLID"), Some(&1));
+        assert_eq!(r.unsupported_geometry.get("IFCSURFACECURVESWEPTAREASOLID"), Some(&1));
     }
 
     #[test]

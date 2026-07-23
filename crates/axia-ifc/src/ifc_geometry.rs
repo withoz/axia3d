@@ -476,6 +476,8 @@ fn geometry_face_loops_counted(
         extruded_area_solid_loops(file, id, scale)
     } else if tag == "IFCREVOLVEDAREASOLID" {
         revolved_area_solid_loops(file, id, scale)
+    } else if tag == "IFCSWEPTDISKSOLID" {
+        swept_disk_solid_loops(file, id, scale)
     } else if tag == "IFCTRIANGULATEDFACESET" {
         triangulated_face_set_loops(file, id, scale)
     } else if tag == "IFCPOLYGONALFACESET" {
@@ -878,6 +880,151 @@ fn revolved_area_solid_loops(
             inners: vec![],
             closed_curve: None,
         });
+    }
+    Ok((faces, 0))
+}
+
+/// The 3D points of an `IfcPolyline` directrix, consecutive duplicates dropped.
+fn polyline_3d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<DVec3>> {
+    let e = file.entity(id)?;
+    if !e.tag.eq_ignore_ascii_case("IFCPOLYLINE") {
+        return None;
+    }
+    let pts = e.args.first()?.as_list()?;
+    let mut out: Vec<DVec3> = Vec::with_capacity(pts.len());
+    for pv in pts {
+        let p = cartesian_point(file, pv.as_ref()?, scale)?;
+        if out.last().map_or(true, |&last| (last - p).length_squared() > 1e-12) {
+            out.push(p);
+        }
+    }
+    if out.len() >= 2 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// A unit vector perpendicular to `t` — the seed of a sweep cross-section frame.
+fn perpendicular(t: DVec3) -> DVec3 {
+    let seed = if t.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+    (seed - t * seed.dot(t)).normalize_or_zero()
+}
+
+/// An `IfcSweptDiskSolid(Directrix, Radius, InnerRadius, StartParam, EndParam)` —
+/// a circular disk (a pipe cross-section, hollow when InnerRadius is set) swept
+/// along a curve. The directrix is sampled to a polyline, a twist-minimizing frame
+/// is carried along it, and a ring of the cross-section is placed at each point;
+/// consecutive rings are joined by quads and an open pipe is capped at both ends.
+/// Only a polyline directrix is read so far (the common case for pipes and rails).
+fn swept_disk_solid_loops(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let solid = file.entity(id).ok_or_else(|| format!("#{} missing", id))?;
+    let directrix_id = solid
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .ok_or_else(|| format!("#{} has no directrix", id))?;
+    let path = polyline_3d(file, directrix_id, scale)
+        .ok_or_else(|| format!("#{} directrix is not a polyline we can sweep yet", id))?;
+    let radius = solid.args.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) * scale;
+    if !(radius > 0.0) {
+        return Ok((Vec::new(), 1));
+    }
+    let inner = solid
+        .args
+        .get(2)
+        .and_then(|v| v.as_f64())
+        .map(|r| r * scale)
+        .filter(|&r| r > 1e-9 && r < radius);
+
+    let m = path.len();
+    // Tangents (central difference in the interior, one-sided at the ends).
+    let tangents: Vec<DVec3> = (0..m)
+        .map(|i| {
+            let t = if i == 0 {
+                path[1] - path[0]
+            } else if i == m - 1 {
+                path[m - 1] - path[m - 2]
+            } else {
+                path[i + 1] - path[i - 1]
+            };
+            t.normalize_or_zero()
+        })
+        .collect();
+    // A rotation-minimizing frame by projecting the previous normal onto each new
+    // cross-section plane — no twist on a straight run, gentle on bends.
+    let mut u = perpendicular(tangents[0]);
+    let mut frames: Vec<(DVec3, DVec3)> = Vec::with_capacity(m);
+    for &t in &tangents {
+        u = (u - t * u.dot(t)).normalize_or_zero();
+        if u.length_squared() < 0.5 {
+            u = perpendicular(t);
+        }
+        let v = t.cross(u).normalize_or_zero();
+        frames.push((u, v));
+    }
+
+    const N: usize = 16; // cross-section segments
+    let ring = |c: DVec3, (u, v): (DVec3, DVec3), r: f64| -> Vec<DVec3> {
+        (0..N)
+            .map(|j| {
+                let a = std::f64::consts::TAU * (j as f64) / (N as f64);
+                c + u * (r * a.cos()) + v * (r * a.sin())
+            })
+            .collect()
+    };
+    let outer: Vec<Vec<DVec3>> = (0..m).map(|i| ring(path[i], frames[i], radius)).collect();
+    let inner_rings: Option<Vec<Vec<DVec3>>> =
+        inner.map(|ir| (0..m).map(|i| ring(path[i], frames[i], ir)).collect());
+
+    let mut faces = Vec::new();
+    // Outer wall.
+    for i in 0..m - 1 {
+        for j in 0..N {
+            let k = (j + 1) % N;
+            faces.push(FaceLoops {
+                outer: vec![outer[i][j], outer[i][k], outer[i + 1][k], outer[i + 1][j]],
+                inners: vec![],
+                closed_curve: None,
+            });
+        }
+    }
+    if let Some(inner_rings) = &inner_rings {
+        // Inner wall (wound the other way; the kernel normalizes it outward).
+        for i in 0..m - 1 {
+            for j in 0..N {
+                let k = (j + 1) % N;
+                faces.push(FaceLoops {
+                    outer: vec![
+                        inner_rings[i][j],
+                        inner_rings[i + 1][j],
+                        inner_rings[i + 1][k],
+                        inner_rings[i][k],
+                    ],
+                    inners: vec![],
+                    closed_curve: None,
+                });
+            }
+        }
+        // Annular end caps — the outer ring with the inner ring as a hole.
+        faces.push(FaceLoops {
+            outer: outer[0].clone(),
+            inners: vec![inner_rings[0].clone()],
+            closed_curve: None,
+        });
+        faces.push(FaceLoops {
+            outer: outer[m - 1].clone(),
+            inners: vec![inner_rings[m - 1].clone()],
+            closed_curve: None,
+        });
+    } else {
+        // Solid disk end caps.
+        faces.push(FaceLoops { outer: outer[0].clone(), inners: vec![], closed_curve: None });
+        faces.push(FaceLoops { outer: outer[m - 1].clone(), inners: vec![], closed_curve: None });
     }
     Ok((faces, 0))
 }
@@ -2522,6 +2669,57 @@ END-ISO-10303-21;
             rad.elements[0].faces.len(),
             "360° and 2π revolve to the same ring"
         );
+    }
+
+    /// A disk (radius, optional inner radius) swept along a polyline directrix —
+    /// a pipe. The `points`/`coords` slots build the directrix, `radius` its
+    /// section.
+    fn swept_pipe_ifc(points: &str, coords: &str, radius: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+{coords}
+#33=IFCPOLYLINE(({points}));
+#50=IFCSWEPTDISKSOLID(#33,{radius});
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'Pipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        )
+    }
+
+    #[test]
+    fn a_swept_disk_solid_is_a_pipe() {
+        // A straight directrix → a cylinder: 16 section segments × 1 span of side
+        // quads, plus a disk cap at each end.
+        let coords = "#34=IFCCARTESIANPOINT((0.,0.,0.));\n#35=IFCCARTESIANPOINT((0.,0.,3.));";
+        let g = import_ifc_geometry(&swept_pipe_ifc("#34,#35", coords, "0.5")).unwrap();
+        assert_eq!(g.elements[0].faces.len(), 18, "16 side quads + 2 caps");
+
+        // A two-segment directrix (an elbow) → twice the side quads, still 2 caps.
+        let bend = "#34=IFCCARTESIANPOINT((0.,0.,0.));\n#35=IFCCARTESIANPOINT((0.,0.,2.));\n\
+                    #36=IFCCARTESIANPOINT((2.,0.,2.));";
+        let g = import_ifc_geometry(&swept_pipe_ifc("#34,#35,#36", bend, "0.3")).unwrap();
+        assert_eq!(g.elements[0].faces.len(), 34, "2×16 side quads + 2 caps");
+    }
+
+    #[test]
+    fn a_hollow_swept_disk_has_annular_end_caps() {
+        // An inner radius makes it a tube: an outer wall, an inner wall, and end
+        // caps that are the outer ring with the inner ring as a hole.
+        let coords = "#34=IFCCARTESIANPOINT((0.,0.,0.));\n#35=IFCCARTESIANPOINT((0.,0.,3.));";
+        let g = import_ifc_geometry(&swept_pipe_ifc("#34,#35", coords, "0.5,0.3")).unwrap();
+        let faces = &g.elements[0].faces;
+        assert_eq!(faces.len(), 34, "16 outer + 16 inner + 2 annular caps");
+        let capped = faces.iter().filter(|f| f.inners.len() == 1).count();
+        assert_eq!(capped, 2, "two annular caps, each with an inner hole");
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real

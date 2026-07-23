@@ -14040,5 +14040,51 @@ END-ISO-10303-21;
         assert!((hi.z - 3000.0).abs() < 50.0 && (lo.z + 3000.0).abs() < 50.0, "outer radius 3 m in Z");
         assert!((lo.y).abs() < 1.0 && (hi.y - 1000.0).abs() < 1.0, "profile height 1 m in Y");
     }
+
+    /// An IfcSweptDiskSolid sweeps a circular section along a directrix. A 0.5 m
+    /// disk along a 3 m straight run is a cylindrical pipe — a watertight solid
+    /// spanning the radius in X and Y and the run length in Z.
+    #[test]
+    fn a_swept_disk_solid_imports_as_a_valid_pipe() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#34=IFCCARTESIANPOINT((0.,0.,0.));
+#35=IFCCARTESIANPOINT((0.,0.,3.));
+#33=IFCPOLYLINE((#34,#35));
+#50=IFCSWEPTDISKSOLID(#33,0.5);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'Pipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 18, "16 side quads + 2 disk caps");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the swept pipe is a valid watertight solid"
+        );
+        // The 0.5 m radius spans X and Y; the 3 m run is the Z length.
+        let mut lo = glam::DVec3::splat(f64::INFINITY);
+        let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+        for (fid, face) in e.scene.mesh.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if let Some(bb) = axia_geo::operations::coplanar::face_world_aabb(&e.scene.mesh, fid) {
+                lo = lo.min(bb.min);
+                hi = hi.max(bb.max);
+            }
+        }
+        assert!((hi.x - 500.0).abs() < 20.0 && (lo.x + 500.0).abs() < 20.0, "0.5 m radius in X");
+        assert!((hi.y - 500.0).abs() < 20.0 && (lo.y + 500.0).abs() < 20.0, "0.5 m radius in Y");
+        assert!((lo.z).abs() < 1.0 && (hi.z - 3000.0).abs() < 1.0, "3 m run in Z");
+    }
 }
 
