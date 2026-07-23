@@ -476,9 +476,92 @@ fn geometry_face_loops_counted(
         extruded_area_solid_loops(file, id, scale)
     } else if tag == "IFCTRIANGULATEDFACESET" {
         triangulated_face_set_loops(file, id, scale)
+    } else if tag == "IFCPOLYGONALFACESET" {
+        polygonal_face_set_loops(file, id, scale)
     } else {
         brep_face_loops_counted(file, id, scale)
     }
+}
+
+/// A loop of world points from a `CoordIndex` list of 1-based indices into
+/// `points`. `None` on an out-of-range or non-integer index.
+fn loop_from_index_list(val: Option<&Value>, points: &[DVec3]) -> Option<Vec<DVec3>> {
+    let idx = val?.as_list()?;
+    let mut out = Vec::with_capacity(idx.len());
+    for i in idx {
+        let raw = i.as_f64()? as i64;
+        if raw < 1 {
+            return None;
+        }
+        out.push(*points.get((raw - 1) as usize)?);
+    }
+    Some(out)
+}
+
+/// An `IfcPolygonalFaceSet` — a mesh of arbitrary polygonal faces (the sibling of
+/// `IfcTriangulatedFaceSet`, but each face is an N-gon that may carry holes). Each
+/// `IfcIndexedPolygonalFace` becomes one `FaceLoops`, so a quad stays a quad
+/// rather than two triangles. Faces we can't read (bad indices, < 3 vertices) are
+/// counted, not silently dropped.
+fn polygonal_face_set_loops(
+    file: &StepFile,
+    id: u32,
+    scale: f64,
+) -> Result<(Vec<FaceLoops>, usize), String> {
+    let set = file.entity(id).ok_or_else(|| format!("#{} missing", id))?;
+    // IfcPolygonalFaceSet(Coordinates, Closed, Faces, PnIndex).
+    let coords_id = set
+        .args
+        .first()
+        .and_then(|v| v.as_ref())
+        .ok_or_else(|| format!("#{} has no coordinates", id))?;
+    let points = cartesian_point_list_3d(file, coords_id, scale)
+        .ok_or_else(|| format!("#{} coordinates are not an IfcCartesianPointList3D", id))?;
+    let face_refs = set
+        .args
+        .get(2)
+        .and_then(|v| v.as_list())
+        .ok_or_else(|| format!("#{} has no faces", id))?;
+
+    let mut faces = Vec::with_capacity(face_refs.len());
+    let mut dropped = 0usize;
+    for fref in face_refs {
+        let face = match fref.as_ref().and_then(|f| file.entity(f)) {
+            Some(f) => f,
+            None => {
+                dropped += 1;
+                continue;
+            }
+        };
+        let tag = face.tag.to_ascii_uppercase();
+        if tag != "IFCINDEXEDPOLYGONALFACE" && tag != "IFCINDEXEDPOLYGONALFACEWITHVOIDS" {
+            dropped += 1;
+            continue;
+        }
+        // IfcIndexedPolygonalFace(CoordIndex) — the outer loop.
+        let outer = match loop_from_index_list(face.args.first(), &points) {
+            Some(o) if o.len() >= 3 => o,
+            _ => {
+                dropped += 1;
+                continue;
+            }
+        };
+        // IfcIndexedPolygonalFaceWithVoids adds InnerCoordIndices — the holes.
+        let mut inners = Vec::new();
+        if tag == "IFCINDEXEDPOLYGONALFACEWITHVOIDS" {
+            if let Some(inner_lists) = face.args.get(1).and_then(|v| v.as_list()) {
+                for il in inner_lists {
+                    if let Some(hole) = loop_from_index_list(Some(il), &points) {
+                        if hole.len() >= 3 {
+                            inners.push(hole);
+                        }
+                    }
+                }
+            }
+        }
+        faces.push(FaceLoops { outer, inners, closed_curve: None });
+    }
+    Ok((faces, dropped))
 }
 
 /// The 3D points of an `IfcCartesianPointList3D` — an inline `((x,y,z), …)`
@@ -2179,6 +2262,66 @@ END-ISO-10303-21;
         let tris = "(1,2,3),(1,1,2),(1,2,99)";
         let g = import_ifc_geometry(&tri_cube_ifc(tris, "")).unwrap();
         assert_eq!(g.elements[0].faces.len(), 1, "only the one good triangle survives");
+    }
+
+    #[test]
+    fn a_polygonal_face_set_keeps_each_face_as_one_n_gon() {
+        // A cube as six IfcIndexedPolygonalFace quads — each stays a quad, not
+        // two triangles.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#75=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.),(0.,0.,1.),(1.,0.,1.),(1.,1.,1.),(0.,1.,1.)));
+#60=IFCINDEXEDPOLYGONALFACE((1,4,3,2));
+#61=IFCINDEXEDPOLYGONALFACE((5,6,7,8));
+#62=IFCINDEXEDPOLYGONALFACE((1,2,6,5));
+#63=IFCINDEXEDPOLYGONALFACE((2,3,7,6));
+#64=IFCINDEXEDPOLYGONALFACE((3,4,8,7));
+#65=IFCINDEXEDPOLYGONALFACE((4,1,5,8));
+#74=IFCPOLYGONALFACESET(#75,.T.,(#60,#61,#62,#63,#64,#65),$);
+#78=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#74));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'PolyCube',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        let el = &g.elements[0];
+        assert_eq!(el.faces.len(), 6, "six quads, not twelve triangles");
+        assert!(el.faces.iter().all(|f| f.outer.len() == 4), "every face is a quad");
+    }
+
+    #[test]
+    fn an_indexed_polygonal_face_with_voids_carries_its_holes() {
+        // A 3x3 plate with a 1x1 square hole: one face, one inner loop.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#75=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(3.,0.,0.),(3.,3.,0.),(0.,3.,0.),(1.,1.,0.),(2.,1.,0.),(2.,2.,0.),(1.,2.,0.)));
+#60=IFCINDEXEDPOLYGONALFACEWITHVOIDS((1,2,3,4),((5,6,7,8)));
+#74=IFCPOLYGONALFACESET(#75,$,(#60),$);
+#78=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#74));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCSLAB('s',$,'HolePlate',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        .to_string();
+        let g = import_ifc_geometry(&src).unwrap();
+        let el = &g.elements[0];
+        assert_eq!(el.faces.len(), 1, "one face");
+        assert_eq!(el.faces[0].outer.len(), 4, "a square outer boundary");
+        assert_eq!(el.faces[0].inners.len(), 1, "one hole");
+        assert_eq!(el.faces[0].inners[0].len(), 4, "a square hole");
     }
 
     /// A wall (4 x 0.2 x 3 m) with a window cut through it, written the way real

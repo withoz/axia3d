@@ -1414,5 +1414,55 @@ tessellation 까지 — IFC 의 주요 geometry 표현이 모두 임포트된다
   MVP 수준 (dedup + per-face plane). 향후 coplanar merge 로 face 수 축소 가능.
 - **PnIndex remap / Normals** 미사용 (좌표 + CoordIndex 만). PnIndex 는 표준에서
   드물게 쓰이며 없으면 직접 index.
-- `IfcPolygonalFaceSet` (삼각형 아닌 다각형 face set) 미지원 — 별도 (`IfcIndexed
-  PolygonalFace` 파싱 필요).
+- `IfcPolygonalFaceSet` (삼각형 아닌 다각형 face set) → **§31 에서 지원.**
+
+## 31. I-3-tessellation Acceptance — IfcPolygonalFaceSet (다각형 face set)
+
+**다각형 face set 이 들어온다.** `IfcTriangulatedFaceSet` (§30) 의 sibling — 삼각형
+soup 대신 **임의 N-gon face 리스트** (그리고 face 마다 구멍도 가능). Revit
+ReferenceView 등이 삼각형화 대신 이 형식으로 내보낸다. §30 의 `cartesian_point_
+list_3d` 를 공유하고, 각 다각형 face 를 그대로 하나의 face 로 임포트한다.
+
+- **`polygonal_face_set_loops`** (`ifc_geometry.rs`): `IfcPolygonalFaceSet
+  (Coordinates, Closed, Faces, PnIndex)` 의 Faces 리스트를 순회하며 각
+  `IfcIndexedPolygonalFace(CoordIndex)` 를 N-gon `FaceLoops` 로 (§30 처럼 삼각형화
+  안 함 — quad 은 quad). `geometry_face_loops_counted` tag dispatch.
+- **구멍 지원**: `IfcIndexedPolygonalFaceWithVoids(CoordIndex, InnerCoordIndices)`
+  는 outer + inner loop → `FaceLoops.inners` → `add_face_with_holes` 가 ring face
+  생성 (§26 profile hole 과 동일 경로).
+- **`loop_from_index_list`** 헬퍼: 1-based CoordIndex → world point loop, 범위 밖
+  index 는 `None`. 정직한 skip (< 3 vertex / bad index → dropped).
+- classifier `SUPPORTED_GEOMETRY` += `IFCPOLYGONALFACESET`.
+
+### 실측
+
+| 입력 | 결과 |
+|---|---|
+| cube 6 quad (`IfcIndexedPolygonalFace` ×6) | **6 face / 8 vert** (quad 유지, 삼각형화 안 함), **valid watertight closedSolid** |
+| 3×3 plate + 1×1 hole (`…WithVoids`) | **1 face + 1 inner loop** (4 outer / 4 inner), valid |
+
+### 외부 커널 교차검증 (web-ifc)
+
+polygonal cube fixture 를 web-ifc 로: **1 mesh / 12 triangle** (6 quad 을 삼각형화).
+우리는 6 quad face 로 유지 — 같은 cube, web-ifc 는 quad 당 2 triangle. fixture 가
+well-formed IFC 임을 확인.
+
+### 회귀
+
+- axia-ifc **+2**: `a_polygonal_face_set_keeps_each_face_as_one_n_gon` (cube 6 quad)
+  + `an_indexed_polygonal_face_with_voids_carries_its_holes` (구멍 1개).
+- axia-wasm **+1** (WASM 경로, CI 가시): `a_polygonal_face_set_imports_as_quads`
+  (6 face / 8 vert / valid). mutation 확인: `polygonal_face_set_loops` 를 empty 로
+  하면 0 face → 실패.
+- 워크스페이스 **3179 passed / 0 failed / 1 ignored**(doc fence), vitest **2940**,
+  tsc·build·ADR 카탈로그·외부 IFC(web-ifc) 통과. 양 WASM 타깃 byte-parity (4081655).
+
+### 사용자 가치 — tessellation 완성
+
+§30 (삼각형) + §31 (다각형) 로 IFC4 의 두 tessellation face set 형식이 모두 들어온다.
+다각형 형식은 삼각형보다 face 수가 적고 (quad = 1 face) 구멍도 표현 — 더 깔끔한 mesh.
+
+### 남은 한계
+
+- **PnIndex remap** 미사용 (§30 과 동일 — 직접 index). PnIndex 사용 파일은 remap 필요.
+- 대형 mesh 는 여전히 per-face DCEL (§30 과 동일 — coplanar merge 는 future).

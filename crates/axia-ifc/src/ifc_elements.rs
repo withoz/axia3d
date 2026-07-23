@@ -51,6 +51,7 @@ const SUPPORTED_GEOMETRY: &[&str] = &[
     "IFCBOOLEANRESULT",
     "IFCBOOLEANCLIPPINGRESULT",
     "IFCTRIANGULATEDFACESET",
+    "IFCPOLYGONALFACESET",
 ];
 
 /// One geometry item hanging off an element's shape representation.
