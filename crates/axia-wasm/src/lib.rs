@@ -13919,5 +13919,35 @@ END-ISO-10303-21;
             "the window is nested under the wall it fills"
         );
     }
+
+    /// An IfcTriangulatedFaceSet (the tessellated format SketchUp and Revit
+    /// export) imports as a mesh: a cube's twelve triangles weld at their shared
+    /// corners into eight vertices and a watertight closed solid.
+    #[test]
+    fn a_triangulated_face_set_imports_as_a_welded_mesh() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#75=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.),(0.,0.,1.),(1.,0.,1.),(1.,1.,1.),(0.,1.,1.)));
+#74=IFCTRIANGULATEDFACESET(#75,$,.T.,((1,2,3),(1,3,4),(5,6,7),(5,7,8),(1,5,6),(1,6,2),(4,3,7),(4,7,8),(1,4,8),(1,8,5),(2,6,7),(2,7,3)),$);
+#78=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#74));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'TriCube',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert_eq!(active_faces(&e), 12, "twelve triangles");
+        assert_eq!(e.scene.mesh.vert_count(), 8, "the shared corners weld to eight vertices");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "a closed triangle mesh is a valid solid"
+        );
+    }
 }
 
