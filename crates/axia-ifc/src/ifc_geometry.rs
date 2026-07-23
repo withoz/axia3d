@@ -1539,9 +1539,90 @@ fn parse_half_space(file: &StepFile, id: u32, scale: f64) -> Option<HalfSpace> {
 /// Handles the shapes real files lean on: a rectangle, a circle (tessellated),
 /// and an arbitrary closed polyline. `None` for a profile we do not read yet
 /// (with voids, an I-beam, a composite curve) so the caller reports it.
+/// A parameterized structural section (I/H, L, U/channel, T) as a closed CCW
+/// polygon in the profile's own frame, before its `Position` is applied. Sharp
+/// corners — fillet and edge radii are read past but not rounded: they leave the
+/// section extent unchanged (the outline area is a hair over the true one), and
+/// the bounding box (what verification checks) is identical.
+///
+/// The origin is the **centre of the section's bounding box**, which is where IFC
+/// (and the web-ifc reference kernel) places these — cross-checked against it. So
+/// the I is symmetric about both axes, the T/U about one, and the L's outer corner
+/// sits at (−w/2, −h/2). (IFC reports the centre of gravity as a separate derived
+/// attribute, precisely because the origin is geometric, not the centroid.)
+fn parametric_section_local(tag: &str, p: &Entity, scale: f64) -> Option<Vec<(f64, f64)>> {
+    let f = |i: usize| p.args.get(i).and_then(|v| v.as_f64()).map(|x| x * scale);
+    match tag {
+        // (…, OverallWidth[3], OverallDepth[4], WebThickness[5], FlangeThickness[6], …)
+        "IFCISHAPEPROFILEDEF" => {
+            let (b, h, tw, tf) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            if !(b > 0.0 && h > 0.0 && tw > 0.0 && tf > 0.0) || tw >= b || 2.0 * tf >= h {
+                return None;
+            }
+            let (hb, hh, hw) = (b / 2.0, h / 2.0, tw / 2.0);
+            Some(vec![
+                (-hb, -hh), (hb, -hh), (hb, -hh + tf), (hw, -hh + tf),
+                (hw, hh - tf), (hb, hh - tf), (hb, hh), (-hb, hh),
+                (-hb, hh - tf), (-hw, hh - tf), (-hw, -hh + tf), (-hb, -hh + tf),
+            ])
+        }
+        // (…, Depth[3], FlangeWidth[4], WebThickness[5], FlangeThickness[6], …)
+        // Flange on top, web hanging down; symmetric about the vertical axis,
+        // bounding box centred so y ∈ [−h/2, h/2].
+        "IFCTSHAPEPROFILEDEF" => {
+            let (h, bf, tw, tf) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            if !(h > 0.0 && bf > 0.0 && tw > 0.0 && tf > 0.0) || tw >= bf || tf >= h {
+                return None;
+            }
+            let (hh, hw, hbf) = (h / 2.0, tw / 2.0, bf / 2.0);
+            Some(vec![
+                (-hw, -hh), (hw, -hh), (hw, hh - tf), (hbf, hh - tf),
+                (hbf, hh), (-hbf, hh), (-hbf, hh - tf), (-hw, hh - tf),
+            ])
+        }
+        // (…, Depth[3], FlangeWidth[4], WebThickness[5], FlangeThickness[6], …)
+        // A channel: web on the left, two flanges out to the right; bounding box
+        // centred so x ∈ [−bf/2, bf/2] and y ∈ [−h/2, h/2].
+        "IFCUSHAPEPROFILEDEF" => {
+            let (h, bf, tw, tf) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            if !(h > 0.0 && bf > 0.0 && tw > 0.0 && tf > 0.0) || tw >= bf || 2.0 * tf >= h {
+                return None;
+            }
+            let (hb, hh, ht, xw) = (bf / 2.0, h / 2.0, h / 2.0 - tf, -bf / 2.0 + tw);
+            Some(vec![
+                (-hb, -hh), (hb, -hh), (hb, -ht), (xw, -ht),
+                (xw, ht), (hb, ht), (hb, hh), (-hb, hh),
+            ])
+        }
+        // (…, Depth[3], Width[4]?, Thickness[5], …) — Width null ⇒ equal legs.
+        // Bounding box centred: outer corner at (−w/2, −h/2), legs up and right.
+        "IFCLSHAPEPROFILEDEF" => {
+            let h = f(3)?;
+            let w = f(4).unwrap_or(h);
+            let t = f(5)?;
+            if !(h > 0.0 && w > 0.0 && t > 0.0) || t >= h || t >= w {
+                return None;
+            }
+            let (x0, y0) = (-w / 2.0, -h / 2.0);
+            Some(vec![
+                (x0, y0), (x0 + w, y0), (x0 + w, y0 + t), (x0 + t, y0 + t),
+                (x0 + t, y0 + h), (x0, y0 + h),
+            ])
+        }
+        _ => None,
+    }
+}
+
 fn parse_profile(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> {
     let p = file.entity(id)?;
     let tag = p.tag.to_ascii_uppercase();
+
+    // Parameterized structural sections — placed by their own Position like the
+    // rectangle and circle below.
+    if let Some(local) = parametric_section_local(&tag, p, scale) {
+        let (o, dx, dy) = profile_placement_2d(file, p.args.get(2).and_then(|v| v.as_ref()), scale);
+        return Some(local.iter().map(|&(u, v)| place2d((u, v), o, dx, dy)).collect());
+    }
 
     if tag == "IFCRECTANGLEPROFILEDEF" {
         // (ProfileType, ProfileName, Position, XDim, YDim)
@@ -2914,6 +2995,60 @@ END-ISO-10303-21;
         ))
         .unwrap();
         assert_eq!(g.elements[0].faces.len(), 5, "composite triangle prism = 2 caps + 3 sides");
+    }
+
+    /// AABB (lo, hi, face count) of an extruded profile in mm.
+    fn extruded_section_aabb(profile: &str) -> (DVec3, DVec3, usize) {
+        let g = import_ifc_geometry(&extruded_wall_ifc(profile)).unwrap();
+        let el = &g.elements[0];
+        let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for f in &el.faces {
+            for p in &f.outer {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        (lo, hi, el.faces.len())
+    }
+
+    #[test]
+    fn parametric_structural_sections_import_at_the_bbox_centre() {
+        // The named steel sections. Sharp corners → a clean N-gon prism: 2 caps +
+        // one side quad per outline vertex. Extruded 3 m up (+Z). The origin is the
+        // section's bounding-box centre — cross-checked against web-ifc, so the
+        // extent is symmetric in each parametric axis.
+        let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+
+        // I / H — 0.2 m wide, 0.4 m deep, doubly symmetric. 12-gon → 14 faces.
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCISHAPEPROFILEDEF(.AREA.,$,$,0.2,0.4,0.01,0.015);");
+        assert_eq!(faces, 14, "I = 2 caps + 12 sides");
+        assert!(near(lo.x, -100.0) && near(hi.x, 100.0), "I centred in X: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -200.0) && near(hi.y, 200.0), "I centred in Y");
+        assert!(near(hi.z - lo.z, 3000.0), "extruded 3 m");
+
+        // T — depth 0.4, flange 0.3. Symmetric about Y, bbox-centred: x∈[-150,150],
+        // y∈[-200,200]. 8-gon → 10 faces.
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCTSHAPEPROFILEDEF(.AREA.,$,$,0.4,0.3,0.02,0.03);");
+        assert_eq!(faces, 10, "T = 2 caps + 8 sides");
+        assert!(near(lo.x, -150.0) && near(hi.x, 150.0), "T x: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -200.0) && near(hi.y, 200.0), "T y bbox-centred");
+
+        // U / channel — depth 0.3, flange 0.15. bbox-centred: x∈[-75,75], y∈[-150,150].
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCUSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.15,0.02,0.02);");
+        assert_eq!(faces, 10, "U = 2 caps + 8 sides");
+        assert!(near(lo.x, -75.0) && near(hi.x, 75.0), "U x bbox-centred: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -150.0) && near(hi.y, 150.0), "U y");
+
+        // L / angle — depth 0.2, width 0.15. bbox-centred: x∈[-75,75], y∈[-100,100].
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCLSHAPEPROFILEDEF(.AREA.,$,$,0.2,0.15,0.02);");
+        assert_eq!(faces, 8, "L = 2 caps + 6 sides");
+        assert!(near(lo.x, -75.0) && near(hi.x, 75.0), "L x: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -100.0) && near(hi.y, 100.0), "L y");
+
+        // L with a null Width ⇒ equal legs (width = depth = 0.2), x∈[-100,100].
+        let (lo, hi, _) = extruded_section_aabb("#40=IFCLSHAPEPROFILEDEF(.AREA.,$,$,0.2,$,0.02);");
+        assert!(near(lo.x, -100.0) && near(hi.x, 100.0), "equal-leg L x: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -100.0) && near(hi.y, 100.0), "equal-leg L y");
     }
 
     #[test]

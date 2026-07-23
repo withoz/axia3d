@@ -1189,6 +1189,42 @@ bare `IfcCircle` 를 OuterCurve 로 직접 쓰는 (완전 원) 경우는 `IfcCir
 미반영). 회전(`IfcRevolvedAreaSolid`) 프로파일도 `parse_profile` 를 쓰므로 곡선
 프로파일 회전은 자동으로 따라오나 별도 회귀는 압출만.
 
+### §26-amendment-3 — 파라메트릭 강구조 단면 (I/H · T · U/채널 · L/앵글)
+
+강구조 표준 단면 — `IfcIShapeProfileDef` (I/H 빔), `IfcTShapeProfileDef` (T),
+`IfcUShapeProfileDef` (채널), `IfcLShapeProfileDef` (앵글) — 을 명명된 파라미터
+(폭·높이·웹/플랜지 두께)로부터 2D 폴리곤으로 생성한다. `IfcParameterizedProfileDef`
+서브타입이라 rect/circle 처럼 자신의 `Position` (`IfcAxis2Placement2D`) 으로 배치.
+
+- **`parametric_section_local`** (`ifc_geometry.rs`): 각 tag 를 sharp-corner
+  N-gon 으로. I=12-gon, T·U=8-gon, L=6-gon. `parse_profile` 이 rect/circle 앞에서
+  먼저 시도, 매칭되면 `profile_placement_2d` + `place2d` 로 배치 (기존 arbitrary
+  경로 무영향).
+- **Origin = 단면 bounding-box 중심** (centroid 아님). IFC 는 CentreOfGravity 를
+  *별도 파생 속성* 으로 보고 — 즉 origin 은 기하적 bbox 중심. **web-ifc 레퍼런스
+  커널과 교차검증** 해 확정 (아래). 처음엔 centroid 로 구현했으나 web-ifc AABB 와
+  불일치 → bbox 중심으로 정정 (measure-first 가 잘못된 가정을 잡음).
+- **Sharp corner** — fillet·edge radius 는 읽고 지나가되 둥글리지 않음. 단면
+  extent (그리고 검증이 보는 bounding box) 는 동일, 면적만 실제 필렛 단면보다 한 톨
+  크다. Fillet 라운딩은 향후 트랙.
+- **검증 (음성 우선)**: 유효성 검사 — I 는 `tw≥b` 또는 `2·tf≥h` 면 거부, 등.
+
+실측 (모두 valid watertight, Euler χ = V−E+F = 2): I (b0.2 h0.4) → **14 face**
+(12-gon 캡 2 + 측벽 12), 중심 x∈[−100,100] y∈[−200,200] · T (h0.4 bf0.3) →
+**10 face**, x∈[−150,150] y∈[−200,200] · U (h0.3 bf0.15) → **10 face**,
+x∈[−75,75] y∈[−150,150] · L (h0.2 w0.15) → **8 face**, x∈[−75,75] y∈[−100,100].
+Width $ 인 L 은 등변 (w=h). **web-ifc 교차검증**: 네 단면 모두 프로파일-평면
+extent 가 web-ifc AABB 와 정확 일치 (web-ifc 의 Y-up 축 교환 감안 — web-ifc
+X↔우리 X, web-ifc Z↔우리 Y; 압출축만 Z-up/Y-up 관습 차이). 4중 검증 (Rust 유닛
+extent+origin + WASM `import_ifc` manifold + nodejs 아티팩트 vs web-ifc AABB +
+라이브 앱 네 단면 valid·렌더 갱신). 회귀 **+2** (`ifc_geometry` 1: 네 단면
+bbox-center extent + 등변 L · WASM 1: 네 단면 manifold valid). mutation: I 폭을
+2배로 하면 "centred in X" 실패 (x∈[−200,200]).
+
+**남은 한계**: fillet/edge radius 미반영 (sharp corner — extent·bbox 는 정확,
+면적만 한 톨 큼). C(립 채널)·Z 단면 + slope (테이퍼 플랜지) 는 별도 트랙.
+`IfcAsymmetricIShapeProfileDef` (비대칭 I) 미처리.
+
 ## 27. I-3-boolean Acceptance — IfcBooleanResult (개구부 있는 벽, CSG)
 
 **개구부 있는 벽이 들어온다.** 실제 Revit/ArchiCAD 는 창·문 뚫린 벽을
