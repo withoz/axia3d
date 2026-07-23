@@ -14267,5 +14267,76 @@ END-ISO-10303-21;
         assert!((hi.y - lo.y - 2000.0).abs() < 1.0, "2 m outer depth in Y: {}", hi.y - lo.y);
         assert!((hi.z - lo.z - 3000.0).abs() < 1.0, "3 m extrusion in Z: {}", hi.z - lo.z);
     }
+
+    /// A profile whose OuterCurve is an IfcCompositeCurve with an arc (a quarter-disk
+    /// section) extrudes to a valid watertight prism — the arc tessellated into side
+    /// walls, more than a straight-edged profile gives.
+    #[test]
+    fn an_extruded_composite_arc_profile_is_a_valid_solid() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((0.,0.));
+#11=IFCCARTESIANPOINT((4.,0.));
+#12=IFCCARTESIANPOINT((0.,4.));
+#13=IFCAXIS2PLACEMENT2D(#10,$);
+#14=IFCCIRCLE(#13,4.);
+#15=IFCTRIMMEDCURVE(#14,(#11),(#12),.T.,.CARTESIAN.);
+#16=IFCPOLYLINE((#10,#11));
+#17=IFCPOLYLINE((#12,#10));
+#18=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#16);
+#19=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#15);
+#20=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#17);
+#21=IFCCOMPOSITECURVE((#18,#19,#20),.F.);
+#40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#21);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Rounded',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert!(active_faces(&e) > 5, "an arc-rounded profile has more sides than a triangle");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the composite-arc profile extrudes to a valid watertight solid"
+        );
+    }
+
+    /// A profile whose OuterCurve is an IfcIndexedPolyCurve (straight runs + a 3-point
+    /// arc corner) extrudes to a valid watertight solid.
+    #[test]
+    fn an_extruded_indexed_polycurve_profile_is_a_valid_solid() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(4.,4.),(2.,5.5),(0.,4.)));
+#11=IFCINDEXEDPOLYCURVE(#10,(IFCLINEINDEX((1,2,3)),IFCARCINDEX((3,4,5)),IFCLINEINDEX((5,1))),.F.);
+#40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#11);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Indexed',$,$,$,#52,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert!(active_faces(&e) >= 8, "line runs + an arc corner tessellate to many sides");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the indexed-polycurve profile extrudes to a valid watertight solid"
+        );
+    }
 }
 

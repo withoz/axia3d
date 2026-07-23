@@ -1576,7 +1576,7 @@ fn parse_profile(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>
         // The voids (InnerCurves) are read separately by `parse_profile_voids`, so a
         // caller that can punch holes (extrude) does and one that can't stays solid.
         let outer = p.args.get(2).and_then(|v| v.as_ref())?;
-        return polyline_2d(file, outer, scale);
+        return profile_loop_2d(file, outer, scale);
     }
     None
 }
@@ -1598,13 +1598,14 @@ fn parse_profile_voids(file: &StepFile, id: u32, scale: f64) -> Vec<Vec<(f64, f6
     inner_curves
         .iter()
         .filter_map(|c| c.as_ref())
-        .filter_map(|cid| polyline_2d(file, cid, scale))
+        .filter_map(|cid| profile_loop_2d(file, cid, scale))
         .filter(|loop_| loop_.len() >= 3)
         .collect()
 }
 
 /// The outer curve of an arbitrary profile as 2D points, when it is an
-/// `IfcPolyline` (the common case). Composite/indexed curves are not read yet.
+/// `IfcPolyline` (the common case). Curve outer boundaries (composite / indexed /
+/// arc) go through `profile_loop_2d`, which falls back here for the polyline case.
 fn polyline_2d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> {
     let c = file.entity(id)?;
     if !c.tag.eq_ignore_ascii_case("IFCPOLYLINE") {
@@ -1630,6 +1631,31 @@ fn polyline_2d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> 
         out.pop();
     }
     Some(out)
+}
+
+/// A profile's outer or inner curve as 2D `(x, y)` points in its own frame. A
+/// profile curve is just a directrix that happens to live in the z = 0 plane, so
+/// anything the directrix path already samples — `IfcCompositeCurve` (line + arc
+/// runs, the way a rounded section is drawn), `IfcIndexedPolyCurve`, an arc or a
+/// spline — is sampled the same way and projected to 2D. `IfcPolyline` keeps its
+/// own proven reader as the fast common case.
+fn profile_loop_2d(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>> {
+    if let Some(poly) = polyline_2d(file, id, scale) {
+        return Some(poly);
+    }
+    // A curve: sample it as a z = 0 directrix and drop z.
+    let mut pts: Vec<(f64, f64)> =
+        sample_directrix(file, id, scale)?.into_iter().map(|p| (p.x, p.y)).collect();
+    // A closed profile curve repeats its start at the end; drop that duplicate so
+    // the loop is not degenerate (matches `polyline_2d`).
+    if pts.len() >= 2 {
+        let (fx, fy) = pts[0];
+        let (lx, ly) = *pts.last().unwrap();
+        if (fx - lx).abs() <= 1e-6 && (fy - ly).abs() <= 1e-6 {
+            pts.pop();
+        }
+    }
+    (pts.len() >= 3).then_some(pts)
 }
 
 /// An `IfcAxis2Placement2D` → (origin, x-axis, y-axis) in 2D, defaulting to the
@@ -2870,6 +2896,64 @@ END-ISO-10303-21;
         let capped: Vec<_> = el.faces.iter().filter(|f| f.inners.len() == 1).collect();
         assert_eq!(capped.len(), 2, "two caps, each with one hole");
         assert!(capped.iter().all(|f| f.inners[0].len() == 4), "the hole is the square void");
+    }
+
+    #[test]
+    fn an_extruded_composite_curve_profile_is_a_prism() {
+        // A profile whose OuterCurve is an IfcCompositeCurve of three straight
+        // segments (a triangle) → the same 3-sided prism a polyline triangle gives.
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#30=IFCCARTESIANPOINT((0.,0.));\n#31=IFCCARTESIANPOINT((4.,0.));\n\
+             #32=IFCCARTESIANPOINT((0.,3.));\n\
+             #33=IFCPOLYLINE((#30,#31));\n#34=IFCPOLYLINE((#31,#32));\n#35=IFCPOLYLINE((#32,#30));\n\
+             #36=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#33);\n\
+             #37=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#34);\n\
+             #38=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#35);\n\
+             #39=IFCCOMPOSITECURVE((#36,#37,#38),.F.);\n\
+             #40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#39);",
+        ))
+        .unwrap();
+        assert_eq!(g.elements[0].faces.len(), 5, "composite triangle prism = 2 caps + 3 sides");
+    }
+
+    #[test]
+    fn an_extruded_composite_curve_with_an_arc_rounds_a_corner() {
+        // A quarter-disk profile: two straight edges + a 90° arc between them, drawn
+        // as an IfcCompositeCurve (line + trimmed-circle arc + line). The arc is
+        // sampled at ~15°/step, so the outer loop gains several points → more side
+        // walls than a straight three-corner profile would.
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#10=IFCCARTESIANPOINT((0.,0.));\n#11=IFCCARTESIANPOINT((4.,0.));\n\
+             #12=IFCCARTESIANPOINT((0.,4.));\n#13=IFCAXIS2PLACEMENT2D(#10,$);\n\
+             #14=IFCCIRCLE(#13,4.);\n#15=IFCTRIMMEDCURVE(#14,(#11),(#12),.T.,.CARTESIAN.);\n\
+             #16=IFCPOLYLINE((#10,#11));\n#17=IFCPOLYLINE((#12,#10));\n\
+             #18=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#16);\n\
+             #19=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#15);\n\
+             #20=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#17);\n\
+             #21=IFCCOMPOSITECURVE((#18,#19,#20),.F.);\n\
+             #40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#21);",
+        ))
+        .unwrap();
+        // 90° arc → 6 (or 7 at the FP boundary) spans, plus the two straight edges:
+        // 8–9 outer points → 8–9 side quads + 2 caps.
+        let n = g.elements[0].faces.len();
+        assert!((10..=11).contains(&n), "quarter-disk prism = arc-tessellated sides + 2 caps, got {n}");
+    }
+
+    #[test]
+    fn an_extruded_indexed_polycurve_profile_rounds_a_corner() {
+        // A profile whose OuterCurve is an IfcIndexedPolyCurve over a 2D point list —
+        // straight runs (IfcLineIndex) plus a 3-point arc corner (IfcArcIndex).
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#10=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(4.,4.),(2.,5.5),(0.,4.)));\n\
+             #11=IFCINDEXEDPOLYCURVE(#10,(IFCLINEINDEX((1,2,3)),IFCARCINDEX((3,4,5)),IFCLINEINDEX((5,1))),.F.);\n\
+             #40=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#11);",
+        ))
+        .unwrap();
+        // Three straight corners + an arc corner → clearly more than the 5 faces a
+        // plain triangle gives.
+        let n = g.elements[0].faces.len();
+        assert!(n >= 8, "indexed profile with an arc corner tessellates to many sides, got {n}");
     }
 
     /// A cube as an IfcTriangulatedFaceSet (SketchUp / Revit tessellated export):

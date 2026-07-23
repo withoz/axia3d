@@ -1155,6 +1155,40 @@ violation, 라이브 앱 import 렌더 갱신. 회귀 **+2** (`ifc_geometry`
 회전(`IfcRevolvedAreaSolid`)의 void (토로이달 공동) 는 별도 트랙 — revolved 는
 여전히 outer 만.
 
+### §26-amendment-2 — 곡선 프로파일 (composite · indexed poly-curve · 호)
+
+프로파일의 OuterCurve 가 `IfcPolyline` 뿐 아니라 **곡선** — `IfcCompositeCurve`
+(직선 run + 호 run, 둥근 단면을 그리는 표준 방식) / `IfcIndexedPolyCurve` (2D 점
+리스트 + line/arc index) / 호 / spline — 일 때도 들어온다. **핵심 통찰**: 프로파일
+곡선은 z = 0 평면에 놓인 directrix 일 뿐이다. `axis_placement` 가 이미
+`IfcAxis2Placement2D` 를 처리하므로 (2D 원호 포함), §33 directrix 샘플러를 그대로
+재사용하고 결과를 (x, y) 로 투영하면 끝.
+
+- **`profile_loop_2d`** (`ifc_geometry.rs`): `IfcPolyline` 은 검증된 `polyline_2d`
+  로 fast-path (기존 30+ 회귀 무영향). 그 외 곡선은 `sample_directrix`
+  (§33-amendment/2 의 composite / indexed / trimmed-arc / spline 디스패치) 로
+  z = 0 샘플 후 z 를 버리고, 닫힌 프로파일의 시작=끝 중복점을 제거.
+- **`parse_profile` 의 arbitrary 분기 + `parse_profile_voids`** 가 `polyline_2d`
+  → `profile_loop_2d` 로 교체. outer 와 void(구멍) 둘 다 곡선 가능 → 둥근 튜브도.
+- **`extruded_area_solid_loops` 무변경**: 프로파일 점 개수·void 루프에 이미
+  제네릭. 호가 outer 루프에 점을 더 넣으면 측벽이 그만큼 더 생길 뿐.
+
+실측 (모두 valid watertight, 0 violation): composite 삼각형(직선 3 segment) →
+**5 face** (polyline 삼각형과 동일) · composite + 90° 호 (사분원) → **10 face**
+(호 6 span × 측벽 + 캡 2) · indexed poly-curve (line index + 3점 arc index) →
+**15 face**. 4중 검증 (Rust 유닛 + WASM `import_ifc` manifold + 컴파일 nodejs
+아티팩트 valid=true·면수 정합 + 라이브 앱 첫 import valid·0 violation·렌더 갱신).
+회귀 **+5** (`ifc_geometry` 3: composite 5 / composite-arc 10~11 / indexed ≥8 —
+FP 경계 흡수 range · WASM 2: composite-arc·indexed manifold valid). mutation:
+`profile_loop_2d` 의 곡선 경로를 None 으로 하면 세 곡선 프로파일 모두 실패하고
+polyline 프로파일은 통과 (곡선 경로 실측 확인).
+
+**남은 한계**: 프로파일 arc 는 §33 과 같은 ~15°/step (chord 아닌 각도 해상도).
+bare `IfcCircle` 를 OuterCurve 로 직접 쓰는 (완전 원) 경우는 `IfcCircleProfileDef`
+가 표준이라 미처리. 트리밍된 spline 프로파일은 전 구간 샘플 (부분 파라미터 trim
+미반영). 회전(`IfcRevolvedAreaSolid`) 프로파일도 `parse_profile` 를 쓰므로 곡선
+프로파일 회전은 자동으로 따라오나 별도 회귀는 압출만.
+
 ## 27. I-3-boolean Acceptance — IfcBooleanResult (개구부 있는 벽, CSG)
 
 **개구부 있는 벽이 들어온다.** 실제 Revit/ArchiCAD 는 창·문 뚫린 벽을
