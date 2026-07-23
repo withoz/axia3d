@@ -1578,10 +1578,34 @@ seg) vs web-ifc coarser tessellation — 같은 파이프, 밀도만 다름.
 들어온다. §26 압출 + §32 회전 + §33 swept disk 로 IFC 의 세 swept solid 형식이 모두
 임포트된다.
 
+### §33-amendment — 곡선 directrix (호 · composite curve)
+
+초기 §33 은 directrix 를 `IfcPolyline` 만 처리했으나, 실제 파이프 벤드는 호(arc)
+로 꺾인다. sweep 은 결국 점 리스트만 필요하므로, **directrix 곡선을 polyline 으로
+샘플** 하는 `sample_directrix` 를 추가해 sweep 본체는 그대로 재사용.
+
+- **`sample_directrix`** (`ifc_geometry.rs`): `IfcPolyline` (기존) / `IfcTrimmedCurve`
+  (호 또는 line) / `IfcCompositeCurve` (직선 run + bend 의 표준 파이프 경로) dispatch.
+- **호 (`IfcTrimmedCurve` of `IfcCircle`)**: `trim_angle` (I-3-curves 자산 재사용)
+  로 시작·끝 각을 읽고 sense 방향으로 sweep, **~15°/step** 샘플 (양 끝점 포함).
+  경계 곡선의 sub-mm chord tolerance (`ARC_CHORD_TOL_MM` 0.02mm) 를 쓰면 2m 반경
+  호에 176 seg → 2818 face 폭발 → 파이프 경로엔 각도 해상도가 맞다 (15° → 6 seg).
+- **line (`IfcTrimmedCurve` of `IfcLine`)**: trim cartesian 점 = 양 끝.
+- **`IfcCompositeCurve`**: 각 `IfcCompositeCurveSegment` 의 ParentCurve 를 재귀 샘플
+  (SameSense=.F. 면 reverse), junction 점 dedup 후 concat.
+
+실측: 90° 호 directrix (반경 2 m, tube 0.2 m) → **98 face** (6 arc span × 16 + 2 cap),
+valid closedSolid, AABB X·Y ∈ [0,2200] (호 반경 + tube). composite (호 + 직선) →
+**114 face** (7 span), valid, live 앱에 bend-then-straight 파이프 렌더. web-ifc 교차
+검증: 호 파이프 **242 triangle** (swept-disk-along-arc 지원). 회귀 **+3** (`a_swept_
+disk_follows_an_arc_directrix` 98 / `a_swept_disk_follows_a_composite_curve` 114 /
+WASM `a_swept_disk_along_an_arc_is_a_valid_elbow`). mutation: `sample_trimmed_curve`
+를 None 으로 하면 호·composite 둘 다 실패.
+
 ### 남은 한계
 
-- **directrix = polyline 만** — `IfcTrimmedCurve`(호)·`IfcCompositeCurve`·`IfcIndexed
-  PolyCurve` directrix 는 별도 (curve 샘플링 필요).
+- **호·composite 만** — `IfcIndexedPolyCurve` (arc/line index segment) 와 spline
+  directrix 는 별도. line 은 CARTESIAN trim 점 형태만 (param-only line 미지원).
 - **frame = projection RMF** (급격한 bend 는 miter 부정확 가능). closed-loop directrix
   는 open 으로 처리 (cap 겹침) — 표준 open pipe 만 검증.
 - MEP element type (`IfcPipeSegment`·`IfcDuctSegment`) 분류 별도 — 현재 `IfcMember`·

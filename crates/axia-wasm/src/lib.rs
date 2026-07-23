@@ -14086,5 +14086,38 @@ END-ISO-10303-21;
         assert!((hi.y - 500.0).abs() < 20.0 && (lo.y + 500.0).abs() < 20.0, "0.5 m radius in Y");
         assert!((lo.z).abs() < 1.0 && (hi.z - 3000.0).abs() < 1.0, "3 m run in Z");
     }
+
+    /// A swept disk whose directrix is a curve, not a polyline — here a 90° arc,
+    /// so the pipe is a curved elbow. It imports as a valid watertight solid.
+    #[test]
+    fn a_swept_disk_along_an_arc_is_a_valid_elbow() {
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#10=IFCCARTESIANPOINT((2.,0.,0.));
+#11=IFCCARTESIANPOINT((0.,2.,0.));
+#14=IFCCARTESIANPOINT((0.,0.,0.));
+#15=IFCAXIS2PLACEMENT3D(#14,$,$);
+#16=IFCCIRCLE(#15,2.);
+#33=IFCTRIMMEDCURVE(#16,(#10),(#11),.T.,.CARTESIAN.);
+#50=IFCSWEPTDISKSOLID(#33,0.2);
+#78=IFCSHAPEREPRESENTATION($,'Body','AdvancedSweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCMEMBER('p',$,'ArcPipe',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        assert!(active_faces(&e) > 18, "a curved elbow has more spans than a straight pipe");
+        assert!(
+            e.scene.mesh.verify_face_invariants().is_valid(),
+            "the arc-swept elbow is a valid watertight solid"
+        );
+    }
 }
 
