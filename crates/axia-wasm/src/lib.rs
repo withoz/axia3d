@@ -14359,6 +14359,9 @@ END-ISO-10303-21;
             ("#40=IFCTSHAPEPROFILEDEF(.AREA.,$,$,0.4,0.3,0.02,0.03);", 10),
             ("#40=IFCUSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.15,0.02,0.02);", 10),
             ("#40=IFCLSHAPEPROFILEDEF(.AREA.,$,$,0.2,0.15,0.02);", 8),
+            ("#40=IFCCSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.15,0.02,0.05);", 14),
+            ("#40=IFCZSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.1,0.02,0.02);", 10),
+            ("#40=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,0.3,0.4,0.02,0.03,$,0.2,0.025,$,$,$);", 14),
         ];
         for (profile, want_faces) in cases {
             let mut e = AxiaEngine::new();

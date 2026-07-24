@@ -1609,6 +1609,58 @@ fn parametric_section_local(tag: &str, p: &Entity, scale: f64) -> Option<Vec<(f6
                 (x0 + t, y0 + h), (x0, y0 + h),
             ])
         }
+        // (…, Depth[3], Width[4], WallThickness[5], Girth[6], …) — a lipped channel:
+        // web on the left, flanges to the right, tips turned back in by the girth.
+        // Symmetric about X, bounding box centred.
+        "IFCCSHAPEPROFILEDEF" => {
+            let (h, w, t, g) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            if !(h > 0.0 && w > 0.0 && t > 0.0 && g > 0.0) || 2.0 * t >= h || t >= w || g >= h / 2.0
+                || g <= t
+            {
+                return None;
+            }
+            let (hw, hh) = (w / 2.0, h / 2.0);
+            Some(vec![
+                (-hw, -hh), (hw, -hh), (hw, -hh + g), (hw - t, -hh + g),
+                (hw - t, -hh + t), (-hw + t, -hh + t), (-hw + t, hh - t), (hw - t, hh - t),
+                (hw - t, hh - g), (hw, hh - g), (hw, hh), (-hw, hh),
+            ])
+        }
+        // (…, Depth[3], FlangeWidth[4], WebThickness[5], FlangeThickness[6], …) — a Z:
+        // web centred, top flange to +x, bottom flange to −x. Point-symmetric about
+        // the origin. FlangeWidth is the section's overall width (tip to tip), matched
+        // against web-ifc, so x ∈ [−bf/2, bf/2].
+        "IFCZSHAPEPROFILEDEF" => {
+            let (h, bf, tw, tf) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            if !(h > 0.0 && bf > 0.0 && tw > 0.0 && tf > 0.0) || 2.0 * tf >= h || bf <= tw {
+                return None;
+            }
+            let (hh, hw) = (h / 2.0, tw / 2.0);
+            let (xr, xl) = (bf / 2.0, -bf / 2.0); // top-flange right edge, bottom-flange left edge
+            Some(vec![
+                (xl, -hh), (hw, -hh), (hw, hh - tf), (xr, hh - tf),
+                (xr, hh), (-hw, hh), (-hw, -hh + tf), (xl, -hh + tf),
+            ])
+        }
+        // (…, BottomFlangeWidth[3], OverallDepth[4], WebThickness[5],
+        //  BottomFlangeThickness[6], BottomFlangeFilletRadius[7]?, TopFlangeWidth[8],
+        //  TopFlangeThickness[9]?, …) — an I with unequal flanges, symmetric about Y.
+        "IFCASYMMETRICISHAPEPROFILEDEF" => {
+            let (bfw, h, tw, btf) = (f(3)?, f(4)?, f(5)?, f(6)?);
+            let tfw = f(8)?;
+            let ttf = f(9).unwrap_or(btf);
+            if !(bfw > 0.0 && h > 0.0 && tw > 0.0 && btf > 0.0 && tfw > 0.0 && ttf > 0.0)
+                || tw >= bfw || tw >= tfw || btf + ttf >= h
+            {
+                return None;
+            }
+            let (hh, hw, hbf, htf) = (h / 2.0, tw / 2.0, bfw / 2.0, tfw / 2.0);
+            Some(vec![
+                (-hbf, -hh), (hbf, -hh), (hbf, -hh + btf), (hw, -hh + btf),
+                (hw, hh - ttf), (htf, hh - ttf), (htf, hh), (-htf, hh),
+                (-htf, hh - ttf), (-hw, hh - ttf), (-hw, -hh + btf), (-hbf, -hh + btf),
+            ])
+        }
         _ => None,
     }
 }
@@ -3049,6 +3101,64 @@ END-ISO-10303-21;
         let (lo, hi, _) = extruded_section_aabb("#40=IFCLSHAPEPROFILEDEF(.AREA.,$,$,0.2,$,0.02);");
         assert!(near(lo.x, -100.0) && near(hi.x, 100.0), "equal-leg L x: {lo:?}..{hi:?}");
         assert!(near(lo.y, -100.0) && near(hi.y, 100.0), "equal-leg L y");
+    }
+
+    #[test]
+    fn cold_formed_and_asymmetric_sections_import_at_the_bbox_centre() {
+        // C/Z were cross-checked vertex-for-vertex against web-ifc (sharp-corner
+        // fixtures); the asymmetric I is a web-ifc kernel gap, so it is checked below
+        // by the equal-flange ≡ I-shape equivalence instead.
+        let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+
+        // C / lipped channel — depth 0.3, width 0.15, wall 0.02, girth 0.05. The
+        // outline traces web + flanges + turned-in lips: 12-gon → 14 faces. bbox
+        // centred: x∈[-75,75], y∈[-150,150].
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCCSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.15,0.02,0.05);");
+        assert_eq!(faces, 14, "C = 2 caps + 12 sides");
+        assert!(near(lo.x, -75.0) && near(hi.x, 75.0), "C x: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -150.0) && near(hi.y, 150.0), "C y");
+
+        // Z — depth 0.3, overall width 0.1, web 0.02, flange 0.02. FlangeWidth is the
+        // tip-to-tip width (web-ifc convention) → x∈[-50,50]. 8-gon → 10 faces.
+        let (lo, hi, faces) = extruded_section_aabb("#40=IFCZSHAPEPROFILEDEF(.AREA.,$,$,0.3,0.1,0.02,0.02);");
+        assert_eq!(faces, 10, "Z = 2 caps + 8 sides");
+        assert!(near(lo.x, -50.0) && near(hi.x, 50.0), "Z x tip-to-tip: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -150.0) && near(hi.y, 150.0), "Z y");
+
+        // Asymmetric I — bottom flange 0.3, depth 0.4, web 0.02, bottom flange 0.03,
+        // top flange 0.2, top flange 0.025. Symmetric about Y; the widest flange
+        // (bottom, 0.3) sets x∈[-150,150], depth centred y∈[-200,200]. 12-gon → 14.
+        let g = import_ifc_geometry(&extruded_wall_ifc(
+            "#40=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,0.3,0.4,0.02,0.03,$,0.2,0.025,$,$,$);",
+        ))
+        .unwrap();
+        let el = &g.elements[0];
+        assert_eq!(el.faces.len(), 14, "asymmetric I = 2 caps + 12 sides");
+        // The flanges differ: near the bottom (y ≈ −200) the section reaches x = ±150
+        // (bottom flange 0.3); near the top (y ≈ +200) only x = ±100 (top flange 0.2).
+        let (mut bot_x, mut top_x) = (0.0_f64, 0.0_f64);
+        for f in &el.faces {
+            for p in &f.outer {
+                if (p.y + 200.0).abs() < 1.0 {
+                    bot_x = bot_x.max(p.x.abs());
+                }
+                if (p.y - 200.0).abs() < 1.0 {
+                    top_x = top_x.max(p.x.abs());
+                }
+            }
+        }
+        assert!(near(bot_x, 150.0), "wide bottom flange reaches ±150, got {bot_x}");
+        assert!(near(top_x, 100.0), "narrow top flange reaches ±100, got {top_x}");
+
+        // The equivalence that stands in for web-ifc: an asymmetric I with equal
+        // flanges must extrude to exactly the same solid as the plain I-shape.
+        let (alo, ahi, af) = extruded_section_aabb(
+            "#40=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,0.2,0.4,0.01,0.015,$,0.2,0.015,$,$,$);",
+        );
+        let (ilo, ihi, iff) = extruded_section_aabb("#40=IFCISHAPEPROFILEDEF(.AREA.,$,$,0.2,0.4,0.01,0.015);");
+        assert_eq!(af, iff, "equal-flange asymmetric I has the I-shape face count");
+        assert!(near(alo.x, ilo.x) && near(ahi.x, ihi.x) && near(alo.y, ilo.y) && near(ahi.y, ihi.y),
+            "equal-flange asymmetric I ≡ I-shape extent");
     }
 
     #[test]

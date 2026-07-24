@@ -1222,8 +1222,39 @@ bbox-center extent + 등변 L · WASM 1: 네 단면 manifold valid). mutation: I
 2배로 하면 "centred in X" 실패 (x∈[−200,200]).
 
 **남은 한계**: fillet/edge radius 미반영 (sharp corner — extent·bbox 는 정확,
-면적만 한 톨 큼). C(립 채널)·Z 단면 + slope (테이퍼 플랜지) 는 별도 트랙.
-`IfcAsymmetricIShapeProfileDef` (비대칭 I) 미처리.
+면적만 한 톨 큼). slope (테이퍼 플랜지) 는 별도 트랙.
+
+### §26-amendment-3b — 냉간성형 + 비대칭 단면 (C/립채널 · Z · 비대칭 I)
+
+나머지 강구조 단면 세 종을 `parametric_section_local` 에 추가.
+
+- **`IfcCShapeProfileDef`** (립 채널) — Depth·Width·WallThickness·Girth. 웹 +
+  플랜지 + 안쪽으로 접힌 립을 그리는 12-gon (thin-wall 윤곽 추적). X축 대칭,
+  bbox 중심.
+- **`IfcZShapeProfileDef`** — Depth·FlangeWidth·WebThickness·FlangeThickness.
+  웹 중앙, 상 플랜지 +x / 하 플랜지 −x 로 점대칭 8-gon. **핵심**: FlangeWidth 는
+  플랜지 overhang 이 아니라 **단면 전체 폭 (tip-to-tip)** — web-ifc 와 대조해
+  확정 (처음엔 overhang 으로 구현, 40mm 불일치 → 정정).
+- **`IfcAsymmetricIShapeProfileDef`** — BottomFlangeWidth·OverallDepth·
+  WebThickness·BottomFlangeThickness·(fillet)·TopFlangeWidth·TopFlangeThickness.
+  상·하 플랜지 폭·두께가 다른 12-gon, Y축 대칭, bbox 중심 (넓은 플랜지가 x
+  extent 결정).
+
+**web-ifc 교차검증 (measure-first)**: sharp-corner fixture (fillet $) 로 프로
+파일 정점을 vertex-for-vertex 대조 — **C 와 Z 는 web-ifc 와 정확 일치**
+(0.00mm, 12·8 정점). 비대칭 I 는 **web-ifc 커널 갭** (엔티티는 읽으나 `t=0` 로
+tessellate 안 함 — 회전체와 동일). 대신 **등플랜지 비대칭 I ≡ I-shape** 등가성
+으로 검증 (I-shape 는 web-ifc 확정) — 속성 순서 (TopFlangeWidth arg8) + 기하 +
+origin 을 간접 확정. 실측: C (h.3 w.15) → 14 face x∈[−75,75] y∈[−150,150] · Z
+(h.3 bf.1) → 10 face x∈[−50,50] · 비대칭 I (bfw.3 tfw.2 h.4) → 14 face, 하단 ±150
+/ 상단 ±100 (플랜지 비대칭), y∈[−200,200]. 모두 valid watertight. 4중 검증
+(Rust 유닛 + WASM manifold + web-ifc vertex 대조/등가성 + 라이브 앱 3 단면
+valid·렌더). 회귀 **+2** (`ifc_geometry` 1 + WASM 1: 세 단면 추가). mutation:
+Z flange-width 를 overhang 으로 되돌리면 "tip-to-tip" 실패 (x∈[−90,90]).
+
+**남은 한계**: fillet/edge radius 미반영 (전 단면 공통). slope (테이퍼 플랜지)·
+`IfcTrapeziumProfileDef`·`IfcEllipseProfileDef` 는 별도 트랙. 비대칭 I 는 web-ifc
+로 tessellation 대조 불가 (커널 갭) — 등가성으로만 확정.
 
 ## 27. I-3-boolean Acceptance — IfcBooleanResult (개구부 있는 벽, CSG)
 
