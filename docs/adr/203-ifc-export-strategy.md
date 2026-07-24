@@ -1654,7 +1654,33 @@ gap). 따라서 revolution 은 web-ifc 교차검증 불가. 검증은 **valid wa
 - 프로파일이 축을 가로지르면(straddle) 회전 시 self-intersect — 축 위 점은 반경 0
   degenerate face 로 skip 되나 표준(축에서 offset)만 검증. `IfcSweptDiskSolid` (원형
   단면 파이프) → **§33 에서 지원.**
-- 프로파일 **hole** (`IfcArbitraryProfileDefWithVoids`) 미반영 — outer 만 회전.
+- 프로파일 **hole** (`IfcArbitraryProfileDefWithVoids`) → **§32-amendment 에서 지원.**
+
+### §32-amendment — 회전체 voids (토로이달 공동)
+
+프로파일에 void 가 있으면 (`IfcArbitraryProfileDefWithVoids`) 회전 시 **공동이 있는
+solid** 이 된다 — full turn 은 속 빈 링(hollow ring), 부분 turn 은 annular-cap 세그먼트.
+
+- **`revolved_area_solid_loops`** (`ifc_geometry.rs`): `parse_profile_voids` 로 void
+  루프를 읽고, outer 처럼 각 void 를 축 둘레로 rings 로 sweep → **inner (공동 벽)
+  surface**. `push_revolved_side` helper 로 outer·void sweep 공유.
+- **Full turn**: outer swept surface + void swept surface 두 개의 닫힌 shell → 속 빈
+  링 (cap 없음). 회귀: void → face 수 정확히 2배 (outer 96 + void 96 = 192).
+- **부분 turn**: 시작·끝 cap 이 **annular** — outer 프로파일에 void 를 hole 로 준
+  `add_face_with_holes` (PR #50 압출 void 와 동일 패턴). 회귀: cap 2개, 각 inners.len()==1.
+- **backward compat**: void 없는 프로파일은 기존 경로 그대로 (기존 §32 회귀 3건 PASS).
+
+실측 (모두 valid watertight, 0 violation): full 360° void → 192 face (외 96 + 내 96)
+· 부분 90° void → 50 emit face (외 24 + 내 24 + annular cap 2; DCEL active 는 cap 실현
+으로 58) · void-less 대비 정확히 side surface 2배. web-ifc 는 회전체 tessellate 안 함
+(§32 커널 갭 동일) → 자체 기하 검증 (valid + void-vs-solid face 배증 + AABB + 라이브
+렌더). 4중 (Rust 유닛 void 2배·annular cap + WASM manifold + node round-trip + 라이브
+앱 fresh-scene valid). 회귀 **+2** (`ifc_geometry` 1 + WASM 1). mutation: void_rings 를
+empty 로 하면 full 96≠192 실패.
+
+**남은 한계**: void 가 축을 가로지르면 (straddle) degenerate — 표준(축에서 offset void)
+만 검증. full-turn hollow ring 은 2-shell solid (외/내 각각 닫힌 manifold) — 엔진이
+watertight 로 인정 (verify_face_invariants 0 violation).
 
 ## 33. I-3-sweptdisk Acceptance — IfcSweptDiskSolid (파이프·튜브)
 

@@ -14373,5 +14373,45 @@ END-ISO-10303-21;
             );
         }
     }
+
+    /// A profile with a void, revolved around an axis, is a hollow ring (full turn)
+    /// or an annular-capped segment (part) — a valid watertight solid with a cavity.
+    #[test]
+    fn a_revolved_profile_with_a_void_imports_as_a_valid_hollow_ring() {
+        let ifc = |angle: &str| {
+            format!(
+                "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n\
+                 #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);\n\
+                 #24=IFCCARTESIANPOINT((0.,0.,0.));\n\
+                 #34=IFCCARTESIANPOINT((2.,0.));\n#35=IFCCARTESIANPOINT((4.,0.));\n\
+                 #36=IFCCARTESIANPOINT((4.,2.));\n#37=IFCCARTESIANPOINT((2.,2.));\n\
+                 #33=IFCPOLYLINE((#34,#35,#36,#37,#34));\n\
+                 #60=IFCCARTESIANPOINT((2.5,0.5));\n#61=IFCCARTESIANPOINT((3.5,0.5));\n\
+                 #62=IFCCARTESIANPOINT((3.5,1.5));\n#63=IFCCARTESIANPOINT((2.5,1.5));\n\
+                 #64=IFCPOLYLINE((#60,#61,#62,#63,#60));\n\
+                 #40=IFCARBITRARYPROFILEDEFWITHVOIDS(.AREA.,$,#33,(#64));\n\
+                 #51=IFCAXIS2PLACEMENT3D(#24,$,$);\n#53=IFCDIRECTION((0.,1.,0.));\n\
+                 #52=IFCAXIS1PLACEMENT(#24,#53);\n\
+                 #50=IFCREVOLVEDAREASOLID(#40,#51,#52,{angle});\n\
+                 #78=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));\n\
+                 #48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));\n\
+                 #45=IFCWALL('w',$,'Tube',$,$,$,#48,$,$);\nENDSEC;\nEND-ISO-10303-21;\n"
+            )
+        };
+        // Full turn → outer + inner swept surfaces, no caps (24 steps × 4 edges × 2).
+        let mut full = AxiaEngine::new();
+        full.import_ifc(ifc("6.283185307"));
+        assert_eq!(active_faces(&full), 192, "hollow ring = outer 96 + void 96");
+        assert!(full.scene.mesh.verify_face_invariants().is_valid(), "hollow ring is valid");
+
+        // Quarter turn → side surfaces double + two annular caps. (The annular caps
+        // realise as several DCEL faces each, so the active count runs above the 50
+        // emitted loops; the point is it is valid and the void's inner surface is
+        // present — far more than a void-less quarter's 26 faces.)
+        let mut part = AxiaEngine::new();
+        part.import_ifc(ifc("1.570796327"));
+        assert!(active_faces(&part) > 40, "void swept an inner surface: {}", active_faces(&part));
+        assert!(part.scene.mesh.verify_face_invariants().is_valid(), "annular-capped tube is valid");
+    }
 }
 
