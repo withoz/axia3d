@@ -839,6 +839,24 @@ fn rotate_around_axis(p: DVec3, axis_pt: DVec3, axis_dir: DVec3, angle: f64) -> 
 /// swept in angular steps; consecutive rings are joined by quad side faces, and a
 /// partial (< 360°) revolution is capped by the start and end profiles. A full
 /// turn closes on itself with no caps.
+/// Sweep one loop's rings into a surface: a quad per profile edge per angle step,
+/// the last step wrapping back to ring 0 on a full turn.
+fn push_revolved_side(faces: &mut Vec<FaceLoops>, rings: &[Vec<DVec3>], steps: usize, full: bool) {
+    let n = rings[0].len();
+    for i in 0..steps {
+        let r0 = &rings[i];
+        let r1 = if full && i == steps - 1 { &rings[0] } else { &rings[i + 1] };
+        for j in 0..n {
+            let k = (j + 1) % n;
+            faces.push(FaceLoops {
+                outer: vec![r0[j], r0[k], r1[k], r1[j]],
+                inners: vec![],
+                closed_curve: None,
+            });
+        }
+    }
+}
+
 fn revolved_area_solid_loops(
     file: &StepFile,
     id: u32,
@@ -854,6 +872,10 @@ fn revolved_area_solid_loops(
         Some(p) if p.len() >= 3 => p,
         _ => return Ok((Vec::new(), 1)),
     };
+    // A profile with voids (IfcArbitraryProfileDefWithVoids) revolves to a solid
+    // with a cavity — a hollow ring for a full turn, an annular-capped one for a part.
+    let voids: Vec<Vec<(f64, f64)>> =
+        parse_profile_voids(file, area_id, scale).into_iter().filter(|v| v.len() >= 3).collect();
     let place = solid
         .args
         .get(1)
@@ -872,43 +894,41 @@ fn revolved_area_solid_loops(
         return Ok((Vec::new(), 1));
     }
 
-    // The profile in world space, in its Position plane.
-    let base: Vec<DVec3> =
-        profile.iter().map(|&(u, v)| place.origin + place.x * u + place.y * v).collect();
-    let n = base.len();
-
     // ~15° per step; a full turn closes on itself (last ring == first).
     let full = (angle.abs() - std::f64::consts::TAU).abs() < 1e-4;
     let steps = ((angle.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).max(2);
     let ring_count = if full { steps } else { steps + 1 };
-    let rings: Vec<Vec<DVec3>> = (0..ring_count)
-        .map(|i| {
-            let a = angle * (i as f64) / (steps as f64);
-            base.iter().map(|&p| rotate_around_axis(p, axis_pt, axis_dir, a)).collect()
-        })
-        .collect();
+    // A loop (in its Position plane) swept into `ring_count` rings around the axis.
+    let make_rings = |loop2d: &[(f64, f64)]| -> Vec<Vec<DVec3>> {
+        let base: Vec<DVec3> =
+            loop2d.iter().map(|&(u, v)| place.origin + place.x * u + place.y * v).collect();
+        (0..ring_count)
+            .map(|i| {
+                let a = angle * (i as f64) / (steps as f64);
+                base.iter().map(|&p| rotate_around_axis(p, axis_pt, axis_dir, a)).collect()
+            })
+            .collect()
+    };
 
-    let mut faces = Vec::with_capacity(steps * n + 2);
-    for i in 0..steps {
-        let r0 = &rings[i];
-        let r1 = if full && i == steps - 1 { &rings[0] } else { &rings[i + 1] };
-        for j in 0..n {
-            let k = (j + 1) % n;
+    let outer_rings = make_rings(&profile);
+    let void_rings: Vec<Vec<Vec<DVec3>>> = voids.iter().map(|v| make_rings(v)).collect();
+
+    let mut faces = Vec::with_capacity((void_rings.len() + 1) * steps * profile.len() + 2);
+    // The outer swept surface, then each void's swept surface (the cavity walls).
+    push_revolved_side(&mut faces, &outer_rings, steps, full);
+    for vr in &void_rings {
+        push_revolved_side(&mut faces, vr, steps, full);
+    }
+    // A partial revolution is closed by the start and end profile caps — each the
+    // outer profile with the voids as holes.
+    if !full {
+        for &ci in &[0usize, ring_count - 1] {
             faces.push(FaceLoops {
-                outer: vec![r0[j], r0[k], r1[k], r1[j]],
-                inners: vec![],
+                outer: outer_rings[ci].clone(),
+                inners: void_rings.iter().map(|vr| vr[ci].clone()).collect(),
                 closed_curve: None,
             });
         }
-    }
-    // A partial revolution is closed by the start and end profile caps.
-    if !full {
-        faces.push(FaceLoops { outer: rings[0].clone(), inners: vec![], closed_curve: None });
-        faces.push(FaceLoops {
-            outer: rings[ring_count - 1].clone(),
-            inners: vec![],
-            closed_curve: None,
-        });
     }
     Ok((faces, 0))
 }
@@ -3370,6 +3390,61 @@ END-ISO-10303-21;
             rad.elements[0].faces.len(),
             "360° and 2π revolve to the same ring"
         );
+    }
+
+    /// A rectangular profile (2..4 × 0..2) with a rectangular void, revolved around
+    /// the Y-axis. The `angle` is a radian string; a full turn is a hollow ring, a
+    /// part is annular-capped.
+    fn revolved_tube_ifc(angle: &str) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#34=IFCCARTESIANPOINT((2.,0.));
+#35=IFCCARTESIANPOINT((4.,0.));
+#36=IFCCARTESIANPOINT((4.,2.));
+#37=IFCCARTESIANPOINT((2.,2.));
+#33=IFCPOLYLINE((#34,#35,#36,#37,#34));
+#60=IFCCARTESIANPOINT((2.5,0.5));
+#61=IFCCARTESIANPOINT((3.5,0.5));
+#62=IFCCARTESIANPOINT((3.5,1.5));
+#63=IFCCARTESIANPOINT((2.5,1.5));
+#64=IFCPOLYLINE((#60,#61,#62,#63,#60));
+#40=IFCARBITRARYPROFILEDEFWITHVOIDS(.AREA.,$,#33,(#64));
+#51=IFCAXIS2PLACEMENT3D(#24,$,$);
+#53=IFCDIRECTION((0.,1.,0.));
+#52=IFCAXIS1PLACEMENT(#24,#53);
+#50=IFCREVOLVEDAREASOLID(#40,#51,#52,{angle});
+#78=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#45=IFCWALL('w',$,'Tube',$,$,$,#48,$,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        )
+    }
+
+    #[test]
+    fn a_revolved_profile_with_a_void_is_a_hollow_ring() {
+        // Full turn: the void sweeps a second (inner) surface, so twice the side
+        // quads of the bare ring and no caps.
+        let solid = import_ifc_geometry(&revolved_ring_ifc("", "6.283185307")).unwrap();
+        let tube = import_ifc_geometry(&revolved_tube_ifc("6.283185307")).unwrap();
+        let (s, t) = (solid.elements[0].faces.len(), tube.elements[0].faces.len());
+        assert_eq!(t, 2 * s, "void adds an equal inner surface: {t} vs {s}");
+        assert!(tube.elements[0].faces.iter().all(|f| f.inners.is_empty()), "a full turn has no caps");
+
+        // Partial turn: the two end caps become annular — the profile with the void
+        // as a hole — while the side surfaces still double.
+        let tube90 = import_ifc_geometry(&revolved_tube_ifc("1.570796327")).unwrap();
+        let capped: Vec<_> = tube90.elements[0].faces.iter().filter(|f| f.inners.len() == 1).collect();
+        assert_eq!(capped.len(), 2, "two annular caps, each with the void as one hole");
+        assert!(capped.iter().all(|f| f.inners[0].len() == 4), "the hole is the 4-point void");
     }
 
     /// A disk (radius, optional inner radius) swept along a polyline directrix —
