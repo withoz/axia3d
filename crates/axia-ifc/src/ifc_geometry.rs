@@ -297,13 +297,16 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
     let mut warnings = Vec::new();
     let scale = length_scale_to_mm(file, &mut warnings);
 
-    // A non-identity WorldCoordinateSystem shifts the whole model. It is
-    // almost always the identity; when it is not, say so rather than importing
-    // everything quietly offset.
-    if let Some(wcs) = crate::ifc_placement::world_coordinate_system(file, scale) {
+    // A non-identity WorldCoordinateSystem places the whole model relative to the
+    // project's world origin — a georeferenced file, or one authored off-origin.
+    // It is almost always the identity; when it is not, it is applied on top of
+    // each member's placement chain below (and reported, since the geometry then
+    // lands far from the origin, which is expected, not a bug).
+    let wcs = crate::ifc_placement::world_coordinate_system(file, scale);
+    if let Some(w) = &wcs {
         warnings.push(format!(
-            "file sets a non-identity WorldCoordinateSystem (origin {:.1},{:.1},{:.1} mm) — not applied",
-            wcs.origin.x, wcs.origin.y, wcs.origin.z
+            "file's WorldCoordinateSystem offsets the whole model to origin {:.1},{:.1},{:.1} mm (applied)",
+            w.origin.x, w.origin.y, w.origin.z
         ));
     }
 
@@ -443,6 +446,21 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 warnings.push(format!("{}: no usable faces", label()));
             }
             continue;
+        }
+        // The project's WorldCoordinateSystem is a global transform on top of every
+        // member's placement chain — applied last, to the element and the openings
+        // cut from it together, so they stay aligned.
+        if let Some(w) = &wcs {
+            for f in &mut faces {
+                f.transform(w);
+                // The polygon moved but its analytic curve did not (as with a
+                // per-member placement) — fall back to the transformed polygon.
+                f.closed_curve = None;
+            }
+            for node in &mut booleans {
+                node.transform(w);
+            }
+            moved = true;
         }
         if moved {
             placed += 1;
@@ -4016,8 +4034,8 @@ END-ISO-10303-21;
 
     #[test]
     fn a_shifted_world_coordinate_system_is_reported() {
-        // We do not apply the context WCS; a file that sets one must not import
-        // silently as if it had not.
+        // A file that sets a non-identity WCS is reported (the model then lands far
+        // from the origin, which is expected) — see the offset test for the actual move.
         let src = "\
 ISO-10303-21;
 HEADER;
@@ -4037,6 +4055,57 @@ END-ISO-10303-21;
             "warnings: {:?}",
             g.warnings
         );
+    }
+
+    /// A box plus a WCS context whose origin is (`ox`, `oy`, `oz`) metres.
+    fn boxed_with_wcs_ifc(ox: f64, oy: f64, oz: f64) -> String {
+        format!(
+            "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,2.);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#51=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#50));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'Box',$,$,$,#52,$,$);
+#90=IFCCARTESIANPOINT(({ox},{oy},{oz}));
+#91=IFCAXIS2PLACEMENT3D(#90,$,$);
+#92=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#91,$);
+ENDSEC;
+END-ISO-10303-21;
+"
+        )
+    }
+
+    #[test]
+    fn a_world_coordinate_system_offsets_the_whole_model() {
+        let aabb = |src: &str| {
+            let g = import_ifc_geometry(src).unwrap();
+            let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+            for f in &g.elements[0].faces {
+                for p in &f.outer {
+                    lo = lo.min(*p);
+                    hi = hi.max(*p);
+                }
+            }
+            (lo, hi)
+        };
+        // Identity WCS: the box is centred on the origin (4 × 2 footprint, 3 tall up +Z).
+        let (lo0, hi0) = aabb(&boxed_with_wcs_ifc(0.0, 0.0, 0.0));
+        assert!((lo0.x + 2000.0).abs() < 1.0 && (hi0.x - 2000.0).abs() < 1.0, "identity X: {lo0:?}..{hi0:?}");
+
+        // A WCS at (100, 50, 10) m slides the whole box by (100000, 50000, 10000) mm;
+        // its extent (size) is unchanged, only its position.
+        let (lo1, hi1) = aabb(&boxed_with_wcs_ifc(100.0, 50.0, 10.0));
+        assert!((lo1.x - (lo0.x + 100_000.0)).abs() < 1.0, "shifted X min: {} vs {}", lo1.x, lo0.x + 100_000.0);
+        assert!((hi1.x - (hi0.x + 100_000.0)).abs() < 1.0, "shifted X max");
+        assert!((lo1.y - (lo0.y + 50_000.0)).abs() < 1.0, "shifted Y");
+        assert!((lo1.z - (lo0.z + 10_000.0)).abs() < 1.0, "shifted Z");
+        assert!(((hi1 - lo1) - (hi0 - lo0)).length() < 1.0, "same size, only moved");
     }
 
     #[test]

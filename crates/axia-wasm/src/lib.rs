@@ -14413,5 +14413,55 @@ END-ISO-10303-21;
         assert!(active_faces(&part) > 40, "void swept an inner surface: {}", active_faces(&part));
         assert!(part.scene.mesh.verify_face_invariants().is_valid(), "annular-capped tube is valid");
     }
+
+    /// A non-identity WorldCoordinateSystem offsets the whole model — and an element
+    /// and the opening cut from it move together, so the hole is still cut and the
+    /// result is still watertight, just at the world origin the file asked for.
+    #[test]
+    fn a_world_coordinate_system_offsets_a_wall_with_its_opening() {
+        // The wall-with-window solid, plus a WCS at (200, 0, 0) m.
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#50=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#60=IFCCARTESIANPOINT((0.,0.,0.8));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#62=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#63=IFCEXTRUDEDAREASOLID(#62,#61,$,1.2);
+#70=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#50,#63);
+#51=IFCSHAPEREPRESENTATION($,'Body','CSG',(#70));
+#52=IFCPRODUCTDEFINITIONSHAPE($,$,(#51));
+#53=IFCWALL('w',$,'CSG',$,$,$,#52,$,$);
+#90=IFCCARTESIANPOINT((200.,0.,0.));
+#91=IFCAXIS2PLACEMENT3D(#90,$,$);
+#92=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#91,$);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        // Still a watertight solid with the opening cut (a plain box is 6 faces).
+        assert!(active_faces(&e) > 6, "the opening is still cut after the WCS shift");
+        assert!(e.scene.mesh.verify_face_invariants().is_valid(), "still watertight after the WCS shift");
+
+        // The 4 m wall now sits around x = 200 m, not the origin.
+        let (mut lo, mut hi) = (glam::DVec3::splat(f64::INFINITY), glam::DVec3::splat(f64::NEG_INFINITY));
+        for (fid, face) in e.scene.mesh.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if let Some(bb) = axia_geo::operations::coplanar::face_world_aabb(&e.scene.mesh, fid) {
+                lo = lo.min(bb.min);
+                hi = hi.max(bb.max);
+            }
+        }
+        let cx = (lo.x + hi.x) / 2.0;
+        assert!((cx - 200_000.0).abs() < 100.0, "model shifted to x≈200 m: centre {cx}");
+    }
 }
 
