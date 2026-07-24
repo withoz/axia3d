@@ -585,6 +585,14 @@ type AxiaEngineExtended = AxiaEngine & {
   getXiaElementKind?(xiaId: number): string;
   getShapeElementKind?(shapeId: number): string;
   ifcElementKinds?(): string;
+  /** ADR-203 opening round-trip — record a window/door the user drew. */
+  recordRectOpening?(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    nx: number, ny: number, nz: number,
+  ): void;
+  clearOpenings?(): void;
+  openingCount?(): number;
   is_face_locked?(face_id_raw: number): boolean;
   // Boolean
   boolean_op?(a: Uint32Array, b: Uint32Array, op: string): string;
@@ -6122,6 +6130,21 @@ export class WasmBridge {
     } catch (e) {
       console.error('[WasmBridge] exportIfcModel failed:', e);
       return null;
+    }
+  }
+
+  /**
+   * ADR-203 opening round-trip — record a rectangular opening (window/door) the
+   * user drew, so a later IFC export re-emits it as an `IfcOpeningElement` that
+   * voids its host wall. `a`/`b` are the two diagonal corners and `normal` the
+   * host face normal, all in world millimetres. No-op if the engine is absent.
+   */
+  recordRectOpening(a: THREE.Vector3, b: THREE.Vector3, normal: THREE.Vector3): void {
+    if (!this.engine?.recordRectOpening) return;
+    try {
+      this.engine.recordRectOpening(a.x, a.y, a.z, b.x, b.y, b.z, normal.x, normal.y, normal.z);
+    } catch (e) {
+      this.recordBridgeError('recordRectOpening', e);
     }
   }
 

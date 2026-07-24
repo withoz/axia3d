@@ -57,6 +57,7 @@ const mockEngine: Record<string, any> = {
   get_all_groups: vi.fn().mockReturnValue('[]'),
   group_count: vi.fn().mockReturnValue(1),
   import_dxf: vi.fn().mockReturnValue('{"faces":10}'),
+  recordRectOpening: vi.fn(),
   importIfc: vi
     .fn()
     .mockReturnValue(
@@ -118,6 +119,19 @@ describe('WasmBridge', () => {
       const b2 = bridge.getMeshBuffers();
       // Positions should be same reference (cached)
       expect(b1!.positions).toBe(b2!.positions);
+    });
+  });
+
+  // ADR-203 opening round-trip — the wrapper forwards the two corners + normal.
+  describe('recordRectOpening', () => {
+    it('forwards the nine coordinates to the engine', () => {
+      const THREE = require('three');
+      bridge.recordRectOpening(
+        new THREE.Vector3(1, 2, 3),
+        new THREE.Vector3(4, 5, 6),
+        new THREE.Vector3(0, -1, 0),
+      );
+      expect(mockEngine.recordRectOpening).toHaveBeenCalledWith(1, 2, 3, 4, 5, 6, 0, -1, 0);
     });
   });
 

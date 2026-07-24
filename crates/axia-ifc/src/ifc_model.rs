@@ -10,11 +10,31 @@
 
 use crate::guid::ifc_guid_for;
 use crate::ifc_advancedbrep::{advanced_faces_filtered, emit_advanced_geometry};
-use crate::ifc_common::emit_owner_units_context;
+use crate::ifc_common::{emit_owner_units_context, pt};
 use crate::step_value::StepValue;
 use crate::step_writer::StepWriter;
 use axia_geo::{FaceId, Mesh};
+use glam::DVec3;
 use std::collections::HashSet;
+
+/// A rectangular opening (window / door) to emit as an `IfcOpeningElement` that
+/// voids one of the model's elements. `host_index` indexes into the `elements`
+/// slice; `corners` are the eight box corners in world millimetres, ordered like
+/// [`crate::emit_box`] (bottom face 0-3, top face 4-7).
+pub struct ModelOpening {
+    pub host_index: usize,
+    pub corners: [DVec3; 8],
+}
+
+/// Box face loops (indices into the eight corners), CCW outward — matches `emit_box`.
+const OPENING_FACE_LOOPS: [[usize; 4]; 6] = [
+    [0, 3, 2, 1], // bottom
+    [4, 5, 6, 7], // top
+    [0, 1, 5, 4], // front
+    [2, 3, 7, 6], // back
+    [0, 4, 7, 3], // left
+    [1, 2, 6, 5], // right
+];
 
 /// One semantic member to export: a display name, an optional material name,
 /// what kind of building element it is, and the faces it owns (engine
@@ -76,6 +96,18 @@ fn next_guid(gi: &mut u64) -> StepValue {
 pub fn emit_ifc_model(
     mesh: &Mesh,
     elements: &[IfcElement],
+    scale: f64,
+    project_name: &str,
+) -> Result<String, String> {
+    emit_ifc_model_with_openings(mesh, elements, &[], scale, project_name)
+}
+
+/// Like [`emit_ifc_model`], but also emits `IfcOpeningElement` + `IfcRelVoidsElement`
+/// for each recorded opening (window / door the user drew).
+pub fn emit_ifc_model_with_openings(
+    mesh: &Mesh,
+    elements: &[IfcElement],
+    openings: &[ModelOpening],
     scale: f64,
     project_name: &str,
 ) -> Result<String, String> {
@@ -226,6 +258,58 @@ pub fn emit_ifc_model(
         ],
     );
 
+    // ── Openings the user drew → IfcOpeningElement + IfcRelVoidsElement ──
+    // The hole is baked into the host wall's mesh; this re-states it as a real IFC
+    // opening so a reader (and our own re-import) sees the wall + opening, not a wall
+    // with a mysterious dent. Each opening is a faceted-brep box that voids its host.
+    for op in openings {
+        let Some(&host) = walls.get(op.host_index) else { continue };
+        let verts: Vec<_> = op.corners.iter().map(|&c| pt(&mut w, c * scale)).collect();
+        let mut faces = Vec::with_capacity(6);
+        for loop_idx in &OPENING_FACE_LOOPS {
+            let loop_ = w.add(
+                "IFCPOLYLOOP",
+                vec![StepValue::List(loop_idx.iter().map(|&i| StepValue::Ref(verts[i])).collect())],
+            );
+            let bound = w.add(
+                "IFCFACEOUTERBOUND",
+                vec![StepValue::Ref(loop_), StepValue::Enum("T".into())],
+            );
+            faces.push(w.add("IFCFACE", vec![StepValue::List(vec![StepValue::Ref(bound)])]));
+        }
+        let shell = w.add(
+            "IFCCLOSEDSHELL",
+            vec![StepValue::List(faces.iter().map(|&f| StepValue::Ref(f)).collect())],
+        );
+        let brep = w.add("IFCFACETEDBREP", vec![StepValue::Ref(shell)]);
+        let shape_rep = w.add(
+            "IFCSHAPEREPRESENTATION",
+            vec![
+                StepValue::Ref(sc.context), StepValue::Str("Body".into()), StepValue::Str("Brep".into()),
+                StepValue::List(vec![StepValue::Ref(brep)]),
+            ],
+        );
+        let prod_def = w.add(
+            "IFCPRODUCTDEFINITIONSHAPE",
+            vec![StepValue::Unset, StepValue::Unset, StepValue::List(vec![StepValue::Ref(shape_rep)])],
+        );
+        let opening = w.add(
+            "IFCOPENINGELEMENT",
+            vec![
+                next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Str("Opening".into()),
+                StepValue::Unset, StepValue::Unset, StepValue::Ref(site_pl), StepValue::Ref(prod_def),
+                StepValue::Unset, StepValue::Unset, // Tag, PredefinedType
+            ],
+        );
+        w.add(
+            "IFCRELVOIDSELEMENT",
+            vec![
+                next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Unset, StepValue::Unset,
+                StepValue::Ref(host), StepValue::Ref(opening),
+            ],
+        );
+    }
+
     Ok(w.build())
 }
 
@@ -314,6 +398,40 @@ mod tests {
         assert_eq!(s.matches("=IFCDOOR(").count(), 1);
         assert_eq!(arity_of(&s, "IFCDOOR"), 13, "door: 8 common + height + width + 3");
         assert_eq!(arity_of(&s, "IFCWALL"), 9, "the wall shape must not move");
+    }
+
+    #[test]
+    fn an_opening_becomes_an_opening_element_that_voids_its_wall() {
+        // A window the user drew is a box that voids its host wall — an
+        // IfcOpeningElement + an IfcRelVoidsElement, not a mysterious dent.
+        let mut mesh = Mesh::new();
+        // create_box(center, width→X, height→Z, depth→Y): a 4 m × 3 m × 0.2 m wall.
+        let wall = mesh
+            .create_box(DVec3::ZERO, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Wall".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: wall,
+        }];
+        // A 1 m (X) × 1.2 m (Z) box, punched through the 0.2 m depth (Y), ordered
+        // like emit_box: bottom four then top four.
+        let c = |x: f64, y: f64, z: f64| DVec3::new(x, y, z);
+        let corners = [
+            c(-500.0, -150.0, -600.0), c(500.0, -150.0, -600.0), c(500.0, 150.0, -600.0), c(-500.0, 150.0, -600.0),
+            c(-500.0, -150.0, 600.0), c(500.0, -150.0, 600.0), c(500.0, 150.0, 600.0), c(-500.0, 150.0, 600.0),
+        ];
+        let openings = vec![ModelOpening { host_index: 0, corners }];
+        let s = emit_ifc_model_with_openings(&mesh, &elements, &openings, 0.001, "House").unwrap();
+
+        assert_eq!(s.matches("=IFCOPENINGELEMENT(").count(), 1, "one opening element");
+        assert_eq!(s.matches("=IFCRELVOIDSELEMENT(").count(), 1, "one voids relationship");
+        assert_eq!(arity_of(&s, "IFCOPENINGELEMENT"), 9);
+        assert_eq!(arity_of(&s, "IFCRELVOIDSELEMENT"), 6);
+        assert_refs_resolve(&s);
+
+        // A model that records no openings emits none (the wall is still there).
+        let plain = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
+        assert_eq!(plain.matches("=IFCOPENINGELEMENT(").count(), 0);
+        assert_eq!(plain.matches("=IFCWALL(").count(), 1);
     }
 
     #[test]

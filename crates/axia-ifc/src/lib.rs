@@ -46,7 +46,7 @@ pub use ifc_geometry::{
 };
 pub use ifc_placement::{axis_placement, resolve_placement, Placement};
 pub use ifc_spatial::{spatial_tree, SpatialNode, SpatialTree};
-pub use ifc_model::{emit_ifc_model, IfcElement};
+pub use ifc_model::{emit_ifc_model, emit_ifc_model_with_openings, IfcElement, ModelOpening};
 pub use ifc_facetedbrep::{emit_box, emit_brep, emit_faceted_brep, emit_unit_cube};
 pub use step_value::{EntityRef, StepValue};
 pub use step_writer::{IfcEntity, StepWriter};

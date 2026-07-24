@@ -1839,3 +1839,53 @@ live-render 확인 중 발견: `WasmBridge.importIfc` 가 성공 후 **`markDirt
   는 open 으로 처리 (cap 겹침) — 표준 open pipe 만 검증.
 - MEP element type (`IfcPipeSegment`·`IfcDuctSegment`) 분류 별도 — 현재 `IfcMember`·
   `IfcRailing`·`IfcBuildingElementProxy` 로 도달.
+
+## 34. Opening round-trip Acceptance — 사용자가 그린 개구부 → IfcOpeningElement (export)
+
+**사용자가 그린 창·문이 IFC 개구부로 나간다.** §29 (import) 는 `IfcRelVoidsElement`
+를 subtract 로 벽에 뚫었다. 반대 방향 — AXiA 에서 그린 개구부를 export 시
+`IfcOpeningElement` + `IfcRelVoidsElement` 로 재구성 — 이 이 절이다. 개구부는 벽
+지오메트리에 baked (구멍이 mesh 에 녹아 있어 기하만으로는 복원 불가) 이므로,
+**그릴 때 별도로 기록** 해 두었다가 export 가 다시 꺼낸다. (사용자 결재: Export 우선.)
+
+### 구현 (5-layer)
+
+- **axia-core `Scene.openings: Vec<RectOpening>`** — `RectOpening { a, b, normal }`
+  (두 대각 코너 + 호스트 면 normal, world mm). `record_rect_opening` / `clear_openings`.
+  **additive 스냅샷 section 12** (ADR-091 §E L1: Scene-level Vec, `#[serde(default)]`
+  없이 bincode 안전; legacy 스냅샷은 truncate → 빈 Vec 복원).
+- **DrawWindowTool** — punch 3경로 (door notch / through-window / face-window) 각
+  성공 직후 `bridge.recordRectOpening(a, b, n)`. 실패 시 미기록.
+- **WasmBridge** — `recordRectOpening` / `clearOpenings` / `openingCount` 노출 +
+  TS wrapper (graceful).
+- **export (`export_ifc_model` in axia-wasm)** — 각 opening 의 호스트 벽을
+  **containment 로 해소** (opening 중점이 어느 element AABB 안인가; 그릴 때 배선
+  불필요). 호스트의 normal-투영 범위 = 벽 두께 → oriented box 8 코너 계산 →
+  `emit_ifc_model_with_openings` 로 전달.
+- **axia-ifc `emit_ifc_model_with_openings`** — 각 opening 을 faceted-brep box
+  (`IFCFACETEDBREP`, 6 quad, `emit_box` winding) 로 emit + `IFCOPENINGELEMENT` +
+  `IFCRELVOIDSELEMENT(host_wall, opening)`. 기존 `emit_ifc_model` 은 `&[]` 로
+  위임 (모든 기존 caller 무변경).
+
+### 검증 (round-trip)
+
+- **round-trip**: 벽 + opening 기록 → export → **재-import → 구멍이 다시 뚫린다**
+  (fresh 엔진 valid watertight, 6 → 10 face). `IfcRelVoidsElement` 를 §29 importer
+  가 subtract 로 처리 → 원래 개구부 복원.
+- **4중**: Rust 유닛 (스냅샷 round-trip + `IFCOPENINGELEMENT`/`IFCRELVOIDSELEMENT`
+  emit + arity) + WASM `import_ifc` (record→export→reimport, valid + 구멍, mutation:
+  opening export 를 `&[]` 로 죽이면 재-import 구멍 안 뚫림 → 실패) + TS
+  (DrawWindowTool 3경로 각 기록 / 실패 시 미기록, bridge 9-arg 전달) + 라이브 앱
+  (export 에 opening+voids emit, sessionStorage 로 fresh-scene 재-import → valid
+  10-face 벽-with-hole).
+- 회귀 **+8** (axia-core 1 스냅샷 / axia-ifc 1 emit / axia-wasm 1 round-trip /
+  vitest 5: DrawWindowTool 4 + WasmBridge 1). 전체 workspace green.
+
+### 남은 한계
+
+- **host = containment**: opening 중점이 벽 AABB 안이어야 매칭. 겹친 벽은 첫 매칭
+  선택. 정밀 host 추적 (그릴 때 배선) 은 향후.
+- **import-preserve 미구현**: import 된 개구부 (§29) 는 여전히 subtract 로 소비
+  (기록 안 함) — 가져온 파일의 개구부 재-export 는 별도 트랙 (full round-trip).
+- **door notch 근사**: 문 (바닥-도달 U-notch, ADR-262) 도 사각 box 로 기록 —
+  IFC opening 은 사각 표현이라 열린 바닥 형상은 근사.
