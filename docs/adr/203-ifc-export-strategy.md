@@ -629,12 +629,39 @@ IfcWall.ObjectPlacement → IfcLocalPlacement ─RelativePlacement→ IfcAxis2Pl
 - 절대 #[ignore] 금지. 워크스페이스 **2957 passed / 0 failed / 0 ignored**,
   vitest 2935, tsc·build·ADR 카탈로그 모두 통과.
 
+### §18-amendment — WCS 전역 배치 (WorldCoordinateSystem 적용)
+
+I-4 는 부재별 `IfcLocalPlacement` 체인을 적용했으나 `IfcGeometricRepresentation
+Context.WorldCoordinateSystem`(모델 전역 원점/방향) 은 **읽고 경고만** 했다 (미적용).
+이제 georeferenced / off-origin 파일의 전역 배치를 **적용**한다.
+
+- **`from_file`** (`ifc_geometry.rs`): `world_coordinate_system(file)` (기존 reader)
+  을 loop 앞에서 한 번 읽고, 각 부재의 최종 형상(placement 체인 적용 + opening
+  fold-in 후)에 전역 transform 으로 적용 — **부재 faces + boolean CSG 노드 둘 다**.
+- **부재와 opening 이 함께 이동**: opening (IfcRelVoidsElement) 은 boolean CSG 노드의
+  operand 로 folded 되어 있으므로, WCS 를 노드 전체(`CsgNode::transform` 재귀)에
+  적용하면 벽과 구멍이 정합 유지. **적용 시점 = opening fold-in 후, push 전** (전역
+  post-transform).
+- **합성**: `world = WCS(placement(local))`. `Placement::then` 으로 검증
+  (`placement.then(&wcs).apply(local) = wcs.apply(placement.apply(local))`).
+- **경고 → informational**: identity 아니면 "모델을 origin X,Y,Z mm 로 offset
+  (applied)" 로 보고 — 형상이 원점에서 멀어지는 건 정상(georeference).
+- **backward compat**: identity WCS (거의 모든 파일 + 우리 emitter) 는 무변경 (기존
+  I-4 회귀 PASS). 우리 파일은 world 좌표 baked → WCS identity → 이중 변환 없음.
+
+실측: WCS origin (100,50,10) m → 박스 AABB 정확히 (100000,50000,10000) mm 이동, 크기
+불변 · WCS origin (200,0,0) m + 창 뚫린 벽 → **valid watertight, 구멍 유지, centre
+x=200000 mm** (벽·opening 함께 이동). 4중 (Rust 유닛 offset+크기불변 + WASM 벽+opening
+정합 + 라이브 앱 valid·centre 200m·"(applied)" 경고). 회귀 **+2** (`ifc_geometry` 1
+offset/크기 + WASM 1 벽+opening 정합). mutation: `world_coordinate_system` 을 None 으로
+하면 X min −2000 (미이동) → 실패.
+
 ### 알려진 한계
 
-- **WCS 미적용** (경고만). 적용은 별도 판단.
 - 공간 구조(`IfcRelContainedInSpatialStructure`) 로 층·건물을 **그룹으로 만들지
   않는다** — 좌표만 맞춘다. 그룹화는 I-5.
 - `IfcGridPlacement` 미지원 (identity 처리).
+- WCS 는 rigid (origin + 정규직교 축) 만 — scale/shear 없는 IFC 표준 전제.
 
 - **다음 (I-5)**: 공간 계층을 씬 그룹으로 — 층/건물별로 묶어서 보이기.
 
