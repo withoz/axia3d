@@ -34,7 +34,7 @@ pub use boolean_group::BooleanGroupTag;
 pub use promote::{PromoteError, PromoteOk, XiaKind};
 pub use commands::{Command, CommandResult};
 pub use scene::{
-    Scene, FORM_MATERIAL,
+    Scene, FORM_MATERIAL, RectOpening,
     OrphanMaterialReport, OrphanMaterialEntry,
     MaterialRecoveryOutcome, MaterialRemovalOutcome,
 };

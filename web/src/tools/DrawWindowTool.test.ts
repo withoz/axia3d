@@ -25,6 +25,7 @@ function mockToolContext() {
       cutWallDoorOpening: vi.fn().mockReturnValue(-1),
       drillRectThroughHole: vi.fn().mockReturnValue(24), // through-window default
       punchRectHole: vi.fn().mockReturnValue(7),
+      recordRectOpening: vi.fn(),
       lastError: vi.fn().mockReturnValue(''),
     },
     viewport: { scene: { add: vi.fn(), remove: vi.fn() } },
@@ -92,6 +93,32 @@ describe('DrawWindowTool — ADR-262 β-3 door/window routing', () => {
     expect(ctx.bridge.cutWallDoorOpening).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.drillRectThroughHole).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.punchRectHole).toHaveBeenCalledTimes(1);
+  });
+
+  // ADR-203 opening round-trip  a successful opening is recorded so IFC export
+  // can re-emit it as an IfcOpeningElement.
+  it('records the opening on the door success path', () => {
+    ctx.bridge.cutWallDoorOpening.mockReturnValue(3);
+    drawOpening(tool);
+    expect(ctx.bridge.recordRectOpening).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the opening on the through-window path', () => {
+    drawOpening(tool); // door -1, drill 24 (default)
+    expect(ctx.bridge.recordRectOpening).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the opening on the face-window path', () => {
+    ctx.bridge.drillRectThroughHole.mockReturnValue(-1);
+    drawOpening(tool); // door -1, drill -1, punch 7
+    expect(ctx.bridge.recordRectOpening).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not record an opening when every punch fails', () => {
+    ctx.bridge.drillRectThroughHole.mockReturnValue(-1);
+    ctx.bridge.punchRectHole.mockReturnValue(-1);
+    drawOpening(tool);
+    expect(ctx.bridge.recordRectOpening).not.toHaveBeenCalled();
   });
 
   it('door tried BEFORE drill (ordering) — same corners + normal forwarded', () => {

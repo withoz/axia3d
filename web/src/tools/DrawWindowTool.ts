@@ -161,6 +161,8 @@ export class DrawWindowTool implements ITool {
     );
     if (jambs > 0) {
       debugLog(`[Window] Cut door notch → ${jambs} jambs`);
+      // ADR-203 opening round-trip  record it so IFC export re-emits the opening.
+      this.ctx.bridge.recordRectOpening(a, b, n);
       Toast.success(t('문(door)을 냈습니다'));
       this.ctx.syncMesh();
       return;
@@ -179,6 +181,7 @@ export class DrawWindowTool implements ITool {
     );
     if (tube > 0) {
       debugLog(`[Window] Drilled rect through → ${tube} tube quads`);
+      this.ctx.bridge.recordRectOpening(a, b, n);
       Toast.success(t('관통 창을 냈습니다'));
       this.ctx.syncMesh();
       return;
@@ -198,6 +201,7 @@ export class DrawWindowTool implements ITool {
       return;
     }
     debugLog(`[Window] Punched rect on face → ring face ${faceId}`);
+    this.ctx.bridge.recordRectOpening(a, b, n);
     Toast.success(t('창을 냈습니다'));
     this.ctx.syncMesh();
   }

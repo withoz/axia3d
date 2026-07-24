@@ -241,6 +241,17 @@ struct LiveNurbsEditSession {
     current_fid: FaceId,
 }
 
+/// A rectangular opening (window or door) the user punched into a wall — its two
+/// diagonal corners and the host face normal, in world millimetres. The hole is
+/// baked into the wall mesh, so this record is what lets IFC export re-emit it as
+/// an `IfcOpeningElement`. (ADR-203 opening round-trip.)
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RectOpening {
+    pub a: DVec3,
+    pub b: DVec3,
+    pub normal: DVec3,
+}
+
 pub struct Scene {
     /// The geometry kernel mesh
     pub mesh: Mesh,
@@ -396,6 +407,14 @@ pub struct Scene {
     pub xia_element_kind: std::collections::BTreeMap<XiaId, String>,
     /// Form-citizen counterpart of [`Self::xia_element_kind`].
     pub shape_element_kind: std::collections::BTreeMap<crate::ShapeId, String>,
+
+    /// ADR-203 opening round-trip — rectangular openings the user drew (a window
+    /// or door punched into a wall). Recorded here so IFC export can emit a real
+    /// `IfcOpeningElement` + `IfcRelVoidsElement` (the hole is baked into the wall
+    /// mesh, so it cannot be recovered from geometry alone). The host wall is
+    /// resolved by containment at export time. Persisted via additive snapshot
+    /// section 12; legacy snapshots restore this empty.
+    pub openings: Vec<RectOpening>,
 
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
@@ -554,6 +573,7 @@ impl Scene {
             xia_to_original_shape: HashMap::new(),
             xia_element_kind: std::collections::BTreeMap::new(),
             shape_element_kind: std::collections::BTreeMap::new(),
+            openings: Vec::new(),
             // ADR-095 Phase 3-β — Reference citizenship (Two-Layer Phase 3).
             references: HashMap::new(),
             next_reference_id: 1,
@@ -712,6 +732,11 @@ impl Scene {
         // empty maps, i.e. everything stays an IfcWall as it was.
         buf.extend_from_slice(&(element_kind_data.len() as u64).to_le_bytes());
         buf.extend_from_slice(&element_kind_data);
+        // ADR-203 opening round-trip — section 12 (additive). Rectangular openings
+        // for IFC export. Legacy snapshots truncate before this → restore reads empty.
+        let openings_data = bincode::serialize(&self.openings).unwrap_or_default();
+        buf.extend_from_slice(&(openings_data.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&openings_data);
         buf
     }
 
@@ -998,6 +1023,26 @@ impl Scene {
         if !element_kind_section_present {
             self.xia_element_kind.clear();
             self.shape_element_kind.clear();
+        }
+
+        // 12. ADR-203 opening round-trip — rectangular openings for IFC export.
+        //     Additive: a legacy snapshot truncates before this, so it restores empty.
+        let mut openings_section_present = false;
+        if offset + 8 <= data.len() {
+            let olen = read_len(data, &mut offset);
+            if olen > 0 && offset + olen <= data.len() {
+                if let Ok(ops) = bincode::deserialize::<Vec<RectOpening>>(&data[offset..offset + olen]) {
+                    self.openings = ops;
+                    openings_section_present = true;
+                }
+                offset += olen;
+            } else if olen == 0 {
+                self.openings.clear();
+                openings_section_present = true;
+            }
+        }
+        if !openings_section_present {
+            self.openings.clear();
         }
         let _ = offset;
 
@@ -1548,6 +1593,22 @@ impl Scene {
     /// `SelectionManager.clearGroupTags`.
     pub fn clear_boolean_group_tags(&mut self) {
         self.boolean_group_tags.clear();
+    }
+
+    /// ADR-203 opening round-trip — record a rectangular opening (window/door) the
+    /// user punched into a wall, so IFC export can re-emit it as an
+    /// `IfcOpeningElement`. `a`/`b` are the two diagonal corners and `normal` the
+    /// host face normal, all in world millimetres. Degenerate rectangles are ignored.
+    pub fn record_rect_opening(&mut self, a: DVec3, b: DVec3, normal: DVec3) {
+        if (a - b).length_squared() < 1e-6 || normal.length_squared() < 1e-12 {
+            return;
+        }
+        self.openings.push(RectOpening { a, b, normal: normal.normalize() });
+    }
+
+    /// Drop all recorded openings.
+    pub fn clear_openings(&mut self) {
+        self.openings.clear();
     }
 
     /// ADR-078 P-1 — True iff at least one face has a Boolean group tag.
@@ -21113,6 +21174,31 @@ mod tests {
 
         assert_eq!(restored.xia_element_kind.get(&xia_id).map(String::as_str), Some("slab"));
         assert_eq!(restored.shape_element_kind.get(&shape_id).map(String::as_str), Some("column"));
+    }
+
+    #[test]
+    fn adr203_openings_survive_a_snapshot_round_trip() {
+        // ADR-203 opening round-trip — a recorded window/door must survive save/load,
+        // or IFC export loses it.
+        let mut scene = Scene::new();
+        scene.record_rect_opening(
+            DVec3::new(1000.0, 0.0, 800.0),
+            DVec3::new(2000.0, 0.0, 2000.0),
+            DVec3::new(0.0, -1.0, 0.0),
+        );
+        // Degenerate (zero-area / zero-normal) records are ignored.
+        scene.record_rect_opening(DVec3::ZERO, DVec3::ZERO, DVec3::Y);
+        assert_eq!(scene.openings.len(), 1, "one real opening, degenerate dropped");
+
+        let bytes = scene.export_versioned_snapshot().expect("export");
+        let mut restored = Scene::new();
+        restored.import_versioned_snapshot(&bytes).expect("import");
+
+        assert_eq!(restored.openings.len(), 1);
+        let op = restored.openings[0];
+        assert!((op.a - DVec3::new(1000.0, 0.0, 800.0)).length() < 1e-6);
+        assert!((op.b - DVec3::new(2000.0, 0.0, 2000.0)).length() < 1e-6);
+        assert!((op.normal - DVec3::new(0.0, -1.0, 0.0)).length() < 1e-6, "normal normalised");
     }
 
     #[test]

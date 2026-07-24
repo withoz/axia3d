@@ -5634,7 +5634,107 @@ impl AxiaEngine {
         if elements.is_empty() {
             return String::new();
         }
-        axia_ifc::emit_ifc_model(&scene.mesh, &elements, MM_TO_M, nm).unwrap_or_default()
+
+        // ADR-203 opening round-trip — turn each recorded window/door into an
+        // IfcOpeningElement that voids its host wall. The host is resolved by
+        // containment (the opening's centre lies in a wall's bounds); the void box
+        // spans that wall's thickness along the opening normal.
+        use axia_geo::operations::coplanar::face_world_aabb;
+        let elem_aabb: Vec<Option<(glam::DVec3, glam::DVec3)>> = elements
+            .iter()
+            .map(|el| {
+                let mut lo = glam::DVec3::splat(f64::INFINITY);
+                let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+                let mut any = false;
+                for &fid in &el.face_ids {
+                    if let Some(bb) = face_world_aabb(&scene.mesh, fid) {
+                        lo = lo.min(bb.min);
+                        hi = hi.max(bb.max);
+                        any = true;
+                    }
+                }
+                any.then_some((lo, hi))
+            })
+            .collect();
+        let mut model_openings: Vec<axia_ifc::ModelOpening> = Vec::new();
+        for op in &scene.openings {
+            let mid = (op.a + op.b) * 0.5;
+            const EPS: f64 = 1.0; // 1 mm slack; the centre sits on the host's face plane
+            let host = elem_aabb.iter().position(|bb| {
+                bb.is_some_and(|(lo, hi)| {
+                    mid.x >= lo.x - EPS && mid.x <= hi.x + EPS
+                        && mid.y >= lo.y - EPS && mid.y <= hi.y + EPS
+                        && mid.z >= lo.z - EPS && mid.z <= hi.z + EPS
+                })
+            });
+            let Some(host_index) = host else { continue };
+            let (lo, hi) = elem_aabb[host_index].unwrap();
+            let n = op.normal.normalize_or_zero();
+            if n.length_squared() < 0.5 {
+                continue;
+            }
+            // In-plane orthonormal basis (u, v) ⊥ n.
+            let seed = if n.x.abs() < 0.9 { glam::DVec3::X } else { glam::DVec3::Y };
+            let u = n.cross(seed).normalize();
+            let v = n.cross(u).normalize();
+            let (au, av) = (op.a.dot(u), op.a.dot(v));
+            let (bu, bv) = (op.b.dot(u), op.b.dot(v));
+            let (umin, umax) = (au.min(bu), au.max(bu));
+            let (vmin, vmax) = (av.min(bv), av.max(bv));
+            // The host wall's extent along the opening normal (its thickness) — the
+            // projection range of the host AABB's eight corners onto n.
+            let mut wmin = f64::INFINITY;
+            let mut wmax = f64::NEG_INFINITY;
+            for cx in [lo.x, hi.x] {
+                for cy in [lo.y, hi.y] {
+                    for cz in [lo.z, hi.z] {
+                        let w = glam::DVec3::new(cx, cy, cz).dot(n);
+                        wmin = wmin.min(w);
+                        wmax = wmax.max(w);
+                    }
+                }
+            }
+            let corner = |uu: f64, vv: f64, ww: f64| u * uu + v * vv + n * ww;
+            let corners = [
+                corner(umin, vmin, wmin), corner(umax, vmin, wmin),
+                corner(umax, vmax, wmin), corner(umin, vmax, wmin),
+                corner(umin, vmin, wmax), corner(umax, vmin, wmax),
+                corner(umax, vmax, wmax), corner(umin, vmax, wmax),
+            ];
+            model_openings.push(axia_ifc::ModelOpening { host_index, corners });
+        }
+
+        axia_ifc::emit_ifc_model_with_openings(&scene.mesh, &elements, &model_openings, MM_TO_M, nm)
+            .unwrap_or_default()
+    }
+
+    /// ADR-203 opening round-trip — record a rectangular opening (window/door) the
+    /// user drew, so IFC export can re-emit it as an `IfcOpeningElement`. Corners
+    /// `a`/`b` and the host face `normal` are in world millimetres.
+    #[wasm_bindgen(js_name = "recordRectOpening")]
+    pub fn record_rect_opening(
+        &mut self,
+        ax: f64, ay: f64, az: f64,
+        bx: f64, by: f64, bz: f64,
+        nx: f64, ny: f64, nz: f64,
+    ) {
+        self.scene.record_rect_opening(
+            glam::DVec3::new(ax, ay, az),
+            glam::DVec3::new(bx, by, bz),
+            glam::DVec3::new(nx, ny, nz),
+        );
+    }
+
+    /// Drop all recorded openings.
+    #[wasm_bindgen(js_name = "clearOpenings")]
+    pub fn clear_openings(&mut self) {
+        self.scene.clear_openings();
+    }
+
+    /// How many openings are recorded.
+    #[wasm_bindgen(js_name = "openingCount")]
+    pub fn opening_count(&self) -> usize {
+        self.scene.openings.len()
     }
 
     /// ADR-203 I-1 — read an `.ifc` file and report what is inside it: schema,
@@ -14462,6 +14562,35 @@ END-ISO-10303-21;
         }
         let cx = (lo.x + hi.x) / 2.0;
         assert!((cx - 200_000.0).abs() < 100.0, "model shifted to x≈200 m: centre {cx}");
+    }
+
+    /// ADR-203 opening round-trip — a window the user drew is recorded, exported as
+    /// an IfcOpeningElement that voids its wall, and re-imports as a real hole.
+    #[test]
+    fn a_recorded_opening_exports_and_reimports_as_a_hole() {
+        let mut e = AxiaEngine::new();
+        // A 4 m (X) × 3 m (Z) × 0.2 m (Y) wall. create_box: width→X, height→Z, depth→Y.
+        e.scene
+            .mesh
+            .create_box(glam::DVec3::ZERO, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        assert_eq!(active_faces(&e), 6, "a plain wall is six faces");
+        // Record a 1 m × 1.2 m window on the front face (y = −100, normal −Y).
+        e.record_rect_opening(-500.0, -100.0, -600.0, 500.0, -100.0, 600.0, 0.0, -1.0, 0.0);
+        assert_eq!(e.opening_count(), 1);
+
+        let ifc = e.export_ifc_model("Test".into());
+        assert!(ifc.contains("IFCOPENINGELEMENT("), "export emits an opening element");
+        assert!(ifc.contains("IFCRELVOIDSELEMENT("), "export links the opening to its wall");
+
+        // Re-import: the voids relationship cuts the hole back into the wall.
+        let mut re = AxiaEngine::new();
+        re.import_ifc(ifc);
+        assert!(
+            re.scene.mesh.verify_face_invariants().is_valid(),
+            "the re-imported wall-with-opening is watertight"
+        );
+        assert!(active_faces(&re) > 6, "the opening was cut back in: {}", active_faces(&re));
     }
 }
 
