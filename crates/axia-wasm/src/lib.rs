@@ -5572,14 +5572,33 @@ impl AxiaEngine {
         match id.and_then(|id| self.scene.material_library.get(id)) {
             Some(m) => {
                 let (r, g, b) = m.visual.rgb();
-                // Albedo texture (base64 data-URI) only when this material carries
-                // user-uploaded PBR layers (§39); library materials have none.
-                let albedo_data_url = m
-                    .visual
-                    .layered
-                    .as_ref()
-                    .and_then(|l| l.albedo.as_ref())
-                    .map(|c| c.data_url.clone());
+                // PBR texture maps — one per populated channel, only when this
+                // material carries user-uploaded layers (§40); library materials
+                // have none. Each carries its own projection + scale + rotation.
+                let mut textures = Vec::new();
+                if let Some(l) = m.visual.layered.as_ref() {
+                    let proj = |p: &axia_core::TextureProjection| match p {
+                        axia_core::TextureProjection::Planar => "PLANAR",
+                        axia_core::TextureProjection::Box => "BOX",
+                        axia_core::TextureProjection::Cylindrical => "CYLINDRICAL",
+                    };
+                    for (chan, mode) in [
+                        (&l.albedo, "DIFFUSE"),
+                        (&l.normal, "NORMAL"),
+                        (&l.roughness, "ROUGHNESS"),
+                        (&l.metallic, "METAL"),
+                    ] {
+                        if let Some(c) = chan.as_ref() {
+                            textures.push(axia_ifc::MaterialTexture {
+                                mode,
+                                data_url: c.data_url.clone(),
+                                projection: proj(&c.projection),
+                                scale: c.scale,
+                                rotation: c.rotation.unwrap_or(0.0),
+                            });
+                        }
+                    }
+                }
                 (
                     Some(m.name.clone()),
                     Some(axia_ifc::MaterialStyle {
@@ -5587,7 +5606,7 @@ impl AxiaEngine {
                         transparency: (1.0 - m.visual.opacity).clamp(0.0, 1.0),
                         roughness: m.visual.roughness.clamp(0.0, 1.0),
                         metalness: m.visual.metalness.clamp(0.0, 1.0),
-                        albedo_data_url,
+                        textures,
                     }),
                 )
             }

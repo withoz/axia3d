@@ -62,14 +62,33 @@ const OPENING_FACE_LOOPS: [[usize; 4]; 6] = [
     [1, 2, 6, 5], // right
 ];
 
-/// A material's rendering appearance for IFC export (ADR-203 §38/§39).
+/// One PBR texture channel to export as an `IfcImageTexture` + its UV
+/// `IfcTextureCoordinateGenerator` (ADR-203 §40).
+#[derive(Clone, PartialEq)]
+pub struct MaterialTexture {
+    /// The channel this map drives → `IfcSurfaceTexture.Mode`:
+    /// `"DIFFUSE"` (albedo) / `"NORMAL"` / `"ROUGHNESS"` / `"METAL"`.
+    pub mode: &'static str,
+    /// The image as a base64 data-URI → `IfcImageTexture.URLReference`.
+    pub data_url: String,
+    /// Projection kind → `IfcTextureCoordinateGenerator.Mode`:
+    /// `"PLANAR"` / `"BOX"` / `"CYLINDRICAL"`.
+    pub projection: &'static str,
+    /// World-units-per-tile → `IfcTextureCoordinateGenerator.Parameter[0]`.
+    pub scale: f64,
+    /// UV rotation in radians → `.Parameter[1]` (0 when unspecified).
+    pub rotation: f64,
+}
+
+/// A material's rendering appearance for IFC export (ADR-203 §38/§39/§40).
 ///
 /// Carries colour + transparency (→ `IfcSurfaceStyleRendering.SurfaceColour` /
 /// `.Transparency`), the PBR scalars roughness + metalness (→
-/// `IfcSpecularRoughness` / `ReflectanceMethod`), and an optional albedo texture
-/// (→ `IfcSurfaceStyleWithTextures`/`IfcImageTexture`, a base64 data-URI). All
-/// channels flow from the engine material's `VisualProperties`. Deriving
-/// `PartialEq` lets equal styles share one `IfcSurfaceStyle` across elements.
+/// `IfcSpecularRoughness` / `ReflectanceMethod`), and the PBR texture maps (→
+/// `IfcSurfaceStyleWithTextures`/`IfcImageTexture` + UV
+/// `IfcTextureCoordinateGenerator`). All channels flow from the engine
+/// material's `VisualProperties`. Deriving `PartialEq` lets equal styles share
+/// one `IfcSurfaceStyle` across elements.
 #[derive(Clone, PartialEq)]
 pub struct MaterialStyle {
     /// Base colour, each component 0..1.
@@ -80,10 +99,10 @@ pub struct MaterialStyle {
     pub roughness: f64,
     /// Metalness 0..1 (>0.5 exports as `ReflectanceMethod` `.METAL.`).
     pub metalness: f64,
-    /// Optional albedo texture as a base64 data-URI (`data:image/png;base64,…`),
-    /// used as `IfcImageTexture.URLReference`. `None` for untextured materials
-    /// (all library materials — only user-uploaded PBR carries a texture).
-    pub albedo_data_url: Option<String>,
+    /// PBR texture maps (albedo/normal/roughness/metallic), each with its own UV
+    /// projection. Empty for untextured materials (all library materials — only
+    /// user-uploaded PBR carries textures).
+    pub textures: Vec<MaterialTexture>,
 }
 
 /// One semantic member to export: a display name, an optional material name,
@@ -396,23 +415,44 @@ pub fn emit_ifc_model_with_openings(
                         ],
                     );
                     let mut style_elems = vec![StepValue::Ref(rendering)];
-                    // §39 texture — embed the albedo image (base64 data-URI) as an
-                    // IfcImageTexture. No UV mapping ⇒ viewers apply their default.
-                    if let Some(url) = &sty.albedo_data_url {
-                        let tex = w.add(
-                            "IFCIMAGETEXTURE",
-                            vec![
-                                StepValue::Enum("T".into()), // RepeatS
-                                StepValue::Enum("T".into()), // RepeatT
-                                StepValue::Str("DIFFUSE".into()), // Mode
-                                StepValue::Unset,            // TextureTransform
-                                StepValue::Unset,            // Parameter
-                                StepValue::Str(url.clone().into()), // URLReference
-                            ],
-                        );
+                    // §39/§40 textures — one IfcImageTexture per PBR channel
+                    // (albedo/normal/roughness/metallic), each with a channel Mode
+                    // and its own UV IfcTextureCoordinateGenerator carrying the
+                    // projection kind (Mode) + scale/rotation (Parameter). All maps
+                    // collect into one IfcSurfaceStyleWithTextures.
+                    if !sty.textures.is_empty() {
+                        let mut tex_refs = Vec::with_capacity(sty.textures.len());
+                        for t in &sty.textures {
+                            let tex = w.add(
+                                "IFCIMAGETEXTURE",
+                                vec![
+                                    StepValue::Enum("T".into()), // RepeatS
+                                    StepValue::Enum("T".into()), // RepeatT
+                                    StepValue::Str(t.mode.into()), // Mode
+                                    StepValue::Unset,            // TextureTransform
+                                    StepValue::Unset,            // Parameter
+                                    StepValue::Str(t.data_url.clone().into()), // URLReference
+                                ],
+                            );
+                            // UV mapping: a procedural coordinate generator whose Mode
+                            // is the projection kind and whose Parameter is [scale,
+                            // rotation]. Maps back to this one texture.
+                            w.add(
+                                "IFCTEXTURECOORDINATEGENERATOR",
+                                vec![
+                                    StepValue::List(vec![StepValue::Ref(tex)]),
+                                    StepValue::Str(t.projection.into()),
+                                    StepValue::List(vec![
+                                        StepValue::Real(t.scale),
+                                        StepValue::Real(t.rotation),
+                                    ]),
+                                ],
+                            );
+                            tex_refs.push(StepValue::Ref(tex));
+                        }
                         let with_tex = w.add(
                             "IFCSURFACESTYLEWITHTEXTURES",
-                            vec![StepValue::List(vec![StepValue::Ref(tex)])],
+                            vec![StepValue::List(tex_refs)],
                         );
                         style_elems.push(StepValue::Ref(with_tex));
                     }
@@ -635,7 +675,7 @@ mod tests {
         let a = mesh.create_box(DVec3::new(0.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap();
         let b = mesh.create_box(DVec3::new(3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap();
         let red = Some(MaterialStyle {
-            rgb: (1.0, 0.0, 0.0), transparency: 0.0, roughness: 0.5, metalness: 0.0, albedo_data_url: None,
+            rgb: (1.0, 0.0, 0.0), transparency: 0.0, roughness: 0.5, metalness: 0.0, textures: vec![],
         });
         let elements = vec![
             IfcElement { name: "A".into(), material_name: Some("Brick".into()), material_style: red.clone(), kind: crate::IfcElementKind::Wall, face_ids: a },
@@ -657,7 +697,7 @@ mod tests {
         let glass = vec![IfcElement {
             name: "G".into(), material_name: Some("Chrome".into()),
             material_style: Some(MaterialStyle {
-                rgb: (0.2, 0.4, 0.8), transparency: 0.5, roughness: 0.1, metalness: 0.9, albedo_data_url: None,
+                rgb: (0.2, 0.4, 0.8), transparency: 0.5, roughness: 0.1, metalness: 0.9, textures: vec![],
             }),
             kind: crate::IfcElementKind::Wall,
             face_ids: mesh.create_box(DVec3::new(-3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
@@ -669,22 +709,34 @@ mod tests {
         assert!(g.contains("IFCCOLOURRGB($,0.2,0.4,0.8)"), "glass colour: {}", g);
         assert_refs_resolve(&g);
 
-        // §39 texture — an albedo data-URI emits IfcSurfaceStyleWithTextures +
-        // IfcImageTexture carrying the URL, alongside the rendering.
+        // §40 textures — each PBR channel emits its own IfcImageTexture (with a
+        // channel Mode) + a UV IfcTextureCoordinateGenerator (projection Mode +
+        // [scale, rotation]); all maps collect into one IfcSurfaceStyleWithTextures.
         let tex = vec![IfcElement {
             name: "T".into(), material_name: Some("Wood".into()),
             material_style: Some(MaterialStyle {
                 rgb: (0.6, 0.4, 0.2), transparency: 0.0, roughness: 0.8, metalness: 0.0,
-                albedo_data_url: Some("data:image/png;base64,iVBORw0KGgo=".into()),
+                textures: vec![
+                    MaterialTexture { mode: "DIFFUSE", data_url: "data:image/png;base64,QUxC".into(), projection: "PLANAR", scale: 1000.0, rotation: 0.0 },
+                    MaterialTexture { mode: "NORMAL", data_url: "data:image/png;base64,Tk9S".into(), projection: "BOX", scale: 500.0, rotation: 1.5 },
+                    MaterialTexture { mode: "ROUGHNESS", data_url: "data:image/png;base64,Uk9V".into(), projection: "PLANAR", scale: 1000.0, rotation: 0.0 },
+                ],
             }),
             kind: crate::IfcElementKind::Wall,
             face_ids: mesh.create_box(DVec3::new(6000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
         }];
         let t = emit_ifc_model(&mesh, &tex, 0.001, "Textured").unwrap();
-        assert_eq!(t.matches("=IFCSURFACESTYLEWITHTEXTURES(").count(), 1, "albedo → with-textures");
-        assert_eq!(t.matches("=IFCIMAGETEXTURE(").count(), 1);
-        assert!(t.contains("'data:image/png;base64,iVBORw0KGgo='"), "embeds the data-URI: {}", t);
-        assert!(t.contains("IFCIMAGETEXTURE(.T.,.T.,'DIFFUSE',"), "repeat + diffuse mode: {}", t);
+        assert_eq!(t.matches("=IFCSURFACESTYLEWITHTEXTURES(").count(), 1, "one with-textures for all maps");
+        assert_eq!(t.matches("=IFCIMAGETEXTURE(").count(), 3, "one image texture per channel");
+        assert_eq!(t.matches("=IFCTEXTURECOORDINATEGENERATOR(").count(), 3, "one UV generator per texture");
+        // Channel modes present.
+        assert!(t.contains("IFCIMAGETEXTURE(.T.,.T.,'DIFFUSE',"), "albedo mode: {}", t);
+        assert!(t.contains("IFCIMAGETEXTURE(.T.,.T.,'NORMAL',"), "normal mode: {}", t);
+        assert!(t.contains("IFCIMAGETEXTURE(.T.,.T.,'ROUGHNESS',"), "roughness mode: {}", t);
+        assert!(t.contains("'data:image/png;base64,Tk9S'"), "embeds the normal-map URI: {}", t);
+        // UV generator carries projection (Mode) + [scale, rotation] (Parameter).
+        assert!(t.contains("'PLANAR',(1000.,0.)"), "planar UV scale: {}", t);
+        assert!(t.contains("'BOX',(500.,1.5)"), "box projection + rotation: {}", t);
         // The style still carries the rendering (both style elements present).
         assert_eq!(t.matches("=IFCSURFACESTYLERENDERING(").count(), 1);
         assert_refs_resolve(&t);
