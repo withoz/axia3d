@@ -2598,7 +2598,7 @@ END-ISO-10303-21;
             &mesh,
             &[IfcElement {
                 name: "Spline".into(),
-                material_name: None,
+                material_name: None, material_rgba: None,
                 kind: crate::IfcElementKind::Wall,
                 face_ids: vec![f],
             }],
@@ -2783,7 +2783,7 @@ END-ISO-10303-21;
             .unwrap();
         let ifc = emit_ifc_model(
             &mesh,
-            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), kind: crate::IfcElementKind::Wall, face_ids: faces }],
+            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: faces }],
             0.001,
             "House",
         )

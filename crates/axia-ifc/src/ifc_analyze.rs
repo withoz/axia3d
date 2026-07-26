@@ -184,7 +184,7 @@ mod tests {
             &[IfcElement {
                 kind: crate::IfcElementKind::Wall,
                 name: "Wall A".into(),
-                material_name: Some("Concrete".into()),
+                material_name: Some("Concrete".into()), material_rgba: None,
                 face_ids: faces,
             }],
             0.001,
