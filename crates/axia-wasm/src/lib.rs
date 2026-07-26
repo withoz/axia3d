@@ -5563,7 +5563,7 @@ impl AxiaEngine {
         &self,
         faces: &[axia_geo::FaceId],
         primary: Option<axia_geo::MaterialId>,
-    ) -> (Option<String>, Option<(f64, f64, f64, f64)>) {
+    ) -> (Option<String>, Option<axia_ifc::MaterialStyle>) {
         let id = faces
             .iter()
             .filter_map(|&f| self.scene.mesh.faces.get(f).map(|fc| fc.material()))
@@ -5572,14 +5572,23 @@ impl AxiaEngine {
         match id.and_then(|id| self.scene.material_library.get(id)) {
             Some(m) => {
                 let (r, g, b) = m.visual.rgb();
+                // Albedo texture (base64 data-URI) only when this material carries
+                // user-uploaded PBR layers (§39); library materials have none.
+                let albedo_data_url = m
+                    .visual
+                    .layered
+                    .as_ref()
+                    .and_then(|l| l.albedo.as_ref())
+                    .map(|c| c.data_url.clone());
                 (
                     Some(m.name.clone()),
-                    Some((
-                        r as f64 / 255.0,
-                        g as f64 / 255.0,
-                        b as f64 / 255.0,
-                        (1.0 - m.visual.opacity).clamp(0.0, 1.0),
-                    )),
+                    Some(axia_ifc::MaterialStyle {
+                        rgb: (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0),
+                        transparency: (1.0 - m.visual.opacity).clamp(0.0, 1.0),
+                        roughness: m.visual.roughness.clamp(0.0, 1.0),
+                        metalness: m.visual.metalness.clamp(0.0, 1.0),
+                        albedo_data_url,
+                    }),
                 )
             }
             None => (None, None),
@@ -5609,7 +5618,7 @@ impl AxiaEngine {
             }
             // Material name + §38 colour from the element's face material (what the
             // viewport shows), falling back to the Xia's primary material.
-            let (material_name, material_rgba) = self.ifc_element_material(&faces, Some(xia.material));
+            let (material_name, material_style) = self.ifc_element_material(&faces, Some(xia.material));
             let kind = scene
                 .xia_element_kind
                 .get(&xid)
@@ -5618,7 +5627,7 @@ impl AxiaEngine {
             elements.push(axia_ifc::IfcElement {
                 name: xia.name.clone(),
                 material_name,
-                material_rgba,
+                material_style,
                 kind,
                 face_ids: faces,
             });
@@ -5635,7 +5644,7 @@ impl AxiaEngine {
             }
             // A Shape is form-layer (no primary material) but its faces may carry
             // an assigned material — honour it so the viewport + export agree.
-            let (material_name, material_rgba) = self.ifc_element_material(&faces, None);
+            let (material_name, material_style) = self.ifc_element_material(&faces, None);
             let kind = scene
                 .shape_element_kind
                 .get(&sid)
@@ -5644,7 +5653,7 @@ impl AxiaEngine {
             elements.push(axia_ifc::IfcElement {
                 name: shape.name.clone(),
                 material_name,
-                material_rgba,
+                material_style,
                 kind,
                 face_ids: faces,
             });
@@ -5658,11 +5667,11 @@ impl AxiaEngine {
             .map(|(fid, _)| fid)
             .collect();
         if !leftover.is_empty() {
-            let (material_name, material_rgba) = self.ifc_element_material(&leftover, None);
+            let (material_name, material_style) = self.ifc_element_material(&leftover, None);
             elements.push(axia_ifc::IfcElement {
                 name: "Model".into(),
                 material_name,
-                material_rgba,
+                material_style,
                 kind: axia_ifc::IfcElementKind::default(),
                 face_ids: leftover,
             });
@@ -14923,6 +14932,10 @@ END-ISO-10303-21;
         assert!(ifc.contains("IFCRELASSOCIATESMATERIAL("), "associated to the wall");
         assert_eq!(ifc.matches("IFCSTYLEDITEM(").count(), 1, "one appearance styled item");
         assert_eq!(ifc.matches("IFCCOLOURRGB(").count(), 1, "with the material colour");
+        // §39 — the appearance is a rendering style carrying the material's PBR
+        // roughness (as IfcSpecularRoughness), not a bare shading.
+        assert_eq!(ifc.matches("IFCSURFACESTYLERENDERING(").count(), 1, "rendering style");
+        assert!(ifc.contains("IFCSPECULARROUGHNESS("), "roughness exported: {}", ifc);
     }
 }
 
