@@ -2101,3 +2101,50 @@ mutation-checked: material_rgba 무시 시 test 실패). 전체 workspace green.
 
 - IfcSurfaceStyleShading (색상 + 투명도) 만 — roughness/metalness (IfcSurfaceStyle**Rendering**)
   는 별도. 텍스처 (IfcImageTexture/IfcSurfaceStyleWithTextures) 도 별도 트랙.
+
+## 39. Rendering fidelity — roughness/metalness + textures (IfcSurfaceStyleRendering / IfcImageTexture)
+
+**문제 (§38 남은 한계)**: §38 은 `IfcSurfaceStyleShading` (색상 + 투명도) 만 emit —
+재질의 PBR 스칼라 (roughness/metalness) 와 텍스처가 IFC 로 전달되지 않아, BIM 뷰어가
+금속/유광/텍스처 재질을 무광 단색으로만 렌더.
+
+**해결 (§39)**: 스타일을 `IfcSurfaceStyleRendering` 으로 격상 + 텍스처를
+`IfcSurfaceStyleWithTextures`/`IfcImageTexture` 로 첨부.
+
+- **데이터 모델 리팩터**: `IfcElement.material_rgba: Option<(f64,f64,f64,f64)>` →
+  `material_style: Option<MaterialStyle>` (신규 struct: `rgb` / `transparency` /
+  `roughness` / `metalness` / `albedo_data_url`). 튜플→struct 로 바꿔 향후 채널 추가가
+  17개 생성자를 다시 건드리지 않게 함 (`None` 생성자는 불변, Some 사이트만 변경).
+- **PBR 매핑 (IFC 는 PBR 이 아닌 Phong 모델)**: `IfcSurfaceStyleRendering` (IFC4:
+  SurfaceColour, Transparency, DiffuseColour, TransmissionColour,
+  DiffuseTransmissionColour, ReflectionColour, SpecularColour, SpecularHighlight,
+  ReflectanceMethod) 로 emit. roughness → `SpecularHighlight = IFCSPECULARROUGHNESS(r)`,
+  metalness → `ReflectanceMethod` (`> 0.5` → `.METAL.`, else `.NOTDEFINED.`). 색상/투명도는
+  §38 그대로 (SurfaceColour = IfcColourRgb, Transparency = `1 - opacity` 또는 `$`).
+- **텍스처 (§39)**: 재질에 사용자 업로드 PBR 레이어 (`VisualProperties.layered.albedo`)
+  가 있으면 그 base64 data-URI 를 `IfcImageTexture.URLReference` 로 embed →
+  `IFCSURFACESTYLEWITHTEXTURES((IFCIMAGETEXTURE(.T.,.T.,'DIFFUSE',$,$,'data:…')))` 를
+  IfcSurfaceStyle 의 두 번째 style element 로 추가. UV 없음 ⇒ 뷰어 기본 매핑. 라이브러리
+  재질은 텍스처가 없어 no-op (사용자 PBR 재질에서만 emit).
+- **소스**: WASM `ifc_element_material` 이 요소의 **face** 재질 (뷰포트가 보여주는 것,
+  `Command::AssignMaterial` 이 설정하는 것) 에서 `MaterialStyle` 을 채움 — §38 에서 고친
+  face-vs-xia 재질 gap 유지. `m.visual.{rgb, opacity, roughness, metalness, layered}` 사용.
+- IfcSurfaceStyle 는 **appearance 별 dedup** (`MaterialStyle` `PartialEq`), advanced/faceted
+  brep 무관 (styled item 은 brep ref 만).
+
+**검증**: `a_material_style_emits_a_rendering_styled_item` (opaque red roughness 0.5 →
+IFCSURFACESTYLERENDERING×1 + `,$,$,$,$,$,$,IFCSPECULARROUGHNESS(0.5),` + `.NOTDEFINED.`;
+투명+금속 (transparency 0.5, metalness 0.9) → `,0.5,…IFCSPECULARROUGHNESS(0.1),` + `.METAL.`;
+albedo data-URI → IFCSURFACESTYLEWITHTEXTURES×1 + IFCIMAGETEXTURE×1 + `'data:image/png;base64,…'`;
+no-style → styled item 0). WASM e2e `an_assigned_face_material_exports_with_name_and_colour`
+(강철 assign → IFCSURFACESTYLERENDERING + IFCSPECULARROUGHNESS). 라이브 (real Chromium +
+새 WASM): box + `assign_material(1=강철)` → `IFCSURFACESTYLERENDERING(#c,$,$,$,$,$,$,`
+`IFCSPECULARROUGHNESS(0.3),.METAL.)` + `IFCCOLOURRGB($,0.431,0.431,0.431)` [0x6E] +
+`IFCMATERIAL('\X2\AC15CCA0\X0\')`; IFCSURFACESTYLESHADING 0. 전체 workspace green (3226).
+
+### 남은 한계
+
+- Rendering 은 IFC 의 Phong 모델 (roughness→SpecularRoughness, metalness→ReflectanceMethod)
+  근사 — 정밀 PBR (albedo/metallic/roughness 텍스처 세트) 은 뷰어별 해석 차이.
+- 텍스처는 albedo 만 embed (normal/roughness/metallic map 은 별도 트랙). UV 매핑 없음
+  (뷰어 기본). data-URI embed 는 IFC 파일 크기를 키움 (텍스처 크기에 비례).
