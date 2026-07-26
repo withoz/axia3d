@@ -2020,7 +2020,23 @@ body + opening 이 정석), 외부 tool 에서 이중 subtract 소지가 있다.
   (단일 요소, 이전 2) + body-only 재-import **vol 2.4e9 = solid** (이전 1.98e9 notched) +
   full 재-import valid notch 복원.
 
-### 남은 한계
+### 남은 한계 → §36-amendment-2 에서 해소
 
-- 회전된/극단 skew opening box (recorded AABB superset) — through-hole·notch 정상, 극단
-  skew 는 별도 검토.
+- ~~회전된 opening box (AABB superset)~~ → **§36-amendment-2 로 해결** (host 실제
+  vertex 로 thickness 계산).
+
+## 36-amendment-2. Rotated wall — opening box thickness from actual vertices
+
+**측정**: opening box 의 normal 방향 두께(wmin/wmax)를 host **AABB** 를 n 에 투영해
+구했다. axis-aligned 벽 + cardinal n 이면 정확하지만, **회전된 벽**은 AABB 를 회전된
+n 에 투영하면 두께를 크게 과대평가한다 — 45° 회전한 200mm 벽 → n 방향 **~4200mm**
+(21×). 결과: (1) 과대한 void box emit, (2) **union refill 시 벽면 밖으로 튀어나온 큰
+protrusion** (실측 mutation: body 부피 2.4e9 → **10.8e9**, 4.5× 부풀음).
+
+**해결**: box 두께를 host element 의 **실제 vertex** 를 n 에 투영해 계산 (AABB 아님).
+회전 무관하게 정확한 벽 두께. axis-aligned + cardinal n 은 수학적으로 동일 (AABB
+투영 == 실제 vertex 투영) → 무회귀. host vertex 를 못 읽으면 AABB 로 방어적 fallback.
+
+**검증**: `a_door_on_a_rotated_wall_refills_without_a_protrusion` (45° 회전 벽 + door →
+export → body-only 재-import 부피 = 참 벽 부피 ±5%, mutation-checked: AABB 강제 시
+10.8e9 로 실패). export 경로는 native/WASM 동일 + axis-aligned 무변경 (§59 live 확인).

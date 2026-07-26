@@ -5681,16 +5681,37 @@ impl AxiaEngine {
             let (bu, bv) = (op.b.dot(u), op.b.dot(v));
             let (umin, umax) = (au.min(bu), au.max(bu));
             let (vmin, vmax) = (av.min(bv), av.max(bv));
-            // The host wall's extent along the opening normal (its thickness) — the
-            // projection range of the host AABB's eight corners onto n.
+            // The host wall's TRUE extent along the opening normal (its thickness)
+            // — from the host element's ACTUAL vertices, not its AABB. An AABB
+            // projected onto a *rotated* normal wildly overestimates (a 45°-rotated
+            // 200 mm wall → ~4200 mm along n), which would emit an oversized void
+            // box and, worse, a union-refill protrusion sticking out of the wall.
             let mut wmin = f64::INFINITY;
             let mut wmax = f64::NEG_INFINITY;
-            for cx in [lo.x, hi.x] {
-                for cy in [lo.y, hi.y] {
-                    for cz in [lo.z, hi.z] {
-                        let w = glam::DVec3::new(cx, cy, cz).dot(n);
-                        wmin = wmin.min(w);
-                        wmax = wmax.max(w);
+            for &fid in &elements[host_index].face_ids {
+                let Some(face) = scene.mesh.faces.get(fid) else { continue };
+                if !face.is_active() {
+                    continue;
+                }
+                if let Ok(vs) = scene.mesh.collect_loop_verts(face.outer().start) {
+                    for v in vs {
+                        if let Ok(p) = scene.mesh.vertex_pos(v) {
+                            let w = p.dot(n);
+                            wmin = wmin.min(w);
+                            wmax = wmax.max(w);
+                        }
+                    }
+                }
+            }
+            // Fallback to the AABB projection if no readable host verts (defensive).
+            if !wmin.is_finite() || !wmax.is_finite() {
+                for cx in [lo.x, hi.x] {
+                    for cy in [lo.y, hi.y] {
+                        for cz in [lo.z, hi.z] {
+                            let w = glam::DVec3::new(cx, cy, cz).dot(n);
+                            wmin = wmin.min(w);
+                            wmax = wmax.max(w);
+                        }
                     }
                 }
             }
@@ -14763,6 +14784,52 @@ END-ISO-10303-21;
         re.import_ifc(ifc);
         assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
         assert!(active_faces(&re) > 6, "the window round-trips (not double-voided): {}", active_faces(&re));
+    }
+
+    /// §36-amendment (rotated wall) — the opening box's thickness along the (now
+    /// rotated) normal must come from the host's ACTUAL vertices, not its AABB. A
+    /// 45°-rotated wall's AABB projected onto the rotated normal massively
+    /// overestimates the thickness (~4200 mm for a 200 mm wall), which would emit
+    /// an oversized void box and a union-refill protrusion. The refilled solid
+    /// body must have the wall's true volume, not a bloated one.
+    #[test]
+    fn a_door_on_a_rotated_wall_refills_without_a_protrusion() {
+        use std::f64::consts::FRAC_PI_4;
+        let mut e = AxiaEngine::new();
+        let center = glam::DVec3::new(0.0, 0.0, 1500.0);
+        let wall_faces =
+            e.scene.mesh.create_box(center, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0)).unwrap();
+        let wall_volume = e.scene.mesh.mesh_volume(); // 2.4e9, rotation-invariant
+        e.scene.create_xia_with_faces("Wall".to_string(), center, wall_faces);
+        // Rotate the whole wall 45° about +Z (its face normals become diagonal).
+        let vids: Vec<_> = e.scene.mesh.verts.iter().map(|(id, _)| id).collect();
+        e.scene.mesh.rotate_verts(&vids, center, glam::DVec3::Z, FRAC_PI_4).unwrap();
+
+        // Rotate the door corners + normal the same way (front face was −Y).
+        let rot = glam::DQuat::from_axis_angle(glam::DVec3::Z, FRAC_PI_4);
+        let rp = |p: glam::DVec3| center + rot * (p - center);
+        let a = rp(glam::DVec3::new(-500.0, -100.0, 0.0));
+        let b = rp(glam::DVec3::new(500.0, -100.0, 2100.0));
+        let n = rot * glam::DVec3::new(0.0, -1.0, 0.0);
+        let jambs = e.cut_wall_door_opening(a.x, a.y, a.z, b.x, b.y, b.z, n.x, n.y, n.z);
+        assert_eq!(jambs, 3, "door carves on the rotated wall too");
+        e.record_rect_opening(a.x, a.y, a.z, b.x, b.y, b.z, n.x, n.y, n.z);
+
+        let ifc = e.export_ifc_model("RotDoor".into());
+        assert!(ifc.contains("IFCOPENINGELEMENT("), "export emits the opening");
+
+        // Body-only re-import: the refilled body is the SOLID wall — its volume is
+        // the true wall volume, NOT bloated by an oversized-box protrusion. (With
+        // the AABB bug the box is ~21× too thick → the union adds huge slabs.)
+        let body_only: String =
+            ifc.lines().filter(|l| !l.contains("IFCRELVOIDSELEMENT(")).collect::<Vec<_>>().join("\n");
+        let mut body = AxiaEngine::new();
+        body.import_ifc(body_only);
+        let bv = body.scene.mesh.mesh_volume();
+        assert!(
+            (bv - wall_volume).abs() < 0.05 * wall_volume,
+            "refilled body ≈ the true wall volume (no protrusion): body {bv:.0} vs wall {wall_volume:.0}"
+        );
     }
 }
 
