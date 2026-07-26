@@ -65,9 +65,14 @@ const OPENING_FACE_LOOPS: [[usize; 4]; 6] = [
 /// One semantic member to export: a display name, an optional material name,
 /// what kind of building element it is, and the faces it owns (engine
 /// `FaceId`s).
+#[derive(Default)]
 pub struct IfcElement {
     pub name: String,
     pub material_name: Option<String>,
+    /// The material's rendering colour (r, g, b, transparency), each 0..1 — the
+    /// source for the element's `IfcStyledItem`/`IfcSurfaceStyle` so BIM viewers
+    /// render it in colour (ADR-203 §38). `None` = no style (viewer default).
+    pub material_rgba: Option<(f64, f64, f64, f64)>,
     /// What this member *is* (ADR-203 δ). Defaults to `Wall` — which is what
     /// every member used to be, so an unassigned model exports unchanged.
     pub kind: crate::IfcElementKind,
@@ -210,6 +215,10 @@ pub fn emit_ifc_model_with_openings(
     let mut walls = Vec::with_capacity(elements.len());
     // Deduplicate IfcMaterial by name (one entity per distinct material).
     let mut materials: Vec<(String, crate::step_value::EntityRef)> = Vec::new();
+    // Deduplicate IfcSurfaceStyle by colour (§38 appearance) — one style entity
+    // per distinct (r,g,b,transparency); each element gets its own IfcStyledItem
+    // pointing at its brep + the shared style.
+    let mut styles: Vec<((f64, f64, f64, f64), crate::step_value::EntityRef)> = Vec::new();
 
     for (ei, el) in elements.iter().enumerate() {
         let allowed: HashSet<FaceId> = el.face_ids.iter().copied().collect();
@@ -315,6 +324,42 @@ pub fn emit_ifc_model_with_openings(
                     next_guid(&mut gi), StepValue::Ref(sc.owner), StepValue::Unset, StepValue::Unset,
                     StepValue::List(vec![StepValue::Ref(wall)]), StepValue::Ref(mat),
                 ],
+            );
+        }
+
+        // ── Appearance (§38): colour the element's geometry so BIM viewers render
+        // it. IfcStyledItem(brep) → IfcSurfaceStyle → IfcSurfaceStyleShading →
+        // IfcColourRgb. The style entity is shared per distinct colour. ──
+        if let Some(rgba) = el.material_rgba {
+            let style = match styles.iter().find(|(c, _)| *c == rgba) {
+                Some((_, r)) => *r,
+                None => {
+                    let (r, g, b, t) = rgba;
+                    let colour = w.add(
+                        "IFCCOLOURRGB",
+                        vec![StepValue::Unset, StepValue::Real(r), StepValue::Real(g), StepValue::Real(b)],
+                    );
+                    let transparency =
+                        if t > 1e-6 { StepValue::Real(t) } else { StepValue::Unset };
+                    let shading = w.add(
+                        "IFCSURFACESTYLESHADING",
+                        vec![StepValue::Ref(colour), transparency],
+                    );
+                    let surf = w.add(
+                        "IFCSURFACESTYLE",
+                        vec![
+                            el.material_name.clone().map_or(StepValue::Unset, |n| StepValue::Str(n.into())),
+                            StepValue::Enum("BOTH".into()),
+                            StepValue::List(vec![StepValue::Ref(shading)]),
+                        ],
+                    );
+                    styles.push((rgba, surf));
+                    surf
+                }
+            };
+            w.add(
+                "IFCSTYLEDITEM",
+                vec![StepValue::Ref(brep), StepValue::List(vec![StepValue::Ref(style)]), StepValue::Unset],
             );
         }
     }
@@ -461,8 +506,8 @@ mod tests {
         // them through.
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "Front Door".into(), material_name: None, kind: crate::IfcElementKind::Door, face_ids: a },
-            IfcElement { name: "Plain Wall".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "Front Door".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Door, face_ids: a },
+            IfcElement { name: "Plain Wall".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: b },
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
 
@@ -481,7 +526,7 @@ mod tests {
             .create_box(DVec3::ZERO, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0))
             .unwrap();
         let elements = vec![IfcElement {
-            name: "Wall".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: wall,
+            name: "Wall".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: wall,
         }];
         // A 1 m (X) × 1.2 m (Z) box, punched through the 0.2 m depth (Y), ordered
         // like emit_box: bottom four then top four.
@@ -506,6 +551,52 @@ mod tests {
     }
 
     #[test]
+    fn a_material_colour_emits_a_styled_item(){
+        // §38 — an element with a material colour gets an IfcStyledItem →
+        // IfcSurfaceStyle → IfcSurfaceStyleShading → IfcColourRgb on its brep,
+        // so a BIM viewer renders it in colour. Two same-coloured elements share
+        // one IfcSurfaceStyle but get their own IfcStyledItem.
+        let mut mesh = Mesh::new();
+        let a = mesh.create_box(DVec3::new(0.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap();
+        let b = mesh.create_box(DVec3::new(3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap();
+        let red = Some((1.0, 0.0, 0.0, 0.0)); // opaque red
+        let elements = vec![
+            IfcElement { name: "A".into(), material_name: Some("Brick".into()), material_rgba: red, kind: crate::IfcElementKind::Wall, face_ids: a },
+            IfcElement { name: "B".into(), material_name: Some("Brick".into()), material_rgba: red, kind: crate::IfcElementKind::Wall, face_ids: b },
+        ];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Coloured").unwrap();
+        assert_eq!(s.matches("=IFCSTYLEDITEM(").count(), 2, "one styled item per element/brep");
+        assert_eq!(s.matches("=IFCSURFACESTYLE(").count(), 1, "same colour → shared surface style");
+        assert_eq!(s.matches("=IFCSURFACESTYLESHADING(").count(), 1);
+        assert_eq!(s.matches("=IFCCOLOURRGB(").count(), 1);
+        assert!(s.contains("IFCCOLOURRGB($,1.,0.,0.)"), "opaque red: {}", s);
+        // opaque → the shading's transparency arg is $ (unset).
+        let shading = s.lines().find(|l| l.contains("IFCSURFACESTYLESHADING(")).unwrap();
+        assert!(shading.ends_with(",$);"), "opaque → no transparency: {}", shading);
+        assert_refs_resolve(&s);
+
+        // A translucent material writes a transparency ratio.
+        let glass = vec![IfcElement {
+            name: "G".into(), material_name: Some("Glass".into()),
+            material_rgba: Some((0.2, 0.4, 0.8, 0.5)), kind: crate::IfcElementKind::Wall,
+            face_ids: mesh.create_box(DVec3::new(-3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
+        }];
+        let g = emit_ifc_model(&mesh, &glass, 0.001, "Glass").unwrap();
+        let gshading = g.lines().find(|l| l.contains("IFCSURFACESTYLESHADING(")).unwrap();
+        assert!(gshading.ends_with(",0.5);"), "transparency 0.5 emitted: {}", gshading);
+        assert!(g.contains("IFCCOLOURRGB($,0.2,0.4,0.8)"), "glass colour: {}", g);
+        assert_refs_resolve(&g);
+
+        // No colour → no style entities at all (unchanged behaviour).
+        let plain = vec![IfcElement {
+            name: "P".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Wall,
+            face_ids: mesh.create_box(DVec3::new(0.0, 3000.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
+        }];
+        let p = emit_ifc_model(&mesh, &plain, 0.001, "Plain").unwrap();
+        assert_eq!(p.matches("=IFCSTYLEDITEM(").count(), 0, "no colour → no styled item");
+    }
+
+    #[test]
     fn a_window_carries_its_measured_size() {
         // OverallHeight / OverallWidth are what a BIM tool shows as the
         // opening's size. Leaving them `$` is legal but useless, so they come
@@ -519,7 +610,7 @@ mod tests {
             .unwrap();
         let elements = vec![IfcElement {
             name: "W1".into(),
-            material_name: None,
+            material_name: None, material_rgba: None,
             kind: crate::IfcElementKind::Window,
             face_ids: f,
         }];
@@ -536,8 +627,8 @@ mod tests {
     fn two_elements_two_walls_two_materials() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
-            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: a },
+            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: b },
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
         assert!(s.contains("FILE_SCHEMA(('IFC4X3'));"));
@@ -563,8 +654,8 @@ mod tests {
     fn shared_material_deduplicated() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
-            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: a },
+            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: b },
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap();
         // one IfcMaterial (deduped), two associations (one per wall)
@@ -575,7 +666,7 @@ mod tests {
     #[test]
     fn element_without_material_has_no_association() {
         let (mesh, a, _b) = two_box_mesh();
-        let elements = vec![IfcElement { name: "Form".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: a }];
+        let elements = vec![IfcElement { name: "Form".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: a }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "F").unwrap();
         assert_eq!(s.matches("=IFCWALL(").count(), 1);
         assert_eq!(s.matches("=IFCMATERIAL(").count(), 0);
@@ -588,8 +679,8 @@ mod tests {
         let build = || {
             let (mesh, a, b) = two_box_mesh();
             let elements = vec![
-                IfcElement { name: "A".into(), material_name: Some("C".into()), kind: crate::IfcElementKind::Wall, face_ids: a },
-                IfcElement { name: "B".into(), material_name: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+                IfcElement { name: "A".into(), material_name: Some("C".into()), material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: a },
+                IfcElement { name: "B".into(), material_name: None, material_rgba: None, kind: crate::IfcElementKind::Wall, face_ids: b },
             ];
             emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
         };

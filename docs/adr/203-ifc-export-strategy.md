@@ -2073,3 +2073,31 @@ mutation-checked: faceted emitter 실패 시 whole-model collapse 로 test 실�
 
 - 심하게 non-planar 한 faceted face 는 IFCPOLYLOOP 로 emit (뷰어 대부분 허용) —
   엄격한 planar 요구 시 per-face 삼각분할은 별도 트랙.
+
+## 38. Material colour / appearance — IfcStyledItem so BIM viewers render colour
+
+**측정**: export 는 `IfcMaterial` (이름) + `IfcRelAssociatesMaterial` 만 emit — **색상
+없음**. Revit/ArchiCAD 등 BIM 뷰어에서 모델이 무채색(기본 회색)으로 보였다. Scene 의
+`Material.visual` 은 `color: u32` (0xRRGGBB) + `opacity: f64` 를 이미 갖고 있음.
+
+**해결 (§38)**: 요소의 재질 색상을 `IfcStyledItem` chain 으로 emit — BIM 뷰어가 색으로
+렌더.
+- **`IfcElement.material_rgba: Option<(f64,f64,f64,f64)>`** (r,g,b,transparency, 0..1)
+  신규 필드. WASM `export_ifc_model` 이 Xia 의 재질에서 채움 (`m.visual.rgb()` /
+  `1.0 - m.visual.opacity`). FORM_MATERIAL/Shape/leftover → None.
+- **emit** (`emit_ifc_model_with_openings`): 요소의 brep 뒤에 `IFCSTYLEDITEM(brep,
+  (IFCSURFACESTYLE)) → IFCSURFACESTYLE(name, .BOTH., (IFCSURFACESTYLESHADING)) →
+  IFCSURFACESTYLESHADING(IFCCOLOURRGB, transparency?) → IFCCOLOURRGB($,r,g,b)`.
+  IfcSurfaceStyle 는 **색상별 dedup** (동일 (r,g,b,t) → 한 style 공유), IfcStyledItem
+  은 요소(brep)별. opaque (transparency ≈ 0) 면 transparency arg 는 `$` (omit).
+- advanced/faceted brep 무관 (styled item 은 brep ref 만 참조) → §37 과 자연 결합.
+
+**검증**: `a_material_colour_emits_a_styled_item` (opaque red → IFCSTYLEDITEM×2 +
+IFCSURFACESTYLE×1 (dedup) + IFCCOLOURRGB `$,1.,0.,0.` + shading transparency `$`;
+glass (0.2,0.4,0.8,0.5) → shading `,0.5)`; no-colour → styled item 0;
+mutation-checked: material_rgba 무시 시 test 실패). 전체 workspace green.
+
+### 남은 한계
+
+- IfcSurfaceStyleShading (색상 + 투명도) 만 — roughness/metalness (IfcSurfaceStyle**Rendering**)
+  는 별도. 텍스처 (IfcImageTexture/IfcSurfaceStyleWithTextures) 도 별도 트랙.

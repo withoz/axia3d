@@ -5554,6 +5554,38 @@ impl AxiaEngine {
     /// Returns "" (→ caller falls back to `exportIfc` faceted) if the scene is
     /// empty or any element can't form an advanced brep. Elements are ordered by
     /// id (Xias, then Shapes, then leftover) for deterministic output.
+    /// The IFC material name + §38 appearance colour for an element: read from
+    /// the material actually on its faces (what the viewport renders, and what
+    /// `AssignMaterial` sets — `face.material`, NOT `xia.material`), falling back
+    /// to the owning Xia's primary material. `FORM_MATERIAL` (the form-layer
+    /// sentinel) → no material. Colour is (r,g,b,transparency), each 0..1.
+    fn ifc_element_material(
+        &self,
+        faces: &[axia_geo::FaceId],
+        primary: Option<axia_geo::MaterialId>,
+    ) -> (Option<String>, Option<(f64, f64, f64, f64)>) {
+        let id = faces
+            .iter()
+            .filter_map(|&f| self.scene.mesh.faces.get(f).map(|fc| fc.material()))
+            .find(|&m| m != axia_core::FORM_MATERIAL)
+            .or_else(|| primary.filter(|&m| m != axia_core::FORM_MATERIAL));
+        match id.and_then(|id| self.scene.material_library.get(id)) {
+            Some(m) => {
+                let (r, g, b) = m.visual.rgb();
+                (
+                    Some(m.name.clone()),
+                    Some((
+                        r as f64 / 255.0,
+                        g as f64 / 255.0,
+                        b as f64 / 255.0,
+                        (1.0 - m.visual.opacity).clamp(0.0, 1.0),
+                    )),
+                )
+            }
+            None => (None, None),
+        }
+    }
+
     #[wasm_bindgen(js_name = "exportIfcModel")]
     pub fn export_ifc_model(&self, name: String) -> String {
         use std::collections::HashSet;
@@ -5575,11 +5607,9 @@ impl AxiaEngine {
             if faces.is_empty() {
                 continue;
             }
-            let material_name = if xia.material == axia_core::FORM_MATERIAL {
-                None
-            } else {
-                scene.material_library.get(xia.material).map(|m| m.name.clone())
-            };
+            // Material name + §38 colour from the element's face material (what the
+            // viewport shows), falling back to the Xia's primary material.
+            let (material_name, material_rgba) = self.ifc_element_material(&faces, Some(xia.material));
             let kind = scene
                 .xia_element_kind
                 .get(&xid)
@@ -5588,6 +5618,7 @@ impl AxiaEngine {
             elements.push(axia_ifc::IfcElement {
                 name: xia.name.clone(),
                 material_name,
+                material_rgba,
                 kind,
                 face_ids: faces,
             });
@@ -5602,6 +5633,9 @@ impl AxiaEngine {
             if faces.is_empty() {
                 continue;
             }
+            // A Shape is form-layer (no primary material) but its faces may carry
+            // an assigned material — honour it so the viewport + export agree.
+            let (material_name, material_rgba) = self.ifc_element_material(&faces, None);
             let kind = scene
                 .shape_element_kind
                 .get(&sid)
@@ -5609,7 +5643,8 @@ impl AxiaEngine {
                 .unwrap_or_default();
             elements.push(axia_ifc::IfcElement {
                 name: shape.name.clone(),
-                material_name: None,
+                material_name,
+                material_rgba,
                 kind,
                 face_ids: faces,
             });
@@ -5623,9 +5658,11 @@ impl AxiaEngine {
             .map(|(fid, _)| fid)
             .collect();
         if !leftover.is_empty() {
+            let (material_name, material_rgba) = self.ifc_element_material(&leftover, None);
             elements.push(axia_ifc::IfcElement {
                 name: "Model".into(),
-                material_name: None,
+                material_name,
+                material_rgba,
                 kind: axia_ifc::IfcElementKind::default(),
                 face_ids: leftover,
             });
@@ -14859,6 +14896,33 @@ END-ISO-10303-21;
         assert_eq!(ifc.matches("IFCFACETEDBREP(").count(), 1, "the non-analytic element → faceted brep");
         // The faceted element's body representation is tagged 'Brep', the analytic 'AdvancedBrep'.
         assert!(ifc.contains("'AdvancedBrep'") && ifc.contains("'Brep'"), "both rep types present");
+    }
+
+    /// §38 end-to-end — a material assigned to a wall's FACES (what the Inspector's
+    /// AssignMaterial does — it sets face.material, not xia.material) still exports
+    /// as an IfcMaterial + an IfcStyledItem colour, because the export reads the
+    /// face material. (Before §38 this was lost: export read xia.material only.)
+    #[test]
+    fn an_assigned_face_material_exports_with_name_and_colour() {
+        let mut e = AxiaEngine::new();
+        let pos = glam::DVec3::new(0.0, 0.0, 1000.0);
+        let wall = e
+            .scene
+            .mesh
+            .create_box(pos, 2000.0, 2000.0, 2000.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), pos, wall.clone());
+        // Assign a coloured library material (id 1 — not the FORM_MATERIAL sentinel
+        // id 0) to the faces, via the same command the Inspector uses.
+        let mat_id = axia_geo::MaterialId::new(1);
+        assert!(e.scene.material_library.get(mat_id).is_some(), "library has material 1");
+        e.scene.execute(axia_core::Command::AssignMaterial { face_ids: wall, material_id: mat_id });
+
+        let ifc = e.export_ifc_model("Coloured".into());
+        assert!(ifc.contains("IFCMATERIAL("), "the face material is exported (not lost on xia.material)");
+        assert!(ifc.contains("IFCRELASSOCIATESMATERIAL("), "associated to the wall");
+        assert_eq!(ifc.matches("IFCSTYLEDITEM(").count(), 1, "one appearance styled item");
+        assert_eq!(ifc.matches("IFCCOLOURRGB(").count(), 1, "with the material colour");
     }
 }
 
