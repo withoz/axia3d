@@ -9233,7 +9233,7 @@ impl AxiaEngine {
         let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
-        match self.scene.mesh.punch_rect_hole(a, b, normal) {
+        match self.scene.punch_rect_hole(a, b, normal) {
             Ok(new_face) => {
                 if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch rect", true) {
                     return -1;
@@ -9278,8 +9278,8 @@ impl AxiaEngine {
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
-        match self.scene.mesh.drill_rect_through_hole(a, b, normal) {
-            Ok(res) => {
+        match self.scene.drill_rect_through_hole(a, b, normal) {
+            Ok(tube_count) => {
                 if !self.integrity_gate_passed(integrity_before, &before, "drill rect", true) {
                     return -1;
                 }
@@ -9287,7 +9287,7 @@ impl AxiaEngine {
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
                 self.invalidate_cache();
-                res.tube_faces.len() as i32
+                tube_count as i32
             }
             Err(e) => {
                 self.scene.restore_scene_snapshot(&before);
@@ -9326,8 +9326,11 @@ impl AxiaEngine {
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
-        match self.scene.mesh.cut_wall_door_opening(a, b, normal) {
-            Ok(res) => {
+        // Scene-level carve: mesh op + ownership reconcile (§36-amendment) — the
+        // new jamb/split faces are adopted into the host wall's element so the
+        // IFC export sees one wall, not the wall + orphaned faces.
+        match self.scene.cut_wall_door_opening(a, b, normal) {
+            Ok(jamb_count) => {
                 if !self.integrity_gate_passed(integrity_before, &before, "door", true) {
                     return -1;
                 }
@@ -9335,7 +9338,7 @@ impl AxiaEngine {
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
                 self.invalidate_cache();
-                res.jamb_faces.len() as i32
+                jamb_count as i32
             }
             Err(e) => {
                 self.scene.restore_scene_snapshot(&before);
@@ -14656,6 +14659,110 @@ END-ISO-10303-21;
         re.import_ifc(ifc);
         assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
         assert!(active_faces(&re) > 6, "the round-tripped opening is a hole again: {}", active_faces(&re));
+    }
+
+    /// §36-amendment — a door's U-notch (an opening cut to the wall's floor edge,
+    /// ADR-262) is NOT a through-hole (its void is part of the outer boundary), so
+    /// the local loop fill can't restore it. Export refills it by boolean union
+    /// (`holed wall ∪ box`) to a SOLID body, so the exported wall body is solid
+    /// (correct IFC — a consumer voids it exactly once) and re-import brings the
+    /// notch back.
+    #[test]
+    fn a_door_notch_exports_solid_and_reimports_as_a_notch() {
+        let mut e = AxiaEngine::new();
+        // A 4 m (X) × 3 m (Z) × 0.2 m (Y) wall, bottom at z = 0. Give it an owning
+        // Xia (the real user flow) so the door carve's ownership reconcile is
+        // exercised — with a plain unowned mesh.create_box the new faces would
+        // fall into the leftover "Model" element instead, hiding the fix.
+        let pos = glam::DVec3::new(0.0, 0.0, 1500.0);
+        let wall_faces = e
+            .scene
+            .mesh
+            .create_box(pos, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), pos, wall_faces);
+        // Cut a door on the front face (y = -100, normal -Y): 1 m wide, floor
+        // (z = 0) to a 2.1 m header — reaches the bottom edge → a U-notch.
+        let jambs = e.cut_wall_door_opening(-500.0, -100.0, 0.0, 500.0, -100.0, 2100.0, 0.0, -1.0, 0.0);
+        assert_eq!(jambs, 3, "the door carved a U-notch (3 jamb faces)");
+        let notched = active_faces(&e);
+        assert!(notched > 6, "the notched wall has more than a plain box's six faces: {notched}");
+        // Record it as an opening (what DrawWindowTool does after a successful cut).
+        e.record_rect_opening(-500.0, -100.0, 0.0, 500.0, -100.0, 2100.0, 0.0, -1.0, 0.0);
+        assert_eq!(e.opening_count(), 1);
+
+        let notched_volume = e.scene.mesh.mesh_volume();
+
+        let ifc = e.export_ifc_model("Door".into());
+        assert!(ifc.contains("IFCOPENINGELEMENT("), "export emits the opening element");
+        assert!(ifc.contains("IFCRELVOIDSELEMENT("), "export links it to the wall");
+        assert!(ifc.contains("IFCADVANCEDBREP("), "the union-refilled solid body exports as advanced brep");
+
+        // The exported wall BODY is SOLID (union-refilled): re-importing it WITHOUT
+        // the RelVoids gives the full un-notched wall — its volume exceeds the
+        // notched wall's (§36-only would export the notched body, failing this).
+        let body_only: String =
+            ifc.lines().filter(|l| !l.contains("IFCRELVOIDSELEMENT(")).collect::<Vec<_>>().join("\n");
+        let mut body = AxiaEngine::new();
+        body.import_ifc(body_only);
+        let body_volume = body.scene.mesh.mesh_volume();
+        assert!(
+            body_volume > notched_volume + 1.0e8,
+            "exported body is SOLID (not notched): body {body_volume:.0} vs notched {notched_volume:.0}"
+        );
+
+        // Re-import the WHOLE file: the SOLID body is voided exactly once → the
+        // notch is back (a holed body + a void would double-void it).
+        let mut re = AxiaEngine::new();
+        re.import_ifc(ifc);
+        assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
+        assert!(active_faces(&re) > 6, "the door notch round-trips (not double-voided): {}", active_faces(&re));
+    }
+
+    /// §36-amendment (+window drill) — a user-drawn window drilled with
+    /// drill_rect_through_hole also reconciles ownership, so its tunnel + cap-split
+    /// faces join the wall's Xia and the wall exports as one SOLID body (the local
+    /// through-hole fill then strips the hole back out via the IfcOpeningElement).
+    #[test]
+    fn a_drilled_window_exports_solid_and_reimports_as_a_hole() {
+        let mut e = AxiaEngine::new();
+        // Xia-owned wall (real flow), so the drill's ownership reconcile matters.
+        let pos = glam::DVec3::new(0.0, 0.0, 1500.0);
+        let wall_faces = e
+            .scene
+            .mesh
+            .create_box(pos, 4000.0, 3000.0, 200.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), pos, wall_faces);
+        // A raised window (sill z=0.6 m, header z=1.8 m) on the front face → a
+        // through-hole (not floor-reaching), drilled front↔back.
+        let tube = e.drill_rect_through_hole(-500.0, -100.0, 600.0, 500.0, -100.0, 1800.0, 0.0, -1.0, 0.0);
+        assert!(tube > 0, "the window drilled a through-hole (tube quads): {tube}");
+        e.record_rect_opening(-500.0, -100.0, 600.0, 500.0, -100.0, 1800.0, 0.0, -1.0, 0.0);
+        assert_eq!(e.opening_count(), 1);
+        let drilled_volume = e.scene.mesh.mesh_volume();
+
+        let ifc = e.export_ifc_model("Window".into());
+        assert!(ifc.contains("IFCOPENINGELEMENT("), "export emits the opening element");
+        assert!(ifc.contains("IFCRELVOIDSELEMENT("), "export links it to the wall");
+
+        // The exported body is SOLID (ownership reconcile + §36 fill): body-only
+        // re-import volume exceeds the drilled wall's (the window is filled back).
+        let body_only: String =
+            ifc.lines().filter(|l| !l.contains("IFCRELVOIDSELEMENT(")).collect::<Vec<_>>().join("\n");
+        let mut body = AxiaEngine::new();
+        body.import_ifc(body_only);
+        assert!(
+            body.scene.mesh.mesh_volume() > drilled_volume + 1.0e8,
+            "exported body is SOLID: body {:.0} vs drilled {:.0}",
+            body.scene.mesh.mesh_volume(), drilled_volume
+        );
+
+        // Full re-import → voided once → the window hole is back.
+        let mut re = AxiaEngine::new();
+        re.import_ifc(ifc);
+        assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
+        assert!(active_faces(&re) > 6, "the window round-trips (not double-voided): {}", active_faces(&re));
     }
 }
 

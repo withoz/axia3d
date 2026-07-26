@@ -1967,10 +1967,60 @@ body + opening 을 함께 내보내면 소비자 (Revit, 우리 재-import 모�
 - **live** (real Chromium, 재빌드 WASM): RelVoids import → export → 재-import → 벽
   valid + 구멍 유지 (이중 void 로 비워지지 않음).
 
+### ~~남은 한계~~ → §36-amendment 에서 해소
+
+- ~~**notch/edge opening 이중 void**~~ → **§36-amendment (union-based fill + ownership
+  reconcile) 로 해결**.
+- 회전된 opening 의 box 는 recorded AABB 에서 재구성 (실제 subtract box 의 superset) —
+  through-hole·notch 모두 채우지만 극단 skew 는 별도 검토.
+
+## 36-amendment. Notch/edge opening — union refill + face-ownership reconcile
+
+§36 의 through-hole fill 은 notch (user-drawn 문의 U-notch, ADR-262) 는 처리 못 한다
+(void 가 outer boundary 의 일부 → inner loop 없음). 측정 결과: **notch 는 이미 정확히
+round-trip** 된다 (이중 void 의 두 번째 subtract 가 already-void 영역에서 no-op, through-
+hole 처럼 벽을 비우지 않음). 하지만 body 가 notched 로 나가면 표준 IFC 가 아니고 (solid
+body + opening 이 정석), 외부 tool 에서 이중 subtract 소지가 있다. 본 amendment 이 notch
+도 **solid body** 로 내보낸다.
+
+### Union refill (notch)
+
+- **핵심**: `holed wall ∪ opening box = solid wall` (box 는 subtract 가 제거한 영역이므로
+  정확히 채움). mesh boolean 을 쓰지만 (through-hole 의 국소 loop fill 과 달리 notch 의
+  void 는 outer boundary 라 loop 조작 불가), scene mesh 는 clone 위에서만 변형 (원본 무손상).
+- **`Mesh::union_opening_box`** (`operations/boolean.rs`) — 8-corner box 를 6면으로 추가
+  → `boolean_solid(host, box, Union)` → 결과 면 반환. coplanar flush union (box 가 벽면과
+  같은 평면) 도 `boolean_solid` 가 처리 (검증됨).
+- **`emit_ifc_model_with_openings`** — element 가 host 인 box 중 **하나라도 notch**
+  (`is_notch`: box 에 걸친 outer loop 有 + inner loop 無) 면 `union_refill_element` 로 전체
+  개구부를 union refill (through-hole 도 함께 채움). 순수 through-hole 만이면 §36 local fill.
+  union 은 element 의 **active face 만** operand 로 사용 (carve 가 남긴 stale inactive 면 제외).
+
+### Face-ownership reconcile (핵심 — user-drawn 개구부)
+
+- **측정으로 밝혀진 진짜 블로커**: `cut_wall_door_opening` (+ `drill_rect_through_hole` /
+  `punch_rect_hole`) 이 새로 만든 jamb·split·tunnel 면을 **벽의 owning 요소 (Xia/Shape) 에
+  소유시키지 않음** → export 가 벽 요소 (부분 면) + orphan "Model" 요소로 쪼개짐 (advBreps=2)
+  → union·fill 이 부분 면집합에만 적용 → body 가 notched. (imported 개구부는 소유권이
+  올발라 정상 — PR #58 §35.)
+- **해결**: opening op 을 **Scene 계층으로 승격** (`Scene::cut_wall_door_opening` /
+  `drill_rect_through_hole` / `punch_rect_hole`) — mesh op 전에 host 의 owner 를 잡고
+  (`find_door_host` = 범용 coplanar host 질의, `pub` 화), mesh op 후 **새 active 면을 그
+  owner 에 adopt** (`capture_host_owner` + `adopt_new_active_faces`, dual-path Shape XOR Xia,
+  기존 cylinder-circle op 의 reconcile 패턴 답습). WASM wrapper 는 이 Scene 메서드를 호출
+  (mesh op + reconcile 이 한 transaction·한 undo). scene mesh 변형 0 (export clone).
+
+### 검증
+
+- Rust (axia-wasm): `a_door_notch_exports_solid_and_reimports_as_a_notch` (Xia-owned 벽 →
+  door carve → export body SOLID via body-only 재-import 부피 > notched, mutation-checked) +
+  `a_drilled_window_exports_solid_and_reimports_as_a_hole` (window drill 동일). axia-geo
+  `union_opening_box_refills_a_notch_to_solid` (coplanar flush union → solid).
+- **live** (real Chromium, 재빌드 WASM): Xia 벽 → door carve → export **advBreps=1**
+  (단일 요소, 이전 2) + body-only 재-import **vol 2.4e9 = solid** (이전 1.98e9 notched) +
+  full 재-import valid notch 복원.
+
 ### 남은 한계
 
-- **notch/edge opening** (user-drawn 문의 U-notch, ADR-262) 은 through-hole 이 아니라
-  fill 이 건너뛴다 → 여전히 이중 void. union-based fill (holed wall ∪ box, boolean) 로
-  일반 해결 가능 — 별도 트랙.
-- 회전된 opening 의 box 는 recorded AABB 에서 재구성 (실제 subtract box 의 superset) —
-  through-hole 은 정확히 채우지만 극단 skew 는 별도 검토.
+- 회전된/극단 skew opening box (recorded AABB superset) — through-hole·notch 정상, 극단
+  skew 는 별도 검토.

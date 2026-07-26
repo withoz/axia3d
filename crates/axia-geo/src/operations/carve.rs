@@ -1715,8 +1715,10 @@ impl Mesh {
 
     /// ADR-262 β-1 — find the coplanar host wall face: active, normal ∥ `n`
     /// (|dot| > 0.999), `center` on its plane (≤ 1μm) and inside its outer loop.
-    /// Mirrors `punch_rect_hole`'s host search.
-    fn find_door_host(&self, center: DVec3, n: DVec3) -> Option<FaceId> {
+    /// Mirrors `punch_rect_hole`'s host search. `pub` so the Scene layer can
+    /// resolve the host's owning element *before* a carve, to adopt the new faces
+    /// into it (ADR-203 §36-amendment ownership reconcile).
+    pub fn find_door_host(&self, center: DVec3, n: DVec3) -> Option<FaceId> {
         let plane_tol = 1e-3;
         for (fid, f) in self.faces.iter() {
             if !f.is_active() {

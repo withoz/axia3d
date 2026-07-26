@@ -493,8 +493,9 @@ fn adr262_beta2_door_export_with_rollback() {
         .expect("punch_polygon_hole must follow the door fn");
     let body = &l[start..start + rel];
     assert!(
-        body.contains("self.scene.mesh.cut_wall_door_opening"),
-        "β-2: must route to the mesh kernel cut_wall_door_opening"
+        body.contains("self.scene.cut_wall_door_opening"),
+        "β-2: must route to the Scene door carve (which runs the mesh kernel \
+         cut_wall_door_opening + the §36 ownership reconcile)"
     );
     // β-1 kernel has NO self-rollback → wrapper MUST snapshot + restore on Err.
     assert!(

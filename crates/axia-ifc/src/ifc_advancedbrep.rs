@@ -489,6 +489,33 @@ fn loop_on_box(edges: &[IfcEdge], fr: &BoxFrame) -> bool {
     !edges.is_empty() && edges.iter().all(|e| fr.contains(e.start))
 }
 
+/// Is this opening box a **through-hole** in `faces` — some face carries an inner
+/// loop entirely on it — rather than a notch/edge opening whose void is part of
+/// the outer boundary? A notch can't be restored by the local loop fill, so the
+/// caller refills it with a boolean union instead (§36-amendment).
+pub(crate) fn is_through_hole(faces: &[AdvancedFace], corners: &[DVec3; 8]) -> bool {
+    match BoxFrame::from_corners(corners) {
+        Some(fr) => faces.iter().any(|f| f.inners.iter().any(|inner| loop_on_box(inner, &fr))),
+        None => false,
+    }
+}
+
+/// Is this opening box a baked **notch** — a face's whole *outer* loop lies on it
+/// (a jamb/tunnel wall of the void) but no inner loop does? A through-hole has an
+/// inner loop; a solid wall (the opening was recorded but never baked into the
+/// geometry) has neither, so it needs no refill. Only a notch needs the boolean
+/// union (its void is part of the outer boundary — the local loop fill can't
+/// restore it). §36-amendment.
+pub(crate) fn is_notch(faces: &[AdvancedFace], corners: &[DVec3; 8]) -> bool {
+    if is_through_hole(faces, corners) {
+        return false;
+    }
+    match BoxFrame::from_corners(corners) {
+        Some(fr) => faces.iter().any(|f| loop_on_box(&f.outer, &fr)),
+        None => false,
+    }
+}
+
 /// Reconstruct the SOLID wall body from the holed faces by **filling** each
 /// through-hole opening. A recorded opening box is the region a RelVoids subtract
 /// removed, so it exactly fills the hole it cut: strip the hole-outline inner

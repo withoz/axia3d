@@ -13,9 +13,35 @@ use crate::ifc_advancedbrep::{advanced_faces_filtered, emit_advanced_geometry, f
 use crate::ifc_common::{emit_owner_units_context, pt};
 use crate::step_value::StepValue;
 use crate::step_writer::StepWriter;
-use axia_geo::{FaceId, Mesh};
+use axia_geo::{FaceId, MaterialId, Mesh};
 use glam::DVec3;
 use std::collections::HashSet;
+
+/// Refill an element's baked openings back to a SOLID wall body by boolean union
+/// on a scratch clone (`holed wall ∪ each opening box = the original solid`) —
+/// the general fill that also handles a notch/edge opening (a door's U-notch),
+/// where the void is part of the outer boundary, not an inner loop (§36-amendment).
+/// The scene mesh is never mutated. Returns the solid body's advanced faces (the
+/// unioned box faces carry no stored surface → §35 synthesizes exact IfcPlanes).
+fn union_refill_element(
+    mesh: &Mesh,
+    host_faces: &[FaceId],
+    boxes: &[[DVec3; 8]],
+) -> Result<Vec<crate::ifc_advancedbrep::AdvancedFace>, String> {
+    let mut work = mesh.clone();
+    // The element's face_ids can include stale INACTIVE faces (a carve deactivates
+    // the pre-notch faces but leaves them in the owner's list). boolean_solid must
+    // only see active operands, so filter first.
+    let mut host: Vec<FaceId> =
+        host_faces.iter().copied().filter(|&f| work.faces.get(f).is_some_and(|fc| fc.is_active())).collect();
+    for b in boxes {
+        host = work
+            .union_opening_box(&host, b, MaterialId::new(0))
+            .map_err(|e| format!("union refill: {}", e))?;
+    }
+    let allowed: HashSet<FaceId> = host.into_iter().collect();
+    crate::ifc_advancedbrep::advanced_faces_filtered(&work, Some(&allowed))
+}
 
 /// A rectangular opening (window / door) to emit as an `IfcOpeningElement` that
 /// voids one of the model's elements. `host_index` indexes into the `elements`
@@ -183,12 +209,28 @@ pub fn emit_ifc_model_with_openings(
             .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;
         // Emit a SOLID wall body: the openings this element hosts are re-stated as
         // separate IfcOpeningElements below, so the body must NOT also carry the
-        // baked hole — else a consumer voids it twice. Fill each through-hole
-        // opening (strip its outline + tunnel faces) back to solid (§35, ADR-203).
+        // baked hole — else a consumer voids it twice (§35/§36, ADR-203).
         let boxes: Vec<[DVec3; 8]> =
             openings.iter().filter(|op| op.host_index == ei).map(|op| op.corners).collect();
         if !boxes.is_empty() {
-            faces = fill_through_hole_openings(faces, &boxes);
+            // A through-hole is refilled locally (strip outline + tunnel faces). A
+            // notch/edge opening (a door's U-notch — void is part of the outer
+            // boundary) can't be, so if the element hosts ANY notch, refill EVERY
+            // opening by boolean union (`holed wall ∪ box = solid`) — handles both.
+            let any_notch = boxes.iter().any(|b| crate::ifc_advancedbrep::is_notch(&faces, b));
+            faces = if any_notch {
+                // A baked notch's void is part of the outer boundary — refill by
+                // boolean union. If the union can't help, fall back to the local
+                // fill (a safe no-op here); never fail the export over a refill.
+                match union_refill_element(mesh, &el.face_ids, &boxes) {
+                    Ok(solid) => solid,
+                    Err(_) => fill_through_hole_openings(faces, &boxes),
+                }
+            } else {
+                // Through-hole → strip loops + tunnel faces; solid wall (opening
+                // recorded, never baked) → a no-op that keeps the body solid.
+                fill_through_hole_openings(faces, &boxes)
+            };
         }
         let brep = emit_advanced_geometry(&mut w, &faces, scale)
             .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;

@@ -2985,6 +2985,97 @@ impl Scene {
         }
     }
 
+    /// ADR-203 §36-amendment — resolve the owning element (Shape XOR Xia) of the
+    /// wall face an opening will be carved into, plus a snapshot of the currently
+    /// active faces, so the new faces a carve/drill creates can be adopted into
+    /// that owner afterward. `find_door_host` is a generic coplanar-face-at-point
+    /// query (shared by door + drill). Returns `(owning_shape, owning_xia, before)`.
+    #[allow(clippy::type_complexity)]
+    fn capture_host_owner(
+        &self,
+        center: DVec3,
+        n: DVec3,
+    ) -> (Option<crate::ShapeId>, Option<XiaId>, std::collections::HashSet<FaceId>) {
+        let host = self.mesh.find_door_host(center, n);
+        let owning_shape = host.and_then(|h| self.face_to_shape.get(&h).copied());
+        let owning_xia = host.and_then(|h| self.face_to_xia.get(&h).copied());
+        let before: std::collections::HashSet<FaceId> =
+            self.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        (owning_shape, owning_xia, before)
+    }
+
+    /// ADR-262 + §36-amendment — carve a door U-notch AND reconcile face ownership:
+    /// the carve's new faces (jambs, splits, bottom notch) are adopted into the
+    /// host wall's owning element, so the wall element owns its full geometry.
+    /// Without this the new faces orphan into a separate "Model" element at IFC
+    /// export, and the per-element solid-body refill (§36 union) can't rebuild the
+    /// wall. Returns the jamb-face count. Not self-transacted — the WASM caller
+    /// wraps it in the integrity gate + snapshot (mesh op + reconcile undo as one).
+    pub fn cut_wall_door_opening(&mut self, a: DVec3, b: DVec3, normal: DVec3) -> anyhow::Result<usize> {
+        let (os, ox, before) = self.capture_host_owner((a + b) * 0.5, normal.normalize_or_zero());
+        let res = self.mesh.cut_wall_door_opening(a, b, normal)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(res.jamb_faces.len())
+    }
+
+    /// ADR-249 + §36-amendment — drill a rectangular through-hole AND reconcile
+    /// ownership (the drill's tunnel + cap-split faces join the host wall's owner),
+    /// so the wall exports as one solid-bodied element. Returns the tube-quad
+    /// count. Not self-transacted (see [`Self::cut_wall_door_opening`]).
+    pub fn drill_rect_through_hole(&mut self, a: DVec3, b: DVec3, normal: DVec3) -> anyhow::Result<usize> {
+        let (os, ox, before) = self.capture_host_owner((a + b) * 0.5, normal.normalize_or_zero());
+        let res = self.mesh.drill_rect_through_hole(a, b, normal)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(res.tube_faces.len())
+    }
+
+    /// ADR-194 + §36-amendment — punch a rectangular blind/face hole AND reconcile
+    /// ownership. Returns the new (ring) face. Not self-transacted.
+    pub fn punch_rect_hole(&mut self, a: DVec3, b: DVec3, normal: DVec3) -> anyhow::Result<FaceId> {
+        let (os, ox, before) = self.capture_host_owner((a + b) * 0.5, normal.normalize_or_zero());
+        let new_face = self.mesh.punch_rect_hole(a, b, normal)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(new_face)
+    }
+
+    /// Adopt every face that became active since `before` into the given owner
+    /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
+    /// carve/drill opening ops. No-op if the host had no owner (demo/script).
+    fn adopt_new_active_faces(
+        &mut self,
+        owning_shape: Option<crate::ShapeId>,
+        owning_xia: Option<XiaId>,
+        before: &std::collections::HashSet<FaceId>,
+    ) {
+        if owning_shape.is_none() && owning_xia.is_none() {
+            return;
+        }
+        let new_faces: Vec<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && !before.contains(fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        for f in new_faces {
+            if let Some(sid) = owning_shape {
+                if let Some(shape) = self.shapes.get_mut(&sid) {
+                    if !shape.face_ids.contains(&f) {
+                        shape.face_ids.push(f);
+                    }
+                }
+                self.face_to_shape.insert(f, sid);
+            } else if let Some(xid) = owning_xia {
+                self.register_faces_to_xia(xid, &[f]);
+                if let Some(xia) = self.xias.get_mut(&xid) {
+                    if !xia.face_ids.contains(&f) {
+                        xia.face_ids.push(f);
+                    }
+                }
+            }
+        }
+    }
+
     /// **ADR-263 β-3 (P3-C)** — draw a closed geodesic "porthole" circle on a
     /// Cone side face, splitting it into a cap + remainder (both inherit the
     /// Cone surface). The 1:1 mirror of `draw_circle_on_cylinder` — the cone is
