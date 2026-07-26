@@ -213,12 +213,20 @@ pub(crate) fn advanced_faces_filtered(
                 continue;
             }
         }
-        let surface = mesh
-            .face_surface(fid)
-            .ok_or_else(|| format!("face {:?}: no analytic surface (advanced brep needs every face analytic)", fid))?
-            .clone();
         let outer = loop_edges(mesh, face.outer().start)
             .map_err(|e| format!("face {:?} outer: {}", fid, e))?;
+        // A face's stored analytic surface is the truth. When it carries none —
+        // e.g. faces created by a Boolean subtract (an imported IfcRelVoidsElement
+        // opening bakes a hole into the wall this way) — synthesize an *exact*
+        // `Plane` from its outer loop iff that loop is coplanar. A tessellated
+        // curved region is not coplanar → `None` → the error below → faceted
+        // fallback, so nothing curved is ever silently flattened.
+        let surface = match mesh.face_surface(fid) {
+            Some(s) => s.clone(),
+            None => synthesize_plane_from_loop(&outer).ok_or_else(|| {
+                format!("face {:?}: no analytic surface (advanced brep needs every face analytic)", fid)
+            })?,
+        };
         let mut inners = Vec::with_capacity(face.inners().len());
         for lr in face.inners() {
             inners.push(
@@ -398,6 +406,47 @@ fn compute_same_sense(outer: &[IfcEdge], surface: &AnalyticSurface) -> bool {
         return true;
     }
     n_face.dot(n_surf) >= 0.0
+}
+
+/// A planar face's analytic surface *is* a plane. When a face carries no stored
+/// surface (Boolean-subtract results — an imported RelVoids opening bakes its
+/// hole into the wall this way), synthesize an exact [`AnalyticSurface::Plane`]
+/// from the outer loop — but only if the loop is genuinely coplanar (max vertex
+/// deviation ≤ 1 µm, well above axis-aligned Boolean noise, well below a
+/// tessellated curved face's per-face deviation). Returns `None` for a
+/// degenerate or non-planar loop so the caller errors → faceted fallback (no
+/// curve is ever flattened).
+fn synthesize_plane_from_loop(outer: &[IfcEdge]) -> Option<AnalyticSurface> {
+    let verts: Vec<DVec3> = outer.iter().map(|e| e.start).collect();
+    if verts.len() < 3 {
+        return None;
+    }
+    let n = newell(&verts);
+    let nlen = n.length();
+    if nlen < 1e-9 {
+        return None; // degenerate (collinear / zero-area)
+    }
+    let normal = n / nlen;
+    let origin = verts[0];
+    let max_dev = verts
+        .iter()
+        .map(|&v| (v - origin).dot(normal).abs())
+        .fold(0.0, f64::max);
+    if max_dev > 1e-3 {
+        return None; // not planar (engine units mm; 1e-3 mm = 1 µm)
+    }
+    // The first non-degenerate outer edge lies in the plane → a valid basis_u ⊥ normal.
+    let basis_u = outer.iter().find_map(|e| {
+        let d = e.end - e.start;
+        (d.length() > 1e-9).then(|| d.normalize())
+    })?;
+    Some(AnalyticSurface::Plane {
+        origin,
+        normal,
+        basis_u,
+        u_range: (-1e6, 1e6),
+        v_range: (-1e6, 1e6),
+    })
 }
 
 /// Newell's method — area-weighted polygon normal (robust to non-planarity).
@@ -934,6 +983,63 @@ mod tests {
     #[test]
     fn empty_faces_rejected() {
         assert!(emit_advanced_brep(&[], 0.001, "e").is_err());
+    }
+
+    // ── §34: synthesize an exact IfcPlane for a surfaceless planar face ──
+    // (a Boolean-cut wall — an imported RelVoids opening bakes its hole this way —
+    // has faces carrying no stored surface; a planar face's surface *is* a plane).
+
+    #[test]
+    fn surfaceless_planar_loop_synthesizes_an_exact_plane() {
+        // A CCW quad in the z = 200 plane (engine units mm).
+        let loop_edges = line_loop(vec![
+            DVec3::new(0.0, 0.0, 200.0),
+            DVec3::new(1000.0, 0.0, 200.0),
+            DVec3::new(1000.0, 1000.0, 200.0),
+            DVec3::new(0.0, 1000.0, 200.0),
+        ]);
+        let s = synthesize_plane_from_loop(&loop_edges).expect("coplanar loop → a plane");
+        match s {
+            AnalyticSurface::Plane { origin, normal, basis_u, .. } => {
+                assert!((normal - DVec3::Z).length() < 1e-9, "normal is +Z: {normal:?}");
+                assert!((origin.z - 200.0).abs() < 1e-9, "origin on the plane");
+                assert!(basis_u.dot(normal).abs() < 1e-9, "basis_u ⊥ normal");
+            }
+            other => panic!("expected Plane, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_planar_loop_is_not_flattened() {
+        // One vertex lifted well off the plane (2 mm) — a curved region must NOT
+        // be silently flattened to a plane (→ None → caller errors → faceted).
+        let loop_edges = line_loop(vec![
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(1000.0, 0.0, 0.0),
+            DVec3::new(1000.0, 1000.0, 2.0),
+            DVec3::new(0.0, 1000.0, 0.0),
+        ]);
+        assert!(synthesize_plane_from_loop(&loop_edges).is_none(), "non-planar → None");
+    }
+
+    #[test]
+    fn a_holed_box_face_without_a_surface_still_exports() {
+        // A single planar face carrying NO stored analytic surface exports via the
+        // synthesized plane (previously: hard error → faceted fallback).
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        // Strip every face's surface → all six now rely on synthesis.
+        let fids: Vec<_> = mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(id, _)| id).collect();
+        for fid in fids {
+            mesh.set_face_surface(fid, None);
+        }
+        let s = emit_advanced_brep_from_mesh(&mesh, 0.001, "holed")
+            .expect("surfaceless planar faces synthesize planes");
+        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 6);
+        assert_eq!(s.matches("=IFCPLANE(").count(), 6, "six synthesized planes");
+        assert!(!s.contains("=IFCFACETEDBREP("), "advanced, not faceted fallback");
+        assert_refs_resolve(&s);
     }
 
     // ── β-2.5: extract advanced brep directly from a live DCEL mesh ──

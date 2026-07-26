@@ -5945,6 +5945,14 @@ impl AxiaEngine {
             }
         }
 
+        // §34 import-preserve — keep the file's openings so a later export re-emits
+        // them as IfcOpeningElement, instead of only ever seeing the baked hole.
+        // Recorded inside the transaction (one Undo drops them with the geometry)
+        // and before the after-snapshot (so they persist).
+        for op in &g.openings {
+            self.scene.record_rect_opening(op.a, op.b, op.normal);
+        }
+
         self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
         self.scene.transactions.commit();
         self.mark_topology_changed();
@@ -14591,6 +14599,68 @@ END-ISO-10303-21;
             "the re-imported wall-with-opening is watertight"
         );
         assert!(active_faces(&re) > 6, "the opening was cut back in: {}", active_faces(&re));
+    }
+
+    /// §34 import-preserve — an opening imported via IfcRelVoidsElement is recorded
+    /// in the scene (not only baked into the wall), so exporting the model re-emits
+    /// it as an IfcOpeningElement, and that export re-imports as a hole again: the
+    /// full round-trip. (The holed wall re-exports because the Boolean-cut faces,
+    /// which carry no stored surface, are synthesized as exact IfcPlanes.)
+    #[test]
+    fn an_imported_relvoids_opening_survives_export_and_reimport() {
+        // A wall + a separate IfcOpeningElement voided into it (the RelVoids form).
+        let src = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('IFC4X3'));
+ENDSEC;
+DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#24=IFCCARTESIANPOINT((0.,0.,0.));
+#47=IFCAXIS2PLACEMENT3D(#24,$,$);
+#46=IFCLOCALPLACEMENT($,#47);
+#40=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,0.2);
+#71=IFCEXTRUDEDAREASOLID(#40,$,$,3.);
+#70=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#71));
+#48=IFCPRODUCTDEFINITIONSHAPE($,$,(#70));
+#45=IFCWALL('w',$,'Wall',$,$,#46,#48,$,$);
+#83=IFCCARTESIANPOINT((1.,0.,0.8));
+#82=IFCAXIS2PLACEMENT3D(#83,$,$);
+#81=IFCLOCALPLACEMENT(#46,#82);
+#88=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,1.,0.4);
+#87=IFCEXTRUDEDAREASOLID(#88,$,$,1.);
+#86=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#87));
+#84=IFCPRODUCTDEFINITIONSHAPE($,$,(#86));
+#80=IFCOPENINGELEMENT('o',$,'Opening',$,$,#81,#84,$,.OPENING.);
+#85=IFCRELVOIDSELEMENT('rv',$,$,$,#45,#80);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let mut e = AxiaEngine::new();
+        e.import_ifc(src.to_string());
+        // The opening was recorded (not only baked into the wall).
+        assert_eq!(e.opening_count(), 1, "the imported RelVoids opening is preserved");
+
+        // Export re-emits it as an opening element (import-preserve), not just a
+        // wall with a mysterious hole.
+        let ifc = e.export_ifc_model("Test".into());
+        assert!(ifc.contains("IFCOPENINGELEMENT("), "re-export emits the preserved opening");
+        assert!(ifc.contains("IFCRELVOIDSELEMENT("), "re-export links it to the wall");
+
+        // The exported holed-wall body itself re-imports to a valid, watertight
+        // wall (the Boolean-cut faces — carrying no stored surface — round-trip
+        // because they are synthesized as exact IfcPlanes). The re-import here
+        // strips the RelVoids: our engine *bakes* the void into the wall body, so
+        // re-applying the opening would double-void it — a pre-existing property
+        // of the baked-void representation shared with user-drawn openings, not
+        // of import-preserve. (Separate track: emit a solid wall body when an
+        // opening is present, per standard IFC, so consumers void it exactly once.)
+        let body_only: String =
+            ifc.lines().filter(|l| !l.contains("IFCRELVOIDSELEMENT(")).collect::<Vec<_>>().join("\n");
+        let mut re = AxiaEngine::new();
+        re.import_ifc(body_only);
+        assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
+        assert!(active_faces(&re) > 6, "the exported holed wall re-imports: {}", active_faces(&re));
     }
 }
 

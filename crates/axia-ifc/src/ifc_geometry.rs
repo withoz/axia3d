@@ -222,10 +222,24 @@ pub struct ElementGeometry {
     pub fills_wall: Option<u32>,
 }
 
+/// An opening (`IfcRelVoidsElement`) read from the file, as the rectangle the
+/// scene records for re-export: two diagonal corners + the host face normal, in
+/// world millimetres. Derived from the opening solid's bounds (normal = its
+/// thinnest axis, i.e. the wall-through direction). Lets an imported opening
+/// round-trip back out as an `IfcOpeningElement` (ADR-203 §34 import-preserve).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImportedOpening {
+    pub a: DVec3,
+    pub b: DVec3,
+    pub normal: DVec3,
+}
+
 /// Result of reading a whole file's geometry.
 #[derive(Clone, Debug, Default)]
 pub struct GeometryImport {
     pub elements: Vec<ElementGeometry>,
+    /// Openings cut by `IfcRelVoidsElement`, kept so they can be re-exported.
+    pub openings: Vec<ImportedOpening>,
     /// Site / building / storey structure, and which container holds what (I-5).
     pub spatial: crate::ifc_spatial::SpatialTree,
     /// Length unit → mm factor actually used.
@@ -320,6 +334,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
     let fills = collect_fills(file);
 
     let mut elements = Vec::new();
+    let mut openings: Vec<ImportedOpening> = Vec::new();
     let mut placed = 0usize;
     for el in &report.elements {
         let label = || match &el.name {
@@ -400,6 +415,12 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             for &op_id in opening_ids {
                 let of = opening_world_faces(file, op_id, scale);
                 if of.len() >= 4 {
+                    // Keep the opening (as the rectangle the scene records) so it can
+                    // be re-exported (§34 import-preserve). WCS-applied to match the
+                    // wall geometry, which is transformed below.
+                    if let Some(op) = imported_opening_from_solid(&of, wcs.as_ref()) {
+                        openings.push(op);
+                    }
                     opening_solids.push(of);
                 } else {
                     warnings.push(format!(
@@ -475,7 +496,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             fills_wall: fills.get(&el.id).copied(),
         });
     }
-    GeometryImport { elements, spatial, scale_to_mm: scale, placed, warnings }
+    GeometryImport { elements, openings, spatial, scale_to_mm: scale, placed, warnings }
 }
 
 /// Face loops of one geometry item — a B-rep or a swept solid. Dispatches on
@@ -1442,6 +1463,39 @@ fn collect_fills(file: &StepFile) -> std::collections::HashMap<u32, u32> {
         }
     }
     fills
+}
+
+/// Reduce an opening solid to the rectangle the scene records (§34 import-preserve):
+/// its world bounding box → two diagonal corners + the wall-through normal (the box's
+/// thinnest axis). `wcs`, when present, is applied so the opening lands in the same
+/// world as the wall it voids (whose geometry is WCS-transformed on import).
+fn imported_opening_from_solid(
+    solid: &[FaceLoops],
+    wcs: Option<&crate::ifc_placement::Placement>,
+) -> Option<ImportedOpening> {
+    let mut lo = DVec3::splat(f64::INFINITY);
+    let mut hi = DVec3::splat(f64::NEG_INFINITY);
+    for f in solid {
+        for p in f.outer.iter().chain(f.inners.iter().flatten()) {
+            let p = wcs.map(|w| w.apply(*p)).unwrap_or(*p);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+    }
+    if !lo.x.is_finite() {
+        return None;
+    }
+    let ext = hi - lo;
+    // Normal = the thinnest axis (the wall-through direction). The sign is
+    // irrelevant — the box rebuild is symmetric about it.
+    let normal = if ext.x <= ext.y && ext.x <= ext.z {
+        DVec3::X
+    } else if ext.y <= ext.z {
+        DVec3::Y
+    } else {
+        DVec3::Z
+    };
+    Some(ImportedOpening { a: lo, b: hi, normal })
 }
 
 /// The world-space solid of an `IfcOpeningElement` — its representation items
