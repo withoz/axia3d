@@ -11,7 +11,77 @@
 use crate::ifc_common::{emit_owner_units_context, emit_product_and_spatial, pt};
 use crate::step_value::{EntityRef, StepValue};
 use crate::step_writer::StepWriter;
+use axia_geo::{FaceId, Mesh};
 use glam::DVec3;
+
+/// Emit an element's active faces as an `IFCFACETEDBREP` (polygonal faces, no
+/// analytic surfaces), returning the brep `#N` — the per-element **faceted
+/// fallback** for the model export (ADR-203 §37). Where [`crate::emit_advanced_geometry`]
+/// needs every face analytic, this emits each DCEL face as an `IFCFACE` with
+/// `IFCPOLYLOOP` bounds (outer + holes), so an element that can't form an advanced
+/// brep (a non-planar / surfaceless face) still exports with its full BIM identity
+/// (its own IfcWall + material + spatial placement), instead of collapsing the
+/// whole model to one faceted shell. When `allowed` is `Some`, only those faces
+/// are included (one element's owned faces). `scale` converts engine mm → metre.
+pub(crate) fn emit_faceted_geometry(
+    w: &mut StepWriter,
+    mesh: &Mesh,
+    allowed: Option<&std::collections::HashSet<FaceId>>,
+    scale: f64,
+) -> Result<EntityRef, String> {
+    let mut face_refs = Vec::new();
+    for (fid, face) in mesh.faces.iter() {
+        if !face.is_active() {
+            continue;
+        }
+        if let Some(set) = allowed {
+            if !set.contains(&fid) {
+                continue;
+            }
+        }
+        let mut bounds: Vec<StepValue> = Vec::new();
+        // Outer loop → IFCFACEOUTERBOUND(IFCPOLYLOOP).
+        let outer = poly_loop(w, mesh, face.outer().start, scale)
+            .map_err(|e| format!("face {:?} outer: {}", fid, e))?;
+        bounds.push(StepValue::Ref(w.add(
+            "IFCFACEOUTERBOUND",
+            vec![StepValue::Ref(outer), StepValue::Enum("T".into())],
+        )));
+        // Hole loops → IFCFACEBOUND(IFCPOLYLOOP).
+        for lr in face.inners() {
+            let inner = poly_loop(w, mesh, lr.start, scale)
+                .map_err(|e| format!("face {:?} inner: {}", fid, e))?;
+            bounds.push(StepValue::Ref(w.add(
+                "IFCFACEBOUND",
+                vec![StepValue::Ref(inner), StepValue::Enum("T".into())],
+            )));
+        }
+        face_refs.push(w.add("IFCFACE", vec![StepValue::List(bounds)]));
+    }
+    if face_refs.is_empty() {
+        return Err("no active faces for faceted brep".into());
+    }
+    let shell = w.add(
+        "IFCCLOSEDSHELL",
+        vec![StepValue::List(face_refs.iter().map(|&f| StepValue::Ref(f)).collect())],
+    );
+    Ok(w.add("IFCFACETEDBREP", vec![StepValue::Ref(shell)]))
+}
+
+/// Build an `IFCPOLYLOOP` from a DCEL boundary loop (its start half-edge),
+/// scaling each vertex to metres. Needs ≥ 3 distinct vertices.
+fn poly_loop(w: &mut StepWriter, mesh: &Mesh, start: axia_geo::HeId, scale: f64) -> Result<EntityRef, String> {
+    let verts = mesh.collect_loop_verts(start).map_err(|e| e.to_string())?;
+    if verts.len() < 3 {
+        return Err(format!("degenerate loop ({} verts)", verts.len()));
+    }
+    let mut pts = Vec::with_capacity(verts.len());
+    for v in verts {
+        let p = mesh.vertex_pos(v).map_err(|e| e.to_string())?;
+        pts.push(StepValue::Ref(pt(w, p * scale)));
+    }
+    Ok(w.add("IFCPOLYLOOP", vec![StepValue::List(pts)]))
+}
 
 /// Shared core: emit `points` + polygonal `face_loops` (each a CCW list of
 /// vertex indices into `points`) as a complete IFC4.3 `IFCFACETEDBREP` file.

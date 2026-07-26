@@ -2040,3 +2040,36 @@ protrusion** (실측 mutation: body 부피 2.4e9 → **10.8e9**, 4.5× 부풀음
 **검증**: `a_door_on_a_rotated_wall_refills_without_a_protrusion` (45° 회전 벽 + door →
 export → body-only 재-import 부피 = 참 벽 부피 ±5%, mutation-checked: AABB 강제 시
 10.8e9 로 실패). export 경로는 native/WASM 동일 + axis-aligned 무변경 (§59 live 확인).
+
+## 37. Per-element faceted fallback — mixed models keep their BIM structure
+
+**측정**: `emit_ifc_model_with_openings` 는 요소별로 `advanced_faces_filtered` 를 호출하고
+하나라도 실패하면 (analytic surface 없는 non-planar face 등) **전체 함수가 Err** →
+`export_ifc_model` 이 `""` 반환 → caller 가 `exportIfc` (단일 faceted 벽) 로 추락. 즉
+**analytic 벽 여러 개 + non-analytic 요소 하나** 인 혼합/실제 모델이 요소별 BIM 구조
+(IfcWall, 재질, 타입, 개구부) 를 통째로 잃고 하나의 faceted shell 로 뭉개졌다. 실측:
+analytic box Xia + surfaceless non-planar quad Xia → export **`""` (exportLen=0)**.
+
+**해결 (§37)**: 요소별 fallback. `advanced_faces_filtered` (순수 query, StepWriter 에
+아무것도 emit 안 함) 를 gate 로 써서 — Ok 면 AdvancedBrep (RepresentationType
+'AdvancedBrep'), Err 면 그 요소만 **IfcFacetedBrep** (`emit_faceted_geometry`,
+RepresentationType 'Brep') 로 emit. 각 요소는 자기 IfcWall + 재질 + 배치를 유지.
+
+- **`emit_faceted_geometry`** (`ifc_facetedbrep.rs`) — 요소의 active face 를 각각
+  `IFCFACE(IFCPOLYLOOP outer + inner)` 로 emit → `IFCCLOSEDSHELL` → `IFCFACETEDBREP`,
+  brep `#N` 반환 (`emit_advanced_geometry` 의 faceted 대응). face 위상(구멍 포함) 보존.
+- **gate-first** 로 orphan 방지: `advanced_faces_filtered` Err 시 advanced 엔티티를
+  이미 emit 한 상태가 아니므로 faceted 경로에 dangling 정의가 안 남음.
+- `overall_size` (door/window OverallHeight/Width) 를 AdvancedFace 대신 mesh 실제
+  vertex 기반으로 변경 → advanced/faceted 경로 무관 동작.
+
+**검증**: `a_mixed_model_exports_advanced_and_faceted_per_element` (analytic 벽 +
+non-analytic 요소 → 2 IfcWall, advanced 1 + faceted 1, 'AdvancedBrep'+'Brep' 둘 다,
+mutation-checked: faceted emitter 실패 시 whole-model collapse 로 test 실패). live
+(real Chromium, 재빌드 WASM): analytic box 2개 → 2 IfcWall + advanced 2 (all-analytic
+무회귀 확인). export 경로 native/WASM 동일.
+
+### 남은 한계
+
+- 심하게 non-planar 한 faceted face 는 IFCPOLYLOOP 로 emit (뷰어 대부분 허용) —
+  엄격한 planar 요구 시 per-face 삼각분할은 별도 트랙.

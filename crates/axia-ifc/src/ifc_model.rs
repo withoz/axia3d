@@ -81,15 +81,23 @@ pub struct IfcElement {
 /// larger of the two horizontal extents, the smaller being the panel's
 /// thickness. Both come back `Unset` if the member has no measurable box, so a
 /// degenerate element writes `$` instead of a zero that reads as a real size.
-fn overall_size(faces: &[crate::ifc_advancedbrep::AdvancedFace], scale: f64) -> (StepValue, StepValue) {
+fn overall_size(mesh: &Mesh, allowed: &HashSet<FaceId>, scale: f64) -> (StepValue, StepValue) {
+    // From the element's actual mesh vertices, so it is independent of whether the
+    // element exported as an advanced or a faceted brep (§37).
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
-    for f in faces {
-        for e in f.outer.iter().chain(f.inners.iter().flatten()) {
-            for p in [e.start, e.end] {
-                for (i, v) in [p.x, p.y, p.z].into_iter().enumerate() {
-                    lo[i] = lo[i].min(v);
-                    hi[i] = hi[i].max(v);
+    for &fid in allowed {
+        let Some(face) = mesh.faces.get(fid) else { continue };
+        if !face.is_active() {
+            continue;
+        }
+        if let Ok(vs) = mesh.collect_loop_verts(face.outer().start) {
+            for v in vs {
+                if let Ok(p) = mesh.vertex_pos(v) {
+                    for (i, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+                        lo[i] = lo[i].min(c);
+                        hi[i] = hi[i].max(c);
+                    }
                 }
             }
         }
@@ -205,42 +213,54 @@ pub fn emit_ifc_model_with_openings(
 
     for (ei, el) in elements.iter().enumerate() {
         let allowed: HashSet<FaceId> = el.face_ids.iter().copied().collect();
-        let mut faces = advanced_faces_filtered(mesh, Some(&allowed))
-            .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;
-        // Emit a SOLID wall body: the openings this element hosts are re-stated as
-        // separate IfcOpeningElements below, so the body must NOT also carry the
-        // baked hole — else a consumer voids it twice (§35/§36, ADR-203).
         let boxes: Vec<[DVec3; 8]> =
             openings.iter().filter(|op| op.host_index == ei).map(|op| op.corners).collect();
-        if !boxes.is_empty() {
-            // A through-hole is refilled locally (strip outline + tunnel faces). A
-            // notch/edge opening (a door's U-notch — void is part of the outer
-            // boundary) can't be, so if the element hosts ANY notch, refill EVERY
-            // opening by boolean union (`holed wall ∪ box = solid`) — handles both.
-            let any_notch = boxes.iter().any(|b| crate::ifc_advancedbrep::is_notch(&faces, b));
-            faces = if any_notch {
-                // A baked notch's void is part of the outer boundary — refill by
-                // boolean union. If the union can't help, fall back to the local
-                // fill (a safe no-op here); never fail the export over a refill.
-                match union_refill_element(mesh, &el.face_ids, &boxes) {
-                    Ok(solid) => solid,
-                    Err(_) => fill_through_hole_openings(faces, &boxes),
+        // Per-element geometry (§37): an analytic element → IfcAdvancedBrep; an
+        // element that can't form one (a non-planar / surfaceless face) → an
+        // IfcFacetedBrep FALLBACK, so it keeps its own IfcWall + material + spatial
+        // placement instead of collapsing the WHOLE model to one faceted shell.
+        // Gate on `advanced_faces_filtered` (a pure query — nothing is emitted to
+        // `w` when it fails, so the faceted path leaves no orphan advanced entities).
+        let (brep, rep_type) = match advanced_faces_filtered(mesh, Some(&allowed)) {
+            Ok(mut faces) => {
+                // Emit a SOLID wall body: the openings this element hosts are
+                // re-stated as separate IfcOpeningElements below, so the body must
+                // NOT also carry the baked hole — else a consumer voids it twice
+                // (§35/§36). A through-hole is refilled locally; a notch/edge
+                // opening (a door's U-notch) is refilled by boolean union.
+                if !boxes.is_empty() {
+                    let any_notch = boxes.iter().any(|b| crate::ifc_advancedbrep::is_notch(&faces, b));
+                    faces = if any_notch {
+                        match union_refill_element(mesh, &el.face_ids, &boxes) {
+                            Ok(solid) => solid,
+                            Err(_) => fill_through_hole_openings(faces, &boxes),
+                        }
+                    } else {
+                        fill_through_hole_openings(faces, &boxes)
+                    };
                 }
-            } else {
-                // Through-hole → strip loops + tunnel faces; solid wall (opening
-                // recorded, never baked) → a no-op that keeps the body solid.
-                fill_through_hole_openings(faces, &boxes)
-            };
-        }
-        let brep = emit_advanced_geometry(&mut w, &faces, scale)
-            .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;
+                match emit_advanced_geometry(&mut w, &faces, scale) {
+                    Ok(b) => (b, "AdvancedBrep"),
+                    Err(_) => (
+                        crate::ifc_facetedbrep::emit_faceted_geometry(&mut w, mesh, Some(&allowed), scale)
+                            .map_err(|e| format!("element[{}] '{}' faceted: {}", ei, el.name, e))?,
+                        "Brep",
+                    ),
+                }
+            }
+            Err(_) => (
+                crate::ifc_facetedbrep::emit_faceted_geometry(&mut w, mesh, Some(&allowed), scale)
+                    .map_err(|e| format!("element[{}] '{}' faceted: {}", ei, el.name, e))?,
+                "Brep",
+            ),
+        };
 
         let shape_rep = w.add(
             "IFCSHAPEREPRESENTATION",
             vec![
                 StepValue::Ref(sc.context),
                 StepValue::Str("Body".into()),
-                StepValue::Str("AdvancedBrep".into()),
+                StepValue::Str(rep_type.into()),
                 StepValue::List(vec![StepValue::Ref(brep)]),
             ],
         );
@@ -262,7 +282,7 @@ pub fn emit_ifc_model_with_openings(
             // than leaving `$`. Height is the Z extent (Z-up, LOCKED #43);
             // width is the larger horizontal extent, the other one being the
             // panel's thickness. A degenerate box leaves both unset.
-            let (h, wd) = overall_size(&faces, scale);
+            let (h, wd) = overall_size(mesh, &allowed, scale);
             args.push(h);
             args.push(wd);
         }
