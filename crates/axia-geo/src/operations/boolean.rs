@@ -1502,6 +1502,40 @@ impl Mesh {
         }
     }
 
+    /// Union an oriented box (8 corners, `emit_box` order — bottom 0-3, top 4-7)
+    /// into `host_faces`, returning the resulting faces. IFC export uses this to
+    /// **refill a baked opening back to a solid wall body**: a recorded opening
+    /// box is exactly the region a subtract removed, so `holed wall ∪ box = the
+    /// original solid`. Emitting the solid body + the opening as a separate
+    /// `IfcOpeningElement` is standard IFC (a consumer voids it once); a holed
+    /// body + a void would double-void it. Unlike the exporter's local
+    /// `AdvancedFace` fill (through-holes only), this handles a **notch/edge**
+    /// opening (a door's U-notch, ADR-262) whose void is part of the outer
+    /// boundary, not an inner loop. Fail-closed like `boolean_solid`.
+    pub fn union_opening_box(
+        &mut self,
+        host_faces: &[FaceId],
+        corners: &[DVec3; 8],
+        material: MaterialId,
+    ) -> Result<Vec<FaceId>> {
+        const BOX_LOOPS: [[usize; 4]; 6] = [
+            [0, 3, 2, 1], // bottom
+            [4, 5, 6, 7], // top
+            [0, 1, 5, 4], // front
+            [2, 3, 7, 6], // back
+            [0, 4, 7, 3], // left
+            [1, 2, 6, 5], // right
+        ];
+        let vids: Vec<VertId> = corners.iter().map(|&c| self.add_vertex(c)).collect();
+        let mut box_faces = Vec::with_capacity(6);
+        for lp in &BOX_LOOPS {
+            let vs: Vec<VertId> = lp.iter().map(|&i| vids[i]).collect();
+            box_faces.push(self.add_face(&vs, material)?);
+        }
+        let res = self.boolean_solid(host_faces, &box_faces, BoolOp::Union, material)?;
+        Ok(res.faces)
+    }
+
     /// ADR-277 β-3 (general mesh CSG, gated v2 path) — imprint + retriangulate
     /// with a SHARED vertex set instead of independent chain-split + post-hoc
     /// weld. For each face crossed by the other solid, subdivide it (β-2 planar
@@ -10948,6 +10982,54 @@ mod tests {
         assert!((lo.x + 50.0).abs() < 1e-3 && (hi.x - 100.0).abs() < 1e-3, "x span [-50,100], got [{},{}]", lo.x, hi.x);
         assert!((lo.y + 50.0).abs() < 1e-3 && (hi.y - 50.0).abs() < 1e-3, "y span [-50,50]");
         assert!((lo.z).abs() < 1e-3 && (hi.z - 100.0).abs() < 1e-3, "z span [0,100]");
+    }
+
+    /// §36-amendment — `union_opening_box` refills a NOTCH (a slot cut to an edge,
+    /// like a door's U-notch) back to a solid wall. The refill box is flush with
+    /// the wall face where the notch opens (coplanar union), so this also proves
+    /// the boolean handles that.
+    fn box_corners(xa: f64, xb: f64, ya: f64, yb: f64, za: f64, zb: f64) -> [DVec3; 8] {
+        [
+            DVec3::new(xa, ya, za), DVec3::new(xb, ya, za), DVec3::new(xb, yb, za), DVec3::new(xa, yb, za),
+            DVec3::new(xa, ya, zb), DVec3::new(xb, ya, zb), DVec3::new(xb, yb, zb), DVec3::new(xa, yb, zb),
+        ]
+    }
+
+    #[test]
+    fn union_opening_box_refills_a_notch_to_solid() {
+        let mat = MaterialId::new(0);
+        let mut m = Mesh::new();
+        // Wall A: x[-50,50] y[-50,50] z[0,100].
+        let a = m.create_box(DVec3::new(0.0, 0.0, 50.0), 100.0, 100.0, 100.0, mat).unwrap();
+        // Cut a notch open to the TOP: subtract a box that protrudes past z=100
+        // and past ±y (clean through-cut of the slot, no coplanar side faces).
+        let sub = box_corners(-20.0, 20.0, -60.0, 60.0, 60.0, 120.0);
+        let sub_vids: Vec<_> = sub.iter().map(|&c| m.add_vertex(c)).collect();
+        let box_loops = [[0usize,3,2,1],[4,5,6,7],[0,1,5,4],[2,3,7,6],[0,4,7,3],[1,2,6,5]];
+        let sub_faces: Vec<_> = box_loops.iter()
+            .map(|l| m.add_face(&l.iter().map(|&i| sub_vids[i]).collect::<Vec<_>>(), mat).unwrap())
+            .collect();
+        let n = m.boolean_solid(&a, &sub_faces, BoolOp::Subtract, mat).unwrap().faces;
+        assert!(m.face_set_manifold_info(&n).is_closed_solid, "notched wall is a closed solid");
+
+        // Refill with the FLUSH opening box — exactly the wall's extent where the
+        // slot opens (z[60,100], y[-50,50]): a coplanar union at z=100 & ±y.
+        let refill = box_corners(-20.0, 20.0, -50.0, 50.0, 60.0, 100.0);
+        let r = m.union_opening_box(&n, &refill, mat).expect("refill union succeeds");
+        let info = m.face_set_manifold_info(&r);
+        assert!(m.verify_face_invariants().is_valid(), "refilled wall is ADR-007 valid");
+        assert!(info.is_closed_solid, "refilled wall is a closed solid");
+        assert_eq!(info.non_manifold_edge_count, 0, "manifold");
+
+        // AABB back to the full wall x[-50,50] y[-50,50] z[0,100] (notch filled).
+        let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+        for &f in &r {
+            if let Ok(vs) = m.collect_loop_verts(m.faces[f].outer().start) {
+                for v in vs { if let Some(p) = m.verts.get(v).map(|v| v.pos()) { lo = lo.min(p); hi = hi.max(p); } }
+            }
+        }
+        assert!((lo.x + 50.0).abs() < 1e-2 && (hi.x - 50.0).abs() < 1e-2, "x[-50,50], got [{},{}]", lo.x, hi.x);
+        assert!((lo.z).abs() < 1e-2 && (hi.z - 100.0).abs() < 1e-2, "z[0,100], got [{},{}]", lo.z, hi.z);
     }
 
     // ADR-277 β-2 (N2) — the constrained subdivision primitive (wraps the
