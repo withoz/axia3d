@@ -1796,6 +1796,45 @@ fn parse_profile(file: &StepFile, id: u32, scale: f64) -> Option<Vec<(f64, f64)>
         );
     }
 
+    if tag == "IFCTRAPEZIUMPROFILEDEF" {
+        // (ProfileType, ProfileName, Position, BottomXDim, TopXDim, YDim, TopXOffset).
+        // Origin at the centre of the BottomXDim × YDim box; the bottom edge is
+        // centred, the top edge starts TopXOffset from the bottom-left corner.
+        let bottom = p.args.get(3).and_then(|v| v.as_f64())? * scale;
+        let top = p.args.get(4).and_then(|v| v.as_f64())? * scale;
+        let yd = p.args.get(5).and_then(|v| v.as_f64())? * scale;
+        let off = p.args.get(6).and_then(|v| v.as_f64()).unwrap_or(0.0) * scale;
+        if !(bottom > 0.0) || !(top > 0.0) || !(yd > 0.0) {
+            return None;
+        }
+        let (hb, hy) = (bottom / 2.0, yd / 2.0);
+        let tl = -hb + off;
+        // CCW: bottom-left, bottom-right, top-right, top-left.
+        let local = [(-hb, -hy), (hb, -hy), (tl + top, hy), (tl, hy)];
+        let (o, dx, dy) = profile_placement_2d(file, p.args.get(2).and_then(|v| v.as_ref()), scale);
+        return Some(local.iter().map(|&(u, v)| place2d((u, v), o, dx, dy)).collect());
+    }
+
+    if tag == "IFCELLIPSEPROFILEDEF" {
+        // (ProfileType, ProfileName, Position, SemiAxis1, SemiAxis2) — tessellated
+        // to a polygon like the circle, with independent x/y radii.
+        let a = p.args.get(3).and_then(|v| v.as_f64())? * scale;
+        let b = p.args.get(4).and_then(|v| v.as_f64())? * scale;
+        if !(a > 0.0) || !(b > 0.0) {
+            return None;
+        }
+        let (o, dx, dy) = profile_placement_2d(file, p.args.get(2).and_then(|v| v.as_ref()), scale);
+        let segments = circle_segments(a.max(b));
+        return Some(
+            (0..segments)
+                .map(|i| {
+                    let ang = std::f64::consts::TAU * (i as f64) / (segments as f64);
+                    place2d((a * ang.cos(), b * ang.sin()), o, dx, dy)
+                })
+                .collect(),
+        );
+    }
+
     if tag == "IFCARBITRARYCLOSEDPROFILEDEF" || tag == "IFCARBITRARYPROFILEDEFWITHVOIDS" {
         // (ProfileType, ProfileName, OuterCurve[, InnerCurves]) — the outer boundary.
         // The voids (InnerCurves) are read separately by `parse_profile_voids`, so a
@@ -3098,6 +3137,33 @@ END-ISO-10303-21;
         // Circle profile tessellates to many sides — a round column.
         let g = import_ifc_geometry(&extruded_wall_ifc("#40=IFCCIRCLEPROFILEDEF(.AREA.,$,$,0.3);")).unwrap();
         assert!(g.elements[0].faces.len() > 20, "a circle profile is many-sided: {}", g.elements[0].faces.len());
+    }
+
+    #[test]
+    fn a_trapezium_profile_extrudes_to_a_four_sided_prism() {
+        // IfcTrapeziumProfileDef: bottom 4 m, top 2 m, height 1 m, top offset 1 m →
+        // an isosceles trapezium (top centred over the bottom). Origin at the
+        // BottomXDim × YDim box centre, so x∈[-2,2] m, y∈[-0.5,0.5] m. A 4-vertex
+        // outline → 2 caps + 4 side quads.
+        let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+        let (lo, hi, faces) =
+            extruded_section_aabb("#40=IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,4.,2.,1.,1.);");
+        assert_eq!(faces, 6, "trapezium = 2 caps + 4 sides");
+        assert!(near(lo.x, -2000.0) && near(hi.x, 2000.0), "bottom width spans X: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -500.0) && near(hi.y, 500.0), "height spans Y");
+        assert!(near(hi.z - lo.z, 3000.0), "extruded 3 m");
+    }
+
+    #[test]
+    fn an_ellipse_profile_is_round_with_independent_axes() {
+        // IfcEllipseProfileDef: semi-axes 2 m (x) and 1 m (y) → a round column whose
+        // bbox is 4 m × 2 m. Tessellated like the circle → many sides.
+        let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+        let (lo, hi, faces) =
+            extruded_section_aabb("#40=IFCELLIPSEPROFILEDEF(.AREA.,$,$,2.,1.);");
+        assert!(faces > 20, "an ellipse is many-sided: {faces}");
+        assert!(near(lo.x, -2000.0) && near(hi.x, 2000.0), "semi-axis 1 spans X: {lo:?}..{hi:?}");
+        assert!(near(lo.y, -1000.0) && near(hi.y, 1000.0), "semi-axis 2 spans Y (half of X)");
     }
 
     #[test]

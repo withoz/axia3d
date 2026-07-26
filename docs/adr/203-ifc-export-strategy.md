@@ -2189,3 +2189,33 @@ albedo(planar,1000) + normal(box,500,1.5) → box+assign → `#272=IFCIMAGETEXTU
 - `IfcTextureCoordinateGenerator.Mode` 값 (PLANAR/BOX/CYLINDRICAL) 은 IFC 표준 고정값이
   아닌 관례 — 뷰어가 인식 못 하면 기본 매핑 fallback.
 - data-URI embed 는 채널 수 × 이미지 크기만큼 IFC 파일을 키움.
+
+## 41. More parametric import profiles — trapezium + ellipse
+
+**문제**: import 이 파라메트릭 profile 로 IfcRectangle / IfcCircle + 강재 단면
+(I/T/U/L/C/Z/asymI) 은 읽지만, IfcTrapeziumProfileDef (사다리꼴) / IfcEllipseProfileDef
+(타원) 은 미지원 → 그 profile 로 정의된 swept solid 이 import 되지 않음.
+
+**해결 (§41)**: `parse_profile` (import) 에 두 profile 추가 — 기존 rectangle/circle 과
+동일 패턴 (dim 읽기 → local (u,v) 생성 → `profile_placement_2d` 로 배치).
+
+- **IfcTrapeziumProfileDef**: (…, Position, BottomXDim, TopXDim, YDim, TopXOffset).
+  원점 = BottomXDim × YDim 박스 중심. 바닥변 중앙 정렬, 윗변은 bottom-left 에서
+  TopXOffset 만큼 이동. 4 꼭짓점 CCW (BL, BR, TR, TL) → N-gon prism.
+- **IfcEllipseProfileDef**: (…, Position, SemiAxis1, SemiAxis2). circle 처럼
+  polygon tessellation 하되 x/y 반경 독립: `(a·cosθ, b·sinθ)`, segment 수 =
+  `circle_segments(max(a, b))`.
+- 둘 다 degenerate (dim ≤ 0) → `None` (skip). extrude / revolve / sweep 모든 caller
+  자동 지원 (profile → 2D loop 계약 동일).
+
+**검증**: `a_trapezium_profile_extrudes_to_a_four_sided_prism` (bottom 4 / top 2 /
+height 1 / offset 1 → 6 faces, x∈[-2,2] y∈[-0.5,0.5] m) + `an_ellipse_profile_is_
+round_with_independent_axes` (semi-axes 2×1 → many-sided, x∈[-2,2] y∈[-1,1] m,
+mutation-checked: a/b swap → 축 extent 뒤바뀜 감지). 전체 workspace green (3228).
+라이브 (real Chromium + 새 WASM): trapezium import → ok elements 1 / faces 6 /
+verts 8; ellipse → ok / faces 514 / verts 1024 (512 segments); warnings 0.
+
+### 남은 한계
+
+- IfcRoundedRectangleProfileDef / IfcCraneRailProfileDef 등 나머지 파라메트릭
+  profile 은 별도. Export 방향의 파라메트릭 profile 분류 (mesh → IfcProfileDef) 도 별도.
