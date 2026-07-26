@@ -449,6 +449,83 @@ fn synthesize_plane_from_loop(outer: &[IfcEdge]) -> Option<AnalyticSurface> {
     })
 }
 
+/// An opening box's orthonormal frame (u, v, n + extents), from the eight corners
+/// in [`crate::ModelOpening`] order (bottom 0-3, top 4-7 — see `emit_box`): edge
+/// c0→c1 is u, c0→c3 is v, c0→c4 is n (the wall-thickness direction).
+struct BoxFrame {
+    c0: DVec3,
+    u: DVec3,
+    v: DVec3,
+    n: DVec3,
+    lu: f64,
+    lv: f64,
+    ln: f64,
+}
+
+impl BoxFrame {
+    fn from_corners(c: &[DVec3; 8]) -> Option<Self> {
+        let (eu, ev, en) = (c[1] - c[0], c[3] - c[0], c[4] - c[0]);
+        let (lu, lv, ln) = (eu.length(), ev.length(), en.length());
+        if lu < 1e-6 || lv < 1e-6 || ln < 1e-6 {
+            return None;
+        }
+        Some(BoxFrame { c0: c[0], u: eu / lu, v: ev / lv, n: en / ln, lu, lv, ln })
+    }
+
+    /// Is `p` within this box's extent (10 µm slack — the box, rebuilt from the
+    /// recorded opening, is a superset of the hole the subtract cut, so its verts
+    /// sit on/inside it; wall verts are hundreds of mm beyond the u/v extent)?
+    fn contains(&self, p: DVec3) -> bool {
+        let d = p - self.c0;
+        let (pu, pv, pn) = (d.dot(self.u), d.dot(self.v), d.dot(self.n));
+        const T: f64 = 1e-2;
+        pu >= -T && pu <= self.lu + T && pv >= -T && pv <= self.lv + T && pn >= -T && pn <= self.ln + T
+    }
+}
+
+/// Does every vertex of this (non-empty) loop lie within `fr`? A hole-outline
+/// inner loop and a tunnel-wall outer loop do; a wall's outer/side loop does not.
+fn loop_on_box(edges: &[IfcEdge], fr: &BoxFrame) -> bool {
+    !edges.is_empty() && edges.iter().all(|e| fr.contains(e.start))
+}
+
+/// Reconstruct the SOLID wall body from the holed faces by **filling** each
+/// through-hole opening. A recorded opening box is the region a RelVoids subtract
+/// removed, so it exactly fills the hole it cut: strip the hole-outline inner
+/// loops (their verts lie on the box) and drop the tunnel-wall faces (whole outer
+/// loop on the box). Emitting the *solid* body + the opening as a separate
+/// `IfcOpeningElement` is standard IFC — a consumer (and our own re-import) voids
+/// it exactly once, where a holed body + a void would **double-void** it.
+///
+/// Only a **through-hole** box (one with a matching inner loop) is filled; a
+/// notch / edge opening (no matching inner loop — a user-drawn door's U-notch,
+/// ADR-262) is left untouched, so this never opens a solid it cannot re-close.
+pub(crate) fn fill_through_hole_openings(faces: Vec<AdvancedFace>, boxes: &[[DVec3; 8]]) -> Vec<AdvancedFace> {
+    let frames: Vec<BoxFrame> = boxes.iter().filter_map(BoxFrame::from_corners).collect();
+    if frames.is_empty() {
+        return faces;
+    }
+    // A box is a through-hole iff some face carries an inner loop entirely on it.
+    let through: Vec<bool> = frames
+        .iter()
+        .map(|fr| faces.iter().any(|f| f.inners.iter().any(|inner| loop_on_box(inner, fr))))
+        .collect();
+    let on_a_through_box = |edges: &[IfcEdge]| {
+        frames.iter().zip(&through).any(|(fr, &t)| t && loop_on_box(edges, fr))
+    };
+    let mut out = Vec::with_capacity(faces.len());
+    for mut f in faces {
+        // A tunnel-wall face: its whole outer loop lies on a through-hole box.
+        if on_a_through_box(&f.outer) {
+            continue;
+        }
+        // A hole outline: strip inner loops that lie on a through-hole box.
+        f.inners.retain(|inner| !on_a_through_box(inner));
+        out.push(f);
+    }
+    out
+}
+
 /// Newell's method — area-weighted polygon normal (robust to non-planarity).
 fn newell(pts: &[DVec3]) -> DVec3 {
     let n = pts.len();
@@ -1020,6 +1097,80 @@ mod tests {
             DVec3::new(0.0, 1000.0, 0.0),
         ]);
         assert!(synthesize_plane_from_loop(&loop_edges).is_none(), "non-planar → None");
+    }
+
+    // ── §35: fill a through-hole opening back to a solid wall body ──
+
+    /// An opening box (emit_box corner order) spanning X∈[-500,500] (u),
+    /// Z∈[-600,600] (v), Y∈[-100,100] (n, the wall thickness).
+    fn opening_box() -> [DVec3; 8] {
+        let c = |x: f64, y: f64, z: f64| DVec3::new(x, y, z);
+        [
+            c(-500.0, -100.0, -600.0), // 0
+            c(500.0, -100.0, -600.0),  // 1  (c1-c0 = +X = u)
+            c(500.0, -100.0, 600.0),   // 2
+            c(-500.0, -100.0, 600.0),  // 3  (c3-c0 = +Z = v)
+            c(-500.0, 100.0, -600.0),  // 4  (c4-c0 = +Y = n)
+            c(500.0, 100.0, -600.0),   // 5
+            c(500.0, 100.0, 600.0),    // 6
+            c(-500.0, 100.0, 600.0),   // 7
+        ]
+    }
+
+    #[test]
+    fn fill_strips_hole_outline_and_drops_tunnel_faces() {
+        let s = plane(DVec3::ZERO, DVec3::Y, DVec3::X);
+        // Front cap (Y=-100): a big wall rect with the hole as an inner loop.
+        let wall = |y: f64| {
+            vec![DVec3::new(-2000.0, y, -2000.0), DVec3::new(2000.0, y, -2000.0),
+                 DVec3::new(2000.0, y, 2000.0), DVec3::new(-2000.0, y, 2000.0)]
+        };
+        let hole = |y: f64| {
+            vec![DVec3::new(-500.0, y, -600.0), DVec3::new(500.0, y, -600.0),
+                 DVec3::new(500.0, y, 600.0), DVec3::new(-500.0, y, 600.0)]
+        };
+        let holed_cap = AdvancedFace {
+            surface: s.clone(),
+            outer: line_loop(wall(-100.0)),
+            inners: vec![line_loop(hole(-100.0))],
+            same_sense: true,
+        };
+        // A tunnel wall at X=-500 (box u=0), spanning Y and Z of the box.
+        let tunnel = AdvancedFace::planar(
+            plane(DVec3::new(-500.0, 0.0, 0.0), -DVec3::X, DVec3::Y),
+            vec![DVec3::new(-500.0, -100.0, -600.0), DVec3::new(-500.0, 100.0, -600.0),
+                 DVec3::new(-500.0, 100.0, 600.0), DVec3::new(-500.0, -100.0, 600.0)],
+            true,
+        );
+        // A genuine wall side face (X=2000) — well outside the box.
+        let side = AdvancedFace::planar(
+            plane(DVec3::new(2000.0, 0.0, 0.0), DVec3::X, DVec3::Y),
+            vec![DVec3::new(2000.0, -100.0, -2000.0), DVec3::new(2000.0, 100.0, -2000.0),
+                 DVec3::new(2000.0, 100.0, 2000.0), DVec3::new(2000.0, -100.0, 2000.0)],
+            true,
+        );
+        let out = fill_through_hole_openings(vec![holed_cap, tunnel, side], &[opening_box()]);
+        // tunnel dropped → cap + side remain
+        assert_eq!(out.len(), 2, "tunnel-wall face dropped");
+        let cap = out.iter().find(|f| f.outer.len() == 4 && f.outer[0].start.x.abs() > 1000.0
+            && (f.outer[0].start.y + 100.0).abs() < 1e-6).expect("cap kept");
+        assert!(cap.inners.is_empty(), "hole outline stripped → solid cap");
+        assert!(out.iter().any(|f| (f.outer[0].start.x - 2000.0).abs() < 1e-6), "wall side kept");
+    }
+
+    #[test]
+    fn fill_leaves_a_notch_untouched() {
+        // No face carries an inner loop on the box → not a through-hole → the box
+        // is a notch/edge opening and NOTHING is filled (a solid we couldn't
+        // re-close must not be opened). A tunnel-looking face stays.
+        let notch_wall = AdvancedFace::planar(
+            plane(DVec3::new(-500.0, 0.0, 0.0), -DVec3::X, DVec3::Y),
+            vec![DVec3::new(-500.0, -100.0, -600.0), DVec3::new(-500.0, 100.0, -600.0),
+                 DVec3::new(-500.0, 100.0, 600.0), DVec3::new(-500.0, -100.0, 600.0)],
+            true,
+        );
+        let out = fill_through_hole_openings(vec![notch_wall], &[opening_box()]);
+        assert_eq!(out.len(), 1, "no inner loop → not a through-hole → untouched");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! WASM caller; this crate stays Scene-agnostic.
 
 use crate::guid::ifc_guid_for;
-use crate::ifc_advancedbrep::{advanced_faces_filtered, emit_advanced_geometry};
+use crate::ifc_advancedbrep::{advanced_faces_filtered, emit_advanced_geometry, fill_through_hole_openings};
 use crate::ifc_common::{emit_owner_units_context, pt};
 use crate::step_value::StepValue;
 use crate::step_writer::StepWriter;
@@ -179,8 +179,17 @@ pub fn emit_ifc_model_with_openings(
 
     for (ei, el) in elements.iter().enumerate() {
         let allowed: HashSet<FaceId> = el.face_ids.iter().copied().collect();
-        let faces = advanced_faces_filtered(mesh, Some(&allowed))
+        let mut faces = advanced_faces_filtered(mesh, Some(&allowed))
             .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;
+        // Emit a SOLID wall body: the openings this element hosts are re-stated as
+        // separate IfcOpeningElements below, so the body must NOT also carry the
+        // baked hole — else a consumer voids it twice. Fill each through-hole
+        // opening (strip its outline + tunnel faces) back to solid (§35, ADR-203).
+        let boxes: Vec<[DVec3; 8]> =
+            openings.iter().filter(|op| op.host_index == ei).map(|op| op.corners).collect();
+        if !boxes.is_empty() {
+            faces = fill_through_hole_openings(faces, &boxes);
+        }
         let brep = emit_advanced_geometry(&mut w, &faces, scale)
             .map_err(|e| format!("element[{}] '{}': {}", ei, el.name, e))?;
 

@@ -14601,11 +14601,12 @@ END-ISO-10303-21;
         assert!(active_faces(&re) > 6, "the opening was cut back in: {}", active_faces(&re));
     }
 
-    /// §34 import-preserve — an opening imported via IfcRelVoidsElement is recorded
-    /// in the scene (not only baked into the wall), so exporting the model re-emits
+    /// §34/§35 import-preserve — an opening imported via IfcRelVoidsElement is
+    /// recorded in the scene (not only baked into the wall), so exporting re-emits
     /// it as an IfcOpeningElement, and that export re-imports as a hole again: the
-    /// full round-trip. (The holed wall re-exports because the Boolean-cut faces,
-    /// which carry no stored surface, are synthesized as exact IfcPlanes.)
+    /// full round-trip. The exported wall body is SOLID (the through-hole is filled
+    /// back, §35) so the RelVoids voids it exactly ONCE — a holed body + a void
+    /// would double-void and empty the wall.
     #[test]
     fn an_imported_relvoids_opening_survives_export_and_reimport() {
         // A wall + a separate IfcOpeningElement voided into it (the RelVoids form).
@@ -14647,20 +14648,14 @@ END-ISO-10303-21;
         assert!(ifc.contains("IFCOPENINGELEMENT("), "re-export emits the preserved opening");
         assert!(ifc.contains("IFCRELVOIDSELEMENT("), "re-export links it to the wall");
 
-        // The exported holed-wall body itself re-imports to a valid, watertight
-        // wall (the Boolean-cut faces — carrying no stored surface — round-trip
-        // because they are synthesized as exact IfcPlanes). The re-import here
-        // strips the RelVoids: our engine *bakes* the void into the wall body, so
-        // re-applying the opening would double-void it — a pre-existing property
-        // of the baked-void representation shared with user-drawn openings, not
-        // of import-preserve. (Separate track: emit a solid wall body when an
-        // opening is present, per standard IFC, so consumers void it exactly once.)
-        let body_only: String =
-            ifc.lines().filter(|l| !l.contains("IFCRELVOIDSELEMENT(")).collect::<Vec<_>>().join("\n");
+        // The exported wall body is SOLID (§35: the through-hole is filled back),
+        // so re-importing the WHOLE file — body + IfcRelVoidsElement — voids it
+        // exactly once and the hole comes back. (A holed body + a void would
+        // double-void → empty wall; that was the pre-§35 limitation.)
         let mut re = AxiaEngine::new();
-        re.import_ifc(body_only);
+        re.import_ifc(ifc);
         assert!(re.scene.mesh.verify_face_invariants().is_valid(), "re-imported wall is watertight");
-        assert!(active_faces(&re) > 6, "the exported holed wall re-imports: {}", active_faces(&re));
+        assert!(active_faces(&re) > 6, "the round-tripped opening is a hole again: {}", active_faces(&re));
     }
 }
 
