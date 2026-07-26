@@ -14831,5 +14831,34 @@ END-ISO-10303-21;
             "refilled body ≈ the true wall volume (no protrusion): body {bv:.0} vs wall {wall_volume:.0}"
         );
     }
+
+    /// §37 per-element faceted fallback — a mixed model (an analytic wall + a
+    /// non-analytic element) must NOT collapse the whole export to one faceted
+    /// shell. Each element keeps its own IfcWall: the analytic one exports as an
+    /// IfcAdvancedBrep, the non-analytic one as an IfcFacetedBrep.
+    #[test]
+    fn a_mixed_model_exports_advanced_and_faceted_per_element() {
+        let mut e = AxiaEngine::new();
+        // Element A: a clean analytic box → advanced brep.
+        let pos = glam::DVec3::new(0.0, 0.0, 1500.0);
+        let a = e.scene.mesh.create_box(pos, 2000.0, 2000.0, 200.0, axia_geo::MaterialId::new(0)).unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), pos, a);
+        // Element B: a surfaceless NON-planar quad → can't form an advanced brep.
+        let v0 = e.scene.mesh.add_vertex(glam::DVec3::new(5000.0, 0.0, 0.0));
+        let v1 = e.scene.mesh.add_vertex(glam::DVec3::new(6000.0, 0.0, 0.0));
+        let v2 = e.scene.mesh.add_vertex(glam::DVec3::new(6000.0, 1000.0, 300.0));
+        let v3 = e.scene.mesh.add_vertex(glam::DVec3::new(5000.0, 1000.0, 0.0));
+        let bface = e.scene.mesh.add_face(&[v0, v1, v2, v3], axia_geo::MaterialId::new(0)).unwrap();
+        e.scene
+            .create_xia_with_faces("Blob".to_string(), glam::DVec3::new(5500.0, 500.0, 100.0), vec![bface]);
+
+        let ifc = e.export_ifc_model("Mixed".into());
+        assert!(!ifc.is_empty(), "the mixed model still exports (no whole-model collapse)");
+        assert_eq!(ifc.matches("IFCWALL(").count(), 2, "both elements keep their own IfcWall");
+        assert_eq!(ifc.matches("IFCADVANCEDBREP(").count(), 1, "the analytic wall → advanced brep");
+        assert_eq!(ifc.matches("IFCFACETEDBREP(").count(), 1, "the non-analytic element → faceted brep");
+        // The faceted element's body representation is tagged 'Brep', the analytic 'AdvancedBrep'.
+        assert!(ifc.contains("'AdvancedBrep'") && ifc.contains("'Brep'"), "both rep types present");
+    }
 }
 
