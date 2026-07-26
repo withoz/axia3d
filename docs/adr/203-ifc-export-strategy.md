@@ -2148,3 +2148,44 @@ no-style → styled item 0). WASM e2e `an_assigned_face_material_exports_with_na
   근사 — 정밀 PBR (albedo/metallic/roughness 텍스처 세트) 은 뷰어별 해석 차이.
 - 텍스처는 albedo 만 embed (normal/roughness/metallic map 은 별도 트랙). UV 매핑 없음
   (뷰어 기본). data-URI embed 는 IFC 파일 크기를 키움 (텍스처 크기에 비례).
+
+## 40. Full PBR texture-map set + UV mapping (IfcImageTexture per channel + IfcTextureCoordinateGenerator)
+
+**문제 (§39 남은 한계)**: §39 는 albedo 한 채널만, UV 없이 (뷰어 기본 매핑) embed.
+재질의 normal / roughness / metallic 맵이 전달되지 않고, 타일 scale / projection /
+rotation 정보도 사라져 텍스처가 올바른 크기·방향으로 매핑되지 않음.
+
+**해결 (§40)**: 4개 PBR 채널 전부 + 채널별 UV 매핑.
+
+- **데이터 모델**: `MaterialStyle.albedo_data_url: Option<String>` →
+  `textures: Vec<MaterialTexture>` (신규 struct: `mode` / `data_url` / `projection` /
+  `scale` / `rotation`). `VisualProperties.layered` 의 4 채널 (albedo / normal /
+  roughness / metallic) 을 채널별로 순회.
+- **채널별 IfcImageTexture**: 각 populated 채널마다 하나. `IfcSurfaceTexture.Mode` 로
+  채널 종류 구분 — albedo→`'DIFFUSE'`, normal→`'NORMAL'`, roughness→`'ROUGHNESS'`,
+  metallic→`'METAL'`. 모든 맵이 한 `IfcSurfaceStyleWithTextures.Textures` list 로 수집.
+- **UV 매핑 (§40 핵심)**: 각 텍스처에 `IfcTextureCoordinateGenerator(Maps=(#tex),
+  Mode, Parameter)` — `Mode` = projection kind (`'PLANAR'` / `'BOX'` / `'CYLINDRICAL'`,
+  `TextureProjection` enum 에서), `Parameter` = `[scale, rotation]` (world-units-per-tile
+  + radians). 절차적 projection UV 를 표현하는 IFC 정식 엔티티 — projection + scale +
+  rotation 을 모두 실음. per-vertex UV 아님 (뷰어가 geometry 에서 생성).
+- **소스**: WASM `ifc_element_material` 이 `m.visual.layered` 의 4 채널을 순회하며
+  `MaterialTexture` Vec 을 채움 (projection enum → 문자열, `rotation.unwrap_or(0.0)`).
+  face 재질 우선 (§38 fix 유지). IfcSurfaceStyle 는 여전히 appearance 별 dedup.
+
+**검증**: `a_material_style_emits_a_rendering_styled_item` (텍스처 케이스 확장 — DIFFUSE
+planar + NORMAL box+rotation + ROUGHNESS → IFCIMAGETEXTURE×3 + IFCTEXTURECOORDINATE-
+GENERATOR×3 + 채널 Mode 3종 + `'PLANAR',(1000.,0.)` + `'BOX',(500.,1.5)`; mutation-
+checked: projection 을 PLANAR 로 고정 시 BOX assert 실패 확인). 전체 workspace green
+(3226). 라이브 (real Chromium + 새 WASM): material 1 (강철) 에 `setLayeredChannel`
+albedo(planar,1000) + normal(box,500,1.5) → box+assign → `#272=IFCIMAGETEXTURE(.T.,.T.,
+'DIFFUSE',$,$,'data:…QUxC')` + `#273=IFCTEXTURECOORDINATEGENERATOR((#272),'PLANAR',
+(1000.,0.))` + `#274=…'NORMAL'…` + `#275=…'BOX',(500.,1.5)`.
+
+### 남은 한계
+
+- UV 는 절차적 (IfcTextureCoordinateGenerator) — per-vertex `IfcTextureMap` /
+  `IfcIndexedTriangleTextureMap` 은 별도 (뷰어별 generator 해석 차이 가능).
+- `IfcTextureCoordinateGenerator.Mode` 값 (PLANAR/BOX/CYLINDRICAL) 은 IFC 표준 고정값이
+  아닌 관례 — 뷰어가 인식 못 하면 기본 매핑 fallback.
+- data-URI embed 는 채널 수 × 이미지 크기만큼 IFC 파일을 키움.
