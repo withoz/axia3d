@@ -1885,7 +1885,48 @@ live-render 확인 중 발견: `WasmBridge.importIfc` 가 성공 후 **`markDirt
 
 - **host = containment**: opening 중점이 벽 AABB 안이어야 매칭. 겹친 벽은 첫 매칭
   선택. 정밀 host 추적 (그릴 때 배선) 은 향후.
-- **import-preserve 미구현**: import 된 개구부 (§29) 는 여전히 subtract 로 소비
-  (기록 안 함) — 가져온 파일의 개구부 재-export 는 별도 트랙 (full round-trip).
+- ~~**import-preserve 미구현**~~ → **§35 에서 구현** (import 된 개구부를 기록).
 - **door notch 근사**: 문 (바닥-도달 U-notch, ADR-262) 도 사각 box 로 기록 —
   IFC opening 은 사각 표현이라 열린 바닥 형상은 근사.
+
+## 35. Opening import-preserve — 가져온 IfcRelVoidsElement 개구부를 기록
+
+**§29 importer 는 `IfcRelVoidsElement` 개구부를 벽에 subtract 로 뚫고 *소비* 했다**
+(baked hole). §34 가 export 방향 (그린 개구부 → `IfcOpeningElement`) 를 완성했으니,
+남은 조각은 **import 방향의 preserve** — 가져온 개구부를 §34 의 `Scene.openings` 에
+기록해, 사용자가 그린 개구부와 **동일한 export 경로** 를 타게 하는 것.
+
+### 기록 (import → scene.openings)
+
+- **axia-ifc `ImportedOpening { a, b, normal }`** (`ifc_geometry.rs`) — void solid
+  의 world AABB (WCS 적용 후) 에서 두 대각 코너 + 가장 얇은 축 = normal 을 뽑는다
+  (`imported_opening_from_solid`). `GeometryImport.openings: Vec<ImportedOpening>`.
+- **axia-wasm `import_ifc`** — I-5 그룹 생성 뒤 `for op in &g.openings {
+  self.scene.record_rect_opening(op.a, op.b, op.normal); }`. 개구부는 §34 의 user-drawn
+  개구부와 **구별 없이** 동일 `Scene.openings` 에 들어간다 → 동일 export 경로.
+- **exporter plane 합성 (`ifc_advancedbrep.rs`)** — subtract 로 뚫린 벽 face 들은
+  **stored surface 가 없다** (boolean 결과). 평면 face 의 analytic surface *는* plane
+  이므로, surface 없는 face 의 outer loop 이 **정말 coplanar 일 때** (max 편차 ≤ 1 µm)
+  `synthesize_plane_from_loop` 이 정확한 `IfcPlane` 을 합성한다 — 곡면 (tessellated)
+  face 는 편차로 `None` → 종전대로 faceted fallback (곡면을 평면으로 뭉개지 않는다).
+  이 합성이 holed 벽을 `IfcAdvancedBrep` 로 나갈 수 있게 한다 (종전엔 hard error).
+
+### 검증
+
+- import RelVoids → `opening_count == 1` (기록됨), export → `IfcOpeningElement` +
+  `IfcRelVoidsElement` emit, holed 벽 body 는 valid watertight 로 재-import (합성 plane
+  덕에). Rust `an_imported_relvoids_opening_survives_export_and_reimport` (axia-wasm) +
+  exporter 3 (`surfaceless_planar_loop_synthesizes_an_exact_plane` /
+  `non_planar_loop_is_not_flattened` / `a_holed_box_face_without_a_surface_still_exports`).
+- **live** (real Chromium, 재빌드 WASM): RelVoids IFC import → `openingCount()==1` →
+  `exportIfcModel` 에 `IFCOPENINGELEMENT` + `IFCRELVOIDSELEMENT` + `IFCADVANCEDBREP`.
+- 회귀 **+4** (axia-ifc 3 + axia-wasm 1 재작성). 전체 workspace green.
+
+### 남은 한계 (별도 트랙 — baked-void 표현)
+
+- **재-import 이중 void**: 우리 엔진은 개구부를 **geometry 에 baked** 하므로, holed 벽
+  body + `IfcRelVoidsElement` 를 함께 내보내면 *어떤* 소비자든 (우리 재-import 포함)
+  개구부를 **두 번** 뺀다 → 벽이 비워진다. 표준 IFC 는 벽 body 를 **solid** 로 두고
+  opening 이 void 를 담는다. 이는 §34 의 user-drawn 개구부에도 이미 있는 성질 —
+  import-preserve 만의 것이 아니다. 올바른 해법 (개구부가 있으면 solid 벽 body 를
+  내보내고, viewer 는 표시용으로만 subtract) 은 별도 트랙.
