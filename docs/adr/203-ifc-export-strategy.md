@@ -1922,11 +1922,55 @@ live-render 확인 중 발견: `WasmBridge.importIfc` 가 성공 후 **`markDirt
   `exportIfcModel` 에 `IFCOPENINGELEMENT` + `IFCRELVOIDSELEMENT` + `IFCADVANCEDBREP`.
 - 회귀 **+4** (axia-ifc 3 + axia-wasm 1 재작성). 전체 workspace green.
 
-### 남은 한계 (별도 트랙 — baked-void 표현)
+### ~~남은 한계 (baked-void 표현)~~ → §36 에서 해소
 
-- **재-import 이중 void**: 우리 엔진은 개구부를 **geometry 에 baked** 하므로, holed 벽
-  body + `IfcRelVoidsElement` 를 함께 내보내면 *어떤* 소비자든 (우리 재-import 포함)
-  개구부를 **두 번** 뺀다 → 벽이 비워진다. 표준 IFC 는 벽 body 를 **solid** 로 두고
-  opening 이 void 를 담는다. 이는 §34 의 user-drawn 개구부에도 이미 있는 성질 —
-  import-preserve 만의 것이 아니다. 올바른 해법 (개구부가 있으면 solid 벽 body 를
-  내보내고, viewer 는 표시용으로만 subtract) 은 별도 트랙.
+- ~~**재-import 이중 void**~~ → **§36 (solid wall body) 로 해결**. 이전엔 holed 벽
+  body + `IfcRelVoidsElement` 를 함께 내보내 *어떤* 소비자든 개구부를 두 번 뺐다.
+  §36 이 export 시 벽 body 를 **solid 로 복원** (through-hole fill) → 소비자는 정확히
+  한 번만 void → 벽이 비워지지 않는다.
+
+## 36. Solid wall body — through-hole 을 채워 이중 void 해소
+
+**표준 IFC 는 벽 body 를 solid 로 두고 `IfcOpeningElement` 가 void 를 담는다.** 우리
+엔진은 개구부를 geometry 에 baked 하므로 (§29 subtract / §34 drill), export 가 holed
+body + opening 을 함께 내보내면 소비자 (Revit, 우리 재-import 모두) 가 개구부를 **두
+번** 빼서 벽이 비워졌다 (실측 재-import face 10→0). §36 은 export 시 벽 body 를 solid
+로 복원해 이를 해소한다 — scene mesh / import / viewport 는 변경 0 (baked hole 그대로
+표시).
+
+### Through-hole fill (export-only, geometry 복원)
+
+- **핵심**: 기록된 opening box 는 subtract 가 제거한 영역이므로 뚫은 구멍을 **정확히
+  채운다** (holed wall ∪ box = solid wall). 따라서 mesh boolean 없이, `AdvancedFace`
+  loop 위에서 국소적으로 복원한다.
+- **`fill_through_hole_openings`** (`ifc_advancedbrep.rs`) — `emit_ifc_model_with_
+  openings` 의 각 element 에 대해, 그 element 가 host 인 opening box 들로:
+  * **hole-outline inner loop 제거** — 모든 vertex 가 box 안 (`BoxFrame::contains`,
+    10µm slack) 인 inner loop = 구멍 윤곽 → cap 이 solid 로.
+  * **tunnel-wall face 제거** — outer loop 전체가 box 위 = 구멍 내벽 → drop.
+  * → through-hole 벽이 6-face solid box 로 복원 (cap 2 + wall side 4).
+- **through-hole 만 fill** — inner loop 이 box 에 걸린 opening 만 (through-hole
+  signature). notch/edge opening (matching inner loop 없음 — user-drawn 문의 U-notch,
+  ADR-262) 은 **손대지 않는다** (다시 닫을 수 없는 solid 를 열지 않음). notch 는 여전히
+  이중 void — 별도 후속 (union-based fill).
+
+### 검증
+
+- import RelVoids → export (**solid** body + opening) → **재-import 전체 파일** (body +
+  RelVoids) → 개구부 한 번만 void → 구멍 복원 (valid watertight, >6 face). Rust
+  `an_imported_relvoids_opening_survives_export_and_reimport` (axia-wasm, 이전 body-only
+  우회 없이 full re-import) + exporter 2 (`fill_strips_hole_outline_and_drops_tunnel_
+  faces` / `fill_leaves_a_notch_untouched`, notch 가드 mutation-checked). §34 user-drawn
+  opening 회귀 (`a_recorded_opening_exports_and_reimports_as_a_hole`) 도 통과 — solid
+  wall + 기록 opening 은 inner loop 이 없어 fill 이 no-op, 실제 drill 기반 창은 이제
+  이 fill 로 함께 해소된다.
+- **live** (real Chromium, 재빌드 WASM): RelVoids import → export → 재-import → 벽
+  valid + 구멍 유지 (이중 void 로 비워지지 않음).
+
+### 남은 한계
+
+- **notch/edge opening** (user-drawn 문의 U-notch, ADR-262) 은 through-hole 이 아니라
+  fill 이 건너뛴다 → 여전히 이중 void. union-based fill (holed wall ∪ box, boolean) 로
+  일반 해결 가능 — 별도 트랙.
+- 회전된 opening 의 box 는 recorded AABB 에서 재구성 (실제 subtract box 의 superset) —
+  through-hole 은 정확히 채우지만 극단 skew 는 별도 검토.
