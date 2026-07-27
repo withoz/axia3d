@@ -220,10 +220,12 @@ for (const c of corpus) {
   }
 
   if (c.file === 'curved.ifc') {
-    check(typeCount(api, modelID, 'IFCCYLINDRICALSURFACE') >= 1, 'IfcCylindricalSurface present');
+    // §43 — a clean cylinder is now a parametric circle sweep (editable in a BIM
+    // tool); a sphere has no extrusion, so it stays an analytic IfcAdvancedBrep.
+    check(typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID') === 1, 'cylinder = one IfcExtrudedAreaSolid');
+    check(typeCount(api, modelID, 'IFCCIRCLEPROFILEDEF') === 1, 'cylinder profile = IfcCircleProfileDef');
     check(typeCount(api, modelID, 'IFCSPHERICALSURFACE') >= 1, 'IfcSphericalSurface present');
-    check(typeCount(api, modelID, 'IFCCIRCLE') >= 1, 'IfcCircle rim edges present');
-    notes.push('curved: web-ifc tessellates IfcPlane/IfcCylindricalSurface only; ' +
+    notes.push('curved: web-ifc sweeps our IfcCircleProfileDef and tessellates IfcPlane; ' +
       'IfcSphericalSurface/Conical/Toroidal are emitted + parsed but skipped by that kernel.');
   }
 

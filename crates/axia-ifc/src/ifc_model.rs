@@ -803,6 +803,94 @@ mod tests {
     }
 
     #[test]
+    fn a_path_b_cylinder_exports_as_a_circle_swept_solid() {
+        // §43 — a Path B cylinder (Cylinder side + two planar caps) exports as a
+        // parametric IfcExtrudedAreaSolid with an IfcCircleProfileDef, the curved
+        // counterpart of §42's box → rectangle. Round-trips to the same extent.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_cylinder_kernel_native_clean(DVec3::ZERO, 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Column".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Column, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Cyl").unwrap();
+        assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 1, "one swept solid");
+        assert_eq!(s.matches("=IFCCIRCLEPROFILEDEF(").count(), 1, "cylinder → circle: {}", s);
+        assert_eq!(s.matches("=IFCADVANCEDBREP(").count(), 0, "no brep for a clean cylinder");
+        assert_eq!(s.matches("=IFCCYLINDRICALSURFACE(").count(), 0, "the side is now parametric");
+        let profile = s.lines().find(|l| l.contains("IFCCIRCLEPROFILEDEF(")).unwrap();
+        assert!(profile.ends_with(",0.5);"), "radius 500mm → 0.5m: {}", profile);
+        let solid = s.lines().find(|l| l.contains("IFCEXTRUDEDAREASOLID(")).unwrap();
+        assert!(solid.ends_with(",1.);"), "height 1000mm → 1m depth: {}", solid);
+        assert_refs_resolve(&s);
+
+        // Round-trip: re-import → a round column of the same bbox (Ø1 m × 1 m).
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        assert_eq!(g.elements.len(), 1);
+        let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for f in &g.elements[0].faces {
+            for p in &f.outer {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        let ext = hi - lo;
+        assert!(
+            (ext.x - 1000.0).abs() < 5.0 && (ext.y - 1000.0).abs() < 5.0 && (ext.z - 1000.0).abs() < 1.0,
+            "round-trip extent {:?}", ext
+        );
+        assert!(g.elements[0].faces.len() > 20, "round-trips as a round column");
+    }
+
+    #[test]
+    fn a_two_cylinder_element_does_not_become_one_solid_circle() {
+        // §43 guard — the dangerous mis-classification: an element holding more
+        // than one cylinder (a tube modelled as an outer + an inner shell) must NOT
+        // collapse to a single solid IfcCircleProfileDef, which would fill the bore
+        // and drop the second shell. Only an exactly-three-face cylinder qualifies.
+        let mut mesh = Mesh::new();
+        let mut faces = mesh
+            .create_cylinder_kernel_native_clean(DVec3::ZERO, 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        faces.extend(
+            mesh.create_cylinder_kernel_native_clean(DVec3::ZERO, 200.0, 1000.0, MaterialId::new(0))
+                .unwrap(),
+        );
+        let elements = vec![IfcElement {
+            name: "Tube".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Column, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Tube").unwrap();
+        assert_eq!(
+            s.matches("=IFCCIRCLEPROFILEDEF(").count(), 0,
+            "two shells must NOT export as one solid circle (that would fill the bore)"
+        );
+        assert!(
+            s.contains("=IFCADVANCEDBREP(") || s.contains("=IFCFACETEDBREP("),
+            "two-shell element → brep fallback: {}", s
+        );
+    }
+
+    #[test]
+    fn a_cone_is_not_mistaken_for_a_cylinder() {
+        // §43 guard — a Cone side surface is not a cylinder; it keeps the brep path
+        // (IfcConicalSurface) rather than exporting as a constant-radius circle.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_cone_kernel_native(DVec3::ZERO, 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Cone".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Column, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Cone").unwrap();
+        assert_eq!(s.matches("=IFCCIRCLEPROFILEDEF(").count(), 0, "a cone is not a circle sweep");
+        assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 0, "a cone is not an extrusion");
+    }
+
+    #[test]
     fn a_non_prism_falls_back_to_brep() {
         // A sphere is not a polygonal prism → no swept solid; it keeps the brep path.
         let mut mesh = Mesh::new();
