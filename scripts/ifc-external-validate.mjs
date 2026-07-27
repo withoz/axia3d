@@ -82,6 +82,11 @@ const corpus = [
     build: (e) => { enablePathB(e); e.create_cylinder(0, 0, 0, 500, 1000, 24); e.create_sphere(3000, 0, 0, 400, 12, 12); },
   },
   {
+    file: 'cone.ifc',
+    what: 'revolved meridian (IfcRevolvedAreaSolid, §44)',
+    build: (e) => { enablePathB(e); e.create_cone(0, 0, 0, 500, 1000, 24); },
+  },
+  {
     file: 'bim.ifc',
     what: 'semantic BIM (Xia → IfcWall + IfcMaterial)',
     build: (e) => {
@@ -184,9 +189,11 @@ for (const c of corpus) {
   const members = MEMBER_TYPES.reduce((n, t) => n + typeCount(api, modelID, t), 0);
   check(members >= 1, 'at least one building element', `${members}`);
   // Analytic solid geometry: a curved element is an IfcAdvancedBrep; a clean
-  // prism is an IfcExtrudedAreaSolid (§42). Either is a non-faceted analytic body.
+  // prism is an IfcExtrudedAreaSolid (§42/§43); a cone is an IfcRevolvedAreaSolid
+  // (§44). Each is a non-faceted analytic body.
   const analyticSolids = typeCount(api, modelID, 'IFCADVANCEDBREP')
-    + typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID');
+    + typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID')
+    + typeCount(api, modelID, 'IFCREVOLVEDAREASOLID');
   check(analyticSolids >= 1, 'analytic solid geometry (advanced brep or swept)');
   check(typeCount(api, modelID, 'IFCFACETEDBREP') === 0, 'no faceted fallback');
 
@@ -209,7 +216,19 @@ for (const c of corpus) {
   } catch (err) {
     check(false, 'geometry extraction', String(err?.message ?? err));
   }
-  check(meshes >= 1 && tris > 0, 'foreign kernel tessellates our geometry', `${meshes} mesh(es), ${tris} triangles`);
+  // web-ifc has no revolution kernel (measured: IfcRevolvedAreaSolid AND
+  // IfcRightCircularCone both yield 0 triangles, while an IfcExtrudedAreaSolid in
+  // the same harness yields 12). A cone is therefore checked structurally below,
+  // not by tessellation — the same treatment the curved surfaces already get.
+  if (c.file === 'cone.ifc') {
+    check(meshes >= 1, 'foreign parser reaches our geometry', `${meshes} mesh(es)`);
+    notes.push('cone: web-ifc has no revolution kernel — IfcRevolvedAreaSolid parses ' +
+      'but tessellates to 0 triangles (IfcRightCircularCone likewise). Before §44 the ' +
+      'same cone rendered as a FLAT DISK (z-extent 0) because that kernel also skips ' +
+      'IfcConicalSurface, so neither form ever showed a cone there.');
+  } else {
+    check(meshes >= 1 && tris > 0, 'foreign kernel tessellates our geometry', `${meshes} mesh(es), ${tris} triangles`);
+  }
 
   if (c.file === 'box.ifc') {
     // §42 — a box exports as a parametric rectangle swept solid, and the foreign
@@ -217,6 +236,16 @@ for (const c of corpus) {
     check(typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID') === 1, 'box = one IfcExtrudedAreaSolid');
     check(typeCount(api, modelID, 'IFCRECTANGLEPROFILEDEF') === 1, 'box profile = IfcRectangleProfileDef');
     check(tris === 12, 'box tessellates to exactly 12 triangles', `${tris}`);
+  }
+
+  if (c.file === 'cone.ifc') {
+    // §44 — a cone is a revolution, not an extrusion: a meridian triangle turned
+    // a full 2π about its axis. The foreign kernel must revolve it back to a cone.
+    check(typeCount(api, modelID, 'IFCREVOLVEDAREASOLID') === 1, 'cone = one IfcRevolvedAreaSolid');
+    check(typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID') === 0, 'a cone is not an extrusion');
+    check(typeCount(api, modelID, 'IFCAXIS1PLACEMENT') === 1, 'one revolution axis');
+    // The meridian survives as a readable profile (what an authoring tool edits).
+    check(typeCount(api, modelID, 'IFCARBITRARYCLOSEDPROFILEDEF') === 1, 'meridian profile present');
   }
 
   if (c.file === 'curved.ifc') {

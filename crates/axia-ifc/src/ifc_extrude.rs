@@ -247,6 +247,109 @@ fn detect_cylinder_prism(mesh: &Mesh, allowed: &HashSet<FaceId>) -> Option<CylPr
     Some(CylPrism { base: axis_origin + axis * lo, axis, radius, ref_dir, depth })
 }
 
+/// A detected right-circular cone or frustum (§44): the base cap centre, the unit
+/// axis (base → top), the two radii, the reference direction, and the height. A
+/// full cone has `top_radius == 0`.
+struct ConePrism {
+    base: DVec3,
+    axis: DVec3,
+    base_radius: f64,
+    top_radius: f64,
+    ref_dir: DVec3,
+    height: f64,
+}
+
+/// Detect a Path B cone or frustum (§44): one `AnalyticSurface::Cone` side plus
+/// one planar cap (apex cone) or two (frustum), each hole-free. A cone is not an
+/// extrusion — its cross-section changes — so it exports as a revolution, not a
+/// sweep. Returns `None` for a partial cone (`u_range` < 2π) or anything else.
+fn detect_cone_prism(mesh: &Mesh, allowed: &HashSet<FaceId>) -> Option<ConePrism> {
+    use axia_geo::AnalyticSurface;
+
+    let mut ids: Vec<FaceId> = allowed.iter().copied().collect();
+    ids.sort_by_key(|f| f.raw());
+    // (apex, axis_dir, half_angle, ref_dir, v_range)
+    let mut side: Option<(DVec3, DVec3, f64, DVec3, (f64, f64))> = None;
+    let mut caps: Vec<DVec3> = Vec::new();
+    let mut active = 0usize;
+
+    for fid in ids {
+        let f = mesh.faces.get(fid)?;
+        if !f.is_active() {
+            continue;
+        }
+        active += 1;
+        match mesh.face_surface(fid) {
+            Some(AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range }) => {
+                if side.is_some() {
+                    return None;
+                }
+                // Only a full turn is a simple revolution of one profile.
+                if (u_range.1 - u_range.0 - std::f64::consts::TAU).abs() > 1e-6 {
+                    return None;
+                }
+                if !(*half_angle > 0.0) || *half_angle >= std::f64::consts::FRAC_PI_2 {
+                    return None;
+                }
+                side = Some((
+                    *apex,
+                    axis_dir.normalize(),
+                    *half_angle,
+                    ref_dir.normalize(),
+                    *v_range,
+                ));
+            }
+            Some(AnalyticSurface::Plane { .. }) => {
+                // A cap with a hole would need a void profile — out of scope.
+                if !f.inners().is_empty() || caps.len() == 2 {
+                    return None;
+                }
+                let vids = mesh.collect_loop_verts(f.outer().start).ok()?;
+                caps.push(mesh.vertex_pos(*vids.first()?).ok()?);
+            }
+            _ => return None,
+        }
+    }
+    let (apex, axis, half_angle, ref_dir, (v0, v1)) = side?;
+    // An apex cone is 1 cap + 1 side; a frustum is 2 caps + 1 side.
+    let expected_caps = if v0.abs() <= CONGRUENCE_TOL { 1 } else { 2 };
+    if active != expected_caps + 1 || caps.len() != expected_caps {
+        return None;
+    }
+    // Radius at a distance v from the apex along the axis.
+    let radius_at = |v: f64| v * half_angle.tan();
+    let (v_lo, v_hi) = if v0 <= v1 { (v0, v1) } else { (v1, v0) };
+    let height = v_hi - v_lo;
+    if height < CONGRUENCE_TOL || v_lo < -CONGRUENCE_TOL {
+        return None;
+    }
+    let base_radius = radius_at(v_hi);
+    let top_radius = radius_at(v_lo);
+    if base_radius <= CONGRUENCE_TOL {
+        return None;
+    }
+    // Congruence: every cap boundary point must sit on the cone at its own height.
+    for &c in &caps {
+        let d = c - apex;
+        let v = d.dot(axis);
+        let radial = (d - axis * v).length();
+        let tol = CONGRUENCE_TOL.max(base_radius * 1e-6);
+        if (radial - radius_at(v)).abs() > tol || v < v_lo - tol || v > v_hi + tol {
+            return None;
+        }
+    }
+    // The base is the wide end (v_hi); the profile is revolved from there back
+    // toward the apex, so the axis points base → top (apex side).
+    Some(ConePrism {
+        base: apex + axis * v_hi,
+        axis: -axis,
+        base_radius,
+        top_radius,
+        ref_dir,
+        height,
+    })
+}
+
 /// Try to emit `allowed` as an `IfcExtrudedAreaSolid` with a classified profile.
 /// Returns the solid's ref (profile + placement + solid all emitted to `w`) when
 /// the faces form a clean polygonal prism (§42) or a right-circular cylinder
@@ -257,6 +360,32 @@ pub fn try_extruded_area_solid(
     allowed: &HashSet<FaceId>,
     scale: f64,
 ) -> Option<EntityRef> {
+    // §44 — a cone/frustum's cross-section changes along the axis, so it is a
+    // revolution, not a sweep: revolve its meridian (a triangle for an apex cone,
+    // a trapezium for a frustum) a full turn about the axis.
+    if let Some(c) = detect_cone_prism(mesh, allowed) {
+        // Profile plane: local X = ref_dir (radial), local Y = the cone axis, so
+        // local Z = X × Y. The meridian lies in that plane with the axis at u = 0.
+        let z = c.ref_dir.cross(c.axis);
+        if z.length() > 0.5 {
+            let meridian: Vec<(f64, f64)> = if c.top_radius <= CONGRUENCE_TOL {
+                // Apex cone: base radius down to the tip.
+                vec![(0.0, 0.0), (c.base_radius, 0.0), (0.0, c.height)]
+            } else {
+                vec![(0.0, 0.0), (c.base_radius, 0.0), (c.top_radius, c.height), (0.0, c.height)]
+            };
+            let (profile, _, _) = emit_arbitrary(w, &meridian, c.base, c.ref_dir, scale);
+            return Some(emit_revolved(
+                w,
+                profile,
+                c.base,
+                z.normalize(),
+                c.ref_dir,
+                c.axis,
+                scale,
+            ));
+        }
+    }
     // §43 — a Path B cylinder is a circle swept along its axis.
     if let Some(c) = detect_cylinder_prism(mesh, allowed) {
         let pos2d = identity_placement_2d(w);
@@ -328,6 +457,45 @@ fn emit_swept(
             StepValue::Ref(pos),
             StepValue::Ref(ext_dir),
             StepValue::Real(depth * scale),
+        ],
+    )
+}
+
+/// Place a meridian profile and revolve it a full turn: `IfcRevolvedAreaSolid`
+/// with `IfcAxis2Placement3D(origin, plane_normal, ref_dir)` — so the profile's
+/// local X is `ref_dir` and its local Y is the revolution axis — plus an
+/// `IfcAxis1Placement(origin, axis)`. Per IFC4 the revolution axis is given in the
+/// same object coordinate system as `Position`, and it must lie in the profile's
+/// plane, which it does here (local Y).
+fn emit_revolved(
+    w: &mut StepWriter,
+    profile: EntityRef,
+    origin: DVec3,
+    plane_normal: DVec3,
+    ref_dir: DVec3,
+    axis: DVec3,
+    scale: f64,
+) -> EntityRef {
+    let loc = pt(w, origin * scale);
+    let n_d = dir(w, plane_normal);
+    let ref_d = dir(w, ref_dir);
+    let pos = w.add(
+        "IFCAXIS2PLACEMENT3D",
+        vec![StepValue::Ref(loc), StepValue::Ref(n_d), StepValue::Ref(ref_d)],
+    );
+    let axis_loc = pt(w, origin * scale);
+    let axis_d = dir(w, axis);
+    let axis1 = w.add(
+        "IFCAXIS1PLACEMENT",
+        vec![StepValue::Ref(axis_loc), StepValue::Ref(axis_d)],
+    );
+    w.add(
+        "IFCREVOLVEDAREASOLID",
+        vec![
+            StepValue::Ref(profile),
+            StepValue::Ref(pos),
+            StepValue::Ref(axis1),
+            StepValue::Real(std::f64::consts::TAU),
         ],
     )
 }
@@ -580,3 +748,4 @@ mod tests {
         assert_eq!(s.matches("IFCCARTESIANPOINT(").count(), 6, "closed polyline: {}", s);
     }
 }
+
