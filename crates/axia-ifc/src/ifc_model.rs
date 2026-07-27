@@ -273,7 +273,19 @@ pub fn emit_ifc_model_with_openings(
         // placement instead of collapsing the WHOLE model to one faceted shell.
         // Gate on `advanced_faces_filtered` (a pure query — nothing is emitted to
         // `w` when it fails, so the faceted path leaves no orphan advanced entities).
-        let (brep, rep_type) = match advanced_faces_filtered(mesh, Some(&allowed)) {
+        // §42 — an element with no baked opening that is a clean polygonal prism
+        // exports as a parametric IfcExtrudedAreaSolid (rectangle/trapezium/
+        // arbitrary profile) instead of a brep. Openings still take the brep path
+        // below (the mesh is no longer a clean prism), and a non-prism returns None.
+        let swept = if boxes.is_empty() {
+            crate::ifc_extrude::try_extruded_area_solid(&mut w, mesh, &allowed, scale)
+                .map(|s| (s, "SweptSolid"))
+        } else {
+            None
+        };
+        let (brep, rep_type) = match swept {
+            Some(pair) => pair,
+            None => match advanced_faces_filtered(mesh, Some(&allowed)) {
             Ok(mut faces) => {
                 // Emit a SOLID wall body: the openings this element hosts are
                 // re-stated as separate IfcOpeningElements below, so the body must
@@ -305,6 +317,7 @@ pub fn emit_ifc_model_with_openings(
                     .map_err(|e| format!("element[{}] '{}' faceted: {}", ei, el.name, e))?,
                 "Brep",
             ),
+            },
         };
 
         let shape_rep = w.add(
@@ -751,6 +764,64 @@ mod tests {
     }
 
     #[test]
+    fn an_extruded_box_exports_as_a_rectangle_swept_solid() {
+        // §42 — a clean prism (a box) exports as a parametric IfcExtrudedAreaSolid
+        // with an IfcRectangleProfileDef, not a brep. Round-trips: re-importing the
+        // emitted file reproduces the box's bounding-box extent.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Wall".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
+        assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 1, "one swept solid");
+        assert_eq!(s.matches("=IFCRECTANGLEPROFILEDEF(").count(), 1, "box → rectangle: {}", s);
+        assert!(s.contains("'SweptSolid'"), "swept representation type");
+        assert_eq!(s.matches("=IFCADVANCEDBREP(").count(), 0, "no brep for a clean prism");
+        assert_refs_resolve(&s);
+
+        // Round-trip: re-import → the box's extent (mm), in some axis order.
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        assert_eq!(g.elements.len(), 1);
+        let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for f in &g.elements[0].faces {
+            for p in &f.outer {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        let ext = hi - lo;
+        let mut d = [ext.x, ext.y, ext.z];
+        d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            (d[0] - 1000.0).abs() < 1.0 && (d[1] - 2000.0).abs() < 1.0 && (d[2] - 3000.0).abs() < 1.0,
+            "round-trip extent {:?}", d
+        );
+    }
+
+    #[test]
+    fn a_non_prism_falls_back_to_brep() {
+        // A sphere is not a polygonal prism → no swept solid; it keeps the brep path.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Ball".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Ball").unwrap();
+        assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 0, "a sphere is not a prism");
+        assert!(
+            s.contains("=IFCADVANCEDBREP(") || s.contains("=IFCFACETEDBREP("),
+            "sphere → brep fallback: {}", s
+        );
+    }
+
+    #[test]
     fn a_window_carries_its_measured_size() {
         // OverallHeight / OverallWidth are what a BIM tool shows as the
         // opening's size. Leaving them `$` is legal but useless, so they come
@@ -796,9 +867,10 @@ mod tests {
         assert_eq!(s.matches("=IFCMATERIAL(").count(), 2);
         assert!(s.contains("IFCMATERIAL('Concrete'") && s.contains("IFCMATERIAL('Steel'"));
         assert_eq!(s.matches("=IFCRELASSOCIATESMATERIAL(").count(), 2);
-        // each box is 6 planar advanced faces
-        assert_eq!(s.matches("=IFCADVANCEDBREP(").count(), 2);
-        assert_eq!(s.matches("=IFCADVANCEDFACE(").count(), 12);
+        // each box exports as a parametric rectangle swept solid (§42)
+        assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 2);
+        assert_eq!(s.matches("=IFCRECTANGLEPROFILEDEF(").count(), 2);
+        assert_eq!(s.matches("=IFCADVANCEDBREP(").count(), 0);
         // both walls contained in the one storey
         assert_eq!(s.matches("=IFCRELCONTAINEDINSPATIALSTRUCTURE(").count(), 1);
         assert_refs_resolve(&s);

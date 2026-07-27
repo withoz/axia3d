@@ -29,6 +29,7 @@ pub mod ifc_placement;
 pub mod ifc_spatial;
 mod ifc_common;
 pub mod ifc_facetedbrep;
+pub mod ifc_extrude;
 pub mod ifc_model;
 pub mod step_value;
 pub mod step_writer;

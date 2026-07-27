@@ -322,8 +322,9 @@ mod tests {
         assert_eq!(a.material.as_deref(), Some("Concrete"));
         assert!(a.global_id.is_some(), "GlobalId read back");
         assert_eq!(a.geometry.len(), 1);
-        assert_eq!(a.geometry[0].kind, "IFCADVANCEDBREP");
-        assert_eq!(a.geometry[0].representation_type.as_deref(), Some("AdvancedBrep"));
+        // A box exports as a parametric rectangle swept solid (§42).
+        assert_eq!(a.geometry[0].kind, "IFCEXTRUDEDAREASOLID");
+        assert_eq!(a.geometry[0].representation_type.as_deref(), Some("SweptSolid"));
         assert!(a.geometry[0].supported);
         assert!(a.has_supported_geometry());
 
@@ -435,7 +436,7 @@ END-ISO-10303-21;
         assert!(json.contains("\"type\":\"IFCWALL\""));
         assert!(json.contains("\"name\":\"Wall A\""));
         assert!(json.contains("\"material\":\"Concrete\""));
-        assert!(json.contains("\"kind\":\"IFCADVANCEDBREP\""));
+        assert!(json.contains("\"kind\":\"IFCEXTRUDEDAREASOLID\""));
         assert!(json.contains("\"supported\":true"));
         assert!(json.contains("\"unsupportedGeometry\":{}"));
         // the material-less wall must serialize as null, not ""

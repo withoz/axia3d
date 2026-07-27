@@ -73,7 +73,7 @@ function enablePathB(e) {
 const corpus = [
   {
     file: 'box.ifc',
-    what: 'planar solid (IfcPlane faces, IfcLine edges)',
+    what: 'parametric prism (IfcExtrudedAreaSolid + IfcRectangleProfileDef, §42)',
     build: (e) => { e.create_box(0, 0, 1500, 2000, 3000, 4000); },
   },
   {
@@ -183,7 +183,11 @@ for (const c of corpus) {
     'IFCFOOTING', 'IFCDOOR', 'IFCWINDOW', 'IFCBUILDINGELEMENTPROXY'];
   const members = MEMBER_TYPES.reduce((n, t) => n + typeCount(api, modelID, t), 0);
   check(members >= 1, 'at least one building element', `${members}`);
-  check(typeCount(api, modelID, 'IFCADVANCEDBREP') >= 1, 'analytic IfcAdvancedBrep (not faceted)');
+  // Analytic solid geometry: a curved element is an IfcAdvancedBrep; a clean
+  // prism is an IfcExtrudedAreaSolid (§42). Either is a non-faceted analytic body.
+  const analyticSolids = typeCount(api, modelID, 'IFCADVANCEDBREP')
+    + typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID');
+  check(analyticSolids >= 1, 'analytic solid geometry (advanced brep or swept)');
   check(typeCount(api, modelID, 'IFCFACETEDBREP') === 0, 'no faceted fallback');
 
   // names survive the round-trip through a foreign reader
@@ -208,7 +212,10 @@ for (const c of corpus) {
   check(meshes >= 1 && tris > 0, 'foreign kernel tessellates our geometry', `${meshes} mesh(es), ${tris} triangles`);
 
   if (c.file === 'box.ifc') {
-    check(typeCount(api, modelID, 'IFCPLANE') === 6, 'box = 6 IfcPlane faces');
+    // §42 — a box exports as a parametric rectangle swept solid, and the foreign
+    // kernel sweeps it back to the same 12-triangle box.
+    check(typeCount(api, modelID, 'IFCEXTRUDEDAREASOLID') === 1, 'box = one IfcExtrudedAreaSolid');
+    check(typeCount(api, modelID, 'IFCRECTANGLEPROFILEDEF') === 1, 'box profile = IfcRectangleProfileDef');
     check(tris === 12, 'box tessellates to exactly 12 triangles', `${tris}`);
   }
 
