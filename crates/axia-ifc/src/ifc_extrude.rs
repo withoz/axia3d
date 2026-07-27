@@ -171,16 +171,106 @@ fn identity_placement_2d(w: &mut StepWriter) -> EntityRef {
     w.add("IFCAXIS2PLACEMENT2D", vec![StepValue::Ref(o), StepValue::Ref(d)])
 }
 
+/// A detected right-circular cylinder: the base cap centre, the unit axis (base →
+/// top), the radius, the profile's reference direction, and the height.
+struct CylPrism {
+    base: DVec3,
+    axis: DVec3,
+    radius: f64,
+    ref_dir: DVec3,
+    depth: f64,
+}
+
+/// Detect a Path B cylinder (§43): exactly three active faces — one
+/// `AnalyticSurface::Cylinder` side plus two planar caps perpendicular to its
+/// axis, each a hole-free closed-curve loop. Returns `None` for anything else
+/// (a tube's annulus caps, a cone, a partial cylinder) so the caller falls back
+/// to the advanced brep, which already exports those exactly.
+fn detect_cylinder_prism(mesh: &Mesh, allowed: &HashSet<FaceId>) -> Option<CylPrism> {
+    use axia_geo::AnalyticSurface;
+
+    let mut ids: Vec<FaceId> = allowed.iter().copied().collect();
+    ids.sort_by_key(|f| f.raw());
+    let mut side: Option<(f64, DVec3, DVec3, DVec3)> = None; // (radius, origin, axis, ref_dir)
+    let mut caps: Vec<DVec3> = Vec::new(); // one boundary point per cap
+    let mut active = 0usize;
+
+    for fid in ids {
+        let f = mesh.faces.get(fid)?;
+        if !f.is_active() {
+            continue;
+        }
+        active += 1;
+        match mesh.face_surface(fid) {
+            Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. }) => {
+                if side.is_some() || *radius <= 0.0 {
+                    return None; // two cylindrical sides is not a simple cylinder
+                }
+                side = Some((*radius, *axis_origin, axis_dir.normalize(), ref_dir.normalize()));
+            }
+            Some(AnalyticSurface::Plane { normal, .. }) => {
+                // A cap with a hole would need a void profile — out of scope.
+                if !f.inners().is_empty() || caps.len() == 2 {
+                    return None;
+                }
+                let _ = normal;
+                let vids = mesh.collect_loop_verts(f.outer().start).ok()?;
+                caps.push(mesh.vertex_pos(*vids.first()?).ok()?);
+            }
+            _ => return None, // sphere / cone / torus / surfaceless → brep path
+        }
+    }
+    if active != 3 || caps.len() != 2 {
+        return None;
+    }
+    let (radius, axis_origin, axis, ref_dir) = side?;
+
+    // Both cap planes must be perpendicular to the axis, i.e. their boundary
+    // points sit at distinct heights along it, and both rims must be at the
+    // cylinder's radius (the congruence check for the curved case).
+    let height_of = |p: DVec3| (p - axis_origin).dot(axis);
+    let radial_of = |p: DVec3| {
+        let d = p - axis_origin;
+        (d - axis * d.dot(axis)).length()
+    };
+    for &c in &caps {
+        if (radial_of(c) - radius).abs() > CONGRUENCE_TOL.max(radius * 1e-6) {
+            return None;
+        }
+    }
+    let (h0, h1) = (height_of(caps[0]), height_of(caps[1]));
+    let (lo, hi) = if h0 <= h1 { (h0, h1) } else { (h1, h0) };
+    let depth = hi - lo;
+    if depth < CONGRUENCE_TOL {
+        return None;
+    }
+    Some(CylPrism { base: axis_origin + axis * lo, axis, radius, ref_dir, depth })
+}
+
 /// Try to emit `allowed` as an `IfcExtrudedAreaSolid` with a classified profile.
 /// Returns the solid's ref (profile + placement + solid all emitted to `w`) when
-/// the faces form a clean polygonal prism, else `None`. `scale` = engine-units →
-/// metre.
+/// the faces form a clean polygonal prism (§42) or a right-circular cylinder
+/// (§43), else `None`. `scale` = engine-units → metre.
 pub fn try_extruded_area_solid(
     w: &mut StepWriter,
     mesh: &Mesh,
     allowed: &HashSet<FaceId>,
     scale: f64,
 ) -> Option<EntityRef> {
+    // §43 — a Path B cylinder is a circle swept along its axis.
+    if let Some(c) = detect_cylinder_prism(mesh, allowed) {
+        let pos2d = identity_placement_2d(w);
+        let profile = w.add(
+            "IFCCIRCLEPROFILEDEF",
+            vec![
+                StepValue::Enum("AREA".into()),
+                StepValue::Unset,
+                StepValue::Ref(pos2d),
+                StepValue::Real(c.radius * scale),
+            ],
+        );
+        return Some(emit_swept(w, profile, c.base, c.axis, c.ref_dir, c.depth, scale));
+    }
     let prism = detect_prism(mesh, allowed)?;
     let cen = centroid(&prism.loop3d);
     // In-plane basis: u along the first cap edge, v = axis × u (right-handed so
@@ -208,25 +298,38 @@ pub fn try_extruded_area_solid(
         .or_else(|| classify_trapezium(w, &p2, cen, u, v, scale))
         .unwrap_or_else(|| emit_arbitrary(w, &p2, cen, u, scale));
 
-    let loc = pt(w, origin3d * scale);
-    let axis_d = dir(w, prism.axis);
-    let ref_d = dir(w, xdir3d);
+    Some(emit_swept(w, profile, origin3d, prism.axis, xdir3d, prism.depth, scale))
+}
+
+/// Place a classified profile and sweep it: `IfcAxis2Placement3D(origin, axis,
+/// ref_dir)` + a local `+Z` `ExtrudedDirection` + the depth.
+fn emit_swept(
+    w: &mut StepWriter,
+    profile: EntityRef,
+    origin: DVec3,
+    axis: DVec3,
+    ref_dir: DVec3,
+    depth: f64,
+    scale: f64,
+) -> EntityRef {
+    let loc = pt(w, origin * scale);
+    let axis_d = dir(w, axis);
+    let ref_d = dir(w, ref_dir);
     let pos = w.add(
         "IFCAXIS2PLACEMENT3D",
         vec![StepValue::Ref(loc), StepValue::Ref(axis_d), StepValue::Ref(ref_d)],
     );
-    // ExtrudedDirection is local: +Z of the placement = the prism axis.
+    // ExtrudedDirection is local: +Z of the placement = the sweep axis.
     let ext_dir = dir(w, DVec3::Z);
-    let solid = w.add(
+    w.add(
         "IFCEXTRUDEDAREASOLID",
         vec![
             StepValue::Ref(profile),
             StepValue::Ref(pos),
             StepValue::Ref(ext_dir),
-            StepValue::Real(prism.depth * scale),
+            StepValue::Real(depth * scale),
         ],
-    );
-    Some(solid)
+    )
 }
 
 /// Map a 2D point in the `(u, v)` frame to a world point (engine units).

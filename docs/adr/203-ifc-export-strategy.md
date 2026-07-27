@@ -2273,3 +2273,51 @@ IFC 관례 정합.
   으로 내보내는 것은 후속 (현재는 brep+refill).
 - 파라메트릭 분류는 Rectangle / Trapezium 만; 그 외 다각형은 faithful 하지만 non-
   parametric (ArbitraryClosed). L-shape 등 형강 export 분류도 후속.
+
+## 43. Curved-side prism export — cylinder → IfcCircleProfileDef (§42 의 곡면 대칭)
+
+**문제 (§42 남은 한계)**: §42 는 **다각형** 프리즘만 파라메트릭 → Path B 원기둥 (기둥/
+파이프) 은 여전히 `IfcAdvancedBrep` (IfcCylindricalSurface + 2 IfcPlane). import 은
+§41 에서 `IfcCircleProfileDef` 를 읽는데 export 는 못 내보내 비대칭.
+
+**해결 (§43)**: `detect_cylinder_prism` 추가 — 다각형 경로와 달리 **surface 기반** 검출
+(Path B cap 은 1-vertex self-loop 라 Newell 법선이 degenerate → surface 를 진실로 사용).
+
+- **검출 조건 (4중 게이트, 배선 감사로 실측 확인)**:
+  1. active face **정확히 3개**
+  2. `AnalyticSurface::Cylinder` side **정확히 1개** (`side.is_some()` → 두 번째는 reject)
+  3. `Plane` cap **정확히 2개**, 각각 **inner loop 없음** (annulus cap = 구멍 뚫린 tube →
+     solid circle 로 내보내면 **보어가 메워지는 무음 손상** → reject)
+  4. **radial 합동**: 두 cap 경계점이 모두 축에서 `radius` 거리 (다각형 경로의 congruence
+     검증의 곡면 대응)
+  - 그 외 surface (Sphere/Cone/Torus/surfaceless) → 즉시 `None` → 기존 brep 경로
+- **emit**: `IfcCircleProfileDef(radius)` + `IfcAxis2Placement3D`(base cap 중심, Axis=
+  cylinder axis_dir, RefDirection=surface 의 ref_dir → u=0 위치 보존) + local +Z
+  ExtrudedDirection + Depth = 두 cap 의 축방향 거리. 배치/solid emit 은 §42 와 공유
+  (`emit_swept` helper 추출).
+- **Ellipse 는 미대상 (실측 근거)**: 엔진에 `AnalyticCurve::Ellipse` / `AnalyticSurface`
+  타원 variant 가 **존재하지 않음** (Line/Circle/Arc/Bezier/BSpline/NURBS,
+  Plane/Cylinder/Sphere/Cone/Torus/NURBS-class 뿐). 타원 기둥은 만들 수 없으므로 export
+  분류 대상도 없음 — import §41 의 `IfcEllipseProfileDef` 는 외부 파일 수용 전용.
+
+**검증**: `a_path_b_cylinder_exports_as_a_circle_swept_solid` (r 500mm → `,0.5)`, h
+1000mm → depth `,1.)`, brep 0, CylindricalSurface 0, **round-trip** 재import bbox
+Ø1m×1m + 20+ face 둥근 기둥) + 가드 2 (`a_two_cylinder_element_does_not_become_one_
+solid_circle` — 두 shell → circle 0, brep fallback; `a_cone_is_not_mistaken_for_a_
+cylinder` — Cone side → swept 0). **Mutation 검증**: 반지름 ×2 → positive test 실패
+확인; 4 게이트를 **모두** 무력화해야 tube 가 solid circle 로 새어나감 확인 (게이트 3개까지
+꺼도 나머지 1개가 차단 — defense-in-depth 실측). 전체 workspace 3237 pass / 0 fail.
+**외부 검증** (web-ifc): curved.ifc 의 cylinder → IfcExtrudedAreaSolid +
+IfcCircleProfileDef 로 읽히고 tessellate (sphere 는 IfcSphericalSurface advanced brep
+유지). 라이브 (real Chromium + 새 WASM): `create_cylinder` →
+`IFCCIRCLEPROFILEDEF(.AREA.,$,#p,0.5)` + `IFCEXTRUDEDAREASOLID(...,1.)`, brep 0.
+
+### 남은 한계
+
+- **annulus cap (진짜 tube)** 은 현재 엔진의 carve API (`punch_circular_hole` /
+  `drill_circular_through_hole`) 가 self-loop cap 을 다루지 못해 **구성 불가** → 가드는
+  방어 코드로 존재하되 회귀는 미커버 (coplanar-containment 가 closed-curve cap 까지
+  닿으면 그때 회귀 추가).
+- Cone (원뿔대) → `IfcExtrudedAreaSolid` 아님 (테이퍼) — `IfcRevolvedAreaSolid` 또는
+  기존 brep. Sphere/Torus 도 압출 아님 → brep 유지가 정답.
+- opening 있는 원기둥, 부분 원기둥 (u_range < 2π) → brep.
