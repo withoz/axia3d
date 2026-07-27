@@ -873,6 +873,27 @@ mod tests {
         );
     }
 
+    /// The 2D points of an emitted profile, parsed. String-matching IFC reals is
+    /// platform-dependent (`tan(atan(0.5))` is exactly 0.5 on one libm and
+    /// 0.49999999999999994 on another), so compare numerically with a tolerance.
+    fn profile_points_2d(s: &str) -> Vec<(f64, f64)> {
+        s.lines()
+            .filter_map(|l| {
+                let open = l.find("IFCCARTESIANPOINT((")? + "IFCCARTESIANPOINT((".len();
+                let inner = l[open..].split("))").next()?;
+                let mut it = inner.split(',');
+                let x: f64 = it.next()?.trim().parse().ok()?;
+                let y: f64 = it.next()?.trim().parse().ok()?;
+                it.next().is_none().then_some((x, y))
+            })
+            .collect()
+    }
+
+    /// Does `pts` contain a point within 1e-6 of `(x, y)`?
+    fn has_point(pts: &[(f64, f64)], x: f64, y: f64) -> bool {
+        pts.iter().any(|&(a, b)| (a - x).abs() < 1e-6 && (b - y).abs() < 1e-6)
+    }
+
     /// The bounding box of an imported element's faces (mm).
     fn imported_extent(s: &str) -> (DVec3, DVec3, usize) {
         let g = crate::ifc_geometry::import_ifc_geometry(s).unwrap();
@@ -908,8 +929,11 @@ mod tests {
         let solid = s.lines().find(|l| l.contains("IFCREVOLVEDAREASOLID(")).unwrap();
         assert!(solid.contains("6.283185"), "full turn (2π): {}", solid);
         // Meridian = 3 corners (0,0) (R,0) (0,H) → a triangle, apex on the axis.
-        assert!(s.contains("IFCCARTESIANPOINT((0.5,0.))"), "base radius 0.5m: {}", s);
-        assert!(s.contains("IFCCARTESIANPOINT((0.,1.))"), "apex at height 1m: {}", s);
+        let pts = profile_points_2d(&s);
+        assert_eq!(pts.len(), 3, "triangular meridian: {:?}", pts);
+        assert!(has_point(&pts, 0.0, 0.0), "meridian starts on the axis: {:?}", pts);
+        assert!(has_point(&pts, 0.5, 0.0), "base radius 0.5m: {:?}", pts);
+        assert!(has_point(&pts, 0.0, 1.0), "apex at height 1m on the axis: {:?}", pts);
         assert_refs_resolve(&s);
 
         // Round-trip: re-import → a cone of the same bbox (Ø1 m × 1 m tall).
@@ -953,13 +977,11 @@ mod tests {
         assert_eq!(s.matches("=IFCREVOLVEDAREASOLID(").count(), 1, "frustum → revolution: {}", s);
         assert_eq!(s.matches("=IFCADVANCEDBREP(").count(), 0, "no brep for a clean frustum");
         // Meridian = 4 corners: (0,0) (0.5,0) (0.2,1) (0,1) — top radius = 40%.
-        assert!(s.contains("IFCCARTESIANPOINT((0.5,0.))"), "base radius 0.5m: {}", s);
-        // Top radius is 40% of 0.5 m; the literal carries float noise (0.2000…4).
-        let top = s
-            .lines()
-            .find(|l| l.contains("IFCCARTESIANPOINT((0.2") && l.ends_with(",1.));"))
-            .unwrap_or_else(|| panic!("top radius 0.2m at height 1m: {}", s));
-        assert!(top.contains("((0.2"), "top radius ≈0.2m: {}", top);
+        let pts = profile_points_2d(&s);
+        assert_eq!(pts.len(), 4, "trapezium meridian: {:?}", pts);
+        assert!(has_point(&pts, 0.0, 0.0) && has_point(&pts, 0.0, 1.0), "axis side: {:?}", pts);
+        assert!(has_point(&pts, 0.5, 0.0), "base radius 0.5m: {:?}", pts);
+        assert!(has_point(&pts, 0.2, 1.0), "top radius 0.2m at height 1m: {:?}", pts);
         assert_refs_resolve(&s);
 
         // Round-trip: the wide end still spans Ø1 m and the height is 1 m.
