@@ -161,6 +161,16 @@ fn pt2d(w: &mut StepWriter, x: f64, y: f64) -> EntityRef {
     w.add("IFCCARTESIANPOINT", vec![StepValue::List(vec![StepValue::Real(x), StepValue::Real(y)])])
 }
 
+/// An identity `IfcAxis2Placement2D` (origin, +X). The parametric profiles centre
+/// and orient themselves through the 3D `IfcExtrudedAreaSolid.Position`, so their
+/// own 2D placement is the identity — but written explicitly (not `$`), which
+/// stricter readers such as web-ifc expect for a profile's Position.
+fn identity_placement_2d(w: &mut StepWriter) -> EntityRef {
+    let o = pt2d(w, 0.0, 0.0);
+    let d = w.add("IFCDIRECTION", vec![StepValue::List(vec![StepValue::Real(1.0), StepValue::Real(0.0)])]);
+    w.add("IFCAXIS2PLACEMENT2D", vec![StepValue::Ref(o), StepValue::Ref(d)])
+}
+
 /// Try to emit `allowed` as an `IfcExtrudedAreaSolid` with a classified profile.
 /// Returns the solid's ref (profile + placement + solid all emitted to `w`) when
 /// the faces form a clean polygonal prism, else `None`. `scale` = engine-units →
@@ -265,12 +275,13 @@ fn classify_rectangle(
     // X of the placement runs along edge 0 (the XDim edge).
     let (e0x, e0y) = e0;
     let xdir = (u * e0x + v * e0y).normalize();
+    let pos2d = identity_placement_2d(w);
     let profile = w.add(
         "IFCRECTANGLEPROFILEDEF",
         vec![
             StepValue::Enum("AREA".into()),
             StepValue::Unset,
-            StepValue::Unset, // Position: identity (placement re-centres in 3D)
+            StepValue::Ref(pos2d), // identity — the 3D placement re-centres
             StepValue::Real(xdim * scale),
             StepValue::Real(ydim * scale),
         ],
@@ -364,12 +375,13 @@ fn classify_trapezium(
     // edge runs [0, bottom_x] from the bottom-left, so centring both edges by
     // −bottom_x/2 cancels and the offset is just the top-left's local x.
     let top_offset = top_lx;
+    let pos2d = identity_placement_2d(w);
     let profile = w.add(
         "IFCTRAPEZIUMPROFILEDEF",
         vec![
             StepValue::Enum("AREA".into()),
             StepValue::Unset,
-            StepValue::Unset,
+            StepValue::Ref(pos2d),
             StepValue::Real(bottom_x * scale),
             StepValue::Real(top_x * scale),
             StepValue::Real(ydim * scale),
@@ -418,7 +430,8 @@ mod tests {
         // 2 × 1 rectangle centred at the origin.
         let rect = vec![(-1.0, -0.5), (1.0, -0.5), (1.0, 0.5), (-1.0, 0.5)];
         let s = build_with(|w| assert!(classify_rectangle(w, &rect, cen, u, v, 1.0).is_some()));
-        assert!(s.contains("IFCRECTANGLEPROFILEDEF(.AREA.,$,$,2.,1.)"), "{}", s);
+        let line = s.lines().find(|l| l.contains("IFCRECTANGLEPROFILEDEF(")).unwrap();
+        assert!(line.ends_with(",2.,1.);"), "XDim 2, YDim 1: {}", line);
         // A trapezoid is not a rectangle (no right angles).
         let trap = vec![(-2.0, -0.5), (2.0, -0.5), (1.0, 0.5), (-1.0, 0.5)];
         let mut w = StepWriter::new();
@@ -432,7 +445,8 @@ mod tests {
         // Exactly the shape the import test builds, so export ↔ import round-trips.
         let trap = vec![(-2.0, -0.5), (2.0, -0.5), (1.0, 0.5), (-1.0, 0.5)];
         let s = build_with(|w| assert!(classify_trapezium(w, &trap, cen, u, v, 1.0).is_some()));
-        assert!(s.contains("IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,4.,2.,1.,1.)"), "{}", s);
+        let line = s.lines().find(|l| l.contains("IFCTRAPEZIUMPROFILEDEF(")).unwrap();
+        assert!(line.ends_with(",4.,2.,1.,1.);"), "bottom 4, top 2, height 1, offset 1: {}", line);
         // A rectangle has two parallel pairs → not a (one-pair) trapezium.
         let rect = vec![(-1.0, -0.5), (1.0, -0.5), (1.0, 0.5), (-1.0, 0.5)];
         let mut w = StepWriter::new();
@@ -447,7 +461,8 @@ mod tests {
         // Top edge listed first (so the parallel pair is on the +Y side initially).
         let trap = vec![(-1.0, 0.5), (1.0, 0.5), (2.0, -0.5), (-2.0, -0.5)];
         let s = build_with(|w| assert!(classify_trapezium(w, &trap, cen, u, v, 1.0).is_some()));
-        assert!(s.contains("IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,4.,2.,1.,1.)"), "{}", s);
+        let line = s.lines().find(|l| l.contains("IFCTRAPEZIUMPROFILEDEF(")).unwrap();
+        assert!(line.ends_with(",4.,2.,1.,1.);"), "bottom 4, top 2, height 1, offset 1: {}", line);
     }
 
     #[test]

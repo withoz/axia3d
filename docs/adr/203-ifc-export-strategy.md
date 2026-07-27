@@ -2258,8 +2258,12 @@ integration 2 (`an_extruded_box_exports_as_a_rectangle_swept_solid` — box → 
 brep` — sphere → 0 swept, brep). 기존 5 test (analyze/classify/json/two-walls/§37 mixed)
 는 box→swept 현실로 갱신 (import classifier 가 `IFCEXTRUDEDAREASOLID` 를 supported 로
 인식 확인). 전체 workspace 3234 pass / 0 fail. 라이브 (real Chromium + 새 WASM):
-create_box → `IFCRECTANGLEPROFILEDEF(.AREA.,$,$,2.,3.)` + `IFCEXTRUDEDAREASOLID(#p,#pos,
-#dir,1.)`, advanced brep 0, `'SweptSolid'`.
+create_box → `IFCRECTANGLEPROFILEDEF` + `IFCEXTRUDEDAREASOLID(#p,#pos,#dir,1.)`,
+advanced brep 0, `'SweptSolid'`. **외부 검증** (`scripts/ifc-external-validate.mjs`,
+web-ifc 독립 엔진): box → IfcExtrudedAreaSolid + IfcRectangleProfileDef 를 읽고 정확히
+12 삼각형으로 tessellate. 프로파일 Position 은 `$` 아닌 **명시 IfcAxis2Placement2D**
+(identity) 로 emit — web-ifc 같은 엄격한 reader 의 `GetRefArgument` 경고 제거 + 실무
+IFC 관례 정합.
 
 ### 남은 한계
 
