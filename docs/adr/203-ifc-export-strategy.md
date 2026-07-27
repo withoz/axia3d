@@ -2321,3 +2321,66 @@ IfcCircleProfileDef 로 읽히고 tessellate (sphere 는 IfcSphericalSurface adv
 - Cone (원뿔대) → `IfcExtrudedAreaSolid` 아님 (테이퍼) — `IfcRevolvedAreaSolid` 또는
   기존 brep. Sphere/Torus 도 압출 아님 → brep 유지가 정답.
 - opening 있는 원기둥, 부분 원기둥 (u_range < 2π) → brep.
+
+## 44. 원뿔·원뿔대 export — 자오선 회전 (IfcRevolvedAreaSolid)
+
+**문제 (§43 남은 한계)**: 원기둥은 §43 에서 circle sweep 이 됐지만, **원뿔/원뿔대**
+(원뿔대 = frustum) 는 단면이 축을 따라 변하므로 **압출이 아님** → 여전히
+`IfcAdvancedBrep` (IfcConicalSurface). 파라메트릭 편집 불가.
+
+**해결 (§44)**: 회전체로 export. `detect_cone_prism` (§43 과 같은 surface 기반) →
+자오선(meridian) 프로파일을 축 둘레로 **full turn (2π)** 회전.
+
+- **검출**: `AnalyticSurface::Cone` side 1개 + Plane cap (apex 원뿔 1개 / 원뿔대 2개,
+  모두 inner loop 없음). **u_range 가 2π** 인 full cone 만 (부분 원뿔 reject).
+  `half_angle ∈ (0, π/2)`. cap 경계점이 자기 높이의 원뿔 반지름과 일치하는지 **합동
+  검증** (`radius_at(v) = v·tan(half_angle)`), v_range 밖이면 reject.
+  cap 개수는 `v_lo ≈ 0` (apex) 이면 1, 아니면 2 로 **기대값 강제**.
+- **자오선 프로파일**: apex 원뿔 → 삼각형 `(0,0) (R,0) (0,H)`; 원뿔대 → 사다리꼴
+  `(0,0) (R_base,0) (R_top,H) (0,H)`. u=0 변이 회전축 위에 놓임 (원뿔의 표준 모델링).
+- **배치**: `IfcAxis2Placement3D(base 중심, Axis=ref_dir×axis (평면 법선),
+  RefDirection=ref_dir)` → local X = 반경방향, **local Y = 원뿔 축** → 자오선이 그
+  평면에 놓임. `IfcAxis1Placement(base 중심, axis)` — IFC4 는 회전축을 Position 과
+  **같은 object 좌표계**로 정의하며 프로파일 평면 안에 있어야 함 (여기서는 local Y).
+  Angle = 2π. import 의 `revolved_area_solid_loops` 와 동일 규약 → round-trip.
+
+**검증**: `a_cone_exports_as_a_revolved_meridian` (삼각형 자오선 + 2π + Axis1Placement
+1개 + brep 0 + **round-trip** 재import bbox Ø1m×1m) + `a_frustum_exports_as_a_revolved_
+trapezium` (top_scale 0.4 → 자오선 `(0,0) (0.5,0) (0.2,1) (0,1)`, round-trip 폭 1m).
+**Mutation**: 자오선 base/top 반지름 swap → frustum 실패, base 반지름 ½ → cone
+round-trip bbox 실패 (모두 pin 됨 확인). 전체 workspace 3239 pass / 0 fail. 라이브
+(real Chromium + 새 WASM): `create_cone` → `IFCREVOLVEDAREASOLID(#p,#pos,#ax,6.2831…)`
++ 자오선 `(0.,0.) (0.5,0.) (0.,1.)`, brep 0.
+
+### 외부 검증에서 측정한 web-ifc 한계 (정직 기록)
+
+외부 검증 corpus 에 `cone.ifc` 추가 후 **web-ifc 가 회전체를 tessellate 하지 못함**
+(0 triangles) 를 발견. 격리 실험 (같은 harness):
+
+| 케이스 | web-ifc 결과 |
+|---|---|
+| IfcExtrudedAreaSolid (control) | **12 tris** ✅ |
+| IfcRevolvedAreaSolid — 자오선이 축에 접함, Axis=object 좌표 | 0 |
+| 〃 Axis=Position-local 좌표 | 0 |
+| 〃 identity Position + 축 = world Y | 0 |
+| 〃 축과 떨어진 ring 프로파일 (축 접촉 없음) | 0 |
+| IfcRightCircularCone (CSG 대안) | 0 (mesh 조차 0) |
+
+→ 축 해석 / 프로파일 형태 문제가 아니라 **web-ifc 0.0.77 에 회전 커널이 없음**.
+
+**중요 — §44 는 web-ifc 기준 회귀가 아님**: §44 이전 (원뿔 = advanced brep) 의 web-ifc
+tessellation 을 측정하니 `extent=[0.980, 0.990, **0.000**]` — **z 두께 0, 즉 바닥
+원판만** 그렸다 (그 커널은 IfcConicalSurface 도 건너뛰므로). 즉 web-ifc 에서는 이전에도
+원뿔이 **잘못된 납작한 원판**이었고 지금은 **아무것도 안 보임** — 어느 쪽도 원뿔을 그린
+적이 없다. 반면 spec 을 구현한 도구 (Revit / ArchiCAD / IfcOpenShell) 와 **우리 importer**
+는 회전체를 정확·파라메트릭하게 복원한다 (round-trip 회귀로 봉인). 그래서 cone.ifc 는
+tessellation 대신 **구조 검증** (revolved solid 1 / extrusion 0 / axis 1 / 자오선 profile
+1) + 한계 note 로 검증한다 — 기존 Spherical/Conical/Toroidal note 와 동일한 처리.
+
+### 남은 한계
+
+- 부분 원뿔 (u_range < 2π), 개구부 포함 원뿔, annulus cap (§43 과 동일) → brep.
+- 구/토러스도 압출·회전 단일 프로파일로 떨어지지 않는 형상은 brep 유지 (구는 반원
+  자오선 회전으로 가능하나 별도 트랙).
+- web-ifc 기반 웹 뷰어에서 원뿔이 안 보이는 것은 그 커널의 한계 — 필요 시 그런 소비자
+  전용으로 tessellated fallback 을 옵션화하는 별도 트랙 가능.
