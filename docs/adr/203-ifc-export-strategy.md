@@ -2219,3 +2219,53 @@ verts 8; ellipse → ok / faces 514 / verts 1024 (512 segments); warnings 0.
 
 - IfcRoundedRectangleProfileDef / IfcCraneRailProfileDef 등 나머지 파라메트릭
   profile 은 별도. Export 방향의 파라메트릭 profile 분류 (mesh → IfcProfileDef) 도 별도.
+
+## 42. Export-direction parametric profile classification (mesh → IfcExtrudedAreaSolid)
+
+**문제**: §41 까지 import 은 파라메트릭 profile 을 읽지만, **export** 은 모든 요소를
+`IfcAdvancedBrep` / `IfcFacetedBrep` 로만 내보냄. 곧은 벽·기둥·보 처럼 명백한 압출
+프리즘도 brep 으로 나가 — BIM 툴에서 편집 불가, 파일 크기 큼, 의미(profile+depth) 소실.
+엔진은 압출 이력(profile/depth)을 저장하지 않으므로(`CreateSolidResult.solid_kind` 는
+반환값일 뿐), export 는 **메시에서 프리즘을 기하학적으로 역검출** 해야 함.
+
+**해결 (§42 MVP)**: 새 `ifc_extrude` 모듈이 다각형 압출 프리즘을 검출 → 프로파일 분류
+→ `IfcExtrudedAreaSolid` emit. 프리즘이 아니면 `None` → 기존 brep 경로 유지.
+
+- **프리즘 검출** (`detect_prism`): active face 중 정확히 2개의 평면 cap (법선 antiparallel,
+  나머지 face 는 모두 그 축에 수직) + cap edge 당 quad side 1개 (`m == cap_n + 2`) +
+  **합동 검증** (bottom vertex + depth·axis 가 top vertex 에 일치). 축은 두 cap 중심 차.
+  FaceId 정렬 순회로 **deterministic** (HashSet 순서 무관 → emit 재현성). hole 있는 면 /
+  곡면 side / self-loop → `None`.
+- **프로파일 분류** (cap loop 을 (u,v) 2D 로 투영, CCW 강제):
+  - **Rectangle**: 4각 + 모든 각 직각 + 마주보는 변 동일 → `IfcRectangleProfileDef(XDim,
+    YDim)`, 배치는 cap 중심.
+  - **Trapezium**: 4각 + 평행변 정확히 한 쌍 (**긴 변을 bottom 으로 canonical**) →
+    `IfcTrapeziumProfileDef(BottomXDim, TopXDim, YDim, TopXOffset)`, box-중심 원점 +
+    bottom 변을 local X 로. §41 import 규약과 정확히 대칭 (round-trip).
+  - **ArbitraryClosed**: 그 외 다각형 → `IfcArbitraryClosedProfileDef` + `IfcPolyline`
+    (cap 다각형 그대로, 항상 faithful).
+- **UV/배치**: `IfcAxis2Placement3D`(cap 원점, Axis=압출축, RefDirection=프로파일 X) +
+  `ExtrudedDirection`=local +Z + `Depth`=프리즘 높이. Shape representation type =
+  `'SweptSolid'`.
+- **연결** (`emit_ifc_model_with_openings`): 요소에 baked opening 이 **없을 때만** swept
+  시도(있으면 메시가 깨끗한 프리즘 아님 → 기존 brep+refill 경로). 비-프리즘도 brep.
+  material 의 `IfcStyledItem` 은 brep 이든 swept 든 geometry ref 만 참조 → §38-40 정합.
+
+**검증**: `ifc_extrude` unit 4 (rectangle/trapezium/orientation-independent/arbitrary
+분류; trapezium 은 §41 import 규약과 동일 파라미터, mutation 은 아래) + `ifc_model`
+integration 2 (`an_extruded_box_exports_as_a_rectangle_swept_solid` — box → 1 swept +
+1 rectangle + 0 brep + **round-trip** re-import bbox 일치; `a_non_prism_falls_back_to_
+brep` — sphere → 0 swept, brep). 기존 5 test (analyze/classify/json/two-walls/§37 mixed)
+는 box→swept 현실로 갱신 (import classifier 가 `IFCEXTRUDEDAREASOLID` 를 supported 로
+인식 확인). 전체 workspace 3234 pass / 0 fail. 라이브 (real Chromium + 새 WASM):
+create_box → `IFCRECTANGLEPROFILEDEF(.AREA.,$,$,2.,3.)` + `IFCEXTRUDEDAREASOLID(#p,#pos,
+#dir,1.)`, advanced brep 0, `'SweptSolid'`.
+
+### 남은 한계
+
+- **곡면 side 프리즘** (원/타원 → Cylinder side + Circle/타원 cap) 미지원 → brep fallback.
+  Circle/Ellipse export 분류는 후속 (import §41 과 대칭 완성).
+- **opening 있는 프리즘**: refill 된 solid 를 다시 프리즘 검출해 swept + 별도 opening
+  으로 내보내는 것은 후속 (현재는 brep+refill).
+- 파라메트릭 분류는 Rectangle / Trapezium 만; 그 외 다각형은 faithful 하지만 non-
+  parametric (ArbitraryClosed). L-shape 등 형강 export 분류도 후속.

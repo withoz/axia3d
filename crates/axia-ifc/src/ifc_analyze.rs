@@ -195,7 +195,9 @@ mod tests {
         let a = analyze_ifc(&ifc).unwrap();
         assert_eq!(a.count("IFCWALL"), 1);
         assert_eq!(a.count("IFCMATERIAL"), 1);
-        assert_eq!(a.count("IFCADVANCEDBREP"), 1);
+        // A box exports as a parametric rectangle swept solid (§42), not a brep.
+        assert_eq!(a.count("IFCEXTRUDEDAREASOLID"), 1);
+        assert_eq!(a.count("IFCADVANCEDBREP"), 0);
         assert_eq!(a.count("IFCFACETEDBREP"), 0);
 
         let json = a.to_json();

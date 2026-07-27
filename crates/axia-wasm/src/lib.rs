@@ -14897,10 +14897,10 @@ END-ISO-10303-21;
         );
     }
 
-    /// §37 per-element faceted fallback — a mixed model (an analytic wall + a
+    /// §37 per-element faceted fallback — a mixed model (a clean box + a
     /// non-analytic element) must NOT collapse the whole export to one faceted
-    /// shell. Each element keeps its own IfcWall: the analytic one exports as an
-    /// IfcAdvancedBrep, the non-analytic one as an IfcFacetedBrep.
+    /// shell. Each element keeps its own IfcWall: the box exports as a parametric
+    /// IfcExtrudedAreaSolid (§42), the non-analytic one as an IfcFacetedBrep.
     #[test]
     fn a_mixed_model_exports_advanced_and_faceted_per_element() {
         let mut e = AxiaEngine::new();
@@ -14920,10 +14920,10 @@ END-ISO-10303-21;
         let ifc = e.export_ifc_model("Mixed".into());
         assert!(!ifc.is_empty(), "the mixed model still exports (no whole-model collapse)");
         assert_eq!(ifc.matches("IFCWALL(").count(), 2, "both elements keep their own IfcWall");
-        assert_eq!(ifc.matches("IFCADVANCEDBREP(").count(), 1, "the analytic wall → advanced brep");
+        assert_eq!(ifc.matches("IFCEXTRUDEDAREASOLID(").count(), 1, "the box → parametric swept solid (§42)");
         assert_eq!(ifc.matches("IFCFACETEDBREP(").count(), 1, "the non-analytic element → faceted brep");
-        // The faceted element's body representation is tagged 'Brep', the analytic 'AdvancedBrep'.
-        assert!(ifc.contains("'AdvancedBrep'") && ifc.contains("'Brep'"), "both rep types present");
+        // The faceted element's body representation is tagged 'Brep', the box 'SweptSolid'.
+        assert!(ifc.contains("'SweptSolid'") && ifc.contains("'Brep'"), "both rep types present");
     }
 
     /// §38 end-to-end — a material assigned to a wall's FACES (what the Inspector's
