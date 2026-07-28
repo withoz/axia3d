@@ -141,21 +141,28 @@ impl Mesh {
     /// loop, or `None` if missing / degenerate.
     fn carve_face_plane(&self, face_id: FaceId) -> Option<(DVec3, DVec3, Vec<DVec3>)> {
         let face = self.faces.get(face_id).filter(|f| f.is_active())?;
-        // This models the face as a PLANE, so a curved face must never reach it.
-        // That was implicit while only polygons got here (a Path A cylinder's side
-        // quads really are planar), but `face_outline_points` below also resolves a
-        // one-vertex closed-curve face — and a Path B cylinder *side* is exactly
-        // that, while being genuinely non-planar. Reject curved surfaces explicitly.
-        if matches!(
-            self.face_surface(face_id),
-            Some(AnalyticSurface::Cylinder { .. })
-                | Some(AnalyticSurface::Sphere { .. })
-                | Some(AnalyticSurface::Cone { .. })
-                | Some(AnalyticSurface::Torus { .. })
-                | Some(AnalyticSurface::BezierPatch { .. })
-                | Some(AnalyticSurface::BSplineSurface { .. })
-                | Some(AnalyticSurface::NURBSSurface { .. })
-        ) {
+        // This models the face as a PLANE, so a genuinely non-planar face must never
+        // reach it. The precise test is "curved surface AND a closed-curve boundary":
+        //   - a Path B cylinder *side* is a one-vertex closed-curve face wrapping the
+        //     whole barrel, so `face_outline_points` resolves an outline for it and
+        //     modelling it as a plane would corrupt every ray hit — reject;
+        //   - a Path A facet also carries a Cylinder/Sphere surface but is a genuine
+        //     planar quad, and it has always been a legitimate ray target. Rejecting
+        //     it on surface kind alone (as this first did) silently changed radial
+        //     drilling on Path A pipes, so the boundary shape decides, not the
+        //     surface kind (ADR-298).
+        if self.closed_curve_rim_face_count(face_id).is_some()
+            && matches!(
+                self.face_surface(face_id),
+                Some(AnalyticSurface::Cylinder { .. })
+                    | Some(AnalyticSurface::Sphere { .. })
+                    | Some(AnalyticSurface::Cone { .. })
+                    | Some(AnalyticSurface::Torus { .. })
+                    | Some(AnalyticSurface::BezierPatch { .. })
+                    | Some(AnalyticSurface::BSplineSurface { .. })
+                    | Some(AnalyticSurface::NURBSSurface { .. })
+            )
+        {
             return None;
         }
         // `face_outline_points` gives the loop's vertex positions for a polygon face
@@ -4057,37 +4064,85 @@ mod closed_curve_cap_carve {
         mesh
     }
 
+    /// ADR-297 claimed a Path B *solid* cap was punchable. It is not, and its test
+    /// only looked as far as `verify_face_invariants`, which does not walk the
+    /// annulus band's INNER loop — so a top-cap punch that had already destroyed
+    /// that loop still read as valid. Measured truth: every face of a Path B
+    /// cylinder shares its rim with the band (`closed_curve_rim_face_count == 2`);
+    /// a bottom-cap punch corrupted the band's OUTER loop ("HalfEdge not found")
+    /// and a top-cap punch corrupted its inner one silently. Such a face must not
+    /// be a punch host at all (ADR-298).
     #[test]
-    fn punch_finds_a_closed_curve_cap_as_its_host() {
-        // Was: "no coplanar face contains the hole center" — the host search gated on
-        // >= 3 loop verts, and a closed-curve cap has exactly one.
-        let mut mesh = path_b_cylinder();
-        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
-        let host = mesh
-            .punch_circular_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 100.0, 24)
-            .expect("a Path B cap must be punchable");
-        assert!(
-            mesh.faces[host].inners().len() >= 1,
-            "the punched cap must carry the hole as an inner loop"
-        );
-        assert!(mesh.verify_face_invariants().is_valid(), "invariants after punch");
-        assert_eq!(
-            mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
-            before,
-            "punching replaces the cap in place; it must not add a face"
-        );
+    fn a_shared_rim_cap_is_never_a_punch_host() {
+        for z in [0.0_f64, 1000.0] {
+            let mut mesh = path_b_cylinder();
+            let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let r = mesh.punch_circular_hole(DVec3::new(0.0, 0.0, z), DVec3::Z, 100.0, 24);
+            assert!(r.is_err(), "a shared-rim cap (z={z}) must be refused, not rewritten");
+            assert!(
+                mesh.verify_face_invariants().is_valid(),
+                "the refusal must leave the mesh untouched (z={z})"
+            );
+            assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), before);
+            for (fid, f) in mesh.faces.iter().filter(|(_, f)| f.is_active()) {
+                assert!(
+                    mesh.collect_loop_verts(f.outer().start).is_ok(),
+                    "face {fid:?} outer loop must survive (z={z})"
+                );
+            }
+        }
     }
 
+    /// The capability ADR-297 actually delivers: a STANDALONE closed-curve face —
+    /// a drawn circle sheet, rim shared with nobody — is punchable.
     #[test]
-    fn punch_rect_and_polygon_reach_a_closed_curve_cap_too() {
-        // All three punch variants shared the same >= 3 vert host gate.
+    fn a_standalone_closed_curve_face_is_punchable() {
+        let mut mesh = Mesh::new();
+        let anchor = mesh.add_vertex(DVec3::new(500.0, 0.0, 0.0));
+        let face = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 500.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        assert_eq!(mesh.closed_curve_rim_face_count(face), Some(1), "standalone rim");
+        let host = mesh
+            .punch_circular_hole(DVec3::ZERO, DVec3::Z, 100.0, 24)
+            .expect("a standalone closed-curve face must be punchable");
+        assert_eq!(mesh.faces[host].inners().len(), 1);
+        assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    /// The annulus band is a one-vertex closed-curve face whose outline resolves,
+    /// and `analytic_face_area` makes it 2*pi*r*h — smaller than the cap's pi*r^2
+    /// whenever h < r/2, so the smallest-area tiebreak actually selected it.
+    #[test]
+    fn a_curved_band_is_never_a_punch_host() {
+        let mut mesh = Mesh::new();
+        mesh.create_cylinder_kernel_native_clean(DVec3::ZERO, 500.0, 200.0, MaterialId::new(0))
+            .unwrap();
+        let r = mesh.punch_circular_hole(DVec3::ZERO, DVec3::Z, 50.0, 24);
+        assert!(r.is_err(), "the cylindrical band must never host a planar punch");
+        assert!(mesh.verify_face_invariants().is_valid(), "mesh untouched by the refusal");
+    }
+
+    /// All three punch variants share the host search, so all three must refuse.
+    #[test]
+    fn rect_and_polygon_punches_also_refuse_a_shared_rim_cap() {
         let mut m1 = path_b_cylinder();
-        m1.punch_rect_hole(
-            DVec3::new(-100.0, -100.0, 1000.0),
-            DVec3::new(100.0, 100.0, 1000.0),
-            DVec3::Z,
-        )
-        .expect("rect opening on a Path B cap");
+        assert!(m1
+            .punch_rect_hole(
+                DVec3::new(-100.0, -100.0, 1000.0),
+                DVec3::new(100.0, 100.0, 1000.0),
+                DVec3::Z,
+            )
+            .is_err());
         assert!(m1.verify_face_invariants().is_valid());
 
         let mut m2 = path_b_cylinder();
@@ -4096,8 +4151,7 @@ mod closed_curve_cap_carve {
             DVec3::new(120.0, -80.0, 1000.0),
             DVec3::new(0.0, 130.0, 1000.0),
         ];
-        m2.punch_polygon_hole(&tri, DVec3::Z)
-            .expect("polygon opening on a Path B cap");
+        assert!(m2.punch_polygon_hole(&tri, DVec3::Z).is_err());
         assert!(m2.verify_face_invariants().is_valid());
     }
 
@@ -4115,23 +4169,54 @@ mod closed_curve_cap_carve {
         assert!(mesh.verify_face_invariants().is_valid());
     }
 
-    /// Documents where through-drilling a Path B solid still stops, so a later fix
-    /// has a baseline. The raycast now FINDS the far cap (that was the
-    /// `carve_face_plane` gate), but `bridge_through_loops` requires the exit wall's
-    /// normal to be anti-parallel to the drill axis — and every face of a Path B
-    /// cylinder reports a cached normal of +Z, including the bottom cap, so the
-    /// guard can never be satisfied. That is a property of closed-curve faces'
-    /// cached normals, not of the drill.
+    /// ADR-298 — the `carve_face_plane` guard rejects a face for being genuinely
+    /// non-planar (a curved surface with a CLOSED-CURVE boundary), not for its
+    /// surface kind. A Path A facet carries a Cylinder surface too but is a real
+    /// planar quad and has always been a legitimate ray target; keying on surface
+    /// kind alone (as ADR-297 first did) made a radial drill on a Path A pipe die
+    /// at "no opposite wall" instead of reaching its real answer.
+    #[test]
+    fn a_path_a_facet_stays_a_valid_ray_target() {
+        let mut mesh = Mesh::new();
+        mesh.create_cylinder(DVec3::ZERO, 500.0, 1000.0, 24, MaterialId::new(0)).unwrap();
+        // Axial drill cap-to-cap must still work end to end.
+        assert!(mesh
+            .drill_circular_through_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 100.0, 12)
+            .is_ok());
+
+        // Radial: the wall quads must be FOUND (the drill gets far enough to reject
+        // for its own reason), not skipped as if they were curved.
+        let mut m2 = Mesh::new();
+        m2.create_cylinder(DVec3::ZERO, 500.0, 1000.0, 24, MaterialId::new(0)).unwrap();
+        let apo = 500.0 * (std::f64::consts::PI / 24.0).cos();
+        let err = m2
+            .drill_circular_through_hole(DVec3::new(apo, 0.0, 500.0), DVec3::X, 40.0, 12)
+            .expect_err("radial drill is rejected, but for the right reason");
+        assert!(
+            !err.to_string().contains("no opposite wall"),
+            "the far wall must be found, got: {err}"
+        );
+    }
+
+    /// Through-drilling a Path B solid is still refused, now at the entry punch:
+    /// its caps are shared-rim closed-curve faces, which are no longer hosts
+    /// (ADR-298). Two things must still hold before this can ever be supported —
+    /// the caps need a representation a punch can rewrite without destroying the
+    /// band, and `bridge_through_loops` needs a trustworthy outward normal (every
+    /// face of a Path B cylinder currently reports a cached +Z, bottom cap
+    /// included, and its `Plane` surface says +Z too, so the anti-parallel guard
+    /// cannot be satisfied — unlike cone/sphere, whose caps do carry NEG_Z).
     #[test]
     fn drill_through_a_path_b_solid_is_refused_cleanly() {
         let mut mesh = path_b_cylinder();
-        let err = mesh
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        assert!(mesh
             .drill_circular_through_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 100.0, 24)
-            .expect_err("still unsupported");
-        let msg = err.to_string();
+            .is_err());
         assert!(
-            msg.contains("경사진") || msg.contains("tapered"),
-            "it must fail with the straight-through reason, got: {msg}"
+            mesh.verify_face_invariants().is_valid(),
+            "a refused drill must leave the mesh untouched"
         );
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), before);
     }
 }
