@@ -1609,14 +1609,19 @@ impl Mesh {
             if h_area <= my_area + 1e-6 {
                 continue; // only a strictly LARGER container counts
             }
-            let hverts = match self.collect_loop_verts(h.outer().start) {
-                Ok(v) if v.len() >= 3 => v,
+            // ADR-299 — outline, not raw loop verts. A kernel-native closed-curve
+            // face (ADR-089) has ONE anchor vertex, so this `>= 3` gate skipped it
+            // and it could never be recognised as a coplanar container: a circle
+            // drawn on a bigger circle reported no host, `wall_thickness_from_
+            // source_face` returned None, and a through-cut silently degraded to a
+            // blind pocket. `face_outline_points` is read-only (it samples the
+            // boundary curve; the mesh keeps its analytic form) — the same fix
+            // ADR-297 applied to the punch host search, which was not propagated
+            // here. The profile side of this very function already used it.
+            let hpts = match self.face_outline_points(hid) {
+                Some(v) if v.len() >= 3 => v,
                 _ => continue,
             };
-            let hpts: Vec<DVec3> = hverts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
-            if hpts.len() < 3 {
-                continue;
-            }
             // Same plane (my centroid within the spatial-hash tol of h's plane).
             if (centroid - hpts[0]).dot(hn).abs() > COPLANAR_OFFSET {
                 continue;
@@ -2444,6 +2449,24 @@ mod tests {
         );
         let active = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         assert_eq!(active, 10, "6 box − Bot door strip + 3 jambs = 10");
+        // Face count and invariants cannot see a BOUNDARY edge, so an unwelded
+        // jamb-to-bottom seam — exactly what LOCKED #86 claims is welded — used
+        // to pass here. Measured truth: the notch leaves a FULLY CLOSED solid
+        // (0 boundary, 0 non-manifold), which is stronger than "the jambs are
+        // welded" and is what the curved siblings in this file already assert
+        // via face_set_manifold_info (ADR-299).
+        let ids: Vec<crate::FaceId> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        let info = mesh.face_set_manifold_info(&ids);
+        assert_eq!(
+            info.non_manifold_edge_count, 0,
+            "a welded jamb leaves no non-manifold edge"
+        );
+        assert_eq!(
+            info.boundary_edge_count, 0,
+            "every jamb seam is welded — a boundary edge means an open seam"
+        );
+        assert!(info.is_closed_solid, "the notched wall is still a closed solid");
     }
 
     /// A door whose bottom does NOT reach the wall bottom edge is a WINDOW →
@@ -4198,6 +4221,55 @@ mod closed_curve_cap_carve {
         );
     }
 
+    /// ADR-299 — a closed-curve face must be recognisable as a coplanar
+    /// container. `find_larger_coplanar_container_face` gated its host candidates
+    /// on `collect_loop_verts(...).len() >= 3`, and a kernel-native closed-curve
+    /// face (ADR-089) has ONE anchor vertex, so it was skipped: a smaller circle
+    /// inside a bigger one reported no host, `wall_thickness_from_source_face`
+    /// returned None, and a through-cut silently degraded to a blind pocket. The
+    /// profile side of that same function already used `face_outline_points`;
+    /// this is the identical fix ADR-297 made to the punch host search.
+    #[test]
+    fn a_closed_curve_face_can_be_a_coplanar_container() {
+        let mut mesh = Mesh::new();
+        let outer_anchor = mesh.add_vertex(DVec3::new(1000.0, 0.0, 0.0));
+        let big = mesh
+            .add_face_closed_curve(
+                outer_anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 1000.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        let inner_anchor = mesh.add_vertex(DVec3::new(200.0, 0.0, 0.0));
+        let small = mesh
+            .add_face_closed_curve(
+                inner_anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 200.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+
+        assert!(
+            mesh.face_has_larger_coplanar_container(small),
+            "the smaller closed-curve face sits inside the bigger one"
+        );
+        // …and the relation is not symmetric: nothing contains the big one.
+        assert!(
+            !mesh.face_has_larger_coplanar_container(big),
+            "the bigger face has no container"
+        );
+    }
+
     /// ADR-298 — a REFUSED punch must not have mutated anything. The host is
     /// polygonized destructively (`polygonize_closed_curve_face` removes the
     /// analytic face and re-adds a tessellated one) and nothing rolls that back:
@@ -4271,4 +4343,5 @@ mod closed_curve_cap_carve {
         assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), before);
     }
 }
+
 

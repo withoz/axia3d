@@ -173,9 +173,14 @@ describe('action wiring — every data-action reaches a handler', () => {
 
     const menubar = idsInContainer('menubar');
     const statusbar = idsInContainer('statusbar');
-    const main = read('src/main.ts');
-    const allowMatch = /CONTEXT_SELECTION_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(main);
-    expect(allowMatch, 'CONTEXT_SELECTION_ACTIONS not found in main.ts').toBeTruthy();
+    // ADR-299 moved the dispatcher out of main.ts so its contract could be
+    // tested without booting the app; the allow-list moved with it.
+    const dispatcher = read('src/ui/dispatchMenuAction.ts');
+    const allowMatch = /CONTEXT_SELECTION_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(dispatcher);
+    expect(
+      allowMatch,
+      'CONTEXT_SELECTION_ACTIONS not found in src/ui/dispatchMenuAction.ts',
+    ).toBeTruthy();
     const allowed = [...allowMatch![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
     expect(allowed.length).toBeGreaterThan(0);
 

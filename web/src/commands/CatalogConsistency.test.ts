@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (187, after -3 ghosts, +1 surfaced tool, -1 hover-only)', () => {
+  it('CommandCatalog count matches expected total (187, after -4 ghosts, +1 surfaced tool, -1 hover-only)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -117,7 +117,13 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // 188: export-ifc (ADR-203 β-1.5) — the first working DCEL→interchange
     // export (IFC4.3 IfcFacetedBrep), wired to the export menu + palette, with
     // a matching ActionCatalog entry.
-    expect(count).toBe(188);
+    //
+    // 187: view-sun-panel left (ADR-299). Unlike the three ghosts above it
+    // never had an implementation at all — no SunPanel class exists anywhere
+    // in the repo. Its handler read a global nothing assigns and swallowed
+    // the miss with `sp?.toggle()`, while the menu advertised a Shift+U hint
+    // bound to nothing. Removed from menu, palette and catalog together.
+    expect(count).toBe(187);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

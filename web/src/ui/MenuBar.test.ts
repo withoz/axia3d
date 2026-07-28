@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { initMenuBar, MenuBarDeps } from './MenuBar';
+import { initMenuBar, MenuBarDeps, consumeActionUnavailable, markActionUnavailable } from './MenuBar';
 
 // Mock debug
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
@@ -26,6 +26,8 @@ function createMenuBarDOM(): void {
           <div class="menu-action" data-action="file-save">Save</div>
           <div class="menu-action" data-action="file-saveas">Save As</div>
           <div class="menu-action" data-action="export-ifc">IFC</div>
+          <div class="menu-action" data-action="view-components">Components</div>
+          <div class="menu-action" data-action="view-xia-inspector">Inspector</div>
         </div>
       </div>
       <div class="menu-item">
@@ -515,6 +517,53 @@ describe('MenuBar', () => {
       };
       clickExportIfc(bridge);
       expect(bridge.exportIfc).toHaveBeenCalled();
+    });
+  });
+
+  // ADR-299 — four Window items read globals nothing assigned, so they only ever
+  // warned; and dispatchMenuAction reported success on element existence alone, so
+  // the Capability Explorer logged every one of them as 'Launched'.
+  describe('unavailable actions report themselves', () => {
+    function click(id: string) {
+      createMenuBarDOM();
+      initMenuBar(deps);
+      consumeActionUnavailable(); // clear anything left by a previous case
+      document.querySelector<HTMLElement>(`[data-action="${id}"]`)!.click();
+    }
+
+    it('flags a handler whose panel global is missing', () => {
+      delete (window as any).__axia_componentPanel;
+      click('view-components');
+      expect(consumeActionUnavailable()).toBe(true);
+    });
+
+    it('does NOT flag one whose panel is present', () => {
+      const toggle = vi.fn();
+      (window as any).__axia_xiaInspector = { toggle };
+      click('view-xia-inspector');
+      expect(toggle).toHaveBeenCalled();
+      expect(consumeActionUnavailable()).toBe(false);
+      delete (window as any).__axia_xiaInspector;
+    });
+
+    it('consuming the flag clears it, so the next action starts clean', () => {
+      markActionUnavailable('x');
+      expect(consumeActionUnavailable()).toBe(true);
+      expect(consumeActionUnavailable()).toBe(false);
+    });
+
+    it('a fresh dispatch resets a stale flag', () => {
+      const toggle = vi.fn();
+      (window as any).__axia_xiaInspector = { toggle };
+      createMenuBarDOM();
+      initMenuBar(deps);
+      // Set it AFTER init and do NOT consume — only the reset inside the
+      // dispatcher can clear it. (Consuming here would mask that reset.)
+      markActionUnavailable('left over from an earlier action');
+      document.querySelector<HTMLElement>('[data-action="view-xia-inspector"]')!.click();
+      expect(toggle).toHaveBeenCalled();
+      expect(consumeActionUnavailable()).toBe(false);
+      delete (window as any).__axia_xiaInspector;
     });
   });
 

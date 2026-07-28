@@ -6,7 +6,7 @@
  * Run: npx playwright test adr-092-demo --headed (or non-headed)
  * Output: web/test-results/adr-092-demo-(...)/screenshots
  */
-import { test } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { waitForBridgeReady } from './helpers/boolean-fixtures';
 
 interface AxiaWindow {
@@ -130,4 +130,13 @@ test('ADR-092 직접 시연 — DrawCircle → PushPull → top rim screenshot',
   console.log('═══════════════════════════════════════════════');
   console.log(JSON.stringify(setup, null, 2));
   console.log('═══════════════════════════════════════════════');
+
+  // Zero assertions before (ADR-299). The claim is that Push/Pull preserves the
+  // closed-curve top rim, so it renders as a smooth multi-segment arc rather
+  // than the polygon facets the pre-ADR-092 path produced.
+  expect(setup.ok, `demo failed at ${setup.stage ?? '?'}`).toBe(true);
+  expect(setup.faces, 'a solid was created').toBeGreaterThan(0);
+  expect(setup.multiSegmentEdges, 'the rim survived as an arc edge').toBeGreaterThan(0);
+  expect(setup.avgSegPerArcEdge, 'an arc edge tessellates to several segments')
+    .toBeGreaterThan(1);
 });

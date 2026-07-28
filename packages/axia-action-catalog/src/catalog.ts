@@ -1871,16 +1871,6 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     adrs: ['ADR-133'],
   },
   {
-    id: 'view-sun-panel',
-    label: '태양 패널',
-    description: 'Open the sun position / time-of-day panel.',
-    tier: 0,
-    surfaces: ['menu'],
-    aliases: {},
-    status: 'ui-only',
-    adrs: ['ADR-133'],
-  },
-  {
     id: 'view-top',
     label: '평면도 (Top)',
     description: 'Switch to orthographic top view (+Z direction).',

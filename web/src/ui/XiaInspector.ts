@@ -21,7 +21,12 @@ export interface XiaInspectorDeps {
   toolManager: ToolManager;
 }
 
-export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
+/** What the caller needs to drive the panel from elsewhere (menu, palette). */
+export interface XiaInspectorHandle {
+  toggle(): void;
+}
+
+export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspectorHandle> {
   const { bridge, viewport, toolManager } = deps;
 
   const xiPanel = document.getElementById('xia-inspector');
@@ -636,4 +641,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<void> {
     if (bare && (e.key === 'i' || e.key === 'I')) toggleInspector();
     if (e.key === 'Escape' && xiPanel?.classList.contains('open')) xiPanel.classList.remove('open');
   });
+
+  // The panel used to be reachable ONLY by bare `I`: `toggleInspector` stayed
+  // local, so the View-menu handlers that look for `window.__axia_xiaInspector`
+  // always fell through to their "not available" toast (ADR-299). Hand it back
+  // so the caller can expose it, the way ConstraintPanel already is.
+  return { toggle: toggleInspector };
 }
