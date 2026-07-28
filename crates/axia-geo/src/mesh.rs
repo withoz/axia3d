@@ -5320,6 +5320,67 @@ impl Mesh {
         if dst == edge.v_small() { edge.v_large() } else { edge.v_small() }
     }
 
+    /// Do all of `probes` lie inside `host`'s outer boundary?
+    ///
+    /// ADR-298 — the punch family polygonizes a closed-curve host **destructively**
+    /// and nothing rolls that back (`TransactionManager::cancel` clears recording
+    /// state only, and the WASM entry points call exactly that on `Err`). A punch
+    /// that bailed afterwards — an oversized radius, an opening off the face —
+    /// therefore left the user's analytic circle permanently converted to a
+    /// polygon while reporting failure. Each variant calls this on its own probe
+    /// points *before* mutating; the outline it measures against is read-only, so
+    /// this check never changes the mesh.
+    ///
+    /// `Ok(true)` for a host with no resolvable outline: the later, authoritative
+    /// check still runs, and this must not invent a new refusal.
+    fn probes_inside_host_outline(&self, host: FaceId, probes: &[DVec3]) -> Result<bool> {
+        let Some(outline) = self.face_outline_points(host) else {
+            return Ok(true);
+        };
+        if outline.len() < 3 {
+            return Ok(true);
+        }
+        let n = self.faces[host].normal().normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return Ok(true);
+        }
+        // Same in-plane basis + even-odd test the punch variants build locally.
+        let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let e1 = (seed - n * seed.dot(n)).normalize_or_zero();
+        if e1.length_squared() < 0.5 {
+            return Ok(true);
+        }
+        let e2 = n.cross(e1);
+        let p0 = outline[0];
+        let project = |p: DVec3| -> (f64, f64) {
+            let v = p - p0;
+            (v.dot(e1), v.dot(e2))
+        };
+        let poly: Vec<(f64, f64)> = outline.iter().copied().map(project).collect();
+        let inside = |x: f64, y: f64| -> bool {
+            let mut hit = false;
+            let m = poly.len();
+            for i in 0..m {
+                let (xi, yi) = poly[i];
+                let (xj, yj) = poly[(i + m - 1) % m];
+                if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                    hit = !hit;
+                }
+            }
+            hit
+        };
+        for &probe in probes {
+            // Flatten onto the host plane first: a probe is a point of the opening,
+            // which is built in that plane anyway.
+            let flat = probe - n * (probe - p0).dot(n);
+            let (x, y) = project(flat);
+            if !inside(x, y) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// For a kernel-native closed-curve face (ADR-089: one anchor vertex + one
     /// self-loop boundary edge), how many ACTIVE faces use that edge?
     ///
@@ -12122,6 +12183,26 @@ impl Mesh {
             )
         })?;
 
+        // ADR-298 — check the opening fits BEFORE the destructive polygonize below,
+        // otherwise a rejected punch still leaves a converted face behind.
+        {
+            let hn = self.faces[host].normal().normalize_or_zero();
+            let (pe1, pe2) = basis(hn);
+            let rim: Vec<DVec3> = (0..segments)
+                .map(|k| {
+                    let t = std::f64::consts::TAU * (k as f64) / (segments as f64);
+                    center + pe1 * (radius * t.cos()) + pe2 * (radius * t.sin())
+                })
+                .collect();
+            if !self.probes_inside_host_outline(host, &rim)? {
+                bail!(
+                    "hole (radius {}) extends outside the face boundary — \
+                     reduce the radius or move the center",
+                    radius
+                );
+            }
+        }
+
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this
         // punches is faceted anyway. So polygonize the host first — the existing
@@ -12442,6 +12523,11 @@ impl Mesh {
             )
         })?;
 
+        // ADR-298 — see punch_circular_hole: validate before the destructive step.
+        if !self.probes_inside_host_outline(host, &[corner_a, corner_b])? {
+            bail!("window rect extends outside the face boundary — move it or shrink it");
+        }
+
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this
         // punches is faceted anyway. So polygonize the host first — the existing
@@ -12688,6 +12774,11 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // ADR-298 — see punch_circular_hole: validate before the destructive step.
+        if !self.probes_inside_host_outline(host, loop_pts)? {
+            bail!("polygon hole extends outside the face boundary — move it or shrink it");
+        }
 
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this

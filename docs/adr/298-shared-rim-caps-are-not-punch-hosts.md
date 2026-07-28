@@ -50,6 +50,21 @@ A **standalone** closed-curve face — a drawn circle sheet, rim used by one fac
 punchable, and that is verified. Path B solid caps are refused, cleanly, leaving the
 mesh untouched.
 
+## 3b. A refused punch used to mutate anyway
+
+A follow-up audit found the same code path leaking a third way. `polygonize_closed_
+curve_face` is destructive, and nothing rolls it back: the WASM entry points handle
+`Err` with `TransactionManager::cancel`, which clears recording state and restores no
+geometry. So a punch that passed host selection and then bailed — an oversized radius,
+an opening off the face — returned "failed" while the user's analytic circle had already
+become a polygon. Reproduced: a radius-500 sheet punched at radius 600 went from
+`outer_loop=1, verts=1` to `outer_loop=23, verts=23` and still reported the error.
+
+Fixed by validating first: new `Mesh::probes_inside_host_outline` tests the opening's
+probe points (circle rim / rect corners / polygon points) against the **read-only**
+outline, and all three variants call it *before* the polygonize. The authoritative
+post-rebuild check is untouched, so this only moves the refusal earlier.
+
 ## 4. Lock-ins
 
 - **L-298-1** `polygonize_closed_curve_face` must not run on a shared rim; the host
@@ -60,7 +75,9 @@ mesh untouched.
 - **L-298-4** A refused punch or drill leaves the mesh byte-unchanged (asserted).
 - **L-298-5** `verify_face_invariants` does not walk a face's inner loops, so it cannot
   by itself prove a rewrite was safe; assert loop walkability on the *neighbours* too.
-- **L-298-6** 절대 #[ignore] 금지.
+- **L-298-6** Validate before mutating: the punch family must reject an ill-fitting
+  opening *before* `polygonize_closed_curve_face`, because nothing rolls that back.
+- **L-298-7** 절대 #[ignore] 금지.
 
 ## 5. Verification
 
@@ -72,12 +89,14 @@ outer loop still walkable** — the assertion ADR-297 lacked),
 `rect_and_polygon_punches_also_refuse_a_shared_rim_cap`,
 `a_path_a_facet_stays_a_valid_ray_target` (axial drill still `Ok`; radial reaches its own
 rejection, not "no opposite wall"),
-`a_polygon_host_is_untouched_by_the_closed_curve_path`, and the drill baseline.
+`a_polygon_host_is_untouched_by_the_closed_curve_path`, `a_refused_punch_leaves_the_host_untouched`
+(§3b: the face survives, still one anchor vertex, no leaked tessellation verts), and the
+drill baseline.
 
 **Mutation-checked**: removing the rim guard fails four; widening `carve_face_plane` back
 to surface-kind fails the Path A pin.
 
-Workspace **3250 pass / 0 fail**.
+Workspace **3251 pass / 0 fail**.
 
 ## 6. Remaining
 

@@ -4198,6 +4198,57 @@ mod closed_curve_cap_carve {
         );
     }
 
+    /// ADR-298 — a REFUSED punch must not have mutated anything. The host is
+    /// polygonized destructively (`polygonize_closed_curve_face` removes the
+    /// analytic face and re-adds a tessellated one) and nothing rolls that back:
+    /// the WASM entry points call `TransactionManager::cancel`, which clears
+    /// recording state and restores no geometry. So an oversized radius used to
+    /// report failure while permanently converting the user's analytic circle into
+    /// a polygon. The containment check now runs against the read-only outline,
+    /// before the destructive step.
+    #[test]
+    fn a_refused_punch_leaves_the_host_untouched() {
+        let mut mesh = Mesh::new();
+        let anchor = mesh.add_vertex(DVec3::new(500.0, 0.0, 0.0));
+        let face = mesh
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 500.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        let verts_before = mesh.verts.iter().filter(|(_, v)| v.is_active()).count();
+        assert_eq!(
+            mesh.collect_loop_verts(mesh.faces[face].outer().start).unwrap().len(),
+            1,
+            "a closed-curve face has one anchor vertex"
+        );
+
+        // radius 600 cannot fit inside a radius-500 sheet.
+        assert!(mesh.punch_circular_hole(DVec3::ZERO, DVec3::Z, 600.0, 24).is_err());
+
+        assert!(
+            mesh.faces.get(face).is_some_and(|f| f.is_active()),
+            "the original face must survive a refusal"
+        );
+        assert_eq!(
+            mesh.collect_loop_verts(mesh.faces[face].outer().start).unwrap().len(),
+            1,
+            "it must still be a closed-curve face, not a polygon substitute"
+        );
+        assert_eq!(
+            mesh.verts.iter().filter(|(_, v)| v.is_active()).count(),
+            verts_before,
+            "no tessellation vertices may leak from a refused punch"
+        );
+        assert!(mesh.verify_face_invariants().is_valid());
+    }
+
     /// Through-drilling a Path B solid is still refused, now at the entry punch:
     /// its caps are shared-rim closed-curve faces, which are no longer hosts
     /// (ADR-298). Two things must still hold before this can ever be supported —
@@ -4220,3 +4271,4 @@ mod closed_curve_cap_carve {
         assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), before);
     }
 }
+
