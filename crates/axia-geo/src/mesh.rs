@@ -12014,14 +12014,15 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            let verts = match self.collect_loop_verts(outer_start) {
-                Ok(v) if v.len() >= 3 => v,
+            // Outline, not raw loop verts: a kernel-native closed-curve face
+            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
+            // Path B cap and the host search reported "no coplanar face". This is
+            // a read-only sample of the boundary curve; the mesh is untouched.
+            let outer_pts = match self.face_outline_points(fid) {
+                Some(v) if v.len() >= 3 => v,
                 _ => continue,
             };
-            let p0 = match self.vertex_pos(verts[0]) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let p0 = outer_pts[0];
             // Same-plane gate.
             if (center - p0).dot(n).abs() > plane_tol {
                 continue;
@@ -12032,11 +12033,7 @@ impl Mesh {
                 (v.dot(e1), v.dot(e2))
             };
             let (cx, cy) = project(center);
-            let outer_2d: Vec<(f64, f64)> = verts
-                .iter()
-                .filter_map(|v| self.vertex_pos(*v).ok())
-                .map(project)
-                .collect();
+            let outer_2d: Vec<(f64, f64)> = outer_pts.iter().copied().map(project).collect();
             if !point_in(cx, cy, &outer_2d) {
                 continue;
             }
@@ -12076,6 +12073,17 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // A kernel-native closed-curve host (ADR-089: one anchor vert + one
+        // self-loop edge) has no outer loop to rebuild from, and the opening this
+        // punches is faceted anyway. So polygonize the host first — the existing
+        // ADR-105 helper, which carries the analytic surface over — and every step
+        // below then runs on a normal polygon face. A polygon host returns None
+        // and is left exactly as it was.
+        let host = match self.polygonize_closed_curve_face(host, self.faces[host].material())? {
+            Some(replacement) => replacement,
+            None => host,
+        };
 
         // 2. Build the circle in the host plane, centered on the projected center.
         let n = self.faces[host].normal().normalize_or_zero();
@@ -12318,14 +12326,15 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            let verts = match self.collect_loop_verts(outer_start) {
-                Ok(v) if v.len() >= 3 => v,
+            // Outline, not raw loop verts: a kernel-native closed-curve face
+            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
+            // Path B cap and the host search reported "no coplanar face". This is
+            // a read-only sample of the boundary curve; the mesh is untouched.
+            let outer_pts = match self.face_outline_points(fid) {
+                Some(v) if v.len() >= 3 => v,
                 _ => continue,
             };
-            let p0 = match self.vertex_pos(verts[0]) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let p0 = outer_pts[0];
             if (center - p0).dot(n).abs() > plane_tol {
                 continue;
             }
@@ -12335,11 +12344,7 @@ impl Mesh {
                 (v.dot(e1), v.dot(e2))
             };
             let (cx, cy) = project(center);
-            let outer_2d: Vec<(f64, f64)> = verts
-                .iter()
-                .filter_map(|v| self.vertex_pos(*v).ok())
-                .map(project)
-                .collect();
+            let outer_2d: Vec<(f64, f64)> = outer_pts.iter().copied().map(project).collect();
             if !point_in(cx, cy, &outer_2d) {
                 continue;
             }
@@ -12378,6 +12383,17 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // A kernel-native closed-curve host (ADR-089: one anchor vert + one
+        // self-loop edge) has no outer loop to rebuild from, and the opening this
+        // punches is faceted anyway. So polygonize the host first — the existing
+        // ADR-105 helper, which carries the analytic surface over — and every step
+        // below then runs on a normal polygon face. A polygon host returns None
+        // and is left exactly as it was.
+        let host = match self.polygonize_closed_curve_face(host, self.faces[host].material())? {
+            Some(replacement) => replacement,
+            None => host,
+        };
 
         // 2. Host plane setup + preserved existing holes (projected for overlap).
         let n = self.faces[host].normal().normalize_or_zero();
@@ -12547,14 +12563,15 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            let verts = match self.collect_loop_verts(outer_start) {
-                Ok(v) if v.len() >= 3 => v,
+            // Outline, not raw loop verts: a kernel-native closed-curve face
+            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
+            // Path B cap and the host search reported "no coplanar face". This is
+            // a read-only sample of the boundary curve; the mesh is untouched.
+            let outer_pts = match self.face_outline_points(fid) {
+                Some(v) if v.len() >= 3 => v,
                 _ => continue,
             };
-            let p0 = match self.vertex_pos(verts[0]) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let p0 = outer_pts[0];
             if (center - p0).dot(n).abs() > plane_tol {
                 continue;
             }
@@ -12564,11 +12581,7 @@ impl Mesh {
                 (v.dot(e1), v.dot(e2))
             };
             let (cx, cy) = project(center);
-            let outer_2d: Vec<(f64, f64)> = verts
-                .iter()
-                .filter_map(|v| self.vertex_pos(*v).ok())
-                .map(project)
-                .collect();
+            let outer_2d: Vec<(f64, f64)> = outer_pts.iter().copied().map(project).collect();
             if !point_in(cx, cy, &outer_2d) {
                 continue;
             }
@@ -12607,6 +12620,17 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // A kernel-native closed-curve host (ADR-089: one anchor vert + one
+        // self-loop edge) has no outer loop to rebuild from, and the opening this
+        // punches is faceted anyway. So polygonize the host first — the existing
+        // ADR-105 helper, which carries the analytic surface over — and every step
+        // below then runs on a normal polygon face. A polygon host returns None
+        // and is left exactly as it was.
+        let host = match self.polygonize_closed_curve_face(host, self.faces[host].material())? {
+            Some(replacement) => replacement,
+            None => host,
+        };
 
         // 2. Host plane setup + preserved existing holes (projected for overlap).
         let n = self.faces[host].normal().normalize_or_zero();

@@ -141,14 +141,29 @@ impl Mesh {
     /// loop, or `None` if missing / degenerate.
     fn carve_face_plane(&self, face_id: FaceId) -> Option<(DVec3, DVec3, Vec<DVec3>)> {
         let face = self.faces.get(face_id).filter(|f| f.is_active())?;
-        let verts = self.collect_loop_verts(face.outer().start).ok()?;
-        if verts.len() < 3 {
+        // This models the face as a PLANE, so a curved face must never reach it.
+        // That was implicit while only polygons got here (a Path A cylinder's side
+        // quads really are planar), but `face_outline_points` below also resolves a
+        // one-vertex closed-curve face — and a Path B cylinder *side* is exactly
+        // that, while being genuinely non-planar. Reject curved surfaces explicitly.
+        if matches!(
+            self.face_surface(face_id),
+            Some(AnalyticSurface::Cylinder { .. })
+                | Some(AnalyticSurface::Sphere { .. })
+                | Some(AnalyticSurface::Cone { .. })
+                | Some(AnalyticSurface::Torus { .. })
+                | Some(AnalyticSurface::BezierPatch { .. })
+                | Some(AnalyticSurface::BSplineSurface { .. })
+                | Some(AnalyticSurface::NURBSSurface { .. })
+        ) {
             return None;
         }
-        let pts: Vec<DVec3> = verts
-            .iter()
-            .filter_map(|&v| self.vertex_pos(v).ok())
-            .collect();
+        // `face_outline_points` gives the loop's vertex positions for a polygon face
+        // and a read-only tessellation of the boundary curve for a kernel-native
+        // closed-curve face (ADR-089: one anchor vert + one self-loop edge). Without
+        // it a Path B cap was invisible to every carve raycast — the mesh keeps its
+        // analytic curve either way, this outline is only for containment tests.
+        let pts = self.face_outline_points(face_id)?;
         if pts.len() < 3 {
             return None;
         }
@@ -4024,6 +4039,99 @@ mod tests {
         assert!(
             mesh.verify_face_invariants().is_valid(),
             "both drilled boxes must stay manifold"
+        );
+    }
+}
+
+#[cfg(test)]
+mod closed_curve_cap_carve {
+    use crate::{Mesh, MaterialId};
+    use glam::DVec3;
+
+    /// A Path B cylinder: 2 planar caps + 1 cylindrical side, each a kernel-native
+    /// closed-curve face (one anchor vert + one self-loop edge, ADR-089).
+    fn path_b_cylinder() -> Mesh {
+        let mut mesh = Mesh::new();
+        mesh.create_cylinder_kernel_native_clean(DVec3::ZERO, 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        mesh
+    }
+
+    #[test]
+    fn punch_finds_a_closed_curve_cap_as_its_host() {
+        // Was: "no coplanar face contains the hole center" — the host search gated on
+        // >= 3 loop verts, and a closed-curve cap has exactly one.
+        let mut mesh = path_b_cylinder();
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let host = mesh
+            .punch_circular_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 100.0, 24)
+            .expect("a Path B cap must be punchable");
+        assert!(
+            mesh.faces[host].inners().len() >= 1,
+            "the punched cap must carry the hole as an inner loop"
+        );
+        assert!(mesh.verify_face_invariants().is_valid(), "invariants after punch");
+        assert_eq!(
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+            before,
+            "punching replaces the cap in place; it must not add a face"
+        );
+    }
+
+    #[test]
+    fn punch_rect_and_polygon_reach_a_closed_curve_cap_too() {
+        // All three punch variants shared the same >= 3 vert host gate.
+        let mut m1 = path_b_cylinder();
+        m1.punch_rect_hole(
+            DVec3::new(-100.0, -100.0, 1000.0),
+            DVec3::new(100.0, 100.0, 1000.0),
+            DVec3::Z,
+        )
+        .expect("rect opening on a Path B cap");
+        assert!(m1.verify_face_invariants().is_valid());
+
+        let mut m2 = path_b_cylinder();
+        let tri = [
+            DVec3::new(-120.0, -80.0, 1000.0),
+            DVec3::new(120.0, -80.0, 1000.0),
+            DVec3::new(0.0, 130.0, 1000.0),
+        ];
+        m2.punch_polygon_hole(&tri, DVec3::Z)
+            .expect("polygon opening on a Path B cap");
+        assert!(m2.verify_face_invariants().is_valid());
+    }
+
+    #[test]
+    fn a_polygon_host_is_untouched_by_the_closed_curve_path() {
+        // Regression guard: the ordinary box case must behave exactly as before.
+        let mut mesh = Mesh::new();
+        mesh.create_box(DVec3::ZERO, 2000.0, 2000.0, 2000.0, MaterialId::new(0)).unwrap();
+        let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let host = mesh
+            .punch_circular_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 200.0, 24)
+            .expect("box top punch");
+        assert_eq!(mesh.faces[host].inners().len(), 1);
+        assert_eq!(mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), before);
+        assert!(mesh.verify_face_invariants().is_valid());
+    }
+
+    /// Documents where through-drilling a Path B solid still stops, so a later fix
+    /// has a baseline. The raycast now FINDS the far cap (that was the
+    /// `carve_face_plane` gate), but `bridge_through_loops` requires the exit wall's
+    /// normal to be anti-parallel to the drill axis — and every face of a Path B
+    /// cylinder reports a cached normal of +Z, including the bottom cap, so the
+    /// guard can never be satisfied. That is a property of closed-curve faces'
+    /// cached normals, not of the drill.
+    #[test]
+    fn drill_through_a_path_b_solid_is_refused_cleanly() {
+        let mut mesh = path_b_cylinder();
+        let err = mesh
+            .drill_circular_through_hole(DVec3::new(0.0, 0.0, 1000.0), DVec3::Z, 100.0, 24)
+            .expect_err("still unsupported");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("경사진") || msg.contains("tapered"),
+            "it must fail with the straight-through reason, got: {msg}"
         );
     }
 }
