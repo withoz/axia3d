@@ -4473,7 +4473,7 @@ impl Mesh {
         // Host must be an active Sphere face.
         if !matches!(
             self.faces.get(face_id).filter(|f| f.is_active()).and_then(|f| f.surface()),
-            Some(AnalyticSurface::Sphere { .. })
+            Some(crate::surfaces::AnalyticSurface::Sphere { .. })
         ) {
             return false;
         }
@@ -5318,6 +5318,105 @@ impl Mesh {
         let edge = &self.edges[he.edge()];
         let dst = he.dst();
         if dst == edge.v_small() { edge.v_large() } else { edge.v_small() }
+    }
+
+    /// Do all of `probes` lie inside `host`'s outer boundary?
+    ///
+    /// ADR-298 — the punch family polygonizes a closed-curve host **destructively**
+    /// and nothing rolls that back (`TransactionManager::cancel` clears recording
+    /// state only, and the WASM entry points call exactly that on `Err`). A punch
+    /// that bailed afterwards — an oversized radius, an opening off the face —
+    /// therefore left the user's analytic circle permanently converted to a
+    /// polygon while reporting failure. Each variant calls this on its own probe
+    /// points *before* mutating; the outline it measures against is read-only, so
+    /// this check never changes the mesh.
+    ///
+    /// `Ok(true)` for a host with no resolvable outline: the later, authoritative
+    /// check still runs, and this must not invent a new refusal.
+    fn probes_inside_host_outline(&self, host: FaceId, probes: &[DVec3]) -> Result<bool> {
+        let Some(outline) = self.face_outline_points(host) else {
+            return Ok(true);
+        };
+        if outline.len() < 3 {
+            return Ok(true);
+        }
+        let n = self.faces[host].normal().normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return Ok(true);
+        }
+        // Same in-plane basis + even-odd test the punch variants build locally.
+        let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let e1 = (seed - n * seed.dot(n)).normalize_or_zero();
+        if e1.length_squared() < 0.5 {
+            return Ok(true);
+        }
+        let e2 = n.cross(e1);
+        let p0 = outline[0];
+        let project = |p: DVec3| -> (f64, f64) {
+            let v = p - p0;
+            (v.dot(e1), v.dot(e2))
+        };
+        let poly: Vec<(f64, f64)> = outline.iter().copied().map(project).collect();
+        let inside = |x: f64, y: f64| -> bool {
+            let mut hit = false;
+            let m = poly.len();
+            for i in 0..m {
+                let (xi, yi) = poly[i];
+                let (xj, yj) = poly[(i + m - 1) % m];
+                if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                    hit = !hit;
+                }
+            }
+            hit
+        };
+        for &probe in probes {
+            // Flatten onto the host plane first: a probe is a point of the opening,
+            // which is built in that plane anyway.
+            let flat = probe - n * (probe - p0).dot(n);
+            let (x, y) = project(flat);
+            if !inside(x, y) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// For a kernel-native closed-curve face (ADR-089: one anchor vertex + one
+    /// self-loop boundary edge), how many ACTIVE faces use that edge?
+    ///
+    /// `Some(1)` — the face stands alone (a drawn circle sheet): its boundary is
+    /// its own, so rewriting it disturbs nothing else.
+    /// `Some(2..)` — the rim is **shared**, which is what every cap of a Path B
+    /// solid looks like (the annulus band holds the radial twin). Rewriting such a
+    /// face destroys the loop its neighbour is built on.
+    /// `None` — not a closed-curve face.
+    ///
+    /// ADR-298: `polygonize_closed_curve_face` must not run on a shared rim.
+    pub fn closed_curve_rim_face_count(&self, face_id: FaceId) -> Option<usize> {
+        let face = self.faces.get(face_id).filter(|f| f.is_active())?;
+        let hes = self.collect_loop_hes(face.outer().start).ok()?;
+        if hes.len() != 1 {
+            return None; // a polygon boundary, not a self-loop
+        }
+        let edge_id = self.hes[hes[0]].edge();
+        let first = self.edges.get(edge_id).filter(|e| e.is_active())?.any_he();
+        if first.is_null() {
+            return None;
+        }
+        let mut users: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut r = first;
+        // Bounded walk — a corrupt radial chain must not hang the caller.
+        for _ in 0..100_000 {
+            let f = self.hes[r].face();
+            if !f.is_null() && self.faces.get(f).is_some_and(|x| x.is_active()) {
+                users.insert(f.raw());
+            }
+            r = self.hes[r].next_rad();
+            if r.is_null() || r == first {
+                break;
+            }
+        }
+        Some(users.len())
     }
 
     /// Does this face share a boundary edge with a face carrying a CURVED
@@ -6605,7 +6704,7 @@ impl Mesh {
             if !face.is_active() { continue; }
             // L1 scope — skip only if already Cylinder (preserve canonical
             // Path B). Plane (Q3 fallback default) → promote to Cylinder.
-            if matches!(face.surface(), Some(AnalyticSurface::Cylinder { .. })) {
+            if matches!(face.surface(), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })) {
                 continue;
             }
 
@@ -12014,10 +12113,20 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            // Outline, not raw loop verts: a kernel-native closed-curve face
-            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
-            // Path B cap and the host search reported "no coplanar face". This is
-            // a read-only sample of the boundary curve; the mesh is untouched.
+            // ADR-298 — this models the host as a PLANE and will rewrite it, so:
+            // A closed-curve face whose rim is SHARED is never a host: that is every
+            // cap of a Path B solid (the annulus band holds the radial twin), and
+            // polygonizing it destroys the loop the band is built on — a bottom-cap
+            // punch broke the band's outer loop outright, a top-cap punch broke its
+            // inner one silently. Only a standalone closed-curve sheet may be
+            // rewritten. This also excludes the band itself, which used to win the
+            // smallest-area tiebreak whenever h < r/2 (ADR-298).
+            if self.closed_curve_rim_face_count(fid).is_some_and(|n| n > 1) {
+                continue;
+            }
+            // Outline, not raw loop verts: a standalone closed-curve face (ADR-089)
+            // has ONE anchor vertex, so a >= 3 vert gate skipped it entirely. This
+            // is a read-only sample of the boundary curve; the mesh is untouched.
             let outer_pts = match self.face_outline_points(fid) {
                 Some(v) if v.len() >= 3 => v,
                 _ => continue,
@@ -12073,6 +12182,26 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // ADR-298 — check the opening fits BEFORE the destructive polygonize below,
+        // otherwise a rejected punch still leaves a converted face behind.
+        {
+            let hn = self.faces[host].normal().normalize_or_zero();
+            let (pe1, pe2) = basis(hn);
+            let rim: Vec<DVec3> = (0..segments)
+                .map(|k| {
+                    let t = std::f64::consts::TAU * (k as f64) / (segments as f64);
+                    center + pe1 * (radius * t.cos()) + pe2 * (radius * t.sin())
+                })
+                .collect();
+            if !self.probes_inside_host_outline(host, &rim)? {
+                bail!(
+                    "hole (radius {}) extends outside the face boundary — \
+                     reduce the radius or move the center",
+                    radius
+                );
+            }
+        }
 
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this
@@ -12326,10 +12455,20 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            // Outline, not raw loop verts: a kernel-native closed-curve face
-            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
-            // Path B cap and the host search reported "no coplanar face". This is
-            // a read-only sample of the boundary curve; the mesh is untouched.
+            // ADR-298 — this models the host as a PLANE and will rewrite it, so:
+            // A closed-curve face whose rim is SHARED is never a host: that is every
+            // cap of a Path B solid (the annulus band holds the radial twin), and
+            // polygonizing it destroys the loop the band is built on — a bottom-cap
+            // punch broke the band's outer loop outright, a top-cap punch broke its
+            // inner one silently. Only a standalone closed-curve sheet may be
+            // rewritten. This also excludes the band itself, which used to win the
+            // smallest-area tiebreak whenever h < r/2 (ADR-298).
+            if self.closed_curve_rim_face_count(fid).is_some_and(|n| n > 1) {
+                continue;
+            }
+            // Outline, not raw loop verts: a standalone closed-curve face (ADR-089)
+            // has ONE anchor vertex, so a >= 3 vert gate skipped it entirely. This
+            // is a read-only sample of the boundary curve; the mesh is untouched.
             let outer_pts = match self.face_outline_points(fid) {
                 Some(v) if v.len() >= 3 => v,
                 _ => continue,
@@ -12383,6 +12522,11 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // ADR-298 — see punch_circular_hole: validate before the destructive step.
+        if !self.probes_inside_host_outline(host, &[corner_a, corner_b])? {
+            bail!("window rect extends outside the face boundary — move it or shrink it");
+        }
 
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this
@@ -12563,10 +12707,20 @@ impl Mesh {
             if outer_start.is_null() {
                 continue;
             }
-            // Outline, not raw loop verts: a kernel-native closed-curve face
-            // (ADR-089) has ONE anchor vertex, so a >= 3 vert gate skipped every
-            // Path B cap and the host search reported "no coplanar face". This is
-            // a read-only sample of the boundary curve; the mesh is untouched.
+            // ADR-298 — this models the host as a PLANE and will rewrite it, so:
+            // A closed-curve face whose rim is SHARED is never a host: that is every
+            // cap of a Path B solid (the annulus band holds the radial twin), and
+            // polygonizing it destroys the loop the band is built on — a bottom-cap
+            // punch broke the band's outer loop outright, a top-cap punch broke its
+            // inner one silently. Only a standalone closed-curve sheet may be
+            // rewritten. This also excludes the band itself, which used to win the
+            // smallest-area tiebreak whenever h < r/2 (ADR-298).
+            if self.closed_curve_rim_face_count(fid).is_some_and(|n| n > 1) {
+                continue;
+            }
+            // Outline, not raw loop verts: a standalone closed-curve face (ADR-089)
+            // has ONE anchor vertex, so a >= 3 vert gate skipped it entirely. This
+            // is a read-only sample of the boundary curve; the mesh is untouched.
             let outer_pts = match self.face_outline_points(fid) {
                 Some(v) if v.len() >= 3 => v,
                 _ => continue,
@@ -12620,6 +12774,11 @@ impl Mesh {
                 nh
             )
         })?;
+
+        // ADR-298 — see punch_circular_hole: validate before the destructive step.
+        if !self.probes_inside_host_outline(host, loop_pts)? {
+            bail!("polygon hole extends outside the face boundary — move it or shrink it");
+        }
 
         // A kernel-native closed-curve host (ADR-089: one anchor vert + one
         // self-loop edge) has no outer loop to rebuild from, and the opening this
@@ -16331,8 +16490,8 @@ mod tests {
         assert_eq!(active, 3, "cap + annulus + south = 3 faces, got {}", active);
 
         // both cap & annulus carry a Sphere surface (ADR-089 A-χ inheritance).
-        assert!(matches!(mesh.faces[cap].surface(), Some(AnalyticSurface::Sphere { .. })), "cap = Sphere");
-        assert!(matches!(mesh.faces[annulus].surface(), Some(AnalyticSurface::Sphere { .. })), "annulus = Sphere");
+        assert!(matches!(mesh.faces[cap].surface(), Some(crate::surfaces::AnalyticSurface::Sphere { .. })), "cap = Sphere");
+        assert!(matches!(mesh.faces[annulus].surface(), Some(crate::surfaces::AnalyticSurface::Sphere { .. })), "annulus = Sphere");
         // annulus gained an inner hole (the circle).
         assert_eq!(mesh.faces[annulus].inners().len(), 1, "annulus has 1 inner hole (the circle)");
 
@@ -16717,9 +16876,9 @@ mod tests {
             report.violations.iter().take(4).collect::<Vec<_>>());
 
         // surface inheritance both sides (ADR-089 A-χ).
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cylinder { .. })),
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })),
             "cap inherits Cylinder");
-        assert!(matches!(mesh.face_surface(host), Some(AnalyticSurface::Cylinder { .. })),
+        assert!(matches!(mesh.face_surface(host), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })),
             "host stays Cylinder");
 
         // cap normal points radially OUTWARD (at the porthole center).
@@ -16784,7 +16943,7 @@ mod tests {
         let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 face (cap)");
         assert!(mesh.verify_face_invariants().is_valid(), "manifold after rect-polyline split");
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cylinder { .. })),
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })),
             "cap inherits Cylinder (ADR-089 A-χ)");
     }
 
@@ -16820,7 +16979,7 @@ mod tests {
         let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
         assert!(mesh.verify_face_invariants().is_valid(), "manifold after cone rect split");
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cone { .. })),
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Cone { .. })),
             "cap inherits Cone (ADR-089 A-χ)");
     }
 
@@ -16854,7 +17013,7 @@ mod tests {
         let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
         assert!(mesh.verify_face_invariants().is_valid(), "manifold after torus rect split");
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Torus { .. })),
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Torus { .. })),
             "cap inherits Torus (ADR-089 A-χ)");
     }
 
@@ -16891,7 +17050,7 @@ mod tests {
         let faces_after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         assert_eq!(faces_after, faces_before + 1, "split adds exactly 1 cap");
         assert!(mesh.verify_face_invariants().is_valid(), "manifold after sphere rect split");
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Sphere { .. })),
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Sphere { .. })),
             "cap inherits Sphere (ADR-089 A-χ)");
     }
 
@@ -16910,10 +17069,10 @@ mod tests {
             let hes = mesh.collect_loop_hes(f.outer().start).map(|h| h.len()).unwrap_or(0);
             let vs = mesh.collect_loop_verts(f.outer().start).map(|v| v.len()).unwrap_or(0);
             let kind = match f.surface() {
-                Some(AnalyticSurface::Sphere { .. }) => "Sphere",
-                Some(AnalyticSurface::Cylinder { .. }) => "Cylinder",
-                Some(AnalyticSurface::Cone { .. }) => "Cone",
-                Some(AnalyticSurface::Torus { .. }) => "Torus",
+                Some(crate::surfaces::AnalyticSurface::Sphere { .. }) => "Sphere",
+                Some(crate::surfaces::AnalyticSurface::Cylinder { .. }) => "Cylinder",
+                Some(crate::surfaces::AnalyticSurface::Cone { .. }) => "Cone",
+                Some(crate::surfaces::AnalyticSurface::Torus { .. }) => "Torus",
                 Some(AnalyticSurface::Plane { .. }) => "Plane",
                 _ => "None/other",
             };
@@ -16964,7 +17123,7 @@ mod tests {
         let inv = mesh.verify_face_invariants();
         // How many result faces inherit the Sphere surface?
         let sphere_faces = mesh.faces.iter()
-            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(crate::surfaces::AnalyticSurface::Sphere { .. })))
             .count();
         eprintln!(
             "[β-4 chord probe] res={:?} faces {}→{} inv_valid={} viol={} sphere_faces={}",
@@ -17009,7 +17168,7 @@ mod tests {
         let inv = mesh.verify_face_invariants();
         let faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         let sphere_faces = mesh.faces.iter()
-            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Sphere { .. })))
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(crate::surfaces::AnalyticSurface::Sphere { .. })))
             .count();
         assert!(inv.is_valid(), "open-seam split must be manifold: {:?}", inv.violations);
         assert_eq!(faces, 3, "2 host pieces + 1 twin hemisphere");
@@ -17058,7 +17217,7 @@ mod tests {
         // Path B cone: base disk (Plane) + side (Cone, apex degenerate). Z-up.
         let kf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
         let side = *kf.iter()
-            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .find(|&&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cone { .. })))
             .expect("cone side face");
         let apex = match mesh.face_surface(side) {
             Some(AnalyticSurface::Cone { apex, .. }) => *apex,
@@ -17080,7 +17239,7 @@ mod tests {
         let inv = mesh.verify_face_invariants();
         let faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         let cone_faces = mesh.faces.iter()
-            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(AnalyticSurface::Cone { .. })))
+            .filter(|(_, f)| f.is_active() && matches!(f.surface(), Some(crate::surfaces::AnalyticSurface::Cone { .. })))
             .count();
         assert!(inv.is_valid(), "cone open-seam split must be manifold: {:?}", inv.violations);
         assert_eq!(faces, 3, "2 side pieces + 1 base disk");
@@ -17118,7 +17277,7 @@ mod tests {
         cm.set_cylinder_path_b_default(true);
         let cf = cm.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
         let side = *cf.iter()
-            .find(|&&f| matches!(cm.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .find(|&&f| matches!(cm.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })))
             .expect("cylinder side (annulus)");
         let outer = cm.collect_loop_verts(cm.faces[side].outer().start).unwrap();
         let inners = cm.faces[side].inners().len();
@@ -17327,7 +17486,7 @@ mod tests {
         mesh.set_cylinder_path_b_default(true);
         let cf = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
         let side = *cf.iter()
-            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .find(|&&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })))
             .expect("cylinder side");
 
         // Two rims = side's outer self-loop + inner self-loop.
@@ -17463,7 +17622,7 @@ mod tests {
         let mat = MaterialId::new(0);
         let cf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
         let side = *cf.iter()
-            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .find(|&&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cone { .. })))
             .expect("cone side");
         let base_rim = mesh.hes[mesh.faces[side].outer().start].edge();
 
@@ -17573,7 +17732,7 @@ mod tests {
         mesh.set_cylinder_path_b_default(true);
         let cf = mesh.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).unwrap();
         let side = *cf.iter()
-            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cylinder { .. })))
+            .find(|&&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cylinder { .. })))
             .expect("cylinder side");
         let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
 
@@ -17621,7 +17780,7 @@ mod tests {
         let mat = MaterialId::new(0);
         let cf = mesh.create_cone_kernel_native(DVec3::ZERO, 5.0, 20.0, mat).unwrap();
         let side = *cf.iter()
-            .find(|&&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .find(|&&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cone { .. })))
             .expect("cone side");
         let faces_before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
 
@@ -17965,7 +18124,7 @@ mod tests {
         let side = faces
             .iter()
             .copied()
-            .find(|&f| matches!(mesh.face_surface(f), Some(AnalyticSurface::Cone { .. })))
+            .find(|&f| matches!(mesh.face_surface(f), Some(crate::surfaces::AnalyticSurface::Cone { .. })))
             .expect("cone side face");
         let (apex, ad, ha, rd, vlo, vhi) = match mesh.face_surface(side).cloned().unwrap() {
             AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, v_range, .. } =>
@@ -17995,8 +18154,8 @@ mod tests {
             report.violations.iter().take(4).collect::<Vec<_>>());
 
         // both inherit the Cone surface (ADR-089 A-χ).
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Cone { .. })), "cap = Cone");
-        assert!(matches!(mesh.face_surface(host), Some(AnalyticSurface::Cone { .. })), "host = Cone");
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Cone { .. })), "cap = Cone");
+        assert!(matches!(mesh.face_surface(host), Some(crate::surfaces::AnalyticSurface::Cone { .. })), "host = Cone");
         // host gained exactly one inner hole (the porthole).
         assert_eq!(mesh.faces[host].inners().len(), 1, "host gains 1 inner hole");
 
@@ -18115,8 +18274,8 @@ mod tests {
         assert!(report.is_valid(), "manifold after torus split: {:?}",
             report.violations.iter().take(4).collect::<Vec<_>>());
 
-        assert!(matches!(mesh.face_surface(cap), Some(AnalyticSurface::Torus { .. })), "cap = Torus");
-        assert!(matches!(mesh.face_surface(host), Some(AnalyticSurface::Torus { .. })), "host = Torus");
+        assert!(matches!(mesh.face_surface(cap), Some(crate::surfaces::AnalyticSurface::Torus { .. })), "cap = Torus");
+        assert!(matches!(mesh.face_surface(host), Some(crate::surfaces::AnalyticSurface::Torus { .. })), "host = Torus");
         assert_eq!(mesh.faces[host].inners().len(), 1, "host gains 1 inner hole");
 
         let (_s, uc, vc) = torus::project_to_torus(c, ad, rd, mr, nr, cp).unwrap();
