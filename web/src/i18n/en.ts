@@ -2222,6 +2222,7 @@ export const EN: Record<string, string> = {
   // backticks too; these are the keys that turned up.
   // ADR-203 I-1 — IFC import step 1: read the file and report its contents.
   'IFC 읽기 실패: 엔진이 준비되지 않았습니다.': 'Could not read the IFC: the engine is not ready.',
+  'IFC 가져오기: 엔진이 아직 준비되지 않았습니다.': 'IFC import: the engine is not ready yet.',
   'IFC 파싱 실패: {error}': 'IFC parsing failed: {error}',
   'IFC 가져오기 중 오류: {error}': 'Error while importing the IFC: {error}',
   '{fileName} — {schema}, 엔티티 {entityCount}개': '{fileName} — {schema}, {entityCount} entities',

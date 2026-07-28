@@ -7,6 +7,7 @@ vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 // Mock timestampedName
 vi.mock('../export/ExportUtils', () => ({
   timestampedName: vi.fn().mockReturnValue('AXiA_3D_test.dxf'),
+  downloadText: vi.fn(),
 }));
 
 // Mock BooleanHandler
@@ -24,6 +25,7 @@ function createMenuBarDOM(): void {
           <div class="menu-action" data-action="file-open">Open</div>
           <div class="menu-action" data-action="file-save">Save</div>
           <div class="menu-action" data-action="file-saveas">Save As</div>
+          <div class="menu-action" data-action="export-ifc">IFC</div>
         </div>
       </div>
       <div class="menu-item">
@@ -467,4 +469,53 @@ describe('MenuBar', () => {
       expect(deps.toolManager.setTool).toHaveBeenCalledWith('line');
     });
   });
+  // ADR-203 — export tries three emitters, best first. exportIfcAdvanced was
+  // shipped but never called, so a scene the semantic emitter cannot represent
+  // (a mixed sheet+solid model) dropped straight to the faceted writer and lost
+  // its exact surfaces.
+  describe('export-ifc emitter tiers', () => {
+    function clickExportIfc(bridge: any) {
+      // Rebuild the DOM first: beforeEach already wired a listener with an
+      // empty bridge, and a second initMenuBar would stack onto it — the old
+      // one throws and the assertions would ride on the survivor.
+      createMenuBarDOM();
+      deps.bridge = bridge;
+      initMenuBar(deps);
+      document.querySelector<HTMLElement>('[data-action="export-ifc"]')!.click();
+    }
+
+    it('prefers the semantic model and asks for nothing else', () => {
+      const bridge = {
+        exportIfcModel: vi.fn().mockReturnValue('ISO-10303-21; MODEL'),
+        exportIfcAdvanced: vi.fn(),
+        exportIfc: vi.fn(),
+      };
+      clickExportIfc(bridge);
+      expect(bridge.exportIfcModel).toHaveBeenCalled();
+      expect(bridge.exportIfcAdvanced).not.toHaveBeenCalled();
+      expect(bridge.exportIfc).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the analytic brep before the faceted one', () => {
+      const bridge = {
+        exportIfcModel: vi.fn().mockReturnValue(null),
+        exportIfcAdvanced: vi.fn().mockReturnValue('ISO-10303-21; ADVANCED'),
+        exportIfc: vi.fn(),
+      };
+      clickExportIfc(bridge);
+      expect(bridge.exportIfcAdvanced).toHaveBeenCalled();
+      expect(bridge.exportIfc).not.toHaveBeenCalled();
+    });
+
+    it('uses the faceted writer only when both analytic tiers decline', () => {
+      const bridge = {
+        exportIfcModel: vi.fn().mockReturnValue(null),
+        exportIfcAdvanced: vi.fn().mockReturnValue(null),
+        exportIfc: vi.fn().mockReturnValue('ISO-10303-21; FACETED'),
+      };
+      clickExportIfc(bridge);
+      expect(bridge.exportIfc).toHaveBeenCalled();
+    });
+  });
+
 });

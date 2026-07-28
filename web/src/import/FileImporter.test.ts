@@ -49,9 +49,17 @@ describe('FileImporter', () => {
   // --- getSupportedFormats ---
 
   describe('getSupportedFormats', () => {
-    it('returns all 12 supported formats (incl. STEP/IGES per ADR-035)', () => {
+    it('returns all 13 supported formats (incl. STEP/IGES per ADR-035, IFC per ADR-203)', () => {
       const formats = FileImporter.getSupportedFormats();
-      expect(formats).toHaveLength(12);
+      expect(formats).toHaveLength(13);
+    });
+
+    it('includes IFC, so "all supported types" accepts a BIM file', () => {
+      // The dialog's accept list is built from these entries; without IFC the
+      // OS filtered a .ifc out of the generic picker even though the app reads it.
+      const ifc = FileImporter.getSupportedFormats().find((f) => f.format === 'ifc');
+      expect(ifc).toBeDefined();
+      expect(ifc!.accept).toContain('.ifc');
     });
 
     it('each entry has format, label, and accept fields', () => {

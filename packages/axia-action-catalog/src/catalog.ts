@@ -1280,7 +1280,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   {
     id: 'export-ifc',
     label: 'IFC 내보내기',
-    description: 'Export current model to IFC4.3 (IfcFacetedBrep) for BIM tools.',
+    description: 'Export current model to IFC4.3 for BIM tools — one IfcWall per member with materials and openings, parametric swept solids where the geometry allows, falling back to an analytic or faceted brep.',
     tier: 1,
     surfaces: ['menu'],
     aliases: {},
