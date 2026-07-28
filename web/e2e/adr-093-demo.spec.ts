@@ -4,7 +4,7 @@
  *
  * Output: web/demo-output/adr-093-*.png
  */
-import { test } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { waitForBridgeReady } from './helpers/boolean-fixtures';
 
 interface AxiaWindow {
@@ -24,6 +24,13 @@ test('ADR-093 직접 시연 — Cylinder 측면 click → group select', async (
     const w = window as unknown as AxiaWindow;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const bridge = w.__axia!.get<any>('bridge');
+
+    // Owner-id grouping only has teeth when the side is MANY faces. Production
+    // defaults to Path B now (ADR-094/117), where a cylinder is 3 faces and the
+    // side is one — so the walk correctly returns a group of 1 and the demo
+    // proves nothing. Pin Path A, which is the geometry LOCKED #93's
+    // "siblings=23" figure describes (ADR-299).
+    bridge.engine?.setCylinderPathBDefault?.(false);
 
     const shapeId = bridge.drawCircleAsCurve(0, 0, 0, 0, 0, 1, 5);
     if (shapeId == null || shapeId < 0) {
@@ -152,4 +159,21 @@ test('ADR-093 직접 시연 — Cylinder 측면 click → group select', async (
   console.log('Walk result:', JSON.stringify(walkResult, null, 2));
   console.log('Select result:', JSON.stringify(selectResult, null, 2));
   console.log('═══════════════════════════════════════════════');
+
+  // This spec had ZERO assertions: it computed `ok`, `siblingCount` and
+  // `selectedCount` and only console.logged them, so it passed even when every
+  // stage failed — while LOCKED #93 cites "siblings=23 → selectedCount=23" as a
+  // gate this file supposedly proved (ADR-299).
+  expect(setup.ok, `setup failed at ${setup.stage ?? '?'}`).toBe(true);
+  // walkResult has no `ok` field — it reports the inventory directly.
+  expect(walkResult.sideFaceId, `no cylindrical side face: ${JSON.stringify(walkResult)}`)
+    .toBeGreaterThanOrEqual(0);
+  expect(walkResult.siblings, 'the walk includes the face it started from')
+    .toContain(walkResult.sideFaceId);
+  expect(walkResult.siblings.length, 'a Path A side is many faces, grouped as one owner')
+    .toBeGreaterThan(1);
+  expect(selectResult.ok, `selection failed: ${selectResult.reason ?? '?'}`).toBe(true);
+  // The claim itself: clicking one side face selects the whole owner group.
+  expect(selectResult.siblingCount).toBeGreaterThan(1);
+  expect(selectResult.selectedCount).toBe(selectResult.siblingCount);
 });

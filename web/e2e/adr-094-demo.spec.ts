@@ -5,7 +5,7 @@
  *
  * Output: web/demo-output/adr-094-*.png + console summary.
  */
-import { test } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { waitForBridgeReady } from './helpers/boolean-fixtures';
 
 interface AxiaWindow {
@@ -112,5 +112,17 @@ test('ADR-094 B-θ — Path B cylinder 3/2/2 architectural anchor', async ({ pag
   console.log('Path A baseline:', pathAStats);
   console.log('Path B result:', pathBResult);
   console.log('Memory savings:', memSavings);
+
+  // Zero assertions before (ADR-299) — this printed a savings table that nothing
+  // checked, so a Path B regression (or the flag silently not applying) still
+  // passed. The claim is a small constant DCEL versus Path A's segment count.
+  expect(pathBResult.flagOn, 'the Path B flag actually took effect').toBe(true);
+  expect(pathBResult.createOk, 'the Path B cylinder was created').toBe(true);
+  expect(pathBResult.faces, 'Path B uses far fewer faces').toBeLessThan(pathAStats.faces);
+  expect(pathBResult.edges).toBeLessThan(pathAStats.edges);
+  expect(pathBResult.verts).toBeLessThan(pathAStats.verts);
+  // ADR-094 measured 25/69/46 → 3/2/2. Assert the ORDER of magnitude, not the
+  // exact numbers, so a tessellation-density change does not break the gate.
+  expect(pathBResult.faces).toBeLessThanOrEqual(8);
   console.log('═══════════════════════════════════════════════');
 });

@@ -1535,11 +1535,31 @@ mod tests {
 
         let _r = m.push_pull(f, 2.0, mat).unwrap();
 
-        // 모든 face가 활성 상태
-        for (_id, face) in m.faces.iter() {
+        // This asserted only that each active face had a non-null outer loop
+        // pointer — the one thing its name does not mean. An open shell (a
+        // missing side wall, an unwelded cap) passed it, and `is_closed_solid`
+        // appeared nowhere in the file except this function's own name
+        // (ADR-299). Check what the name says.
+        let report = m.verify_outward_normals();
+        assert!(
+            report.is_closed_solid,
+            "push_pull must produce a closed solid, got {} inward face(s) of {} checked",
+            report.inward_count, report.checked_faces
+        );
+        assert!(
+            m.collect_non_manifold_edges().is_empty(),
+            "a closed solid has no non-manifold edges"
+        );
+        assert!(m.verify_face_invariants().is_valid());
+
+        // Keep the original structural check as well — it is cheap and it
+        // localises a corrupt loop pointer faster than the volume report does.
+        for (id, face) in m.faces.iter() {
             if face.is_active() {
-                // 각 face의 outer loop 검증
-                assert!(!face.outer().start.is_null(), "face should have valid outer loop");
+                assert!(
+                    !face.outer().start.is_null(),
+                    "face {id:?} should have a valid outer loop"
+                );
             }
         }
     }
