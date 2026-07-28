@@ -3660,6 +3660,12 @@ impl Scene {
                     )
                 })
             })
+            // …and the same solid's planar CAP. Its rim is the curved wall's rim,
+            // so it is part of that kernel-native solid, not a free coplanar
+            // region: re-deriving it against the model deactivates the cap (the
+            // solid opens) and the containment pass would pair it with its own
+            // wall. Excluding the wall alone was not enough.
+            .filter(|&fid| !self.mesh.face_touches_curved_neighbour(fid))
             .collect();
         if planar.is_empty() {
             return Ok(0);
@@ -23756,6 +23762,66 @@ mod tests {
     /// 사용자 보고 2026-06-02 "면이 분할 안된것이 있음" (rect 안 원 2개 중 하나만
     /// hole). scene post-process `processed` set 이 첫 split 후 outer(rect)를
     /// 마킹 → 두 번째 원 pair skip 회귀. inner(원)만 마킹하면 multi-hole 작동.
+    /// A curved primitive must survive the auto re-derive with its cap intact.
+    ///
+    /// A Path B cone's curved side and its own base cap share one rim circle, so
+    /// the coplanar containment pass used to reparent one as a hole of the other:
+    /// the cap gained an inner loop anchored at its own outer anchor and the solid
+    /// was silently un-capped (`is_closed_solid` true -> false). Topology checks
+    /// still passed, so only the volume check catches it. Covers every flag
+    /// combination a caller can produce, including the production default (both on).
+    #[test]
+    fn a_cone_stays_a_closed_solid_through_auto_intersect() {
+        for (auto_intersect, rederive) in [(false, false), (true, false), (true, true)] {
+            let mut scene = Scene::new();
+            scene.auto_intersect_on_draw = auto_intersect;
+            scene.face_rederive_on_draw = rederive;
+            let tag = format!("intersect={auto_intersect} rederive={rederive}");
+
+            // Mirror what the WASM `create_*` entry points do: build, own, and then
+            // run the auto pass only when a flag asks for it.
+            let mut add = |scene: &mut Scene, name: &str, faces: Vec<axia_geo::FaceId>| {
+                scene.create_xia_with_faces(name.to_string(), DVec3::ZERO, faces.clone());
+                if scene.auto_intersect_on_draw || scene.face_rederive_on_draw {
+                    let _ = scene.intersect_faces_inner(&faces);
+                }
+            };
+            let cone = scene
+                .mesh
+                .create_cone_kernel_native(
+                    DVec3::new(12000.0, 0.0, 0.0),
+                    500.0,
+                    1000.0,
+                    axia_geo::MaterialId::new(0),
+                )
+                .unwrap();
+            add(&mut scene, "Cone", cone.clone());
+            // A coplanar neighbour on the same z = 0 plane is what used to trigger
+            // the containment pass over the cone's own two faces.
+            let bx = scene
+                .mesh
+                .create_box(
+                    DVec3::new(0.0, 0.0, 1000.0),
+                    2000.0,
+                    1000.0,
+                    2000.0,
+                    axia_geo::MaterialId::new(0),
+                )
+                .unwrap();
+            add(&mut scene, "Box", bx);
+
+            for &f in &cone {
+                let inners = scene.mesh.faces.get(f).map_or(0, |x| x.inners().len());
+                assert_eq!(inners, 0, "{tag}: cone face {f:?} gained a spurious hole");
+            }
+            assert!(
+                scene.mesh.verify_outward_normals().is_closed_solid,
+                "{tag}: the cone must remain a closed solid"
+            );
+            assert!(scene.mesh.verify_face_invariants().is_valid(), "{tag}: invariants");
+        }
+    }
+
     #[test]
     fn adr186_two_circles_in_rect_both_holes() {
         let mut scene = Scene::new();
