@@ -5320,6 +5320,66 @@ impl Mesh {
         if dst == edge.v_small() { edge.v_large() } else { edge.v_small() }
     }
 
+    /// Does this face share a boundary edge with a face carrying a CURVED
+    /// analytic surface (Cylinder / Sphere / Cone / Torus / NURBS-class)?
+    ///
+    /// True for the planar **cap of a kernel-native curved solid** — its rim is
+    /// the curved wall's rim. ADR-197 already keeps the curved wall itself out of
+    /// the coplanar passes; a cap that answers `true` here belongs to the same
+    /// solid and must be left alone too, otherwise those passes re-derive it
+    /// against the model and the solid loses its cap.
+    ///
+    /// Walks the outer loop, and for each boundary edge the whole radial chain, so
+    /// it is correct for a closed-curve face (one anchor vertex + one self-loop
+    /// edge) as well as for a polygon.
+    pub fn face_touches_curved_neighbour(&self, face_id: FaceId) -> bool {
+        use crate::surfaces::AnalyticSurface as S;
+        let Some(face) = self.faces.get(face_id) else { return false };
+        let start = face.outer().start;
+        if start.is_null() {
+            return false;
+        }
+        let mut he = start;
+        // Bounded walks — a corrupt chain must not hang the caller.
+        for _ in 0..100_000 {
+            let edge_id = self.hes[he].edge();
+            let first = self.edges[edge_id].any_he();
+            if !first.is_null() {
+                let mut r = first;
+                for _ in 0..100_000 {
+                    let f = self.hes[r].face();
+                    if !f.is_null() && f != face_id {
+                        if let Some(nb) = self.faces.get(f) {
+                            if nb.is_active()
+                                && matches!(
+                                    nb.surface(),
+                                    Some(S::Cylinder { .. })
+                                        | Some(S::Sphere { .. })
+                                        | Some(S::Cone { .. })
+                                        | Some(S::Torus { .. })
+                                        | Some(S::BezierPatch { .. })
+                                        | Some(S::BSplineSurface { .. })
+                                        | Some(S::NURBSSurface { .. })
+                                )
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                    r = self.hes[r].next_rad();
+                    if r.is_null() || r == first {
+                        break;
+                    }
+                }
+            }
+            he = self.hes[he].next();
+            if he.is_null() || he == start {
+                break;
+            }
+        }
+        false
+    }
+
     /// HalfEdge의 "twin" (같은 edge의 반대 방향 HE) 반환.
     /// 2-manifold 메시에서 twin은 radial 체인의 다음 것.
     /// 3+ radial의 경우(non-manifold): dst가 다른 첫 번째 HE.

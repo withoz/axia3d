@@ -259,6 +259,8 @@ pub fn split_face_by_inner_circle(
     outer_face: FaceId,
     inner_face: FaceId,
 ) -> Result<(), AnnulusError> {
+    // Structural gate shared by every caller (see `reject_non_nestable`).
+    reject_non_nestable(mesh, outer_face, inner_face)?;
     // === Validation 1: outer + inner active ===
     let outer = mesh.faces.get(outer_face).ok_or(AnnulusError::InactiveFace {
         face_id: outer_face.raw(),
@@ -344,6 +346,8 @@ pub fn split_face_by_inner_circle_generic(
     outer_face: FaceId,
     inner_face: FaceId,
 ) -> Result<(), AnnulusError> {
+    // Structural gate shared by every caller (see `reject_non_nestable`).
+    reject_non_nestable(mesh, outer_face, inner_face)?;
     use crate::boundary_kernel::geom2::{point_in_polygon_even_odd, Pip, Vec2};
 
     // 1. active
@@ -441,6 +445,76 @@ fn face_containment_size(mesh: &Mesh, fid: FaceId) -> f64 {
     } else {
         mesh.face_area(fid)
     }
+}
+
+/// Can this face take part in coplanar containment (as a container or as a hole)?
+///
+/// Only planar regions can. A face carrying a CURVED analytic surface
+/// (Cylinder / Sphere / Cone / Torus / NURBS-class) is a wall, not a region —
+/// ADR-197 already excludes such faces from the coplanar re-derive, and the same
+/// exclusion must hold here.
+///
+/// Without it, a Path B primitive's curved side and its own planar cap **share
+/// the same rim circle**, so both report an identical `face_containment_size` and
+/// one gets reparented as a hole of the other: the cap ends up with an inner loop
+/// anchored at its own outer anchor, and `verify_outward_normals().is_closed_solid`
+/// flips to false (the cone/cylinder is silently un-capped).
+fn is_containment_candidate(mesh: &Mesh, fid: FaceId) -> bool {
+    use crate::surfaces::AnalyticSurface as S;
+    !matches!(
+        mesh.face_surface(fid),
+        Some(S::Cylinder { .. })
+            | Some(S::Sphere { .. })
+            | Some(S::Cone { .. })
+            | Some(S::Torus { .. })
+            | Some(S::BezierPatch { .. })
+            | Some(S::BSplineSurface { .. })
+            | Some(S::NURBSSurface { .. })
+    )
+}
+
+/// Is `outer` strictly bigger than `inner`, so that nesting is even possible?
+///
+/// Two regions of equal size cannot nest (the inner would have to be strictly
+/// inside), so an equal-size pair is never a container/hole relationship —
+/// notably two faces that share one boundary loop.
+fn strictly_larger(outer_size: f64, inner_size: f64) -> bool {
+    outer_size > inner_size * (1.0 + 1e-9)
+}
+
+/// Shared gate for every "make `inner` a hole of `outer`" split, so both the
+/// pairwise legacy path (`detect_*_containment` → `split_face_by_inner_*`) and the
+/// innermost-parent pass (`assign_*`) are protected by one rule (메타-원칙 #4).
+///
+/// Rejects the two ways a pair can be structurally un-nestable:
+/// 1. either face carries a CURVED surface — a wall is not a planar region
+///    (ADR-197 already excludes such faces from the coplanar re-derive), and
+/// 2. the two regions are the same size — a Path B primitive's curved side and its
+///    own cap share one rim circle, and without this they "contain" each other:
+///    the cap gains an inner loop anchored at its own outer anchor and the solid
+///    is silently un-capped (`is_closed_solid` true → false).
+fn reject_non_nestable(
+    mesh: &Mesh,
+    outer_face: FaceId,
+    inner_face: FaceId,
+) -> Result<(), AnnulusError> {
+    let un_nestable = |size: f64| AnnulusError::InnerNotContained {
+        center_distance: 0.0,
+        inner_radius: size,
+        outer_radius: size,
+    };
+    if !is_containment_candidate(mesh, outer_face) || !is_containment_candidate(mesh, inner_face) {
+        return Err(un_nestable(face_containment_size(mesh, inner_face)));
+    }
+    let (o, i) = (face_containment_size(mesh, outer_face), face_containment_size(mesh, inner_face));
+    if !strictly_larger(o, i) {
+        return Err(AnnulusError::InnerNotContained {
+            center_distance: 0.0,
+            inner_radius: i,
+            outer_radius: o,
+        });
+    }
+    Ok(())
 }
 
 /// ADR-279 β — is this circle face ALREADY a "disk" whose rim is a hole of some
@@ -999,6 +1073,8 @@ pub fn split_face_by_inner_polygon(
     outer_face: FaceId,
     inner_face: FaceId,
 ) -> Result<(), AnnulusError> {
+    // Structural gate shared by every caller (see `reject_non_nestable`).
+    reject_non_nestable(mesh, outer_face, inner_face)?;
     // 1. active
     let outer = mesh.faces.get(outer_face).ok_or(AnnulusError::InactiveFace {
         face_id: outer_face.raw(),
@@ -1545,3 +1621,84 @@ mod tests {
              got {:?}", report.violations);
     }
 }
+
+
+#[cfg(test)]
+mod curved_cap_selfhole_tests {
+    use crate::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A Path B primitive's curved side and its own planar cap SHARE one rim
+    /// circle, so both used to report the same containment size and one was
+    /// reparented as a hole of the other — the cap ended up with an inner loop
+    /// anchored at its own outer anchor and the solid silently lost its cap
+    /// (`is_closed_solid` true → false). Planar-only candidacy + the strict-size
+    /// rule must leave such a pair completely alone.
+    #[test]
+    fn a_cones_cap_never_becomes_a_hole_of_its_own_side() {
+        let mut mesh = Mesh::new();
+        let cone = mesh
+            .create_cone_kernel_native(DVec3::new(12000.0, 0.0, 0.0), 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        assert_eq!(cone.len(), 2, "Path B cone = base cap + cone side");
+        let fids: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+
+        let assigned = super::assign_circle_holes_innermost(&mut mesh, &fids);
+        assert_eq!(assigned, 0, "cap and its own side must not nest");
+        let polys = super::assign_polygon_holes(&mut mesh, &fids);
+        assert_eq!(polys, 0, "…and neither may the polygon path pair them");
+
+        for &f in &cone {
+            let inners = mesh.faces.get(f).map_or(0, |x| x.inners().len());
+            assert_eq!(inners, 0, "face {:?} gained a spurious hole", f);
+        }
+    }
+
+    /// Same guard for a cylinder: two coplanar-looking caps of EQUAL radius plus a
+    /// curved side. Equal-size regions cannot nest.
+    #[test]
+    fn a_cylinders_caps_never_nest_in_each_other() {
+        let mut mesh = Mesh::new();
+        let cyl = mesh
+            .create_cylinder_kernel_native_clean(DVec3::ZERO, 500.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        // The Path B side face legitimately owns one inner loop (the far rim —
+        // ADR-094 annulus), so assert nothing is ADDED rather than "no inners".
+        let before: Vec<usize> =
+            cyl.iter().map(|&f| mesh.faces.get(f).map_or(0, |x| x.inners().len())).collect();
+        let fids: Vec<_> =
+            mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(super::assign_circle_holes_innermost(&mut mesh, &fids), 0);
+        let after: Vec<usize> =
+            cyl.iter().map(|&f| mesh.faces.get(f).map_or(0, |x| x.inners().len())).collect();
+        assert_eq!(after, before, "no face may gain a hole: {:?} → {:?}", before, after);
+    }
+
+    /// The guards must not over-block: a genuinely smaller coplanar circle inside
+    /// a bigger one is still reparented as its hole (ADR-185/ADR-279 behaviour).
+    #[test]
+    fn a_smaller_coplanar_circle_still_becomes_a_hole() {
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let mk = |mesh: &mut Mesh, r: f64| {
+            let a = mesh.add_vertex(DVec3::new(r, 0.0, 0.0));
+            mesh.add_face_closed_curve(
+                a,
+                AnalyticCurve::Circle {
+                    center: DVec3::ZERO, radius: r, normal: DVec3::Z, basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap()
+        };
+        let big = mk(&mut mesh, 1000.0);
+        let small = mk(&mut mesh, 300.0);
+        let fids = vec![big, small];
+        let assigned = super::assign_circle_holes_innermost(&mut mesh, &fids);
+        assert_eq!(assigned, 1, "a strictly smaller concentric circle is a hole");
+        assert_eq!(mesh.faces.get(big).map_or(0, |f| f.inners().len()), 1,
+            "the big disk gains exactly one hole");
+    }
+}
+
