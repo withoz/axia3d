@@ -261,7 +261,6 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-history','view', '작업 기록 패널', 'History','⇧H',     false, deps));
   cmds.push(action('view-scenes', 'view', '장면 패널',     'Scenes', undefined, false, deps));
   cmds.push(action('view-ssao',   'view', 'SSAO 토글',     'SSAO',   undefined, false, deps));
-  cmds.push(action('view-sun-panel', 'view','태양 패널',   '태양',   undefined, false, deps));
   // Panel / diagnostic toggles — catalog SSOT coverage (bottom-bar UX audit).
   // 'I' was bound in XiaInspector but never recorded here, so the catalog
   // thought the key was free and handed it to Pie — which is how one keystroke

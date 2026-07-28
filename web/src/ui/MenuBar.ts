@@ -37,6 +37,32 @@ export interface MenuBarDeps {
 
 // Tool display names live in the shared SSOT (./toolDisplayNames).
 
+/**
+ * Did the last menu action actually do something?
+ *
+ * `dispatchMenuAction` (main.ts) used to return `true` as soon as it found a
+ * `[data-action]` element and clicked it, so the Capability Explorer recorded
+ * `result:'ok'` — "Launched (menu dispatch)" — even for a handler that bailed on
+ * a missing global and only raised a warning toast. Four Window-menu items were
+ * dead that way and the audit trail called every one of them a success
+ * (ADR-299). A handler that cannot proceed calls {@link markActionUnavailable};
+ * the dispatcher reads it back and reports honestly.
+ */
+let actionUnavailable = false;
+
+/** A handler declares it could not carry the action out. */
+export function markActionUnavailable(message: string): void {
+  actionUnavailable = true;
+  Toast.warning(message);
+}
+
+/** Read and clear the flag — call immediately after dispatching a click. */
+export function consumeActionUnavailable(): boolean {
+  const was = actionUnavailable;
+  actionUnavailable = false;
+  return was;
+}
+
 export function initMenuBar(deps: MenuBarDeps): void {
   const { viewport, bridge, toolManager, scene, fileManager,
           saveProject, openProject, openOsnapPanel } = deps;
@@ -111,7 +137,6 @@ export function initMenuBar(deps: MenuBarDeps): void {
       'view-ssao': viewport.isSsaoEnabled?.() ?? false,
       // 'view-shadow-pro': removed 2026-05-16 (shadow system deferred to ADR-106)
       'view-fur': viewport.isFurEnabled?.() ?? false,
-      'view-sun-panel': isPanelOpen('__axia_sunPanel'),
       'view-history': isPanelOpen('__axia_historyPanel'),
       'view-capability-explorer': isPanelOpen('__axia_capabilityExplorer'),
       'view-invariant-verifier': isPanelOpen('__axia_invariantVerifier'),
@@ -203,6 +228,10 @@ export function initMenuBar(deps: MenuBarDeps): void {
     if (!action) return;
     const act = action.dataset.action;
     if (!act) return;
+
+    // Fresh slate: a handler that cannot proceed sets this via
+    // markActionUnavailable, and the palette dispatcher reads it back.
+    actionUnavailable = false;
 
     closeAllMenus();
 
@@ -409,11 +438,12 @@ export function initMenuBar(deps: MenuBarDeps): void {
         break;
       }
       // case 'view-shadow-pro': removed 2026-05-16 — shadow system deferred to ADR-106
-      case 'view-sun-panel': {
-        const sp = (window as unknown as { __axia_sunPanel?: { toggle(): void } }).__axia_sunPanel;
-        sp?.toggle();
-        break;
-      }
+      // `view-sun-panel` is gone (ADR-299). There is no SunPanel class anywhere
+      // in the repo — the handler read a global nothing assigns and `sp?.toggle()`
+      // swallowed it, so the menu item advertised (with a Shift+U hint bound to
+      // nothing) a feature that never existed. Sun direction lives in the Sun
+      // settings the Style panel exposes. Re-introducing a panel needs the class
+      // first, then a menu entry — not the other way round.
       case 'reference-image': {
         // 참조 이미지 overlay — 사진 따라 그리기 / 비율 맞추기 용.
         // HTML <img> overlay 방식: 3D 씬과 독립, 카메라 이동해도 고정.
@@ -596,14 +626,14 @@ export function initMenuBar(deps: MenuBarDeps): void {
         // ComponentPanel — `Shift+G` 단축키와 동일 (KeyboardShortcuts 와 정합)
         const cp = (window as unknown as { __axia_componentPanel?: { toggle(): void } }).__axia_componentPanel;
         if (cp?.toggle) cp.toggle();
-        else Toast.warning(t('컴포넌트 패널을 사용할 수 없습니다.'));
+        else markActionUnavailable(t('컴포넌트 패널을 사용할 수 없습니다.'));
         break;
       }
       case 'view-constraints': {
         // ConstraintPanel — `J` 단축키와 동일
         const cp = (window as unknown as { __axia_constraintPanel?: { toggle(): void } }).__axia_constraintPanel;
         if (cp?.toggle) cp.toggle();
-        else Toast.warning(t('구속 조건 패널을 사용할 수 없습니다.'));
+        else markActionUnavailable(t('구속 조건 패널을 사용할 수 없습니다.'));
         break;
       }
       case 'view-materials': {
@@ -615,14 +645,14 @@ export function initMenuBar(deps: MenuBarDeps): void {
           xi.toggle();
           Toast.info(t('재질 편집은 XIA 인스펙터에서 수행하세요.'), 3000);
         } else {
-          Toast.warning(t('XIA 인스펙터를 사용할 수 없습니다.'));
+          markActionUnavailable(t('XIA 인스펙터를 사용할 수 없습니다.'));
         }
         break;
       }
       case 'view-xia-inspector': {
         const xi = (window as unknown as { __axia_xiaInspector?: { toggle(): void } }).__axia_xiaInspector;
         if (xi?.toggle) xi.toggle();
-        else Toast.warning(t('XIA 인스펙터를 사용할 수 없습니다.'));
+        else markActionUnavailable(t('XIA 인스펙터를 사용할 수 없습니다.'));
         break;
       }
       case 'clash-detect': {

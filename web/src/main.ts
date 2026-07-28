@@ -36,6 +36,7 @@ import { initOsnapPanel } from './ui/OsnapPanel';
 import { initStylePanel } from './ui/StylePanel';
 import { initProjectSerializer } from './ui/ProjectSerializer';
 import { initMenuBar } from './ui/MenuBar';
+import { dispatchMenuAction } from './ui/dispatchMenuAction';
 import { initVCB } from './ui/VCB';
 import { initKeyboardShortcuts } from './ui/KeyboardShortcuts';
 import { StatusBar } from './ui/StatusBar';
@@ -129,24 +130,6 @@ async function checkWasmFreshness(): Promise<void> {
  * `case 'snap-override': return; // hover로 처리, 클릭 무시`. Firing it from
  * the palette would be a silent no-op, which is worse than not offering it.
  */
-const CONTEXT_SELECTION_ACTIONS = new Set(['group-edit', 'group-hide', 'group-lock']);
-
-const dispatchMenuAction = (id: string): boolean => {
-  // #statusbar too: osnap / grid / edge / axis / help / rename are F-key
-  // buttons down there, handled by StatusBar.ts — they exist in neither
-  // #menubar nor executeAction, so from the palette they fell through both
-  // hops and produced "unknown command". Measured in the wiring audit.
-  const item =
-    document.querySelector<HTMLElement>(
-      `#menubar [data-action="${id}"], #statusbar [data-action="${id}"]`,
-    ) ??
-    (CONTEXT_SELECTION_ACTIONS.has(id)
-      ? document.querySelector<HTMLElement>(`#context-menu [data-action="${id}"]`)
-      : null);
-  if (!item) return false;
-  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  return true;
-};
 
 async function main() {
   debugLog('AXiA 3D starting...');
@@ -900,7 +883,14 @@ async function main() {
   });
 
   // ═══ 12. XIA Inspector Panel — see ui/XiaInspector.ts ═══
-  await initXiaInspector({ bridge, viewport, toolManager });
+  {
+    const xiaInspector = await initXiaInspector({ bridge, viewport, toolManager });
+    // ADR-299 — the View menu's `view-xia-inspector` / `view-materials` look this
+    // up and, finding nothing, only ever showed "not available". Expose it the way
+    // ConstraintPanel and Scenes already are.
+    (window as unknown as { __axia_xiaInspector?: { toggle(): void } })
+      .__axia_xiaInspector = xiaInspector;
+  }
 
   // ═══ 13. Component Panel (그룹/컴포넌트 아웃라이너) ═══
   {
@@ -942,6 +932,11 @@ async function main() {
     toolManager.selection.onChange(() => {
       componentPanel.refresh();
     });
+
+    // ADR-299 — `view-components` reads this global; nothing assigned it, so the
+    // menu item only ever produced a warning toast while bare `O` worked.
+    (window as unknown as { __axia_componentPanel?: ComponentPanel })
+      .__axia_componentPanel = componentPanel;
   }
 
   // ═══ 14. Constraint Panel (파라메트릭 제약 목록) ═══
