@@ -334,13 +334,17 @@ export function initMenuBar(deps: MenuBarDeps): void {
       // ── 내보내기 IFC (ADR-203) — 부재별 IfcWall + 재질 (γ) 우선,
       //    비지원 face 있으면 IfcFacetedBrep (β-1.5) 로 fallback ──
       case 'export-ifc': {
-        // The analytic emitter needs every face to carry its surface; when one
-        // does not it returns an empty string, which `??` would let through
-        // (empty is not nullish). Fall through to the faceted writer so the
-        // user still gets a valid file instead of "there is no geometry".
+        // Three tiers, best first. Each emitter returns an empty string (not
+        // nullish, so `??` would let it through) when it cannot represent the
+        // scene, and the bridge maps that to null:
+        //   1. semantic model — one IfcWall per member, materials, openings;
+        //   2. single-wall analytic brep — loses the members but keeps exact
+        //      surfaces, which is what a mixed sheet+solid scene falls back to;
+        //   3. faceted brep — always writable, so the user still gets a file.
         const model = bridge.exportIfcModel('AXiA Model');
-        const analytic = !!model;
-        const ifc = analytic ? model : bridge.exportIfc('AXiA Model');
+        const advanced = model ? null : bridge.exportIfcAdvanced('AXiA Model');
+        const ifc = model ?? advanced ?? bridge.exportIfc('AXiA Model');
+        const analytic = !!(model || advanced);
         if (!ifc) { Toast.warning(t('내보낼 형상이 없습니다.')); break; }
         import('../export/ExportUtils')
           .then(({ downloadText }) => {

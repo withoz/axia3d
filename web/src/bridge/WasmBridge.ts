@@ -6149,6 +6149,39 @@ export class WasmBridge {
   }
 
   /**
+   * How many openings (ADR-203) the engine currently holds.
+   *
+   * Diagnostics only — the lifecycle is already correct without touching it:
+   * `import_versioned_snapshot` restores the file's openings (section 12) and
+   * clears them for a legacy file that has no such section, so they are scoped
+   * to the loaded project rather than accumulating. Returns 0 when the engine
+   * is absent.
+   */
+  openingCount(): number {
+    if (!this.engine?.openingCount) return 0;
+    try {
+      return this.engine.openingCount();
+    } catch (e) {
+      this.recordBridgeError('openingCount', e);
+      return 0;
+    }
+  }
+
+  /**
+   * Drop every recorded opening (ADR-203). An escape hatch for diagnostics and
+   * for a caller that resets the scene without going through a snapshot — see
+   * {@link openingCount} for why normal project loading needs no such call.
+   */
+  clearOpenings(): void {
+    if (!this.engine?.clearOpenings) return;
+    try {
+      this.engine.clearOpenings();
+    } catch (e) {
+      this.recordBridgeError('clearOpenings', e);
+    }
+  }
+
+  /**
    * ADR-203 I-1 — read an `.ifc` file and report what it contains (schema,
    * entity histogram, element/material counts). Read-only: the scene is
    * untouched. Returns null if the engine is absent or the report is unusable.

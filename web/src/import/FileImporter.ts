@@ -21,10 +21,10 @@ import { parseString as parseDxf } from 'dxf';
 import { convertDwgToDxf, init as initDwgDxf } from 'dwgdxf';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
-import type { BRepTraversalResult } from './occtBrepTraversal';
+import type { BRepTraversalResult } from './occtBrepTraversal';
 import { t } from '../i18n';
 
-export type ImportFormat = 'obj' | 'stl' | 'gltf' | 'dae' | 'ply' | '3ds' | 'dxf' | 'dwg' | 'skp' | '3dm' | 'step' | 'iges';
+export type ImportFormat = 'obj' | 'stl' | 'gltf' | 'dae' | 'ply' | '3ds' | 'dxf' | 'dwg' | 'skp' | '3dm' | 'step' | 'iges' | 'ifc';
 
 export interface ImportResult {
   format: ImportFormat;
@@ -67,6 +67,7 @@ const FORMAT_ACCEPT: Record<ImportFormat, string> = {
   '3dm':  '.3dm',
   'step': '.step,.stp',
   'iges': '.iges,.igs',
+  'ifc':  '.ifc',
 };
 
 /** 포맷별 표시 이름 */
@@ -83,14 +84,14 @@ const FORMAT_LABEL: Record<ImportFormat, string> = {
   '3dm':  'Rhino 3DM',
   'step': 'STEP (AP203/AP214/AP242)',
   'iges': 'IGES 5.3',
+  'ifc':  'IFC (BIM)',
 };
 
 /** 모든 지원 확장자. STEP/IGES도 picker에 노출하되 importFile에서 명시 안내 메시지로
  *  거부 (조용히 실패하는 것보다 사용자에게 대안을 알려주는 게 나음). */
-const ALL_ACCEPT = [
-  ...Object.values(FORMAT_ACCEPT),
-  '.step', '.stp', '.iges', '.igs',
-].join(',');
+// STEP/IGES used to be appended by hand here; they are entries in FORMAT_ACCEPT
+// now, so listing them again only duplicated them in the dialog's filter.
+const ALL_ACCEPT = Object.values(FORMAT_ACCEPT).join(',');
 
 export class FileImporter {
   private scene: THREE.Scene;
@@ -203,6 +204,34 @@ export class FileImporter {
     //   * 결과 warnings → Toast.warning (사용자 surface)
     //   * 성공 → Toast.success
     //   * traversal field → ImportResult 통과 (ADR-037 P22.7 owner-ID 매핑용)
+    // IFC — a BIM model, not reference geometry: it goes into the ENGINE as DCEL
+    // faces (ADR-203 I-1..I-5), so delegate to the same handler the dedicated
+    // "IFC 가져오기" menu item uses. Without this branch a `.ifc` picked from
+    // "지원되는 모든 유형" reached the mesh loaders, which cannot read STEP-21.
+    // Returns an empty group because nothing is added to the reference scene.
+    if (ext === 'ifc') {
+      const container = (window as unknown as { __axia?: { tryGet?: (k: string) => unknown } }).__axia;
+      const bridge = container?.tryGet?.('bridge') as
+        | import('../ui/IfcImportHandler').IfcImportDeps['bridge']
+        | undefined;
+      const toolManager = container?.tryGet?.('toolManager') as
+        | import('../ui/IfcImportHandler').IfcImportDeps['toolManager']
+        | undefined;
+      if (!bridge || !toolManager) {
+        throw new Error(t('IFC 가져오기: 엔진이 아직 준비되지 않았습니다.'));
+      }
+      const { importIfcFileObject } = await import('../ui/IfcImportHandler');
+      await importIfcFileObject(file, { bridge, toolManager });
+      return {
+        format: 'ifc',
+        fileName: file.name,
+        group: new THREE.Group(),
+        meshCount: 0,
+        vertexCount: 0,
+        faceCount: 0,
+      };
+    }
+
     if (ext === 'step' || ext === 'stp' || ext === 'iges' || ext === 'igs') {
       const { StepIgesImporter } = await import('./StepIgesImporter');
       const importer = StepIgesImporter.getInstance();
@@ -397,6 +426,7 @@ export class FileImporter {
       case 'dwg':  return 'dwg';
       case 'skp':  return 'skp';
       case '3dm':  return '3dm';
+      case 'ifc':  return 'ifc';
       default:     return null;
     }
   }

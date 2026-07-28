@@ -58,6 +58,8 @@ const mockEngine: Record<string, any> = {
   group_count: vi.fn().mockReturnValue(1),
   import_dxf: vi.fn().mockReturnValue('{"faces":10}'),
   recordRectOpening: vi.fn(),
+  openingCount: vi.fn().mockReturnValue(2),
+  clearOpenings: vi.fn(),
   importIfc: vi
     .fn()
     .mockReturnValue(
@@ -132,6 +134,33 @@ describe('WasmBridge', () => {
         new THREE.Vector3(0, -1, 0),
       );
       expect(mockEngine.recordRectOpening).toHaveBeenCalledWith(1, 2, 3, 4, 5, 6, 0, -1, 0);
+    });
+  });
+
+  // ADR-203 — declared on the engine interface but never wrapped, so a caller
+  // could not reach them. The lifecycle needs no call (import_versioned_snapshot
+  // restores section 12 and clears it for a legacy file), so these are
+  // diagnostics; the point of the test is that the wrapper exists and is safe.
+  describe('opening diagnostics', () => {
+    it('openingCount forwards the engine count', () => {
+      const bridge = new WasmBridge();
+      (bridge as any).engine = mockEngine;
+      expect(bridge.openingCount()).toBe(2);
+      expect(mockEngine.openingCount).toHaveBeenCalled();
+    });
+
+    it('clearOpenings forwards to the engine', () => {
+      const bridge = new WasmBridge();
+      (bridge as any).engine = mockEngine;
+      bridge.clearOpenings();
+      expect(mockEngine.clearOpenings).toHaveBeenCalled();
+    });
+
+    it('both are safe when the engine lacks them', () => {
+      const bridge = new WasmBridge();
+      (bridge as any).engine = {};
+      expect(bridge.openingCount()).toBe(0);
+      expect(() => bridge.clearOpenings()).not.toThrow();
     });
   });
 
