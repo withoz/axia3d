@@ -21,7 +21,7 @@ import { parseString as parseDxf } from 'dxf';
 import { convertDwgToDxf, init as initDwgDxf } from 'dwgdxf';
 import { debugLog } from '../utils/debug';
 import { Toast } from '../ui/Toast';
-import type { BRepTraversalResult } from './occtBrepTraversal';
+import type { BRepTraversalResult } from './occtBrepTraversal';
 import { t } from '../i18n';
 
 export type ImportFormat = 'obj' | 'stl' | 'gltf' | 'dae' | 'ply' | '3ds' | 'dxf' | 'dwg' | 'skp' | '3dm' | 'step' | 'iges';
