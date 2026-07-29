@@ -112,8 +112,8 @@ const SECTIONS: ShortcutSection[] = [
     title: '패널',
     rows: [
       { key: 'I', description: 'XIA Inspector' },
-      { key: 'O', description: 'Outliner (컴포넌트 패널)' },
-      { key: 'J', description: 'Constraint 패널' },
+      { key: 'Shift+O', description: 'Outliner (컴포넌트 패널)' },
+      { key: 'Shift+J', description: 'Constraint 패널' },
       { key: 'Shift+H', description: '작업 기록 패널 (Parametric History)' },
     ],
   },

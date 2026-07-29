@@ -918,13 +918,17 @@ async function main() {
       },
     );
 
-    // 키보드 O → Component Panel 토글
+    // 키보드 Shift+O → Component Panel (Outliner) 토글.
+    //
+    // ADR-300 — this listened for BARE O, which KeyboardShortcuts already maps to
+    // the Offset tool. Both listeners fired on every press: one keystroke opened
+    // the Outliner *and* switched tools, and ShortcutHelpModal documented O twice
+    // ("Offset" and "Outliner"). Bare letters belong to tools — O for Offset is
+    // the CAD/SketchUp convention this app follows — so the panel moves to Shift.
     window.addEventListener('keydown', (e) => {
       if (isTypingInInput(e.target)) return;
-      if (e.key === 'o' || e.key === 'O') {
-        if (!e.ctrlKey && !e.altKey && !e.shiftKey) {
-          componentPanel.toggle();
-        }
+      if ((e.key === 'o' || e.key === 'O') && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        componentPanel.toggle();
       }
     });
 
@@ -952,10 +956,15 @@ async function main() {
     (window as unknown as { __axia_constraintPanel?: ConstraintPanel })
       .__axia_constraintPanel = constraintPanel;
 
-    // 키보드 J → Constraint Panel 토글 ('K'는 Inference Lock에서 사용 중)
+    // 키보드 Shift+J → Constraint Panel 토글.
+    //
+    // ADR-300 — bare J is the Slice tool (KeyboardShortcuts + AxiaCommands), and
+    // this listener claimed it too, so one press both opened the panel and
+    // switched tools. The comment here used to say "'K' is taken by Inference
+    // Lock", which was true but missed that J was taken as well.
     window.addEventListener('keydown', (e) => {
       if (isTypingInInput(e.target)) return;
-      if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      if ((e.key === 'j' || e.key === 'J') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         constraintPanel.toggle();
       }
     });
@@ -1160,10 +1169,16 @@ async function main() {
     };
     requestAnimationFrame(tickCV);
 
-    // Shift+J → 인디케이터 토글
+    // Shift+K → 제약 인디케이터 토글.
+    //
+    // ADR-300 — this held Shift+J, which is where the Constraint PANEL had to go
+    // once bare J was returned to the Slice tool. Between the two, the panel is
+    // the documented user-facing surface (ShortcutHelpModal lists it) while this
+    // indicator toggle appears in no menu and no help text, so the panel keeps
+    // the near-miss key and the dev toggle moves to a free one.
     window.addEventListener('keydown', (e) => {
       if (isTypingInInput(e.target)) return;
-      if ((e.key === 'j' || e.key === 'J') && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      if ((e.key === 'k' || e.key === 'K') && e.shiftKey && !e.ctrlKey && !e.altKey) {
         constraintVisual.toggle();
       }
     });
