@@ -8771,6 +8771,40 @@ LOCKED #88 (doc-lag 이 오진을 낳은 기록 — 이 항목이 그 재발을 
 gap 은 **필드 하나**였다 — `add_face_closed_curve` 가 rim 의 평면을 붙이고 closed-curve 분기가
 `continue` 로 빠져나가 아무도 그걸 대체하지 못했다.
 
+#### ⚠ 적대적 검토가 잡은 것 — 거절 경로가 거짓말을 남기고 있었다
+
+5개 렌즈가 **하나의 결함**으로 수렴했고 실제였다. `face_surface` 는 모든 advanced face 에
+surface 를 **자연 전체 도메인**으로 채워 넣는다(면 하나만 보고는 범위를 알 수 없으므로 그럴
+수밖에 없다). `reconstruct_surfaces` 는 성공 시에만 좁히고 `dropped_surface` 만 비웠으며,
+**거절은 전부 맨 `continue`** 였다 → full-domain surface 가 그대로 남고 wasm 이 그걸 붙였다.
+
+```
+PROBE lone-cap surface = Some(Sphere { .. v_range: (-1.5707963, 1.5707963) })
+```
+
+즉 L-310-2 가 거절하려던 바로 그 경우(홀로 있는 반구)가 **통짜 구**로 들어왔다 — 면적
+1.26e7(참값 6.28e6), 반쪽만 있는데 공 전체가 렌더된다. **이 ADR 이 고치려던 납작한 원반보다
+나쁘다.** 외부 exporter 의 부분 patch 도 전부 이 경로다.
+
+**그리고 내 가드는 내내 통과했다.** `adr310_a_lone_hemisphere_…` 가 tag 와 경고 문구만 보고
+`surface` 를 안 봤다 — 이 저장소가 반복해서 당한 바로 그 vacuous check(ADR-299/302/304).
+지금은 `surface.is_none()` 을 단언하고, 수정을 되돌리면(debug_assert 도 함께 끄고) **그
+단언이** 실패한다.
+
+**교훈은 새롭지 않다는 것이 요점** — 가드는 지켜야 할 것을 깨뜨려 실패를 눈으로 보기 전까지
+아무것도 붙잡고 있지 않다. 검토 전에 뮤테이션 4건을 돌렸지만 **거절 경로는 하나도 건드리지
+않았다** — 그 테스트를 내가 썼기 때문이다.
+
+#### Lock-ins (L-310-1 ~ 10)
+
+**L-310-8** *살아남은 surface 는 범위를 결정한 surface 다* — 불변식
+`surface.is_some() ⟹ dropped_surface.is_none()`, 마지막 pass + `debug_assert` 로 고정.
+거절은 tag 와 **함께 surface 도 버린다**. **L-310-9** 프레임 비교는 축이 아니라 **방향**
+기준 — anti-parallel 은 같은 구지만 다른 파라미터화라 캡이 뒤바뀐다, 수용이 아니라 거절.
+**L-310-10** 모든 수용 테스트는 **NaN 이면 실패**하도록 — `NaN > eps` 가 false 라
+`if x > eps { continue }` 는 NaN 에서 **통과해 버린다**(ADR-304 가 두 번 찾은 함정,
+LOCKED #100 L-100-1).
+
 #### Lock-ins (L-310-1 ~ 7)
 
 export 불변(바이트 변경은 새 ADR + 승인) / 짝 완성은 **증거가 정확할 때만**(같은 element ·
@@ -8805,7 +8839,10 @@ import 하려면 언젠가 필요하다.
 
 **시연 게이트** (실제 wasm, fresh reload): 브라우저에서 Path B 구 → export → 새 엔진으로
 import → `verts=1 edges=1 faces=2`, 두 면 모두 `faceSurfaceKind=3`(Sphere), `warnings []`,
-**렌더 z ∈ [−1000, +1000]** (원반이 아니라 지름 전체).
+**렌더 z ∈ [−1000, +1000]** (원반이 아니라 지름 전체). 검토 수정 후 **거절 경로도 시연** —
+같은 파일에서 `IFCCLOSEDSHELL` 의 반구 하나를 지우면 `faces=1`, `faceSurfaceKind=1`(Plane),
+**렌더 z ∈ [0,0]**, FLAT 경고 발화. 수정 전에는 이 줄이 `kind=3` + `z ∈ [−1000,+1000]`
+(반쪽으로 만든 통짜 공) 이었다.
 
 #### Cross-link
 

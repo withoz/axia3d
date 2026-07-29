@@ -2197,8 +2197,10 @@ fn face_surface(file: &StepFile, face: &Entity, scale: f64) -> Option<AnalyticSu
     }
 }
 
-/// 1 μm — ADR-147's spatial-hash floor, and generous enough to absorb the
-/// decimal round-trip a STEP file puts every coordinate through.
+/// 1 μm — chosen to absorb the decimal round-trip a STEP file puts every
+/// coordinate through, and comfortably above ADR-147's 0.15 μm spatial-hash
+/// dedup floor, so two points the engine would merge never read as different
+/// surfaces here.
 const SURFACE_TOL: f64 = 1e-3;
 
 /// The exact boundary circle of a single closed-curve face: centre, radius,

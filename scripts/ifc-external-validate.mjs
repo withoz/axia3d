@@ -226,8 +226,9 @@ for (const c of corpus) {
     check(meshes >= 1, 'foreign parser reaches our geometry', `${meshes} mesh(es)`);
     notes.push('cone: web-ifc has no revolution kernel — IfcRevolvedAreaSolid parses ' +
       'but tessellates to 0 triangles (IfcRightCircularCone likewise). Before §44 the ' +
-      'same cone rendered as a FLAT DISK (z-extent 0) because that kernel also skips ' +
-      'IfcConicalSurface, so neither form ever showed a cone there.');
+      'same cone rendered as a FLAT DISK (z-extent 0) because that kernel has no ' +
+      'IfcConicalSurface either — it triangulates the boundary instead. Neither ' +
+      'form ever showed a cone there.');
   } else {
     check(meshes >= 1 && tris > 0, 'foreign kernel tessellates our geometry', `${meshes} mesh(es), ${tris} triangles`);
   }
@@ -257,7 +258,9 @@ for (const c of corpus) {
     check(typeCount(api, modelID, 'IFCCIRCLEPROFILEDEF') === 1, 'cylinder profile = IfcCircleProfileDef');
     check(typeCount(api, modelID, 'IFCSPHERICALSURFACE') >= 1, 'IfcSphericalSurface present');
     notes.push('curved: web-ifc sweeps our IfcCircleProfileDef and tessellates IfcPlane; ' +
-      'IfcSphericalSurface/Conical/Toroidal are emitted + parsed but skipped by that kernel.');
+      'IfcSphericalSurface/Conical/Toroidal are emitted + parsed, but that kernel has ' +
+      'no such surface — it triangulates the boundary loop into a flat disc (measured, ' +
+      'ADR-310 §6), so a sphere comes out with z-extent 0.');
   }
 
   if (c.file === 'spline.ifc') {

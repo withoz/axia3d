@@ -180,6 +180,18 @@ STEP file puts every coordinate through).
   to them changes render for existing files and is a separate step.
 - **L-310-6** The parity guard is the point: an imported Path B primitive must
   equal the native one. That guard is what would have caught this defect.
+- **L-310-8** **A surface that survives is one whose range we decided.** The
+  invariant `surface.is_some() ⟹ dropped_surface.is_none()`, held by a final
+  pass and pinned by a `debug_assert`. `face_surface` has to stock every
+  advanced face at the natural full domain, because a range is not knowable one
+  face at a time — so a refusal that only skips *narrowing* leaves a lie behind,
+  and the attach site cannot tell. Refusal drops the surface with the tag.
+- **L-310-9** Comparison of frames is by direction, not merely by axis.
+  Anti-parallel frames describe the same sphere and a different
+  parameterization; they are refused rather than accommodated.
+- **L-310-10** Every acceptance test is written so that a NaN **fails** it.
+  `NaN > eps` is false, so an `if x > eps { continue }` guard falls through on
+  NaN — the trap ADR-304 found twice (LOCKED #100 L-100-1).
 - **L-310-7** 절대 #[ignore] 금지.
 
 ## 8. Sub-steps
@@ -223,6 +235,45 @@ boundary *is* a flat circle, and the depth lives in the surface. A future reader
 who reaches for extent to check this will find it unchanged and must not read
 that as a regression — the round-trip test says so in its own comment.
 
+### What an adversarial review caught, after all of that
+
+Five independent lenses over the diff converged on one defect, and it was real.
+
+`face_surface` stocks **every** advanced face with its surface at the natural
+full domain — it has to, since a range is not knowable one face at a time.
+`reconstruct_surfaces` narrowed that on success and cleared `dropped_surface`;
+every refusal was a bare `continue`. The full-domain surface stayed on, and the
+wasm attached it regardless. Measured on the fixture already in the tree:
+
+```
+PROBE lone-cap surface = Some(Sphere { .. v_range: (-1.5707963, 1.5707963) })
+```
+
+So the one case L-310-2 exists to refuse — a lone hemisphere — imported as a
+**whole sphere**: area 1.26e7 where the truth is 6.28e6, and a full ball
+rendered where half of one exists. Worse than the flat disc this ADR set out to
+fix, and it reached every spherical or toroidal face we decline, including the
+partial patches foreign exporters produce.
+
+**The guard passed the entire time.**
+`adr310_a_lone_hemisphere_is_undecidable_and_still_says_so` asserted the tag and
+the warning text and never looked at `surface` — a check that held nothing,
+which is the failure mode this repo has been bitten by repeatedly (ADR-299,
+ADR-302, ADR-304). It now asserts `surface.is_none()`, and reverting the fix
+with the `debug_assert` also disabled makes that assertion — not the assert —
+fail.
+
+Two smaller ones from the same review, both fixed: `same_surface` accepted
+anti-parallel axes (L-310-9), and the acceptance guards were written so a NaN
+fell through them (L-310-10). Also corrected: the FLAT clause had lost its only
+behavioural assertion when ADR-309's test was replaced, and §6 #4's claim about
+the validator was only two-thirds done — one of three "skips" was left.
+
+The lesson is not new, which is the point: a guard proves nothing until the
+guarded thing is broken and the guard is watched to fail. Four mutations were
+run before the review, and none of them touched the refusal path — because I
+wrote the test that would have.
+
 **Demo gate** (CONTRIBUTING §4 — a green suite is not the scene path). Built the
 wasm, drew a Path B sphere in the browser, exported it, reloaded to a fresh
 engine, imported it back:
@@ -236,6 +287,19 @@ render   125496 vertices, z ∈ [-1000, +1000]
 
 The last line is the user-visible fix: the imported solid spans the full
 diameter instead of lying flat at z = 0.
+
+Re-run after the review's fix, with the refusal path added — the same file with
+one hemisphere struck out of its `IFCCLOSEDSHELL`:
+
+```
+pair      faces=2, both faceSurfaceKind=3 (Sphere), warnings [], z ∈ [-1000, +1000]
+lone cap  faces=1,      faceSurfaceKind=1 (Plane),  z ∈ [0, 0]
+          warning: "…carried IFCSPHERICALSURFACE but were rebuilt from their
+          boundary — … this solid is now FLAT (volume lost)"
+```
+
+Before the fix that second row read `faceSurfaceKind=3` and
+`z ∈ [-1000, +1000]`: a whole ball built from half of one.
 
 ## Cross-link
 
