@@ -8700,7 +8700,18 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   그건 설계 보장이 아니라 ADR-304 의 **죽은 코드**다 — 아래 정책 질문에 "예" 라 답하면
   그 문들이 다시 열린다 (L-307-1).
 - `compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).
-- 생성이 퇴화를 **거부해야 하는지**는 ADR-304 가 의도적으로 답하지 않은 정책 질문.
+- ~~생성이 퇴화를 거부해야 하는지~~ → **2026-07-29 결재: 아니오 — 생성은 관대하게 두고,
+  모호함에 기대던 쪽을 없앤다** (ADR-304 §6 amendment). 측정된 불리함: ① `normalize_for_
+  import` 의 `degenerate_removed` 카운터가 보여주듯 **임포트가 accept-then-repair 로 설계**
+  돼 있고 실제 OBJ/STL/DXF/IFC 에 0-면적 삼각형이 흔하다 / ② ADR-307 이 반박한 둘
+  (`merge_faces_by_edge`×4, `subdivide`×1)이 **되살아난다** — 그것들이 도달 불가인 이유가
+  `compute_normal` 이 실패 못 해서이므로, 거부는 ADR-307 이 측정으로 피해간 rollback 작업을
+  **만들어낸다** / ③ 199 호출부에 새 실패 모드(그중 16 파일이 teardown-then-rebuild).
+  **구분 주의**: NaN/정확히-0 만 거부하면 허용오차가 없어 **얇은 면과 무관** — `NORMAL_EPSILON`
+  주석의 "얇은 면" 걱정은 *면적 임계값* 변형에만 해당한다. 죽은 `bail!` 이 의도한 건 전자.
+  대신 **결합을 끊는다** — ADR-307 이 `punch_*` 에 한 것(이미 뜬 snapshot 복원)을 나머지
+  teardown op 에도 적용하면 안전 논증이 죽은 가드에 안 기대고, 이 질문은 나중에 자유롭게
+  답할 수 있게 된다.
 - IFC import 가 `IfcAdvancedFace.FaceSurface` 를 읽지 않아 왕복 시 analytic surface 상실.
 - ~~`SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다~~ → **ADR-308 이 노출**(사용자 결재).
   가드 통과는 구멍이 아니라 **의도** 였다 — `ActionWiring` 이 단축키를 도달 표면으로 세는 것은

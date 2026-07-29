@@ -122,8 +122,38 @@ DVec3(NaN, NaN, NaN)) as VALID`.
   fix. Left in place, now documented.
 - Whether creation *should* reject degenerates is still open, and is the policy
   question this ADR deliberately does not answer.
-- `verify_face_invariants` still does not walk inner loops (ADR-298). That is the
-  other known blind spot and it remains open.
+
+  > **Answered 2026-07-29 (사용자 결재): no — keep creation permissive, and remove
+  > what depended on the ambiguity instead.** Measured downsides of switching to
+  > reject: (1) `normalize_for_import` carries a `degenerate_removed` counter, so
+  > the import pipeline is *built* on accept-then-repair — real OBJ / STL / DXF /
+  > IFC files routinely contain zero-area triangles, and strict creation fights
+  > that design rather than serving it; (2) it would make ADR-307's two refuted
+  > findings live again — `merge_faces_by_edge` ×4 and `subdivide` ×1 are
+  > unreachable *because* `compute_normal` cannot fail, so a strict guard
+  > re-opens paths that tear down before rebuilding with no rollback, i.e.
+  > choosing "reject" **creates** the work ADR-307 measured away; (3) 199
+  > `add_face_with_holes` call sites gain a failure mode, 16 files of which do
+  > teardown-then-rebuild.
+  >
+  > Worth separating, because the code comment conflates them: rejecting **only
+  > NaN / exactly-zero** normals needs no tolerance and would not touch thin
+  > faces at all — the `NORMAL_EPSILON` comment's "avoid missing thin faces"
+  > concern applies only to the *area-threshold* variant. The dead `bail!`
+  > intends the first. That nuance is why the decision is a genuine choice rather
+  > than a foregone one.
+  >
+  > The decision is to break the **coupling** instead: ADR-307 already did it for
+  > `punch_*` by restoring the snapshot that was already captured. Doing the same
+  > for the remaining teardown ops means the safety argument stops resting on a
+  > dead guard, and this policy question becomes free to answer either way, later.
+- ~~`verify_face_invariants` still does not walk inner loops (ADR-298)~~ —
+  **wrong, and closed by ADR-306.** I3 *has* walked inner loops since before
+  ADR-298; the real asymmetry was that **I4** checked half-edge ownership on the
+  outer loop only, so a repointed inner half-edge was invisible to this verifier
+  *and* to `collect_non_manifold_edges` *and* to `detect_self_intersections`.
+  ADR-306 extends I4 over inner loops. I repeated ADR-298's stated reason here
+  without checking it — exactly what L-306-3 was written about.
 
 ## Cross-link
 
