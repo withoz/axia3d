@@ -1,6 +1,6 @@
 # ADR-310 — An imported hemisphere keeps its sphere
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07-29
 **Category**: IFC / import
 **Scope**: step 2 of ADR-309's four — restores the geometry it named
@@ -112,22 +112,33 @@ little:
 
 `FaceLoops` gains `surface: Option<AnalyticSurface>` — `IfcAdvancedFace`
 attribute 1, inverted through the same mapping `emit_surface` writes. A
-per-element pass then decides its parameter range, in this order:
+per-element pass (`reconstruct_surfaces`) then decides its parameter range.
 
-1. **Invert the boundary.** Project the face's boundary points through the
-   surface's parameterization and take the (u, v) bounding box. This is the
-   general answer and it is what a torus's single full-domain face and any
-   ordinary curved face need.
-2. **Degenerate range → pair completion.** When the inverted range collapses in
-   one parameter — a sphere cap, whose whole boundary sits at one latitude —
-   look for exactly one other face in the same element carrying an equal surface
-   and an equal boundary. Found: the two get the two complementary components.
-3. **Neither → keep today's behaviour.** The polygon is used, `dropped_surface`
-   stays set, and ADR-309's warning still fires. A lone hemisphere is genuinely
-   undecidable under this decision and must keep saying so.
+The draft of this section proposed a two-rule mechanism (invert the boundary
+into a (u, v) box; fall back to pair completion when that collapses).
+Implementing it produced **one** rule instead, which is both simpler and says
+why the two cases differ:
 
-Reconstruction clears `dropped_surface`, so the warning is exactly "what we could
-not rebuild" rather than "what was curved".
+> A boundary curve cuts its surface into some number of components, and the file
+> must supply exactly that many faces.
+
+- A circle on a **sphere** always disconnects it — Jordan, on a sphere — into
+  two caps. Exactly two faces sharing one sphere and one circle of latitude
+  *are* those two caps, and the split is in v at that latitude.
+- A circle of latitude on a **torus** does *not* disconnect it. A single face
+  carrying one is therefore the whole surface, and the circle is a seam.
+
+Everything else is refused and keeps today's behaviour — the polygon, the
+`dropped_surface` tag, and ADR-309's warning. That includes a lone hemisphere,
+which is genuinely undecidable once the export change is declined, three faces
+on one sphere, and a circle that is not a parallel. Reconstruction clears
+`dropped_surface`, so the warning means exactly "not rebuilt" rather than "was
+curved".
+
+The evidence required is exact (L-310-2): the boundary must be a self-loop
+`AnalyticCurve::Circle`, not a polygon that looks round, and surfaces are
+matched to 1 μm (ADR-147's floor, which also absorbs the decimal round-trip a
+STEP file puts every coordinate through).
 
 ## 6. Corrections — ADR-309 and this repo's own comments
 
@@ -181,6 +192,40 @@ not rebuild" rather than "what was curved".
 | **β-3** | sphere reconstructed by pair completion | extent ≈ 2r; the two faces' `v_range` are complementary; total area 4πr²; a lone hemisphere still warns |
 | **β-4** | parity guard + wasm attaches the surface on the closed-curve path | imported primitive equals native: counts, surface kind, range, area |
 | **γ** | closure — ADR Accepted, ADR-309 corrections, stale comments, LOCKED, memory | ADR catalog CI |
+
+## 9. Acceptance
+
+| step | commit | what landed |
+|---|---|---|
+| α | `f58517e` | this document; the byte-identity measurement; the declined options |
+| β-1 | `6b29db0` | `FaceLoops.surface`; `face_surface` inverts `emit_surface`. axia-ifc 168 → 169 |
+| β-2/β-3 | `a8fce41` | `reconstruct_surfaces`; ADR-309's test replaced. 169 → 170 |
+| β-4 | (this branch) | the wasm import attaches the surface; three parity tests |
+| γ | (this commit) | Status, ADR-309's correction note, the stale comments, LOCKED |
+
+**Regressions**: `cargo test --workspace` **3262 → 3267** (β-1 +1; β-2/β-3 +2
+new − 1 removed; β-4 +3), 0 failed, 1 ignored (pre-existing slow channel).
+`vitest` **2970 / 1 skipped**, unchanged. `tsc` 0. `check-adr-catalog` ✓.
+`scripts/ifc-external-validate.mjs` — all external-parser checks pass.
+
+**Mutation-checked**, each guard against the change it is supposed to hold:
+
+| mutation | caught by |
+|---|---|
+| `face_surface` always returns `None` | `adr310_beta1_…` — *"a hemisphere must carry its sphere, got None"* |
+| `reconstruct_surfaces` is a no-op | `adr310_sphere_and_torus_round_trip_keep_their_surface` |
+| the `g.len() != 2` guard accepts a lone cap | `adr310_a_lone_hemisphere_is_undecidable_and_still_says_so` |
+| the wasm does not attach the surface | both parity tests (the box control stays green, correctly) |
+
+**What the tests deliberately do not assert.** ADR-309 measured `f.outer`'s
+extent to expose the loss. That measure cannot show the repair: a hemisphere's
+boundary *is* a flat circle, and the depth lives in the surface. A future reader
+who reaches for extent to check this will find it unchanged and must not read
+that as a regression — the round-trip test says so in its own comment.
+
+**Not verified in a browser.** The parity guard runs the real
+`AxiaEngine::import_ifc`, natively. The wasm binary and the UI wiring around it
+were not exercised for this change.
 
 ## Cross-link
 

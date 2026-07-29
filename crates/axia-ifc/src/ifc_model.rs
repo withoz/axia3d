@@ -844,10 +844,15 @@ mod tests {
         // ADR-309 — this records TODAY's behaviour, it does not endorse it. The
         // importer rebuilds every face from its boundary, so a parametric
         // cylinder comes back tessellated. When the importer learns to read
-        // IfcAdvancedFace.FaceSurface / IfcCircleProfileDef as a curve, this
-        // count drops to a small kernel-native one and this line goes red —
-        // that is progress. Update it deliberately; do not delete the check,
-        // which still catches a collapse to a degenerate handful of faces.
+        // IfcCircleProfileDef as a curve, this count drops to a small
+        // kernel-native one and this line goes red — that is progress. Update
+        // it deliberately; do not delete the check, which still catches a
+        // collapse to a degenerate handful of faces.
+        //
+        // ADR-310 measured that this file has ZERO IfcAdvancedFace: a clean
+        // Path B cylinder exports as an IfcExtrudedAreaSolid (§43). So reading
+        // FaceSurface — which ADR-310 now does — leaves this untouched, and
+        // only the profile half of the sentence above governs it.
         assert!(
             g.elements[0].faces.len() > 20,
             "currently tessellated on re-import ({} faces); see ADR-309 if this went red",
@@ -956,6 +961,8 @@ mod tests {
         );
         // ADR-309 — as above: today the revolution is tessellated on re-import.
         // A future importer that keeps the revolution analytic makes this red.
+        // ADR-310 does not: a cone exports as an IfcRevolvedAreaSolid (§44),
+        // with zero IfcAdvancedFace, so reading FaceSurface cannot reach it.
         assert!(nfaces > 20, "currently tessellated on re-import ({nfaces}); see ADR-309");
     }
 

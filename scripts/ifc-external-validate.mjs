@@ -21,11 +21,13 @@
  * Exit 0 = every expectation held. Exit 1 = a regression (or a missing prereq).
  *
  * KNOWN EXTERNAL LIMITATION (documented, not a failure): web-ifc's geometry
- * kernel implements only IfcPlane + IfcCylindricalSurface for advanced faces.
- * IfcSphericalSurface / IfcConicalSurface / IfcToroidalSurface are valid IFC4
- * and we emit them, but that engine logs "unexpected surface type" and skips
- * them. We assert the entities are present and parseable, not that this
- * particular engine tessellates them.
+ * kernel has no spherical, conical or toroidal surface. IfcSphericalSurface /
+ * IfcConicalSurface / IfcToroidalSurface are valid IFC4 and we emit them, but
+ * that engine logs "unexpected surface type". It does NOT skip them, as this
+ * note used to say — measured (ADR-310 §6), it triangulates the boundary loop
+ * into a flat disc, so a sphere comes out with z-extent exactly 0. We assert
+ * the entities are present and parseable, not that this particular engine
+ * tessellates them correctly.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

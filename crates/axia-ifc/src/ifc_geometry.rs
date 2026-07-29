@@ -12,16 +12,26 @@
 //!                                                   → IfcEdgeCurve → IfcVertexPoint
 //! ```
 //!
-//! **Curved edges are read by their endpoints.** An `IfcEdgeCurve` whose
-//! geometry is an `IfcCircle` becomes a straight chord here — the loop is a
-//! polygon. A polygonised cylinder (24 segments, 26 faces) therefore round-trips
-//! whole, but a kernel-native rim (ADR-089 Path B: one self-loop edge) collapses
-//! to a single point, and that face is dropped rather than invented. Every drop
-//! is named in [`GeometryImport::warnings`], so a thinner import is visible
-//! instead of silent. Rebuilding analytic curves on import is a later step.
+//! **Curved edges are read by their endpoints** — an `IfcEdgeCurve` whose
+//! geometry is an `IfcCircle` becomes a straight chord, so the loop is a
+//! polygon. A polygonised cylinder (24 segments, 26 faces) round-trips whole
+//! that way.
 //!
-//! Faces arrive with their plane attached ([`FaceLoops::plane`]) because a
-//! surface-less face is refused by every kernel-aware op (ADR-087 K-ε).
+//! A **kernel-native rim** (ADR-089 Path B: one self-loop edge) does not go
+//! through that path at all. [`single_closed_curve`] recovers the exact circle,
+//! so the face is rebuilt with the curve rather than a chord fan — its boundary
+//! is a 497-point loop, not a dropped face. (An earlier version of this note
+//! claimed such a rim "collapses to a single point, and that face is dropped";
+//! measured, it does not — ADR-310 §6.)
+//!
+//! Every drop that *does* happen is named in [`GeometryImport::warnings`], so a
+//! thinner import is visible instead of silent.
+//!
+//! Faces arrive with a surface attached, because a surface-less face is refused
+//! by every kernel-aware op (ADR-087 K-ε). Which surface: the file's own
+//! `IfcAdvancedFace.FaceSurface` where we can rebuild it (ADR-310 — spherical
+//! and toroidal, their parameter range decided from the faces since IFC carries
+//! none), otherwise the boundary's best-fit plane ([`FaceLoops::plane`]).
 
 use crate::ifc_placement::Placement;
 use axia_foreign::step_parser::{self, Entity, StepFile, Value};
