@@ -150,24 +150,35 @@
 
 ## ⑤ Edge case / 안정성 테스트
 
-테스트: `crates/axia-geo/tests/practicality_edge_cases.rs` (9개 all pass)
+테스트: `crates/axia-geo/tests/practicality_edge_cases.rs` (10개 all pass)
+
+> **ADR-304 정정 (2026-07-29).** 아래 표의 이전 판본은 행 2/3/9 를 "✅ ADR-003
+> degenerate guard / 안전 처리 / 퇴화 graceful" 로 적었으나, 그 근거였던 세 테스트는
+> `let _ = result;` 로 끝나 **아무것도 검사하지 않았다**. 실제로 측정해 보니 생성
+> 단계의 퇴화 가드는 존재하지 않는다 — `add_face_with_holes` 는 0-면적 삼각형·정점을
+> 반복하는 loop·NaN 좌표 면을 모두 수용하고, 거부하는 것은 정점 3개 미만뿐이다.
+> 관대함 자체는 의도된 것이고(`NORMAL_EPSILON = 0.0`, "keep at 0 to avoid missing
+> thin faces"), 빠져 있던 것은 **탐지**였다. ADR-304 가 그 절반을 채웠다.
 
 | # | 테스트 | 결과 |
 |---|--------|------|
-| 1 | NaN 좌표 vertex → face 생성 | ✅ panic 없이 처리 (거부 또는 isolate) |
-| 2 | Zero-area triangle (collinear 3점) | ✅ ADR-003 degenerate guard |
-| 3 | 중복 vertex face | ✅ 안전 처리 |
-| 4 | 1000 quad 씬 build + shadow | ✅ < 5s (실측 60ms) |
-| 5 | 100회 add/remove 반복 | ✅ 메모리 안정 |
+| 1 | NaN 좌표 vertex → face 생성 | ✅ 수용됨 → normal = NaN → **verifier 가 포착** (I6) |
+| 2 | Zero-area triangle (collinear 3점) | ✅ 수용됨 → normal = NaN → **verifier 가 포착** (I6). 생성 가드는 없음 |
+| 3 | 중복 vertex face | ✅ 수용됨 → DCEL 이 2정점 loop 로 접음 → **verifier 가 포착** (I1) |
+| 3b | 정점 2개 loop | ✅ **생성 거부** — 유일한 생성 가드 |
+| 3c | 정상 quad (대조군) | ✅ 미포착 — verifier 가 전부를 깨졌다고 하지는 않음 |
+| 4 | 1000 quad 씬 build + shadow | ✅ < 5s (실측 60ms), 1000면 모두 존재 확인 |
+| 5 | 100회 add/remove 반복 | ✅ `remove_face` Result 검사 + 잔존 활성면 0 확인 |
 | 6 | 태양 수평선 아래 | ✅ 빈 shadow 반환 |
 | 7 | 태양 수평 | ✅ 빈 shadow (정의 undefined) |
-| 8 | 1km 스케일 좌표 | ✅ 오버플로우 없음 |
-| 9 | 0.001mm 서브밀리미터 | ✅ 퇴화 graceful |
+| 8 | 1km 스케일 좌표 | ✅ 오버플로우 없음, normal 유한 확인 |
+| 9 | 0.001mm 서브밀리미터 | ✅ 1μm 는 dedup 하한(0.15μm, LOCKED #5) 위 → 얇지만 **유효**, 미포착 |
+| 9b | 1e-5mm 간격 | ✅ dedup 하한 아래 → 정점 용접 확인 |
 
 **추가로 CI에서 보호**:
 - TypeScript strict 모드 (tsconfig) + CI workflow에서 tsc --noEmit
-- `npm run test` 1013개 테스트
-- `cargo test` 258 + 9 (edge case) = 267개
+- `npm run test` 2967개 테스트 (2026-07-29 실측)
+- `cargo test --workspace` 3254개 (2026-07-29 실측, edge case 10개 포함)
 
 ---
 
