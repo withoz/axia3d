@@ -98,6 +98,18 @@ material the file names.**
 - **L-311-5** A style we cannot read is named in `warnings`, like every other
   drop in this module.
 - **L-311-6** Textures are not imported (D5). Saying so is part of the contract.
+- **L-311-8** **The element kind crosses promotion.** `shape_element_kind` and
+  `xia_element_kind` are two halves of one fact, and promotion moves a member
+  between them. Carried in `promote_shape_to_xia`, not at the import call site —
+  a user who classifies a drawn Shape and then assigns a material was losing it
+  the same way.
+- **L-311-9** **The stored kind is the canonical short key**, not the raw IFC
+  tag. `set_shape_element_kind` normalises and says why; the export accepts
+  either, but the Inspector's 부재 종류 picker reads the string directly, so a
+  raw tag leaves a correctly-classified member with a blank dropdown.
+- **L-311-10** **A guard for a kind must use a kind that is not `Wall`.** Wall
+  is `#[default]`, so a test using one cannot tell "kept the kind" from "lost
+  it" — which is exactly how L-311-8's defect survived.
 - **L-311-7** 절대 #[ignore] 금지.
 
 ## 5. Sub-steps
@@ -135,6 +147,42 @@ material the file names.**
 | the file's style is never read | *colour from IfcColourRgb* |
 | a library-matched material is repainted by the file | *the library material keeps its own colour* |
 
+### What an adversarial review caught
+
+Three real defects, and the first is the same shape of failure as ADR-310's: the
+guard used the one input that cannot expose it.
+
+**The element kind was lost the moment a member promoted.**
+`promote_shape_to_xia` copies name, faces, position, normal and material — not
+the kind. The export's Xia branch then read `None` and fell to
+`IfcElementKind::default()`, which is `Wall`. Measured:
+
+```
+SLAB   + material  →  re-exports as IFCWALL
+COLUMN + material  →  re-exports as IFCWALL
+DOOR   + material  →  re-exports as IFCWALL   (13 attributes → 9; OverallHeight
+                                               and OverallWidth gone with it)
+```
+
+So the better-formed the file, the more it lost — and this contradicted L-311-2
+on the *success* path. Fixed in `promote_shape_to_xia` rather than at the import
+call site, because a user who classifies a drawn Shape and then assigns a
+material was losing it identically.
+
+**Nothing caught it**: β-1 uses `material: None` so it never promotes, β-2
+asserts only the name, and the demo used a **Wall** — the one kind
+indistinguishable from a kind that was dropped. Hence L-311-10.
+
+**The stored value was the raw tag.** Import wrote `"IFCSLAB"` where every other
+writer stores `"slab"`. The export accepts both, which is why the tests passed —
+but the Inspector's 부재 종류 picker reads the string directly, so an imported
+member showed a blank dropdown while exporting correctly. My own β-1 test
+asserted `"IFCWALL"`, locking the wrong convention in.
+
+**L-311-5 was not implemented.** The lock-in says an unreadable style is named
+in `warnings`; nothing did. Now it is, with a control asserting that a style we
+*do* read is not a drop.
+
 **Demo gate** (real wasm, fresh reload) — the round-trip is now symmetric:
 
 ```
@@ -146,6 +194,17 @@ re-export     1999 B, 'Model', no material       2363 B, 'Box', IFCMATERIAL('벽
 
 The GUID comes back identical too (`2$9yajP4ccgJ4IbCuhZ4Ta`), since it is
 derived from the member's name.
+
+Re-run after the review's fixes with a **column** — the case that was broken,
+and the one a wall could never have shown:
+
+```
+export      #35=IFCCOLUMN(…,'Box',…)   material 강철, kind set to 'column'
+import      xias 1, face material 1, stored kind "column", warnings []
+re-export   #35=IFCCOLUMN(…,'Box',…)
+```
+
+Before the fix that last line read `IFCWALL`.
 
 ## 7. What is still not imported
 

@@ -8888,6 +8888,34 @@ IFC 는 Phong 이라 역매핑은 `IfcSpecularRoughness`→roughness, `.METAL.`�
 승격은 **ADR-050 4조건의 적용이지 강제가 아님** — 닫힌 박스는 Xia 로 돌아오고 열린 shell 은
 face 재질을 단 Shape 로 남는다(거부는 누락이 아니라 모델 자신의 답).
 
+#### ⚠ 적대적 검토가 잡은 것 (3건) — 또 "가드가 하필 못 드러내는 입력을 썼다"
+
+**① element kind 가 승격 순간 사라졌다.** `promote_shape_to_xia` 는 이름·face·position·
+normal·재질을 옮기면서 **kind 는 안 옮긴다**. export 의 Xia 분기는 `None` → `unwrap_or_default()`
+= **Wall**. 실측: `SLAB+재질 → IFCWALL`, `COLUMN+재질 → IFCWALL`, `DOOR+재질 → IFCWALL`
+(속성 13→9, `OverallHeight`/`OverallWidth` 동반 소실). **파일이 잘 만들어져 있을수록 더 잃는다**
+— 게다가 이건 실패가 아니라 **성공 경로**라 L-311-2 를 정면으로 위반. import 호출부가 아니라
+`promote_shape_to_xia` 에서 수정 — 사용자가 그린 Shape 를 분류한 뒤 재질을 주는 경로도 **똑같이**
+잃고 있었기 때문.
+
+**아무것도 못 잡은 이유**: β-1 은 `material: None`(승격 안 함), β-2 는 이름만 단언, 시연은
+**Wall** — `#[default]` 라서 "kind 유지"와 "kind 소실"이 **구별 불가능한 유일한 종류**. ⇒ L-311-10.
+
+**② 저장값이 raw tag 였다.** import 가 `"IFCSLAB"` 을 넣는데 다른 모든 writer 는 `"slab"` 을
+넣는다. export 는 둘 다 받아서 테스트가 통과했지만, Inspector **부재 종류 picker 는 문자열을
+그대로** 읽으므로 올바르게 분류된 member 가 **빈 드롭다운**으로 보인다. 게다가 **내 β-1 테스트가
+`"IFCWALL"` 을 단언해 틀린 규약을 못박고 있었다.**
+
+**③ L-311-5 가 구현돼 있지 않았다** — "못 읽은 style 은 warnings 에" 라고 lock-in 해 놓고 아무것도
+안 했다. 지금은 경고하고, **읽은 style 은 drop 이 아니라는 대조군**도 함께.
+
+#### Lock-ins (L-311-8 ~ 10, 검토 후 추가)
+
+**L-311-8** element kind 는 **승격을 건넌다**(`shape_element_kind` / `xia_element_kind` 는 한 사실의
+두 반쪽) / **L-311-9** 저장값은 **정식 짧은 키**(raw IFC 태그 아님 — export 는 둘 다 받지만 UI picker 는
+아니다) / **L-311-10** **kind 가드는 `Wall` 이 아닌 종류를 써야 한다** — Wall 은 `#[default]` 라
+"유지"와 "소실"이 구별 불가.
+
 #### Lock-ins (L-311-1 ~ 7)
 
 imported member 는 자기 face 를 **소유** 한다("unowned → Model wall" 은 member 없는 기하의
@@ -8897,9 +8925,9 @@ fallback) / 내보낸 이름·IFC 타입 그대로 돌아온다 / 라이브러�
 
 #### 검증
 
-`cargo test --workspace` **3268 → 3277** (+9) / 외부 IFC 검증기 통과 / ADR catalog ✓.
-**뮤테이션 6건** 각각 해당 가드가 잡음 — 특히 *"a known name is not repainted by the file"*
-대조군이 없으면 "찾은 style 을 그냥 적용" 구현이 나머지 전부를 통과한다.
+`cargo test --workspace` **3268 → 3281** (+13, 검토 수정 +4 포함) / 외부 IFC 검증기 통과 /
+ADR catalog ✓. **뮤테이션 9건** 각각 해당 가드가 잡음 — 특히 *"a known name is not repainted
+by the file"* 대조군이 없으면 "찾은 style 을 그냥 적용" 구현이 나머지 전부를 통과한다.
 
 **시연 게이트** (실제 wasm, fresh reload) — 왕복 대칭:
 
@@ -8910,6 +8938,10 @@ import        xias 0, 전부 FORM_MATERIAL         xias 1, 6면 모두 재질 4,
 ```
 
 GUID(`2$9yajP4ccgJ4IbCuhZ4Ta`)도 동일 — 이름에서 유도되기 때문.
+
+검토 수정 후 **column 으로 재시연**(Wall 로는 절대 못 드러내는 경우): export `#35=IFCCOLUMN(...)`
+→ import `xias 1`, 재질 1(강철), 저장 kind **`"column"`**, warnings `[]` → 재-export
+**`#35=IFCCOLUMN(...)`**. 수정 전이면 `IFCWALL` 이었다.
 
 #### 아직 import 안 하는 것 (ADR-311 §7)
 
