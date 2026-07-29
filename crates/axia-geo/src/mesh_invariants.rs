@@ -312,14 +312,37 @@ impl Mesh {
                 }
             }
 
-            // I4: outer loop의 모든 half-edge가 이 face에 속해야 함
-            if let Ok(outer_hes) = self.collect_loop_hes(outer_start) {
-                for he in outer_hes {
+            // I4: 이 face 의 모든 half-edge — outer AND inner — 가 이 face 를
+            // 가리켜야 함.
+            //
+            // ADR-306: inner 쪽이 빠져 있었다. I3 는 inner loop 을 *걷지만*
+            // (null start / collect 실패 / < 3 verts) 그 half-edge 들이 어느
+            // face 에 속하는지는 보지 않았고, I4 는 outer 만 봤다. 그래서 hole
+            // 경계의 HE 가 다른 face 를 가리키도록 손상돼도 검증기는
+            // `valid=true, violations=[]` 를 반환했다 — 측정 확인. 같은 손상을
+            // `collect_non_manifold_edges` 도 `detect_self_intersections` 도
+            // 잡지 못한다(둘 다 0). 즉 어떤 게이트에도 보이지 않았다.
+            //
+            // ADR-298 L-298-5 는 이를 "verify_face_invariants 가 inner loop 을
+            // 걷지 않는다" 로 적었는데 부정확하다 — I3 는 baseline(155e127,
+            // ADR-298 이전)부터 걷고 있었다. 실제 구멍은 이 **비대칭** 이다.
+            let loop_starts = std::iter::once(outer_start)
+                .chain(face.inners().iter().map(|inner| inner.start))
+                .enumerate();
+            for (li, start) in loop_starts {
+                if start.is_null() { continue; }   // I1/I3 가 이미 보고함
+                let Ok(hes) = self.collect_loop_hes(start) else { continue; };
+                for he in hes {
                     let he_face = self.hes[he].face();
                     if he_face != fid {
+                        let which = if li == 0 {
+                            "outer".to_string()
+                        } else {
+                            format!("inner[{}]", li - 1)
+                        };
                         violations.push(format!(
-                            "face {:?}: outer HE {:?} points to wrong face {:?}",
-                            fid, he, he_face,
+                            "face {:?}: {} HE {:?} points to wrong face {:?}",
+                            fid, which, he, he_face,
                         ));
                     }
                 }
@@ -492,6 +515,91 @@ impl Mesh {
                 eprintln!("[ADR-007] Invariant violations:\n{}", report.summary());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod adr306_tests {
+    use crate::entities::*;
+    use crate::mesh::Mesh;
+    use glam::DVec3;
+
+    /// A 200×200 quad with a 60×60 hole, plus a second face to point at.
+    fn quad_with_hole() -> (Mesh, FaceId, FaceId) {
+        let mut m = Mesh::new();
+        let o: Vec<VertId> = [(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)]
+            .iter()
+            .map(|&(x, y)| m.add_vertex(DVec3::new(x, y, 0.0)))
+            .collect();
+        let h: Vec<VertId> = [(70.0, 70.0), (70.0, 130.0), (130.0, 130.0), (130.0, 70.0)]
+            .iter()
+            .map(|&(x, y)| m.add_vertex(DVec3::new(x, y, 0.0)))
+            .collect();
+        let f = m.add_face_with_holes(&o, &[&h], MaterialId::new(0)).expect("quad with hole");
+        let o2: Vec<VertId> = [(300.0, 0.0), (400.0, 0.0), (400.0, 100.0), (300.0, 100.0)]
+            .iter()
+            .map(|&(x, y)| m.add_vertex(DVec3::new(x, y, 0.0)))
+            .collect();
+        let other = m.add_face_with_holes(&o2, &[], MaterialId::new(0)).expect("second face");
+        (m, f, other)
+    }
+
+    /// I4 used to check the outer loop only. An inner half-edge repointed at
+    /// another face was invisible to `verify_face_invariants` AND to
+    /// `collect_non_manifold_edges` AND to `detect_self_intersections` — every
+    /// gate in the codebase asks one of those, so nothing could see it.
+    #[test]
+    fn adr306_inner_half_edge_pointing_at_another_face_is_flagged() {
+        let (m, f, _) = quad_with_hole();
+        assert!(m.verify_face_invariants().is_valid(), "baseline must be clean");
+        assert_eq!(m.faces[f].inners().len(), 1, "fixture must actually have a hole");
+
+        // Outer — was already caught; kept as the symmetry half of the claim.
+        let (mut m, f, other) = quad_with_hole();
+        let outer_start = m.faces[f].outer().start;
+        let he = m.collect_loop_hes(outer_start).expect("outer hes")[0];
+        m.hes[he].set_face(other);
+        let r = m.verify_face_invariants();
+        assert!(!r.is_valid(), "a repointed OUTER half-edge must be flagged");
+        assert!(
+            r.violations.iter().any(|v| v.contains("outer HE")),
+            "expected an 'outer HE' violation, got {:?}", r.violations
+        );
+
+        // Inner — the gap ADR-306 closes.
+        let (mut m, f, other) = quad_with_hole();
+        let inner_start = m.faces[f].inners()[0].start;
+        let he = m.collect_loop_hes(inner_start).expect("inner hes")[0];
+        m.hes[he].set_face(other);
+        let r = m.verify_face_invariants();
+        assert!(
+            !r.is_valid(),
+            "a repointed INNER half-edge must be flagged. Nothing else sees it: \
+             collect_non_manifold_edges and detect_self_intersections both report 0 \
+             on this exact mesh, so if this check goes, the corruption is invisible."
+        );
+        assert!(
+            r.violations.iter().any(|v| v.contains("inner[0] HE")),
+            "expected an 'inner[0] HE' violation, got {:?}", r.violations
+        );
+    }
+
+    /// The measurement that makes the test above load-bearing rather than
+    /// decorative: on the corrupted mesh, the two other gates see nothing.
+    #[test]
+    fn adr306_no_other_gate_sees_a_repointed_inner_half_edge() {
+        let (mut m, f, other) = quad_with_hole();
+        let inner_start = m.faces[f].inners()[0].start;
+        let he = m.collect_loop_hes(inner_start).expect("inner hes")[0];
+        m.hes[he].set_face(other);
+        assert_eq!(
+            m.collect_non_manifold_edges().len(), 0,
+            "if this ever becomes non-zero the finding's premise changed — re-measure"
+        );
+        assert_eq!(
+            m.detect_self_intersections().intersecting_pairs.len(), 0,
+            "if this ever becomes non-zero the finding's premise changed — re-measure"
+        );
     }
 }
 
