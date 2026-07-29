@@ -2895,6 +2895,41 @@ mod tests {
         );
     }
 
+    /// L-310-8, for the shape foreign exporters actually write: a spherical
+    /// face bounded by several edges rather than one closed rim — a patch, a
+    /// fillet, a blend.
+    ///
+    /// It is not even a *candidate* for reconstruction (`boundary_circle`
+    /// wants one self-loop circle), so nothing ever narrows its range. The
+    /// surface must therefore not survive: `face_surface` stocked it with the
+    /// whole sphere, and attaching that to a patch would render a complete ball
+    /// and double every area derived from it.
+    #[test]
+    fn adr310_a_spherical_patch_keeps_no_surface_and_still_warns() {
+        // The semicircle fixture's face is an IfcAdvancedFace with a two-edge
+        // boundary (an arc plus its diameter). Swap its plane for a sphere.
+        let ifc = semicircle_ifc(".T.").replace("#35=IFCPLANE(#15);", "#35=IFCSPHERICALSURFACE(#15,1.5);");
+        assert!(ifc.contains("IFCSPHERICALSURFACE"), "fixture must actually carry a sphere");
+
+        let g = import_ifc_geometry(&ifc).unwrap();
+        let f = &g.elements[0].faces;
+        assert_eq!(f.len(), 1, "one patch");
+        assert!(
+            f[0].closed_curve.is_none(),
+            "a two-edge boundary is not a closed-curve rim, so never a candidate"
+        );
+        assert!(
+            f[0].surface.is_none(),
+            "never narrowed, so never attached — got {:?}",
+            f[0].surface
+        );
+        assert_eq!(f[0].dropped_surface.as_deref(), Some("IFCSPHERICALSURFACE"));
+        assert!(
+            g.warnings.iter().any(|w| w.contains("IFCSPHERICALSURFACE")),
+            "and it says so: {:?}", g.warnings
+        );
+    }
+
     /// A semicircle face: an arc from A(4,0.5) to B(4,3.5) on the circle
     /// centred (4,2) r=1.5, closed by the straight diameter B→A. `sense` is the
     /// trimmed curve's `SenseAgreement` — the only thing that says which half.
