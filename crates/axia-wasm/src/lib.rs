@@ -6021,6 +6021,16 @@ impl AxiaEngine {
                 Some(n) if !n.trim().is_empty() => n.clone(),
                 _ => format!("#{}", el.element_id),
             };
+            // ADR-311 β-1 — a member owns its faces. Without this the faces
+            // arrive unowned, and `export_ifc_model` sweeps every one of them
+            // into a single 'Model' wall: the member's name, material and IFC
+            // type all gone on a re-export. A group alone cannot carry that —
+            // groups reference faces, Shapes own them, and the export reads
+            // ownership.
+            let sid = self.scene.create_shape(label.clone(), faces.clone());
+            if !el.ifc_type.trim().is_empty() {
+                self.scene.shape_element_kind.insert(sid, el.ifc_type.clone());
+            }
             let gid = self.scene.groups.create_group(label, faces.clone());
             groups_made += 1;
             element_group.insert(el.element_id, gid);
@@ -15141,5 +15151,70 @@ mod adr310_parity_tests {
             (total_area(&engine.scene.mesh) - total_area(&native)).abs() < 1.0,
             "a box's area is unaffected"
         );
+    }
+}
+
+/// ADR-311 — an imported member owns its faces, keeps its name and its kind.
+///
+/// Measured before this existed: the faces arrived unowned, so `export_ifc_model`
+/// swept all of them into a single `IFCWALL` named 'Model' and the member's
+/// name, material and IFC type were gone on a re-export.
+#[cfg(test)]
+mod adr311_member_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A one-member file, exported straight from a mesh so no `debug_log!`
+    /// (which is `web_sys::console` and aborts a native test) is on the path.
+    fn one_wall_ifc(name: &str, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn adr311_beta1_an_imported_member_is_owned_named_and_kinded() {
+        let ifc = one_wall_ifc("Box", None);
+        let mut engine = AxiaEngine::new();
+        let report = engine.import_ifc(ifc);
+        assert!(report.contains("\"ok\":true"), "import failed: {report}");
+
+        assert_eq!(engine.scene.shapes.len(), 1, "one member, one Shape");
+        let (sid, shape) = engine.scene.shapes.iter().next().unwrap();
+        assert_eq!(shape.name, "Box", "the member keeps its name");
+        assert_eq!(shape.face_ids.len(), 6, "and owns its faces");
+        assert_eq!(
+            engine.scene.shape_element_kind.get(sid).map(String::as_str),
+            Some("IFCWALL"),
+            "and its kind"
+        );
+    }
+
+    #[test]
+    fn adr311_beta1_a_re_export_emits_the_member_not_a_model_catch_all() {
+        // The user-visible half. Ownership is what the export reads, so this is
+        // the assertion that would have caught the whole defect.
+        let ifc = one_wall_ifc("Box", None);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let again = engine.export_ifc_model("Probe".to_string());
+        let walls: Vec<&str> = again.lines().filter(|l| l.contains("=IFCWALL(")).collect();
+        assert!(again.contains("'Box'"), "the member comes back by name: {walls:?}");
+        assert!(
+            !walls.iter().any(|l| l.contains("'Model'")),
+            "and not as the unowned-faces catch-all: {walls:?}"
+        );
+        assert_eq!(walls.len(), 1, "exactly one member: {walls:?}");
     }
 }

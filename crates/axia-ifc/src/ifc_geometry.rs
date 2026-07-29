@@ -248,6 +248,10 @@ pub struct ElementGeometry {
     /// `#N` of the product entity (matches `ImportedElement::id`).
     pub element_id: u32,
     pub name: Option<String>,
+    /// Entity tag, e.g. `IFCWALL` — what kind of member this is. Carried so an
+    /// import can record it (`shape_element_kind` / `xia_element_kind`) and a
+    /// re-export can emit the member as the same kind it arrived as (ADR-311).
+    pub ifc_type: String,
     pub material: Option<String>,
     /// `#N` of the spatial container holding this member, if the file says
     /// (`IfcRelContainedInSpatialStructure`, I-5).
@@ -570,6 +574,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
         elements.push(ElementGeometry {
             element_id: el.id,
             name: el.name.clone(),
+            ifc_type: el.ifc_type.clone(),
             material: el.material.clone(),
             container: spatial.container_of.get(&el.id).copied(),
             faces,
