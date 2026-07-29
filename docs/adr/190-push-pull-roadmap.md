@@ -188,7 +188,7 @@ P0.1 rederive surface attach (root-cause) + P0.2 fallback safety net (3-part). �
 
 - **ADR-079** L3 (surface = truth) + Q3 (push_pull fallback) — Phase 0 의 직접 layer
 - **ADR-186** 유도면 re-derive (P0.1 surface attach 대상)
-- **ADR-189** Arc-Preserving Split — #1 gap 을 노출한 직계 (LOCKED #75)
+- **ADR-189** Arc-Preserving Split — #1 gap 을 노출한 직계 (LOCKED #99)
 - **ADR-102** Detach-on-Arrangement cleave (P0.2-c 재-cleave 재사용)
 - **ADR-101** coplanar auto-intersect (lens sub-face — pushable 확인)
 - **ADR-016 Q2** multi-loop reject (Phase 1 P1.2 결재 대상)

@@ -6132,7 +6132,7 @@ impl Scene {
                     }
                 }
             } else {
-                // legacy OFF — Approach A polygonize (LOCKED #75 regression).
+                // legacy OFF — Approach A polygonize (LOCKED #99 regression).
                 let _ = self.mesh.polygonize_closed_curve_face(face_id, mat);
             }
         }

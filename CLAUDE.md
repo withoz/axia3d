@@ -1666,6 +1666,13 @@
     closed BSpline / NURBS (A-Δ) 모두 first-class.
 
 ### 35. ADR-089 — True Kernel-Native Closed Edges (A-α ~ A-Γ closure, 2026-05-08)
+
+> ⚠ **중복 항목 (2026-07-29 ADR-305 확인).** 위쪽의 `### 35. ADR-089 — … (A-α ~
+> A-Δ closure, 2026-05-09)` 이 **canonical** 이다 — 그쪽이 A-Δ 까지 포함하고
+> ADR-092/093/094 amendment 를 담고 있다. 이 항목은 하루 전 스냅샷이 지워지지 않고
+> 남은 것이며, 두 항목 모두 같은 ADR-089 를 가리키므로 "LOCKED #35" 인용은
+> 의미상 모호하지 않다. 이력 보존을 위해 지우지 않고 표시만 한다. 새 내용을 넣을
+> 곳은 **위쪽 항목**.
 - **사용자 통찰 (canonical, 2026-05-08)**:
   > "면은 닫힌 경계로부터 유도된다."
   메타-원칙 #14 의 깊은 실현 — closed edge cycle 이 자연 first-class
@@ -6018,7 +6025,7 @@ surface 미부착 (1-vertex boundary → `dirty_faces` inherit 누락). ADR-189 
 ADR-016 Q2 LOCKED 변경 → 명시 결재 필요).
 
 **Cross-link**: ADR-079 (L3 surface / Q3 fallback) / ADR-186 (유도면) /
-ADR-189 (#1 gap 노출, LOCKED #75) / ADR-102 (cleave 재사용) / ADR-101 (lens) /
+ADR-189 (#1 gap 노출, LOCKED #99) / ADR-102 (cleave 재사용) / ADR-101 (lens) /
 ADR-016 Q2 (Phase 1) / ADR-064/066 (Phase 2) / 메타-원칙 #4/#5/#6 / commit
 `4c0e9bb`.
 
@@ -8572,7 +8579,15 @@ missing face, shadow rendering, stacked-inner) 를 ADR-015 신설 + 코드
 - 바닥면 RECT 가 정확히 z=0 에 위치 — 후속 z-search/sort 안정.
 - Trade-off: outer 의 hole 영역 자동 인식 안 됨 (push/pull 시 명시 처리).
 
-### 75. ADR-174 — Curve-Edge Crossing-Split (직선 × Circle 면, demo-verified, 2026-06-01) ✅
+### 99. ADR-174 — Curve-Edge Crossing-Split (직선 × Circle 면, demo-verified, 2026-06-01) ✅
+
+> ⚠ **번호 정정 (2026-07-29, ADR-305).** 이 항목은 **#75 로 잘못 붙어** 있었다.
+> #75 는 이미 ADR-175 (Face-Hit Drawing Plane) 의 것이었고, 두 서로 다른 ADR 이
+> 같은 번호를 쓰면서 하류 문서들이 각자 다른 뜻으로 "LOCKED #75" 를 인용하게 됐다
+> — `178`/`179` 는 ADR-175 를, `174`/`189`/`190`/`scene.rs` 는 ADR-174 를 가리켰다.
+> 번호만으로는 구분이 불가능했다. **위치상 제자리인 ADR-175 가 #75 를 유지**하고
+> (파일 내 #74 와 #76 사이), #98 뒤에 잘못 붙어 있던 이 항목이 **#99** 로 옮겨졌다.
+> ADR-174 를 뜻하던 인용 9건도 함께 갱신. 내용은 무변경.
 
 > ✅ **Amended by ADR-189** (2026-06-09, 사용자 결재 "(b) 다각형화 제거 + 자동
 > 분할 유지"). L-75-1 Approach A (polygonize) 의 *결과* — 원이 직선/사각형에
@@ -8620,6 +8635,73 @@ anchor → d2=0) 를 "평행" 으로 skip → secant crossing 미검출 → 면 
 **Cross-link**: ADR-089 (Path B Circle) / ADR-105 (polygonize dispatch
 mirror) / ADR-172 (직선 pipeline, Pattern 12) / ADR-173 §10 (spawn anchor) /
 ADR-101 A9 / 메타-원칙 #5/#6/#14/#15/#16. LOCKED #43/#64/#70~74.
+
+### 100. ADR-295 ~ ADR-304 — 커널 결함 정리 + 감사 종결 (2026-07-13 ~ 07-29) ✅
+
+> ⚠ **이 항목은 LOCKED #88 이 막으려던 doc-lag 을 다시 메운다.** 2026-07-29 실측:
+> ADR-295 부터 ADR-304 까지 **10개 accepted ADR 이 CLAUDE.md 에 언급 0회**였다.
+> CLAUDE.md 는 매 세션 project instructions 로 로드되는 파일이므로, 여기 없는 것은
+> 새 세션에게 **존재하지 않는 것과 같다** — LOCKED #88 이 기록하듯 그래서 한 세션이
+> 이미 고쳐진 코드를 broken 으로 오진했다. **판정 전 코드·테스트·런타임으로 대조할 것**
+> (메타-원칙 #4 SSOT).
+
+| ADR | 내용 | 상태 |
+|---|---|---|
+| **ADR-295** | auto-intersect self-hole — cap 과 자기 곡면 side 가 rim 을 공유해 cap 이 파괴되던 결함. 두 가드 유지, IFC export gate 완화 금지 | Accepted |
+| **ADR-296** | IFC 배선 gap 종결 — generic importer 가 `.ifc` 처리, export 3-tier, diagnostics wrap. "openings 누적" 은 **결함이 아니었음**(이미 snapshot-scoped) — 재개봉 금지 | Accepted |
+| **ADR-297** | Path B closed-curve cap punch — **틀렸고 메시를 손상시켰다**. ADR-298 이 정정 | Superseded |
+| **ADR-298** | ADR-297 정정 — 4 결함(공유 rim / band-as-host / 과잉 곡면 가드 / **거절했는데 이미 변형**). `verify_face_invariants` 가 **inner loop 을 순회하지 않아** 손상된 메시에 valid 를 반환할 수 있다는 것이 여기서 드러남 | Accepted |
+| **ADR-299** | 감사 3건 종결 — 죽은 Window 메뉴가 **audit 에 성공으로 기록**되던 것(ADR-069 의 한 layer 아래) / `expect` 0개 스펙 3건 / closed curve 를 건너뛰던 container gate | Accepted |
+| **ADR-300** | 단축키 O·J 충돌 — 도구와 패널이 같은 바 문자를 주장. 바 문자는 도구의 것, 패널은 modifier | Accepted |
+| **ADR-301** | **ADR-300 이 만든 회귀** — 옮겨간 Shift+K 가 Back view 였다. **뷰 리스너가 세 번째 주인**이고 ADR-300 의 가드는 두 맵만 봤다. 인디케이터의 전역 키를 **없애고** 제약 패널 👁 버튼으로 이동 | Accepted |
+| **ADR-302** | 실패한 fillet/chamfer 가 메시를 건드리지 않는다 — 드릴한 상자 chamfer 가 teardown 이후 실패하며 면 **10→8**, closed **true→false**, `cancel()` 이 복원도 undo 프레임도 안 남김. `preflight_f3` 로 **mutate 전에 validate** | Accepted |
+| **ADR-303** | 이웃 2건(`chamfer_vertex_3way` / `merge_coplanar_faces_geometric`) 624건 sweep → **mutate 0**, 구조는 실재하나 도달 불가 → high 에서 강등 | Accepted |
+| **ADR-304** | 퇴화 면: **관대한 생성, 검증기에서의 탐지**. `NORMAL_EPSILON = 0.0` 이라 `len < 0.0` 이 참이 될 수 없어 `compute_normal` 의 degenerate bail 이 **죽은 코드**, `NaN > 1e-10` 이 false 라 verifier 가 NaN normal 면을 **valid 로 보고**. I6 추가(non-finite 만; 0-길이는 load-bearing) | Accepted |
+
+#### 이 10개가 공통으로 말하는 것
+
+**통과하던 검사가 아무것도 붙잡고 있지 않았다.** ADR-299 는 스펙에 `expect` 가 없어서,
+ADR-301 은 추출기가 세 맵 중 둘만 봐서, ADR-302 는 첫 두 sweep 의 입력이 너무 쉬워서
+0을 반환했고, ADR-304 는 `NaN` 비교가 조용히 false 로 평가돼 보호를 건너뛰었다.
+
+그래서 이후 모든 가드에 **변이 검증**(가드를 끄면 실제로 실패하는가)을 붙였고,
+ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는 테스트를 넣었다.
+
+#### 새 lock-in
+
+- **L-100-1** NaN 가능 값을 `<` / `>` 로 가드하지 말 것. `NaN < eps` 는 조용히 false 로
+  평가돼 보호를 건너뛴다 — ADR-304 의 두 함정이 모두 이것. `is_finite()` 를 명시.
+- **L-100-2** teardown 전에 판정 가능한 검사는 teardown 전에 끝낸다 (ADR-302 L-302-1,
+  ADR-298 §3b 답습). 한 entry point 의 rollback 은 한 caller 를 지키지만 op 안의
+  거절은 전부를 지킨다.
+- **L-100-3** 바 문자는 도구의 것. 패널·오버레이 토글은 modifier 를 쓰거나, 더 좋게는
+  자기 패널 안에 산다 (ADR-300/301). 전역 키 공간은 희소 자원.
+- **L-100-4** 키 주인은 **세 맵**이다 — `TOOL_MAP` / `SHIFT_TOOL_MAP` / **뷰 리스너**
+  (`t`/`b`/`f`/`k`, `SHIFT_TOOL_MAP` 에 없는 letter 는 바·Shift 양쪽 주장).
+- **L-100-5** "✅ 검증됨" 을 주장하는 보고서는 그걸 **단언하는** 테스트를 대야 한다
+  (ADR-299 / ADR-304 — `docs/PRACTICALITY_REPORT.md` 가 없는 가드를 검증됨으로 제시).
+- **L-100-6** 아무것도 못 찾은 sweep 은 **쓴 입력을 밝혀야** 한다 (ADR-302 — 첫 두 번의
+  0 은 `create_box` 두 번이 융합 boss 가 아니라 분리된 두 솔리드였기 때문).
+- **L-100-7** 실재처럼 읽히나 어떤 입력도 도달 못 하는 결함은 **정확히 그렇게** 보고한다
+  (ADR-303). 활성인 양 조용히 고치는 것은 다른 일이다.
+
+#### 아직 열린 것
+
+- `verify_face_invariants` 가 **inner loop 을 순회하지 않는다** (ADR-298). 두 번째
+  사각지대였던 NaN normal 은 ADR-304 가 닫았지만 이건 그대로.
+- `transactions.cancel()` 이 복원하지 않는 것은 계통적 — WASM 에 `cancel()` Err arm 이
+  **약 85개**. 대부분 애초에 mutate 하지 않는 경로라 일괄 변경은 별도 측정 필요.
+  ADR-303 이 그 sweep 을 미룰 근거를 하나 더 줬다 (가장 필요해 보이던 3개 중 2개가 아니었음).
+- `compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).
+- 생성이 퇴화를 **거부해야 하는지**는 ADR-304 가 의도적으로 답하지 않은 정책 질문.
+- IFC import 가 `IfcAdvancedFace.FaceSurface` 를 읽지 않아 왕복 시 analytic surface 상실.
+- `SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다 (발견성).
+
+#### Cross-link
+
+LOCKED #88 (doc-lag 이 오진을 낳은 기록 — 이 항목이 그 재발을 막는다), ADR-069
+(audit 성공 오기록 — ADR-299 가 한 layer 아래에서 재현), ADR-267 / ADR-272 / ADR-273
+(이 결함들이 통과해 버린 게이트들), 메타-원칙 #4 (SSOT) / #6 (Preventive, measure-first).
 
 ## 향후 과제
 

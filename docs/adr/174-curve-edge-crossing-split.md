@@ -2,7 +2,7 @@
 
 **Status**: Accepted (γ closure 2026-06-01 — Approach A demo-verified
 (real browser faces 1→2 via drawCircleAsCurve + drawLineAsShape) + β-1~β-3
-+14 회귀 + polygonize root-cause fix. LOCKED #75.)
++14 회귀 + polygonize root-cause fix. LOCKED #99.)
 **Date**: 2026-05-31 (α) ~ 2026-06-01 (γ)
 **Author**: WYKO + Claude
 **Trigger**: ADR-173 γ closure (LOCKED #74) §10 — "곡면 한계 (S3/S6/S9/S12) =
@@ -270,7 +270,7 @@ R-β 가 이미 동일 trade-off accept — **MVP accept + polish 별도** 가 h
   밖 / 한 endpoint disk 내부) + (옵션) R4/R6 rim Arc 재부착 + owner_id polish.
 - **β-4**: 사용자 facing 검증 (approach A 는 engine internal → WASM/TS 변경
   0 예상, ADR-105 R-E 답습) + HARD flag (ADR-101 A9) 정합 확인.
-- **γ**: closure — Status Accepted + §9 Lessons + LOCKED #75 candidate +
+- **γ**: closure — Status Accepted + §9 Lessons + LOCKED #99 candidate +
   **Claude Preview MCP demo** (drawCircleAsCurve + drawLineAsShape 가로지름
   → faces 1→2, 사용자 비전 곡선 경계 end-to-end — ADR-172 γ / ADR-087 K-ζ).
 
@@ -415,7 +415,7 @@ R-β 가 이미 동일 trade-off accept — **MVP accept + polish 별도** 가 h
   dist 미빌드로 일부 lazy UI 패널 Vite overlay — 엔진/그리기 경로 무관.
 - β-4 (HARD flag): 직선 cutting chord 가 exec_draw_line 의 mark_edge_hard 로
   HARD (ADR-101 A9) — 기존 ADR-172 직선 split 동일 경로, 신규 코드 0.
-- Status Accepted + §9 Lessons + LOCKED #75 (사용자 결재 2026-06-01).
+- Status Accepted + §9 Lessons + LOCKED #99 (사용자 결재 2026-06-01).
 - 회귀 누적 (β-1~β-3): axia-geo +7 (1545), axia-core +7 (323). 합계 **+14**,
   절대 #[ignore] 금지 14/14.
 
@@ -446,9 +446,9 @@ origin/main sync 우선.
 
 ---
 
-## 10. LOCKED #75 (사용자 결재 완료 2026-06-01)
+## 10. LOCKED #99 (사용자 결재 완료 2026-06-01)
 
-> **LOCKED #75 — ADR-174 Curve-Edge Crossing-Split closure (직선 × self-loop
+> **LOCKED #99 — ADR-174 Curve-Edge Crossing-Split closure (직선 × self-loop
 > Circle 경계 → polygonize dispatch)**
 >
 > ADR-173 §10 spawned future ADR closure. ADR-172 직선 crossing-split 의
