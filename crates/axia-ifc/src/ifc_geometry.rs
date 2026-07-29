@@ -242,6 +242,25 @@ impl CsgNode {
     }
 }
 
+/// ADR-311 β-3 — the scalar appearance an `IfcSurfaceStyleRendering` carries.
+///
+/// Deliberately *not* `ifc_model::MaterialStyle`: that type has a `textures`
+/// field, and textures are not imported (L-311-6). A type with only what we
+/// actually read cannot imply otherwise.
+///
+/// IFC's rendering model is Phong, not PBR, so the mapping back is the inverse
+/// of what the export writes: `IfcSpecularRoughness` → roughness, and
+/// `ReflectanceMethod = .METAL.` → metalness 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImportedStyle {
+    /// Each component 0..1.
+    pub rgb: (f64, f64, f64),
+    /// 0 = opaque.
+    pub transparency: f64,
+    pub roughness: f64,
+    pub metalness: f64,
+}
+
 /// Geometry extracted for one element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElementGeometry {
@@ -253,6 +272,13 @@ pub struct ElementGeometry {
     /// re-export can emit the member as the same kind it arrived as (ADR-311).
     pub ifc_type: String,
     pub material: Option<String>,
+    /// How the file says this member looks (ADR-311 β-3), read from its
+    /// `IfcStyledItem` → `IfcSurfaceStyle` → `IfcSurfaceStyleRendering`.
+    ///
+    /// Only consulted when the material *name* is one we do not know: a name
+    /// that matches the library reuses that material's own appearance, so a
+    /// file cannot repaint 벽돌 (L-311-3).
+    pub style: Option<ImportedStyle>,
     /// `#N` of the spatial container holding this member, if the file says
     /// (`IfcRelContainedInSpatialStructure`, I-5).
     pub container: Option<u32>,
@@ -370,6 +396,8 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
 
     let spatial = crate::ifc_spatial::spatial_tree(file);
     let report = crate::ifc_elements::classify(file);
+    // ADR-311 β-3 — indexed once; a scan per element would be O(elements × file).
+    let styled = styled_items(file);
     // Openings that void a wall (IfcRelVoidsElement) — subtracted below so a door
     // or window opening becomes a real hole rather than a phantom overlap.
     let voids = collect_voids(file);
@@ -388,6 +416,13 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
         let mut faces = Vec::new();
         let mut supported_geometry = 0usize;
         let mut dropped_faces = 0usize;
+        // ADR-311 β-3 — the appearance the file gives this member, from the
+        // first of its representation items that carries a style.
+        let style = el
+            .geometry
+            .iter()
+            .filter_map(|g| styled.get(&g.id).copied())
+            .find_map(|si| resolve_style(file, si));
         // I-4 — a member's B-rep is written in its own coordinate system and
         // located by a placement chain. Our own files use the identity (we bake
         // world coordinates), so this is free for them and correct for Revit /
@@ -576,6 +611,7 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             name: el.name.clone(),
             ifc_type: el.ifc_type.clone(),
             material: el.material.clone(),
+            style,
             container: spatial.container_of.get(&el.id).copied(),
             faces,
             booleans,
@@ -2155,6 +2191,97 @@ fn curved_face_surface(file: &StepFile, face: &Entity) -> Option<String> {
         return None; // the one kind the boundary already describes exactly
     }
     Some(surf.tag.to_ascii_uppercase())
+}
+
+/// ADR-311 β-3 — every `IfcStyledItem`, indexed by the representation item it
+/// styles. Built once per file: a per-element scan would be O(elements × file).
+fn styled_items(file: &StepFile) -> std::collections::BTreeMap<u32, u32> {
+    let mut map = std::collections::BTreeMap::new();
+    for (id, e) in &file.data {
+        if !e.tag.eq_ignore_ascii_case("IFCSTYLEDITEM") {
+            continue;
+        }
+        // IfcStyledItem.Item is attribute 0. First one wins — a second style on
+        // the same item is not something we can honour anyway.
+        if let Some(item) = e.args.first().and_then(|v| v.as_ref()) {
+            map.entry(item).or_insert(*id);
+        }
+    }
+    map
+}
+
+/// The appearance a styled item resolves to, if any.
+///
+/// `IfcStyledItem.Styles` may hold the `IfcSurfaceStyle` directly (IFC4) or an
+/// `IfcPresentationStyleAssignment` wrapping it (IFC2x3, and still common in
+/// files real tools write) — both are followed.
+fn resolve_style(file: &StepFile, styled_item: u32) -> Option<ImportedStyle> {
+    let si = file.entity(styled_item)?;
+    let mut queue: Vec<u32> = si.args.get(1)?.as_list()?.iter().filter_map(|v| v.as_ref()).collect();
+    let mut seen = 0;
+    while let Some(id) = queue.pop() {
+        seen += 1;
+        if seen > 64 {
+            break; // a cycle in someone else's file is not our problem to hang on
+        }
+        let Some(e) = file.entity(id) else { continue };
+        if e.tag.eq_ignore_ascii_case("IFCPRESENTATIONSTYLEASSIGNMENT") {
+            if let Some(inner) = e.args.first().and_then(|v| v.as_list()) {
+                queue.extend(inner.iter().filter_map(|v| v.as_ref()));
+            }
+            continue;
+        }
+        if e.tag.eq_ignore_ascii_case("IFCSURFACESTYLE") {
+            // IfcSurfaceStyle.Styles is attribute 2.
+            let Some(elems) = e.args.get(2).and_then(|v| v.as_list()) else { continue };
+            for r in elems.iter().filter_map(|v| v.as_ref()) {
+                let Some(re) = file.entity(r) else { continue };
+                if re.tag.eq_ignore_ascii_case("IFCSURFACESTYLERENDERING") {
+                    return rendering_style(file, re);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `IfcSurfaceStyleRendering` → the four scalars. Inverts what `emit_surface`'s
+/// sibling in `ifc_model` writes.
+fn rendering_style(file: &StepFile, r: &Entity) -> Option<ImportedStyle> {
+    // SurfaceColour (0), Transparency (1), … SpecularHighlight (7),
+    // ReflectanceMethod (8).
+    let c = file.entity(r.args.first()?.as_ref()?)?;
+    if !c.tag.eq_ignore_ascii_case("IFCCOLOURRGB") {
+        return None;
+    }
+    // IfcColourRgb(Name, Red, Green, Blue).
+    let rgb = (
+        c.args.get(1)?.as_f64()?,
+        c.args.get(2)?.as_f64()?,
+        c.args.get(3)?.as_f64()?,
+    );
+    let transparency = r.args.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    // SpecularHighlight is a SELECT — IfcSpecularRoughness(x) or
+    // IfcSpecularExponent(x). Only roughness is ours to read back; an exponent
+    // is a different quantity and guessing a conversion would be an invention.
+    let roughness = match r.args.get(7) {
+        Some(Value::Typed { tag, args })
+            if tag.eq_ignore_ascii_case("IFCSPECULARROUGHNESS") =>
+        {
+            args.first().and_then(|x| x.as_f64()).unwrap_or(0.8)
+        }
+        _ => 0.8,
+    };
+    let metalness = match r.args.get(8).and_then(|v| v.as_enum()) {
+        Some(m) if m.eq_ignore_ascii_case("METAL") => 1.0,
+        _ => 0.0,
+    };
+    Some(ImportedStyle {
+        rgb,
+        transparency: transparency.clamp(0.0, 1.0),
+        roughness: roughness.clamp(0.0, 1.0),
+        metalness,
+    })
 }
 
 /// ADR-310 β-1 — `IfcAdvancedFace.FaceSurface` read back as the engine's own

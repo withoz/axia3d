@@ -6040,7 +6040,7 @@ impl AxiaEngine {
             // at all (L-311-3). An unmatched name is a new Project-tier
             // material rather than a guess at which built-in was meant.
             if let Some(mname) = el.material.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                let mid = self.resolve_import_material(mname);
+                let mid = self.resolve_import_material(mname, el.style.as_ref());
                 for &fid in faces {
                     if let Some(face) = self.scene.mesh.faces.get_mut(fid) {
                         face.set_material(mid);
@@ -15251,12 +15251,37 @@ impl AxiaEngine {
     /// a mass takeoff on an imported foreign material should be corrected by
     /// the user, not quietly believed. Its *appearance* is refined from the
     /// file's style graph where there is one (β-3).
-    fn resolve_import_material(&mut self, name: &str) -> axia_geo::MaterialId {
+    fn resolve_import_material(
+        &mut self,
+        name: &str,
+        style: Option<&axia_ifc::ifc_geometry::ImportedStyle>,
+    ) -> axia_geo::MaterialId {
         if let Some(id) = self.scene.material_library.find_by_name(name) {
+            // A name we know keeps its own appearance — a file does not get to
+            // repaint 벽돌 (L-311-3).
             return id;
         }
         use axia_core::material::{
             FireRating, MaterialCategory, PhysicalProperties, VisualProperties,
+        };
+        let ch = |x: f64| ((x.clamp(0.0, 1.0) * 255.0).round() as u32) & 0xff;
+        let visual = match style {
+            Some(s) => VisualProperties {
+                color: (ch(s.rgb.0) << 16) | (ch(s.rgb.1) << 8) | ch(s.rgb.2),
+                roughness: s.roughness,
+                metalness: s.metalness,
+                opacity: 1.0 - s.transparency,
+                layered: None,
+            },
+            // No style in the file either: a neutral grey, so an unstyled
+            // foreign material is visibly unremarkable rather than a guess.
+            None => VisualProperties {
+                color: 0xb0b0b0,
+                roughness: 0.8,
+                metalness: 0.0,
+                opacity: 1.0,
+                layered: None,
+            },
         };
         self.scene.material_library.create_material(
             name.to_string(),
@@ -15270,13 +15295,7 @@ impl AxiaEngine {
                 thermal_conductivity: 0.5,
                 fire_rating: FireRating::None,
             },
-            VisualProperties {
-                color: 0xb0b0b0,
-                roughness: 0.8,
-                metalness: 0.0,
-                opacity: 1.0,
-                layered: None,
-            },
+            visual,
         )
     }
 }
@@ -15383,5 +15402,95 @@ mod adr311_material_tests {
         assert_eq!(engine.scene.shapes.len(), 1, "it stays a form-layer member");
         let f = engine.scene.mesh.faces.iter().find(|(_, f)| f.is_active()).unwrap();
         assert_eq!(f.1.material(), axia_core::FORM_MATERIAL, "faces stay form-layer");
+    }
+}
+
+/// ADR-311 β-3 — the appearance a *created* material takes from the file.
+#[cfg(test)]
+mod adr311_style_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A file whose member carries both a material name and a style, the way
+    /// the export writes one (§38/§39).
+    fn styled_ifc(material: &str, rgb: (f64, f64, f64), rough: f64, metal: f64) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some(material.to_string()),
+            material_style: Some(axia_ifc::MaterialStyle {
+                rgb,
+                transparency: 0.0,
+                roughness: rough,
+                metalness: metal,
+                textures: Vec::new(),
+            }),
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
+    }
+
+    #[test]
+    fn adr311_beta3_a_created_material_takes_the_files_appearance() {
+        // A name the library does not know, so the style graph is what decides
+        // how it looks. Pure blue, mirror-smooth, fully metallic.
+        let ifc = styled_ifc("Anodised Blue", (0.0, 0.0, 1.0), 0.05, 1.0);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let mid = engine
+            .scene
+            .material_library
+            .find_by_name("Anodised Blue")
+            .expect("created under its own name");
+        let m = engine.scene.material_library.get(mid).unwrap();
+        assert_eq!(m.visual.color, 0x0000ff, "colour from IfcColourRgb: {:#08x}", m.visual.color);
+        assert!((m.visual.roughness - 0.05).abs() < 1e-6, "roughness {}", m.visual.roughness);
+        assert!((m.visual.metalness - 1.0).abs() < 1e-9, "METAL → metalness 1: {}", m.visual.metalness);
+    }
+
+    #[test]
+    fn adr311_beta3_a_known_name_is_not_repainted_by_the_file() {
+        // The control, and the point of L-311-3. 벽돌 is built-in id 4 and red;
+        // a file claiming it is pure green must not change the library.
+        let before = {
+            let e = AxiaEngine::new();
+            e.scene.material_library.get(MaterialId::new(4)).unwrap().visual.color
+        };
+        let ifc = styled_ifc("벽돌", (0.0, 1.0, 0.0), 0.01, 1.0);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let m = engine.scene.material_library.get(MaterialId::new(4)).unwrap();
+        assert_eq!(m.visual.color, before, "the library material keeps its own colour");
+        assert_ne!(m.visual.color, 0x00ff00, "and is emphatically not the file's green");
+    }
+
+    #[test]
+    fn adr311_beta3_an_unstyled_unknown_name_gets_a_neutral_grey() {
+        // No style to read: the material exists but claims nothing.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some("Unstyled".into()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        let ifc = axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
+        assert_eq!(ifc.matches("=IFCSTYLEDITEM(").count(), 0, "no style emitted");
+
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+        let mid = engine.scene.material_library.find_by_name("Unstyled").unwrap();
+        assert_eq!(engine.scene.material_library.get(mid).unwrap().visual.color, 0xb0b0b0);
     }
 }
