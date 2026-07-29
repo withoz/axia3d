@@ -652,6 +652,26 @@ impl Mesh {
         let a3 = self.add_vertex(tp3);
         let b3 = self.add_vertex(tn3);
 
+        // ADR-303 — validate before mutate (ADR-302 L-302-1). `uniq` depends
+        // only on the trim vertices materialized just above, so it is decidable
+        // HERE, before step 6 splices and step 7 tears the corner down. Reaching
+        // it at step 9 — after teardown AND rebuild — would have left the three
+        // originals gone, three replacements in with the corner spliced out, and
+        // the closing triangle never added: an open solid, reported as a failure.
+        //
+        // Measured unreachable today, and this records why: `edge_trim_points`
+        // returns per-edge points that are identical from both incident faces
+        // (adversarial sweep #2), so {a*, b*} always collapses to exactly 3. A
+        // 624-case sweep over box / cylinder / drilled box / fused boss never
+        // reached it (tests/mutate_on_failure_sim.rs). This is ordering hygiene,
+        // not a live bug fix — but the ordering was the hazard, so it moves.
+        let mut uniq: Vec<VertId> = Vec::with_capacity(3);
+        for x in [a1, b1, a2, b2, a3, b3] {
+            if !uniq.contains(&x) { uniq.push(x); }
+        }
+        ensure!(uniq.len() == 3,
+            "chamfer: expected 3 unique edge trim points, got {}", uniq.len());
+
         // 6) Splice each face's loop: replace v with its two edge points
         //    [prev-edge point, next-edge point], preserving loop order.
         let f1_new = splice_vertex_replacement(&f1_verts, v, &[a1, b1])?;
@@ -671,15 +691,9 @@ impl Mesh {
         let new_f2 = self.add_face_with_holes(&f2_new, &[], m2)?;
         let new_f3 = self.add_face_with_holes(&f3_new, &[], m3)?;
 
-        // 9) Chamfer triangle from the 3 UNIQUE edge trim points. Each of v's
-        //    3 edges is shared by two of the faces, so {a*, b*} collapses to
-        //    exactly 3 ids. Winding: point outward (n_sum direction).
-        let mut uniq: Vec<VertId> = Vec::with_capacity(3);
-        for x in [a1, b1, a2, b2, a3, b3] {
-            if !uniq.contains(&x) { uniq.push(x); }
-        }
-        ensure!(uniq.len() == 3,
-            "chamfer: expected 3 unique edge trim points, got {}", uniq.len());
+        // 9) Chamfer triangle from the 3 UNIQUE edge trim points (computed and
+        //    checked before the teardown — see ADR-303 above). Winding: point
+        //    outward (n_sum direction).
         let (q1, q2, q3) = (uniq[0], uniq[1], uniq[2]);
         let (pq1, pq2, pq3) =
             (self.vertex_pos(q1)?, self.vertex_pos(q2)?, self.vertex_pos(q3)?);
