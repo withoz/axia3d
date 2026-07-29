@@ -186,4 +186,10 @@ Command::CleanDegenerateXias { confirm: bool, preview_first: bool }
 - [ ] `boolean` 의 `DegenerateMode` 옵션
 - [ ] `Toast` 기반 사용자 피드백
 - [ ] `Command::ValidateScene` 수동 검증 커맨드
-- [ ] 각 연산의 단위 테스트에 degenerate 거부 케이스 추가
+- [~] 각 연산의 단위 테스트에 degenerate 거부 케이스 추가 — **ADR-304 부분 완료**:
+      `practicality_edge_cases.rs` 가 실제 계약을 고정했다. 다만 측정 결과 그 계약은
+      "거부" 가 아니라 **"수용 후 verifier 포착"** 이다 — `add_face_with_holes` 의
+      유일한 생성 가드는 정점 3개 미만이고, 나머지 퇴화(0-면적/자기반복/NaN)는
+      수용된 뒤 `verify_face_invariants` 가 잡는다. 생성 단계 거부로 바꾸는 것은
+      `NORMAL_EPSILON = 0.0`("keep at 0 to avoid missing thin faces") 의도와
+      충돌하고 라이브 경로의 동작을 바꾸므로 별도 결정이 필요.

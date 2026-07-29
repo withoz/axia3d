@@ -236,8 +236,31 @@ impl Mesh {
                 continue;
             }
 
-            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반)
+            // I6 (ADR-304): a normal that is not finite is not a normal.
+            //
+            // NaN slipped past every check below, because `NaN > 1e-10` is
+            // FALSE — so I2 was skipped entirely and the face was reported
+            // valid. It is the same NaN-comparison trap that makes
+            // `compute_normal`'s degenerate bail unreachable: with
+            // NORMAL_EPSILON = 0.0, `len < 0.0` is never true, so a zero-length
+            // Newell normal falls through to `Ok(normal / 0.0)` = NaN and a
+            // degenerate face enters the mesh carrying it.
+            //
+            // Creation stays permissive on purpose (tolerances.rs: "keep at 0
+            // to avoid missing thin faces"). What was missing is DETECTION —
+            // and every gate in this codebase (ADR-267 integrity, ADR-272
+            // closure, ADR-302/303 sims) asks this verifier. Zero-length is NOT
+            // flagged: the check below already treats it as "no cached normal,
+            // skip", and that is load-bearing.
             let cached = face.normal();
+            if !cached.is_finite() {
+                violations.push(format!(
+                    "face {:?}: normal is not finite ({:?}) — degenerate geometry",
+                    fid, cached
+                ));
+                continue;
+            }
+            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반)
             if cached.length_squared() > 1e-10 {
                 if let Ok(computed) = self.compute_normal(&outer_verts) {
                     let cn = cached.normalize_or_zero();
