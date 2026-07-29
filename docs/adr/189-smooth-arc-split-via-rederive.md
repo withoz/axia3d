@@ -24,7 +24,7 @@
 
 ## 1. Problem — Approach A 의 polygonize 손실
 
-ADR-174 Approach A (LOCKED #75 L-75-1): 직선이 Path B Circle self-loop face 를
+ADR-174 Approach A (LOCKED #99 L-75-1): 직선이 Path B Circle self-loop face 를
 가로지르면 `exec_draw_line` Step 0 pre-pass 가 `polygonize_closed_curve_face` 로
 원을 ~28 직선으로 변환한 뒤 직선 파이프라인 (ADR-172) 으로 분할한다. 이유 —
 `find_line_crossings` 가 self-loop 곡선 edge 를 못 잡음 (양 endpoint 동일 anchor
@@ -133,7 +133,7 @@ self-loop split 신규 primitive **0** 으로 목표 달성.
 - **ADR-087** K-ζ (사용자 시연 게이트)
 
 ### LOCKED / 메타-원칙
-- **LOCKED #75** (ADR-174) — amendment note (Approach B realized)
+- **LOCKED #99** (ADR-174) — amendment note (Approach B realized)
 - **메타-원칙 #14** (곡선 경계 → disk-topology) / **#15** (split contract) /
   **#16** (WHEN gate) — 보존
 - commit `65b6484`
