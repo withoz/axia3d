@@ -844,10 +844,15 @@ mod tests {
         // ADR-309 — this records TODAY's behaviour, it does not endorse it. The
         // importer rebuilds every face from its boundary, so a parametric
         // cylinder comes back tessellated. When the importer learns to read
-        // IfcAdvancedFace.FaceSurface / IfcCircleProfileDef as a curve, this
-        // count drops to a small kernel-native one and this line goes red —
-        // that is progress. Update it deliberately; do not delete the check,
-        // which still catches a collapse to a degenerate handful of faces.
+        // IfcCircleProfileDef as a curve, this count drops to a small
+        // kernel-native one and this line goes red — that is progress. Update
+        // it deliberately; do not delete the check, which still catches a
+        // collapse to a degenerate handful of faces.
+        //
+        // ADR-310 measured that this file has ZERO IfcAdvancedFace: a clean
+        // Path B cylinder exports as an IfcExtrudedAreaSolid (§43). So reading
+        // FaceSurface — which ADR-310 now does — leaves this untouched, and
+        // only the profile half of the sentence above governs it.
         assert!(
             g.elements[0].faces.len() > 20,
             "currently tessellated on re-import ({} faces); see ADR-309 if this went red",
@@ -956,67 +961,143 @@ mod tests {
         );
         // ADR-309 — as above: today the revolution is tessellated on re-import.
         // A future importer that keeps the revolution analytic makes this red.
+        // ADR-310 does not: a cone exports as an IfcRevolvedAreaSolid (§44),
+        // with zero IfcAdvancedFace, so reading FaceSurface cannot reach it.
         assert!(nfaces > 20, "currently tessellated on re-import ({nfaces}); see ADR-309");
     }
 
     #[test]
-    fn adr309_path_b_sphere_and_torus_round_trip_flat_and_say_so() {
-        // ADR-309 — this test DOCUMENTS A LOSS. It is not describing correct
-        // behaviour; it pins a defect so that (a) it cannot get quieter, and
-        // (b) fixing it turns this red on purpose.
+    fn adr310_sphere_and_torus_round_trip_keep_their_surface() {
+        // Replaces ADR-309's `..._flat_and_say_so`, which documented this loss
+        // and said to delete it together with the fix. BOTH of its halves go,
+        // not only the flatness one — ADR-309's comment that the warning half
+        // "outlives" it is true of a partial repair, not of this one. A face we
+        // rebuilt is no longer a face we dropped, so the warning correctly
+        // falls silent.
         //
-        // A Path B sphere is 2 faces sharing one self-loop equator edge; a Path B
-        // torus is 1 such face. We export them correctly — IFCSPHERICALSURFACE /
-        // IFCTOROIDALSURFACE, which other BIM tools read as the right solid. But
-        // our own importer rebuilds a face from its BOUNDARY alone, and for these
-        // two the whole boundary is one planar circle. So the solid returns as a
-        // flat disc: volume gone. Measured, not inferred.
+        // IFC carries no extent for an elementary surface, and the two
+        // hemispheres are byte-identical in the file (ADR-310 §1), so the range
+        // cannot come from either face alone. It comes from the pair: a circle
+        // cuts a sphere into exactly two caps; a parallel does not cut a torus
+        // at all.
         //
-        // Until the importer reads FaceSurface and can rebuild a hemisphere
-        // kernel-native, the least we owe the user is to say it happened — this
-        // module's contract is that a thinner import is visible, and this was the
-        // one drop that was silent.
-        for label in ["sphere", "torus"] {
-            let mut mesh = Mesh::new();
-            let faces = if label == "sphere" {
-                mesh.create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0)).unwrap()
-            } else {
-                vec![mesh
-                    .create_torus_kernel_native(DVec3::ZERO, 1000.0, 250.0, MaterialId::new(0))
-                    .unwrap()]
-            };
-            let elements = vec![IfcElement {
-                name: label.into(), material_name: None, material_style: None,
-                kind: crate::IfcElementKind::Wall, face_ids: faces,
-            }];
-            let s = emit_ifc_model(&mesh, &elements, 0.001, label).unwrap();
-
-            // The EXPORT is right — that half is not the defect.
-            let surf = if label == "sphere" { "IFCSPHERICALSURFACE" } else { "IFCTOROIDALSURFACE" };
-            assert!(s.contains(surf), "{label}: export must carry its analytic surface");
-
-            let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
-            let (lo, hi, _) = imported_extent(&s);
-            let ext = hi - lo;
-
-            // THE LOSS. Delete this assertion only together with the fix.
-            assert!(
-                ext.z.abs() < 1.0,
-                "{label} now has depth ({:.1} mm) — the importer learned to rebuild the surface. Good: remove this assertion and check the real solid instead.",
-                ext.z
-            );
-
-            // AND IT MUST NOT BE SILENT. This half outlives the one above.
-            assert!(
-                g.warnings.iter().any(|w| w.contains(surf)),
-                "{label}: the dropped surface must be named in warnings, got {:?}",
-                g.warnings
-            );
-            assert!(
-                g.warnings.iter().any(|w| w.contains("FLAT")),
-                "{label}: a flattened solid must say so, got {:?}", g.warnings
-            );
+        // DELIBERATELY NOT ASSERTED: the extent of `f.outer`. A hemisphere's
+        // boundary *is* a flat circle — the depth lives in the surface. ADR-309
+        // measured extent to expose the loss; that measure cannot show the
+        // repair, and reading it as a regression would be a mistake.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "sphere".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "sphere").unwrap();
+        assert!(s.contains("IFCSPHERICALSURFACE"), "export must carry its surface");
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        let hemis = &g.elements[0].faces;
+        assert_eq!(hemis.len(), 2, "two hemispheres");
+        let mut vr: Vec<(f64, f64)> = Vec::new();
+        for f in hemis {
+            match &f.surface {
+                Some(axia_geo::AnalyticSurface::Sphere { radius, v_range, .. }) => {
+                    assert!((radius - 1000.0).abs() < 1e-6, "radius {radius}");
+                    vr.push(*v_range);
+                }
+                other => panic!("a hemisphere must come back on its sphere, got {other:?}"),
+            }
+            assert!(f.dropped_surface.is_none(), "rebuilt, so nothing was dropped");
         }
+        vr.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let half = std::f64::consts::FRAC_PI_2;
+        assert!((vr[0].0 + half).abs() < 1e-9, "lower cap starts at the south pole: {vr:?}");
+        assert!((vr[1].1 - half).abs() < 1e-9, "upper cap ends at the north pole: {vr:?}");
+        assert!((vr[0].1 - vr[1].0).abs() < 1e-9, "the caps meet at the equator: {vr:?}");
+        assert!(vr[0].1.abs() < 1e-9, "and that equator is v = 0: {vr:?}");
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("IFCSPHERICALSURFACE")),
+            "nothing was dropped, so nothing is warned about: {:?}", g.warnings
+        );
+
+        let mut mesh = Mesh::new();
+        let f = mesh
+            .create_torus_kernel_native(DVec3::ZERO, 1000.0, 250.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "torus".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: vec![f],
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "torus").unwrap();
+        assert!(s.contains("IFCTOROIDALSURFACE"), "export must carry its surface");
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        let ring = &g.elements[0].faces;
+        assert_eq!(ring.len(), 1, "one torus face");
+        let tau = std::f64::consts::TAU;
+        match &ring[0].surface {
+            Some(axia_geo::AnalyticSurface::Torus {
+                major_radius, minor_radius, u_range, v_range, ..
+            }) => {
+                assert!((major_radius - 1000.0).abs() < 1e-6, "major {major_radius}");
+                assert!((minor_radius - 250.0).abs() < 1e-6, "minor {minor_radius}");
+                assert_eq!((*u_range, *v_range), ((0.0, tau), (0.0, tau)), "the whole torus");
+            }
+            other => panic!("a torus must come back on its torus, got {other:?}"),
+        }
+        assert!(ring[0].dropped_surface.is_none());
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("IFCTOROIDALSURFACE")),
+            "nothing dropped: {:?}", g.warnings
+        );
+    }
+
+    #[test]
+    fn adr310_a_lone_hemisphere_is_undecidable_and_still_says_so() {
+        // The guard on L-310-2. One cap on a sphere is genuinely ambiguous —
+        // northern and southern are byte-identical, and this ADR declined the
+        // export change that would have distinguished them. So it must NOT be
+        // guessed: the polygon path keeps it, and ADR-309's warning still
+        // fires. Without this test, "reconstruct whatever is curved" would pass
+        // every other assertion here while silently doubling a hemisphere.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "half".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: vec![faces[0]],
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "half").unwrap();
+        assert!(s.contains("IFCSPHERICALSURFACE"), "still exported as a sphere");
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        let f = &g.elements[0].faces;
+        assert_eq!(f.len(), 1, "one face");
+        assert_eq!(
+            f[0].dropped_surface.as_deref(),
+            Some("IFCSPHERICALSURFACE"),
+            "a lone cap must stay dropped, not be guessed"
+        );
+        // The half an adversarial review caught missing. Asserting only the tag
+        // above let a refused face keep the surface `face_surface` had stocked
+        // it with — the FULL sphere, since a range is not knowable one face at a
+        // time. That doubles the cap's area and renders a whole ball: worse than
+        // the flat disc ADR-309 described. "Refused" has to mean nothing was
+        // attached, not just that something was said.
+        assert!(
+            f[0].surface.is_none(),
+            "refused must leave NO surface, got {:?}",
+            f[0].surface
+        );
+        assert!(
+            g.warnings.iter().any(|w| w.contains("IFCSPHERICALSURFACE")),
+            "and it must still say so: {:?}", g.warnings
+        );
+        // ADR-309's FLAT clause: this is now its only behavioural cover, since
+        // the test that carried it was replaced. A lone cap really is flat.
+        assert!(
+            g.warnings.iter().any(|w| w.contains("FLAT (volume lost)")),
+            "a flattened solid must still say so: {:?}", g.warnings
+        );
     }
 
     #[test]

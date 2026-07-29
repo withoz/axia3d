@@ -5,6 +5,25 @@
 **Category**: IFC / import
 **Scope**: step 1 of 4 — stops the silence, not the loss
 
+> ⚠ **Two factual claims below are corrected by ADR-310 §6** (2026-07-29). The
+> body is left as written (메타-원칙 #10); read it together with that section.
+>
+> 1. **§1's "other BIM tools read `IFCSPHERICALSURFACE` and show the right
+>    solid" is false.** Measured against the vendored web-ifc: extent Z is
+>    exactly `0.0000` for sphere and torus alike — it flattens them as we did.
+>    §1 also contradicts §6 of this same document, which said the export drops
+>    u/v. §6 was right.
+> 2. **"volume lost" overstates.** A native Path B sphere also reports
+>    `mesh_volume() == 0.0`; `mesh.rs:13067` skips loops under three vertices.
+>    The loss was extent, shape and analytic surface — there was never a volume.
+>
+> §6's sizing was also wrong: step 3's stated obstacle was already satisfied by
+> vertex dedup, and steps 2 and 3 together came to one field.
+> `adr309_path_b_sphere_and_torus_round_trip_flat_and_say_so` has been **removed
+> together with the fix**, as its own message instructed — both halves, not only
+> the flatness one (see ADR-310 §6). `adr309_a_box_round_trip_warns_about_
+> nothing` remains as the control.
+
 ## 1. Measured, by running it
 
 `crates/axia-ifc`'s module doc states the contract: *"Every drop is named in

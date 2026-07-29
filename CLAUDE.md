@@ -8712,13 +8712,15 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   대신 **결합을 끊는다** — ADR-307 이 `punch_*` 에 한 것(이미 뜬 snapshot 복원)을 나머지
   teardown op 에도 적용하면 안전 논증이 죽은 가드에 안 기대고, 이 질문은 나중에 자유롭게
   답할 수 있게 된다.
-- IFC 왕복 손실 — **실측(ADR-309)**: Path B **구·토러스가 납작해진다**(extent Z=0, 부피 0). 
-  `face_bounds` 가 `IfcAdvancedFace` 속성 0(Bounds)만 읽고 속성 1(FaceSurface)을 안 읽어서, 
-  경계가 평면 적도 원 하나뿐인 그 둘은 충실히 복원하면 원반이 된다. 콘은 `IfcRevolvedAreaSolid` 
-  경로라 형상은 살고 surface 만 잃는다 — **서로 다른 두 손실**. ADR-309 가 **1단계(경고)만** 
-  완료: 이제 손실이 이름을 갖는다("…is now FLAT (volume lost)"). 남은 2~4단계 = FaceSurface 
-  읽기(큼, **내보내기도 u/v 를 버리므로 import-only 수리 불가**) / 구·토러스 kernel-native 재구성
-  (큼) / appearance·재질 이름 import(중).
+- ~~IFC 왕복 손실 — Path B 구·토러스가 납작해진다~~ → **2·3단계 완료 (ADR-310, LOCKED #101)**.
+  구·토러스가 자기 surface 를 갖고 돌아온다. 남은 것은 **4단계뿐** — appearance + 재질 *이름*
+  import(중). 우리가 내보내는 presentation 엔티티는 전부 emit 전용(import 가 아는 84 태그 중
+  presentation 0개)이고 재질 이름은 파싱되나 버려져 모든 face 가 `FORM_MATERIAL` 이 된다.
+  또한 re-export 시 import 된 건물이 "Model" 이라는 **하나의 `IFCWALL`** 로 뭉개진다 — import 는
+  group 만 만들고 export 는 `scene.xias`/`shapes` 에서 소스를 얻기 때문.
+  **⚠ ADR-309 의 두 주장은 ADR-310 §6 이 정정**: ① "다른 BIM 툴은 제대로 본다" 는 **거짓**
+  (web-ifc 도 extent Z=0.0000 로 납작하게 만든다) ② "부피 0" 은 **과장** — 네이티브 Path B 구도
+  부피 0 이다(`mesh.rs:13067`). 진짜 손실은 extent·형상·surface 였고 부피는 원래 없었다.
 - ~~`SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다~~ → **ADR-308 이 노출**(사용자 결재).
   가드 통과는 구멍이 아니라 **의도** 였다 — `ActionWiring` 이 단축키를 도달 표면으로 세는 것은
   commit `553aedb` 에 근거·변이검증까지 기록된 계약. 따라서 제품 결정이었고, 메뉴 항목은
@@ -8729,6 +8731,125 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
 LOCKED #88 (doc-lag 이 오진을 낳은 기록 — 이 항목이 그 재발을 막는다), ADR-069
 (audit 성공 오기록 — ADR-299 가 한 layer 아래에서 재현), ADR-267 / ADR-272 / ADR-273
 (이 결함들이 통과해 버린 게이트들), 메타-원칙 #4 (SSOT) / #6 (Preventive, measure-first).
+
+### 101. ADR-310 — An imported hemisphere keeps its sphere (IFC 왕복 2·3단계, 2026-07-29) ✅
+
+**사용자 결재 (2026-07-29)**: 다음 작업 = IFC 2단계 / 구 복원 방식 = **내보내기 무변경
+(import-only)**.
+
+#### §1 측정 — 두 반구는 파일 안에서 byte-identical
+
+우리 export 를 덤프해 각 `IFCADVANCEDFACE` 의 의존 closure 를 자기 기준으로 재번호하면
+두 블록이 **완전히 같다**. 방향 플래그 4개가 모두 `.T.` 이고, 구별을 담을 수 있었던
+`SameSense` 는 **계산조차 되지 않는다** — 1-정점 loop 의 Newell 이 정확히 0이라
+`compute_same_sense`(`ifc_advancedbrep.rs:400`) 가 퇴화 기본값을 반환한다. 엔진은 알고
+있고(`v_range` (0,π/2) vs (−π/2,0)) `emit_surface`(`:585`) 의 `..` 가 버린다.
+⇒ **ADR-309 §6 의 "extents must be synthesized from the loop" 는 구에 대해 수행 불가.**
+
+#### §2 그러나 *짝* 은 모호하지 않다 — 이것이 import-only 를 가능케 한 전부
+
+구 위의 원은 구를 정확히 두 조각으로 나눈다. 같은 구면·같은 경계 원을 참조하는 면이
+둘이면 그 둘은 **필연적으로** 그 두 캡이다. 어느 쪽이 북쪽인지만 미정이고, 두 면이 파일이
+기록하는 모든 면에서 동일하므로 **관측 불가능**하다(합집합은 어느 쪽이든 같은 구).
+
+**면적이 정확한 이유가 여기 있다** — 각 2πr², 합 4πr². 순진한 "둘 다 전체 도메인" 안은
+화면은 맞아 보이지만 합 8πr² 로 **2배 계상**된다. IFC 는 물량 산출 포맷이라 허용 불가.
+
+#### §3 구현은 draft 의 2-규칙이 아니라 **1-규칙** 으로 수렴
+
+> 경계 곡선이 그 곡면을 몇 조각으로 나누는가 — 파일은 정확히 그 수만큼 면을 대야 한다.
+
+- **구**: 원은 항상 구를 2조각(캡)으로 나눈다 → 면 2개 필요, 분할은 그 위도에서 v 방향.
+- **토러스**: 위도 원은 토러스를 **나누지 않는다** → 면 1개면 그게 곡면 전체이고 원은 seam.
+- 그 외는 전부 거부하고 오늘 동작 유지(폴리곤 + `dropped_surface` + ADR-309 경고): 홀로 있는
+  반구(내보내기 변경을 거절한 이상 **진짜로** 판정 불가), 한 구에 3면, 위도가 아닌 원.
+
+#### §4 ADR-309 §6 이 크기를 잘못 쟀다 — 3단계는 이미 끝나 있었다
+
+정점 dedup 덕에 imported DCEL `verts=1 edges=1 faces=2, invariants valid` = native 와 동일.
+3단계의 장애물로 적힌 *"wasm 루프가 공유 self-loop 을 인식해야"* 는 **이미 충족**이었고, 남은
+gap 은 **필드 하나**였다 — `add_face_closed_curve` 가 rim 의 평면을 붙이고 closed-curve 분기가
+`continue` 로 빠져나가 아무도 그걸 대체하지 못했다.
+
+#### ⚠ 적대적 검토가 잡은 것 — 거절 경로가 거짓말을 남기고 있었다
+
+5개 렌즈가 **하나의 결함**으로 수렴했고 실제였다. `face_surface` 는 모든 advanced face 에
+surface 를 **자연 전체 도메인**으로 채워 넣는다(면 하나만 보고는 범위를 알 수 없으므로 그럴
+수밖에 없다). `reconstruct_surfaces` 는 성공 시에만 좁히고 `dropped_surface` 만 비웠으며,
+**거절은 전부 맨 `continue`** 였다 → full-domain surface 가 그대로 남고 wasm 이 그걸 붙였다.
+
+```
+PROBE lone-cap surface = Some(Sphere { .. v_range: (-1.5707963, 1.5707963) })
+```
+
+즉 L-310-2 가 거절하려던 바로 그 경우(홀로 있는 반구)가 **통짜 구**로 들어왔다 — 면적
+1.26e7(참값 6.28e6), 반쪽만 있는데 공 전체가 렌더된다. **이 ADR 이 고치려던 납작한 원반보다
+나쁘다.** 외부 exporter 의 부분 patch 도 전부 이 경로다.
+
+**그리고 내 가드는 내내 통과했다.** `adr310_a_lone_hemisphere_…` 가 tag 와 경고 문구만 보고
+`surface` 를 안 봤다 — 이 저장소가 반복해서 당한 바로 그 vacuous check(ADR-299/302/304).
+지금은 `surface.is_none()` 을 단언하고, 수정을 되돌리면(debug_assert 도 함께 끄고) **그
+단언이** 실패한다.
+
+**교훈은 새롭지 않다는 것이 요점** — 가드는 지켜야 할 것을 깨뜨려 실패를 눈으로 보기 전까지
+아무것도 붙잡고 있지 않다. 검토 전에 뮤테이션 4건을 돌렸지만 **거절 경로는 하나도 건드리지
+않았다** — 그 테스트를 내가 썼기 때문이다.
+
+#### Lock-ins (L-310-1 ~ 10)
+
+**L-310-8** *살아남은 surface 는 범위를 결정한 surface 다* — 불변식
+`surface.is_some() ⟹ dropped_surface.is_none()`, 마지막 pass + `debug_assert` 로 고정.
+거절은 tag 와 **함께 surface 도 버린다**. **L-310-9** 프레임 비교는 축이 아니라 **방향**
+기준 — anti-parallel 은 같은 구지만 다른 파라미터화라 캡이 뒤바뀐다, 수용이 아니라 거절.
+**L-310-10** 모든 수용 테스트는 **NaN 이면 실패**하도록 — `NaN > eps` 가 false 라
+`if x > eps { continue }` 는 NaN 에서 **통과해 버린다**(ADR-304 가 두 번 찾은 함정,
+LOCKED #100 L-100-1).
+
+#### Lock-ins (L-310-1 ~ 7)
+
+export 불변(바이트 변경은 새 ADR + 승인) / 짝 완성은 **증거가 정확할 때만**(같은 element ·
+동일 surface · 동일 경계 · 정확히 2면; 1개나 3개 이상은 손대지 않음) / 재구성은
+`dropped_surface` 를 비우고 실패는 유지 — 경고는 **"복원 못함"** 이지 **"곡면이었음"** 이
+아니다 / non-identity placement 에서는 `closed_curve` 처럼 surface 도 **버린다**(잘못 놓인
+surface 는 없는 것보다 나쁘다) / 여기서는 **구·토러스만**, 원통·콘 advanced-brep face 는
+best-fit plane 유지(기존 파일 render 가 바뀌므로 별도 단계) / **parity guard 가 핵심** —
+imported Path B primitive 는 native 와 같아야 하고, 그 guard 의 부재가 이 결함을 존재하게
+했다 / 절대 #[ignore] 금지.
+
+#### 거절한 안 (재논쟁 방지)
+
+① 남반구 `IfcFaceOuterBound.Orientation` 을 `.F.` 로 뒤집고 ISO 10303-42 `n×t` 적용 —
+*단일* 반구까지 결정 가능해지나 바이트가 바뀌고, 주기적 면에서 bound 방향을 존중하는 제3자
+리더를 확인할 수 없었다 ② `IfcRectangularTrimmedSurface` — **스키마 위법**
+(`IfcAdvancedFace.ApplicableSurface` 는 Elementary/Swept/BSpline 만 허용) ③ seam+pole
+(`IfcSeamCurve`+`IfcVertexLoop`) — 스키마의 정석이고 **닫힌 셸 결함**(모든 엣지가 1회만
+사용됨)도 같이 해소하나 크고 오늘 측정 가능한 이득 0. **거절이 아니라 연기** — 외부 반구를
+import 하려면 언젠가 필요하다.
+
+#### 검증
+
+`cargo test --workspace` **3262 → 3268** / `vitest` 2970 (불변) / `tsc` 0 /
+`ifc-external-validate.mjs` 통과 / ADR catalog ✓. **뮤테이션 4건 각각 해당 가드가 잡음**
+(surface 를 안 읽으면 β-1, 재구성을 끄면 왕복 테스트, 홀로 있는 캡을 추측하면 lone-hemisphere
+가드, wasm 이 부착 안 하면 parity 2건 — 박스 대조군은 정상적으로 green 유지).
+
+**테스트가 일부러 단언하지 않는 것**: `f.outer` 의 extent. 반구의 경계는 **원래 평평한 원**
+이고 깊이는 surface 가 갖는다. ADR-309 는 손실을 드러내려고 extent 를 쟀지만 **그 척도로는
+수리를 볼 수 없다** — 나중에 extent 로 확인하려는 사람이 이걸 회귀로 오독하면 안 된다.
+
+**시연 게이트** (실제 wasm, fresh reload): 브라우저에서 Path B 구 → export → 새 엔진으로
+import → `verts=1 edges=1 faces=2`, 두 면 모두 `faceSurfaceKind=3`(Sphere), `warnings []`,
+**렌더 z ∈ [−1000, +1000]** (원반이 아니라 지름 전체). 검토 수정 후 **거절 경로도 시연** —
+같은 파일에서 `IFCCLOSEDSHELL` 의 반구 하나를 지우면 `faces=1`, `faceSurfaceKind=1`(Plane),
+**렌더 z ∈ [0,0]**, FLAT 경고 발화. 수정 전에는 이 줄이 `kind=3` + `z ∈ [−1000,+1000]`
+(반쪽으로 만든 통짜 공) 이었다.
+
+#### Cross-link
+
+ADR-310 / ADR-309(이 손실에 이름을 붙였고 §1·§6 이 여기서 정정됨) / ADR-089 · LOCKED #35
+(Path B closed-curve face — DCEL 은 rim 이고 surface 가 형상을 갖는다) / ADR-031
+(AnalyticSurface) / ADR-104 family / ADR-147(1μm floor) / ADR-087 K-ε(surface-less face 거부)
+/ LOCKED #44 / 메타-원칙 #4 · #6.
 
 ## 향후 과제
 
