@@ -8692,9 +8692,13 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   hole 경계 HE 가 다른 face 를 가리켜도 `valid=true []` 였던 것 — `collect_non_manifold_
   edges` 도 `detect_self_intersections` 도 0 이라 **모든 게이트에 안 보였다**. I4 를 inner
   loop 까지 확장(회귀 0). ADR-304 의 NaN 비대칭과 같은 부류.
-- `transactions.cancel()` 이 복원하지 않는 것은 계통적 — WASM 에 `cancel()` Err arm 이
-  **약 85개**. 대부분 애초에 mutate 하지 않는 경로라 일괄 변경은 별도 측정 필요.
-  ADR-303 이 그 sweep 을 미룰 근거를 하나 더 줬다 (가장 필요해 보이던 3개 중 2개가 아니었음).
+- ~~`cancel()` Err arm 약 85개~~ → **ADR-307 이 실측**: **82개**. 이미 복원 11 / ADR-302·303 이
+  닫음 4 / 엔진 self-protect 2 / **파괴 전 검증 ~56** / destroy-then-fallible **9**. 검증이
+  9 를 더 줄임 — `merge_faces_by_edge` 4건·`subdivide` 1건 **반박**, `punch_*` **3건 수정**
+  (이미 뜬 snapshot 을 Err arm 이 쓰도록), `merge_coplanar_containing` 1건 미검증 잔여.
+  **⚠ 결합**: 저 "도달 불가" 판정 둘이 `compute_normal` 이 Err 을 못 낸다는 데 기대는데,
+  그건 설계 보장이 아니라 ADR-304 의 **죽은 코드**다 — 아래 정책 질문에 "예" 라 답하면
+  그 문들이 다시 열린다 (L-307-1).
 - `compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).
 - 생성이 퇴화를 **거부해야 하는지**는 ADR-304 가 의도적으로 답하지 않은 정책 질문.
 - IFC import 가 `IfcAdvancedFace.FaceSurface` 를 읽지 않아 왕복 시 analytic surface 상실.
