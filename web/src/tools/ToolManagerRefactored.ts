@@ -233,7 +233,7 @@ export class ToolManager {
   //  - `_planeLock` = null → ADR-164 sticky fallback 자연 활성
   //
   //  Reset hooks (L-166-2 cross-tool 유지 + 명시 release only):
-  //  - Ctrl+Shift+P 단축키 (β-3 scope)
+  //  - Home 단축키 (β-3 scope)
   //  - notifyViewModeChange (view 변경 = 사용자 의도 변경 명시 신호)
   //  - enterSketch / exitSketch (sketch lock-in 우선)
   //  - cancelCurrentTool (Esc — 사용자 의도 변경 명시 신호)
@@ -2842,7 +2842,7 @@ export class ToolManager {
    *   - view mode change (via `notifyViewModeChange`)
    *   - Esc cancel (via `cancelCurrentTool`)
    *   - 명시 user trigger:
-   *     * Ctrl+Shift+P 단축키 (β-3 scope)
+   *     * Home 단축키 (β-3 scope)
    *     * ContextMenu "🔓 평면 잠금 해제" (β-3 scope)
    *
    * **setTool() 는 호출 안 함** (cross-tool 유지가 본 ADR 핵심 가치).
@@ -2856,7 +2856,7 @@ export class ToolManager {
   }
 
   /**
-   * ADR-270 §amendment — explicit user reset of the drawing plane (Ctrl+Shift+P
+   * ADR-270 §amendment — explicit user reset of the drawing plane (Home
    * / 우클릭 "평면 잠금 해제"). Clears BOTH the strong lock AND the sticky
    * last-drawn plane, so empty space reverts to the view-mode default (ground
    * z=0 in 3d/top). Answers "입체면에 그리다가 z=0 에 그리려면?" — after drawing
@@ -2873,7 +2873,7 @@ export class ToolManager {
   }
 
   /** True if a drawing plane is pinned away from the view default — a lock OR
-   *  a sticky last-drawn plane. Drives the Ctrl+Shift+P / context-menu "reset"
+   *  a sticky last-drawn plane. Drives the Home / context-menu "reset"
    *  affordance so it also fires when only the sticky (not a hard lock) pins
    *  the plane. */
   hasPinnedPlane(): boolean {
@@ -3686,7 +3686,7 @@ export class ToolManager {
     // auto-unlocks and falls through to the face-hit logic — the user's
     // explicit "draw on this other face" intent (LOCKED #67 amendment,
     // 사용자 시연 2026-05-29 "입체면에 라인 생성"). Same-plane hits and empty
-    // space keep the lock. Explicit unlock (Ctrl+Shift+P / view change /
+    // space keep the lock. Explicit unlock (Home / view change /
     // sketch / Esc) also changes the plane.
     if (this._planeLock) {
       const lockHit = this.viewport.pick(e.clientX, e.clientY);
@@ -4498,7 +4498,7 @@ export class ToolManager {
       // previous ADR-182 physical unlock on each new draw's first click is
       // removed; getDrawPlane applies the lock from the first click, and only
       // a genuinely different-plane face hit (cos|dot| < 0.9999) auto-unlocks.
-      // Explicit release stays via Ctrl+Shift+P / view change / sketch / Esc.
+      // Explicit release stays via Home / view change / sketch / Esc.
       const rawPt = this.get3DPoint(e);
       const tool = this.tools.get(this._currentTool);
       if (tool?.onMouseDown) {

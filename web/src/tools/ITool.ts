@@ -11,7 +11,8 @@ import { SnapVisual } from '../snap/SnapVisual';
 import { SelectionManager } from './SelectionManager';
 import { DimensionLabel } from '../ui/DimensionLabel';
 import { UnitSystem } from '../units/UnitSystem';
-import { PickBox } from '../ui/PickBox';
+import { PickBox } from '../ui/PickBox';
+
 import { t } from '../i18n';
 
 /**
@@ -108,7 +109,7 @@ export interface ToolContext {
   /**
    * ADR-166 β-2 — Plane lock activation hook (called by Draw tools on
    * first_click when no lock active). Strong cross-tool plane lock
-   * preserved until explicit release (Ctrl+Shift+P / view change /
+   * preserved until explicit release (Home / view change /
    * sketch enter/exit / Esc — L-166-2).
    *
    * **Idempotent**: ToolManager.lockPlane is a no-op when already

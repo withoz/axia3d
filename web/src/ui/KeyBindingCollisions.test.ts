@@ -162,18 +162,40 @@ describe('ADR-300/301 — keystroke ownership', () => {
     const bare = bareTools();
     const shift = shiftTools();
     const views = viewKeys();
-    const mainClaims = claims(MAIN);
+    // Both files, not just main.ts. Widening the hint regex above surfaced
+    // `flip-faces prints Shift+N, which nothing binds` — but Shift+N *is*
+    // bound, at KeyboardShortcuts.ts:119. The hint was honest and the guard was
+    // looking in one of the two places that bind keys.
+    const mainClaims = new Set([...claims(MAIN), ...claims(SHORTCUTS)]);
 
     const wrong: string[] = [];
     let hintCount = 0;
-    const re = /data-action="([^"]+)"[^<]*<span class="mk">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
+    // Three hint classes, not one. `mk` is the menu bar; `tdi-key` is a toolbar
+    // dropdown row and `ctx-key` a context-menu row, and both were invisible
+    // here — which is how the Pie dropdown went on printing `I` (the XIA
+    // Inspector) after the identical menu-bar hint was removed by the very
+    // commit that added this guard. Dropdown rows key off `data-tool`, so match
+    // either attribute and normalise to the `tool-x` form the check expects.
+    // The gap must be lazy and unbounded in tag count — a dropdown row puts an
+    // icon span (with nested svg) and a label span between the attribute and
+    // the key — but must stop at the next `data-action`/`data-tool`, so a row
+    // WITHOUT a hint cannot steal the next row's. A tighter gap silently
+    // matched nothing for those rows, which is how the Pie hint survived being
+    // "covered".
+    // The row boundary is ANY `data-` attribute, not just action/tool: a
+    // context row keyed `data-snap="tempTrack"` carries its own `K` hint, and a
+    // narrower stop paired that hint with the `view-3d` row five lines above
+    // it — a false accusation, which is as bad as a missed one.
+    const re =
+      /data-(action|tool)="([^"]+)"(?:(?!data-[a-z-]+=)[\s\S])*?<span class="(?:mk|tdi-key|ctx-key)">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(HTML)) !== null) {
       hintCount++;
-      const action = m[1];
-      const key = m[2].startsWith('Shift+')
-        ? `Shift+${m[2].slice(6).toUpperCase()}`
-        : m[2].toUpperCase();
+      const action = m[1] === 'tool' ? `tool-${m[2]}` : m[2];
+      const raw = m[3];
+      const key = raw.startsWith('Shift+')
+        ? `Shift+${raw.slice(6).toUpperCase()}`
+        : raw.toUpperCase();
 
       if (action.startsWith('tool-')) {
         const tool = action.slice('tool-'.length);

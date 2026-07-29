@@ -1175,7 +1175,7 @@ describe('ToolManager', () => {
       const stuck = (tm as any).getDrawPlane({ clientX: 100, clientY: 100 } as MouseEvent);
       expect(stuck.origin?.z).toBeCloseTo(750, 6);
 
-      // resetDrawingPlane (= Ctrl+Shift+P / 우클릭 "평면 잠금 해제").
+      // resetDrawingPlane (= Home / 우클릭 "평면 잠금 해제").
       tm.resetDrawingPlane();
       expect(tm.hasPinnedPlane()).toBe(false);
       expect(tm.getPlaneLock()).toBeNull();
@@ -1610,7 +1610,7 @@ describe('ToolManager', () => {
       tm.cancelCurrentTool();
       expect(tm.isPlaneLocked()).toBe(false);
 
-      // (5) Explicit unlockPlane API (사용자 명시 release path, β-3 Ctrl+Shift+P 의 base)
+      // (5) Explicit unlockPlane API (사용자 명시 release path, β-3 Home 의 base)
       setupLock();
       tm.unlockPlane();
       expect(tm.isPlaneLocked()).toBe(false);

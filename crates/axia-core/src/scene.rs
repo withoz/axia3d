@@ -1895,6 +1895,24 @@ impl Scene {
         //    consumption per round-trip; re-promote will re-record).
         self.xia_to_original_shape.remove(&xia_id);
 
+        // 10. The element kind comes back with it (ADR-311 L-311-8, in the
+        //     direction promote already handled).
+        //
+        //     Without this, removing a material — a first-class documented flow
+        //     (LOCKED #26 Phase 2 / ADR-091: Inspector 재질 "없음" → 자동 강등)
+        //     — silently reclassified the member. A slab set through the
+        //     Inspector lands only in `xia_element_kind`, so after demotion the
+        //     export's Shape branch missed and fell to `Wall`: the slab wrote
+        //     itself out as `IFCWALL`, and a door lost four attributes with it.
+        //     Exactly the loss ADR-311 measured going the other way.
+        //
+        //     The stale `xia_element_kind` entry goes too — the Xia is gone, and
+        //     leaving it would resurrect the old kind on a later promote that
+        //     happens to reuse the id.
+        if let Some(kind) = self.xia_element_kind.remove(&xia_id) {
+            self.shape_element_kind.insert(shape_id, kind);
+        }
+
         Ok(DemoteOk { shape_id, original_id_restored })
     }
 
@@ -24965,6 +24983,43 @@ mod tests {
 #[cfg(test)]
 mod audit_missing_id_tests {
     use super::*;
+
+    /// ADR-311 L-311-8, the direction promote already handled.
+    ///
+    /// Removing a material demotes a Xia to a Shape (LOCKED #26 Phase 2). The
+    /// kind used to stay behind, so a slab classified in the Inspector exported
+    /// itself as IFCWALL afterwards.
+    #[test]
+    fn demote_carries_the_element_kind_back_to_the_shape() {
+        let mut scene = Scene::new();
+        let faces = scene
+            .mesh
+            .create_box(glam::DVec3::ZERO, 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        let sid = scene.create_shape("M".into(), faces.clone());
+        // Slab, not Wall — Wall is the default the bug fell back to, so a test
+        // using it could not tell "carried" from "lost".
+        scene.shape_element_kind.insert(sid, "slab".to_string());
+        let xid = scene
+            .promote_shape_to_xia(sid, axia_geo::MaterialId::new(4))
+            .expect("a closed box promotes")
+            .xia_id;
+        assert_eq!(scene.xia_element_kind.get(&xid).map(String::as_str), Some("slab"));
+
+        // What removing the material in the Inspector does: revert to the form
+        // sentinel, which is the gate demotion opens on (ADR-091 D-A=a).
+        scene.xias.get_mut(&xid).unwrap().material = FORM_MATERIAL;
+        let out = scene.demote_xia_to_shape(xid).expect("demote");
+        assert_eq!(
+            scene.shape_element_kind.get(&out.shape_id).map(String::as_str),
+            Some("slab"),
+            "the kind must come back with the member"
+        );
+        assert!(
+            !scene.xia_element_kind.contains_key(&xid),
+            "and the dead Xia's entry must not linger to resurrect later"
+        );
+    }
 
     #[test]
     fn set_edge_class_on_a_missing_edge_errors_rather_than_panicking() {
