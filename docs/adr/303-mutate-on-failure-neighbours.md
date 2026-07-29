@@ -52,10 +52,25 @@ Both are defended upstream, by construction rather than by a guard:
   crediting "adversarial sweep #2" — an earlier hardening whose purpose was
   keeping the solid closed, and which incidentally made this assertion
   unfireable. The step-9 `ensure!` is a leftover from before that fix.
-- `simplified.len() < 3` needs the merged boundary of two coplanar faces to be
-  *entirely* collinear. Both operands are valid non-degenerate polygons (ADR-003
-  rejects degenerates at creation), and the union of two such polygons cannot
-  have a fully collinear boundary.
+- `simplified.len() < 3` needs the merged boundary to be *entirely* collinear,
+  which takes at least one degenerate operand.
+
+  My first draft of this ADR justified it with "ADR-003 rejects degenerates at
+  creation." **That is false, and measuring it is what caught it.**
+  `add_face_with_holes` accepts a collinear zero-area triangle, a loop that
+  repeats a vertex (`[a,b,a,b]`), and a face with a NaN coordinate — the last one
+  yielding `normal = (NaN, NaN, NaN)`. The only creation guard is
+  `"Face requires at least 3 vertices"`.
+
+  The conclusion survives for a different, measured reason: a degenerate face's
+  normal is NaN or zero, and the coplanarity check runs **before** the removal, so
+  the pair is refused there. Two collinear zero-area faces, and a NaN-vertex face
+  against a valid quad, both return
+  `Err("faces not coplanar (NaN° between normals, tol 30.00°)")` with the face
+  count unchanged. A valid quad merged with a collinear sliver simply *succeeds*.
+  Nothing tried reaches the post-removal bail.
+
+  That the creation contract is missing is a separate finding, tracked below.
 
 ## 3. Decision
 
@@ -105,6 +120,16 @@ Existing `chamfer` tests: 20 passed.
 WASM layer, most on paths that never mutated. ADR-302 §6 deferred that sweep and
 this measurement is a reason to keep deferring it: two of the three ops that
 looked most likely to need it turned out not to.
+
+**New, found while checking §2's premise**: `add_face_with_holes` has no
+degenerate guard. It accepts zero-area, self-repeating and NaN geometry, and only
+refuses a loop of fewer than three vertices. `docs/PRACTICALITY_REPORT.md` rows
+2/3/9 present that contract as "✅ ADR-003 degenerate guard" verified, resting on
+`practicality_edge_cases.rs` tests that end in `let _ = result;` and check
+nothing; ADR-003's own checklist still has "각 연산의 단위 테스트에 degenerate
+거부 케이스 추가" unticked. Adding the guard would change behaviour on live paths
+(a valid quad merged with a collinear sliver currently succeeds), so it needs its
+own measurement and decision, not a drive-by. Its own ADR.
 
 ## Cross-link
 
