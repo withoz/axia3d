@@ -829,6 +829,29 @@ impl MaterialLibrary {
         self.materials.values().collect()
     }
 
+    /// ADR-311 — the material this name refers to, matching either the
+    /// localized `name` or `name_en`.
+    ///
+    /// An IFC file names its materials in text, and that text is all a
+    /// round-trip has to go on. Matching it here is what lets an imported
+    /// member reuse the library material it left as — including its
+    /// appearance, which is why our own files recover their colour without
+    /// any style parsing at all (L-311-3).
+    ///
+    /// Exact match, trimmed. Deliberately not fuzzy: guessing that "Concrete
+    /// C30" means 콘크리트 would repaint a member on the strength of a
+    /// substring. An unmatched name is a *new* material, which is honest.
+    pub fn find_by_name(&self, name: &str) -> Option<MaterialId> {
+        let want = name.trim();
+        if want.is_empty() {
+            return None;
+        }
+        self.materials
+            .values()
+            .find(|m| m.name.trim() == want || m.name_en.trim() == want)
+            .map(|m| m.id)
+    }
+
     /// Count of materials in library
     pub fn count(&self) -> usize {
         self.materials.len()

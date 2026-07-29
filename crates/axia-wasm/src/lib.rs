@@ -6031,6 +6031,29 @@ impl AxiaEngine {
             if !el.ifc_type.trim().is_empty() {
                 self.scene.shape_element_kind.insert(sid, el.ifc_type.clone());
             }
+            // ADR-311 β-2 — the material the file names. The geometry layer has
+            // been recovering this string all along; nothing was using it, so
+            // every imported face got FORM_MATERIAL.
+            //
+            // Matched by name, the library material comes back whole — which is
+            // how our own files recover their colour with no appearance parsing
+            // at all (L-311-3). An unmatched name is a new Project-tier
+            // material rather than a guess at which built-in was meant.
+            if let Some(mname) = el.material.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                let mid = self.resolve_import_material(mname);
+                for &fid in faces {
+                    if let Some(face) = self.scene.mesh.faces.get_mut(fid) {
+                        face.set_material(mid);
+                    }
+                }
+                // ADR-050's rule, applied rather than forced: material +
+                // watertight + manifold + volume > 0 makes a member
+                // property-layer. A closed box came from a Xia and goes back to
+                // one; an open shell stays a Shape, with its faces materialled,
+                // which the export already honours. A refusal here is the
+                // model's own answer, not a drop.
+                let _ = self.scene.promote_shape_to_xia(sid, mid);
+            }
             let gid = self.scene.groups.create_group(label, faces.clone());
             groups_made += 1;
             element_group.insert(el.element_id, gid);
@@ -15216,5 +15239,149 @@ mod adr311_member_tests {
             "and not as the unowned-faces catch-all: {walls:?}"
         );
         assert_eq!(walls.len(), 1, "exactly one member: {walls:?}");
+    }
+}
+
+impl AxiaEngine {
+    /// ADR-311 β-2 — the `MaterialId` an IFC material name refers to: the
+    /// library's own if the name matches, otherwise a new Project-tier one.
+    ///
+    /// The physical properties of an unknown material are not in the file, so
+    /// they are neutral placeholders rather than an invention with authority —
+    /// a mass takeoff on an imported foreign material should be corrected by
+    /// the user, not quietly believed. Its *appearance* is refined from the
+    /// file's style graph where there is one (β-3).
+    fn resolve_import_material(&mut self, name: &str) -> axia_geo::MaterialId {
+        if let Some(id) = self.scene.material_library.find_by_name(name) {
+            return id;
+        }
+        use axia_core::material::{
+            FireRating, MaterialCategory, PhysicalProperties, VisualProperties,
+        };
+        self.scene.material_library.create_material(
+            name.to_string(),
+            name.to_string(),
+            MaterialCategory::Custom,
+            PhysicalProperties {
+                density: 1000.0,
+                friction: 0.5,
+                restitution: 0.3,
+                specific_gravity: 1.0,
+                thermal_conductivity: 0.5,
+                fire_rating: FireRating::None,
+            },
+            VisualProperties {
+                color: 0xb0b0b0,
+                roughness: 0.8,
+                metalness: 0.0,
+                opacity: 1.0,
+                layered: None,
+            },
+        )
+    }
+}
+
+/// ADR-311 β-2 — the material an imported member carries.
+#[cfg(test)]
+mod adr311_material_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn ifc_with_material(name: &str, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn adr311_beta2_a_library_material_comes_back_as_itself() {
+        // 벽돌 is built-in id 4. Matching by name is what returns the SAME
+        // material — appearance included, with no style parsing (L-311-3).
+        let before = {
+            let e = AxiaEngine::new();
+            e.scene.material_library.count()
+        };
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_with_material("Box", Some("벽돌"))).contains("\"ok\":true"));
+
+        let (_, shape_or_xia_faces) = {
+            let f: Vec<_> = engine
+                .scene
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(fid, f)| (fid, f.material()))
+                .collect();
+            (f.len(), f)
+        };
+        assert!(!shape_or_xia_faces.is_empty(), "faces exist");
+        for (fid, mid) in &shape_or_xia_faces {
+            assert_eq!(mid.raw(), 4, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
+        }
+        assert_eq!(
+            engine.scene.material_library.count(),
+            before,
+            "a name the library knows creates nothing"
+        );
+    }
+
+    #[test]
+    fn adr311_beta2_an_unknown_name_creates_a_material_rather_than_guessing() {
+        let mut engine = AxiaEngine::new();
+        let before = engine.scene.material_library.count();
+        assert!(engine
+            .import_ifc(ifc_with_material("Box", Some("Concrete C30/37")))
+            .contains("\"ok\":true"));
+
+        assert_eq!(
+            engine.scene.material_library.count(),
+            before + 1,
+            "an unmatched name is a new material, not a fuzzy match onto 콘크리트"
+        );
+        let made = engine
+            .scene
+            .material_library
+            .find_by_name("Concrete C30/37")
+            .expect("created under the file's own name");
+        assert!(made.raw() >= 100, "custom materials live at 100+ (ADR-098): {}", made.raw());
+        let f = engine.scene.mesh.faces.iter().find(|(_, f)| f.is_active()).unwrap();
+        assert_eq!(f.1.material(), made, "and the faces carry it");
+    }
+
+    #[test]
+    fn adr311_beta2_a_closed_box_comes_back_property_layer() {
+        // ADR-050's four conditions are met by a closed box, so the member that
+        // left as a Xia returns as one. Applied, not forced — the open-shell
+        // case is the next test.
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_with_material("Box", Some("벽돌"))).contains("\"ok\":true"));
+        assert_eq!(engine.scene.xias.len(), 1, "promoted");
+        assert_eq!(engine.scene.xias.values().next().unwrap().name, "Box", "keeping its name");
+    }
+
+    #[test]
+    fn adr311_beta2_no_material_named_means_no_material_invented() {
+        // The control. Without it, "assign something to everything" would pass
+        // every assertion above.
+        let mut engine = AxiaEngine::new();
+        let before = engine.scene.material_library.count();
+        assert!(engine.import_ifc(ifc_with_material("Box", None)).contains("\"ok\":true"));
+
+        assert_eq!(engine.scene.material_library.count(), before, "nothing created");
+        assert_eq!(engine.scene.xias.len(), 0, "and nothing promoted");
+        assert_eq!(engine.scene.shapes.len(), 1, "it stays a form-layer member");
+        let f = engine.scene.mesh.faces.iter().find(|(_, f)| f.is_active()).unwrap();
+        assert_eq!(f.1.material(), axia_core::FORM_MATERIAL, "faces stay form-layer");
     }
 }
