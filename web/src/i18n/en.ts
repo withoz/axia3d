@@ -1697,6 +1697,7 @@ export const EN: Record<string, string> = {
   '복사 실패': 'Copy failed',
   '지우기': 'Clear',
   '구속 (Constraints)': 'Constraints',
+  '제약 표시 켜기/끄기': 'Show / hide constraint overlay',
   '모든 제약 재해결': 'Re-solve every constraint',
   '모두 삭제': 'Delete all',
   '제약이 없습니다': 'No constraints',
