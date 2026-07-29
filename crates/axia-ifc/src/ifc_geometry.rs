@@ -416,8 +416,10 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                             f.transform(&placement);
                             // The polygon moved but the analytic curve did not;
                             // fall back to the (transformed) polygon rather than
-                            // place the curve wrong.
+                            // place the curve wrong. Same for the surface
+                            // (L-310-4): placed wrongly is worse than absent.
                             f.closed_curve = None;
+                            f.surface = None;
                         }
                         moved = true;
                     }
@@ -427,6 +429,12 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 Err(e) => warnings.push(format!("{}: {}", label(), e)),
             }
         }
+        // ADR-310 §5 — decide each curved face's parameter range from the faces
+        // themselves, since IFC's elementary surfaces carry no extent. Runs
+        // before the warnings below, because a face we rebuild is no longer a
+        // face we dropped (L-310-3).
+        reconstruct_surfaces(&mut faces);
+
         if dropped_faces > 0 {
             // Curved rims read by their endpoints collapse to <3 points. Say so
             // rather than handing back a quietly thinner solid.
@@ -2179,6 +2187,153 @@ fn face_surface(file: &StepFile, face: &Entity, scale: f64) -> Option<AnalyticSu
     }
 }
 
+/// 1 μm — ADR-147's spatial-hash floor, and generous enough to absorb the
+/// decimal round-trip a STEP file puts every coordinate through.
+const SURFACE_TOL: f64 = 1e-3;
+
+/// The exact boundary circle of a single closed-curve face: centre, radius,
+/// plane normal. `None` for anything else — a polygon boundary is not the
+/// exact evidence L-310-2 requires.
+fn boundary_circle(f: &FaceLoops) -> Option<(DVec3, f64, DVec3)> {
+    match f.closed_curve {
+        Some(axia_geo::AnalyticCurve::Circle { center, radius, normal, .. }) => {
+            Some((center, radius, normal))
+        }
+        _ => None,
+    }
+}
+
+/// Are these the same surface, to within the decimal round-trip? Only the two
+/// families ADR-310 reconstructs are comparable; everything else is `false`,
+/// which keeps it out of every group.
+fn same_surface(a: &AnalyticSurface, b: &AnalyticSurface) -> bool {
+    let near = |p: DVec3, q: DVec3| (p - q).length() < SURFACE_TOL;
+    let along = |p: DVec3, q: DVec3| p.cross(q).length() < 1e-9;
+    match (a, b) {
+        (
+            AnalyticSurface::Sphere { center: c1, radius: r1, axis_dir: a1, .. },
+            AnalyticSurface::Sphere { center: c2, radius: r2, axis_dir: a2, .. },
+        ) => near(*c1, *c2) && (r1 - r2).abs() < SURFACE_TOL && along(*a1, *a2),
+        (
+            AnalyticSurface::Torus {
+                center: c1, axis_dir: a1, major_radius: m1, minor_radius: n1, ..
+            },
+            AnalyticSurface::Torus {
+                center: c2, axis_dir: a2, major_radius: m2, minor_radius: n2, ..
+            },
+        ) => {
+            near(*c1, *c2)
+                && along(*a1, *a2)
+                && (m1 - m2).abs() < SURFACE_TOL
+                && (n1 - n2).abs() < SURFACE_TOL
+        }
+        _ => false,
+    }
+}
+
+/// ADR-310 §5 — give each curved face the parameter range IFC does not carry,
+/// and clear `dropped_surface` where we succeed.
+///
+/// IFC's elementary surfaces are unbounded, so the extent has to come from the
+/// faces themselves. One idea covers both cases: **a boundary curve cuts its
+/// surface into some number of components, and the file must supply exactly
+/// that many faces.**
+///
+/// - A circle on a **sphere** always disconnects it — Jordan, on a sphere —
+///   into two caps. So exactly two faces sharing one sphere and one circle of
+///   latitude *are* those two caps. Which one is northern is undetermined, and
+///   unobservable: the two faces are identical in every respect the file
+///   records, and their union is the same sphere either way.
+/// - A circle of latitude on a **torus** does *not* disconnect it. So a single
+///   face carrying one is the whole surface and the circle is a seam.
+///
+/// Anything else is left alone — a lone hemisphere (genuinely undecidable
+/// without the export change this ADR declined), three faces on one sphere, a
+/// circle that is not a parallel. Those keep their polygon and keep ADR-309's
+/// warning, which is what the warning is for.
+fn reconstruct_surfaces(faces: &mut [FaceLoops]) {
+    use std::f64::consts::FRAC_PI_2;
+
+    let candidates: Vec<usize> = (0..faces.len())
+        .filter(|&i| faces[i].surface.is_some() && boundary_circle(&faces[i]).is_some())
+        .collect();
+
+    // Group by (same surface, same boundary circle). These lists are tiny —
+    // only faces whose surface we inverted at all reach here.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    'next: for &i in &candidates {
+        let (ci, ri, ni) = boundary_circle(&faces[i]).unwrap();
+        for g in groups.iter_mut() {
+            let (cg, rg, ng) = boundary_circle(&faces[g[0]]).unwrap();
+            let same_ring = (ci - cg).length() < SURFACE_TOL
+                && (ri - rg).abs() < SURFACE_TOL
+                // the same ring may be traversed either way
+                && ni.cross(ng).length() < 1e-9;
+            if same_ring
+                && same_surface(
+                    faces[g[0]].surface.as_ref().unwrap(),
+                    faces[i].surface.as_ref().unwrap(),
+                )
+            {
+                g.push(i);
+                continue 'next;
+            }
+        }
+        groups.push(vec![i]);
+    }
+
+    for g in groups {
+        let (circle_c, circle_r, circle_n) = boundary_circle(&faces[g[0]]).unwrap();
+        match faces[g[0]].surface.as_ref().unwrap().clone() {
+            AnalyticSurface::Sphere { center, radius, axis_dir, .. } => {
+                if g.len() != 2 {
+                    continue; // L-310-2 — a lone cap is undecidable, three is nonsense
+                }
+                if circle_n.cross(axis_dir).length() > 1e-9 {
+                    continue; // not a circle of latitude: the split is not in v
+                }
+                let h = (circle_c - center).dot(axis_dir);
+                if (circle_c - center - axis_dir * h).length() > SURFACE_TOL {
+                    continue; // not centred on the axis
+                }
+                let v0 = (h / radius).clamp(-1.0, 1.0).asin();
+                if (radius * v0.cos() - circle_r).abs() > SURFACE_TOL {
+                    continue; // the circle does not lie on this sphere
+                }
+                // The two caps. The assignment is arbitrary because it is
+                // unobservable — swapping them gives the same sphere.
+                for (k, &fi) in g.iter().enumerate() {
+                    if let Some(AnalyticSurface::Sphere { v_range, .. }) = faces[fi].surface.as_mut()
+                    {
+                        *v_range = if k == 0 { (v0, FRAC_PI_2) } else { (-FRAC_PI_2, v0) };
+                    }
+                    faces[fi].dropped_surface = None;
+                }
+            }
+            AnalyticSurface::Torus { center, axis_dir, major_radius, minor_radius, .. } => {
+                if g.len() != 1 {
+                    continue;
+                }
+                if circle_n.cross(axis_dir).length() > 1e-9 {
+                    continue;
+                }
+                if (circle_c - center).length() > SURFACE_TOL {
+                    continue; // a parallel through v = 0 or v = π sits on the centre
+                }
+                let outer = (circle_r - (major_radius + minor_radius)).abs() < SURFACE_TOL;
+                let inner = (circle_r - (major_radius - minor_radius)).abs() < SURFACE_TOL;
+                if !(outer || inner) {
+                    continue;
+                }
+                // One parallel does not disconnect a torus, so this face is the
+                // whole surface — which is the full domain already stored.
+                faces[g[0]].dropped_surface = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The exact curve when a face is a single closed-curve disk: exactly one
 /// bound, one edge loop, one self-loop edge (`EdgeStart == EdgeEnd`) whose
 /// geometry is a circle or a B-spline. `None` for anything else — a box, a
@@ -2648,13 +2803,11 @@ mod tests {
                     assert!(center.length() < 1e-6, "centre {center:?}");
                     assert!((radius - 1000.0).abs() < 1e-6, "radius {radius}");
                     assert!((axis_dir.dot(DVec3::Z) - 1.0).abs() < 1e-9, "axis {axis_dir:?}");
-                    // The natural full domain — IFC carries no extent for an
-                    // elementary surface, so this is not yet the face's range.
+                    // A sphere is closed in u, so that range is the full turn
+                    // whichever cap this is. Which cap — the v range — is
+                    // β-3's business, and asserted there.
                     assert_eq!(*u_range, (0.0, tau));
-                    assert_eq!(
-                        *v_range,
-                        (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)
-                    );
+                    assert!(v_range.1 > v_range.0, "a real range, got {v_range:?}");
                 }
                 other => panic!("a hemisphere must carry its sphere, got {other:?}"),
             }
