@@ -211,10 +211,25 @@ impl Mesh {
             // analytic curve attached) 도 valid — face = closed boundary
             // 의 byproduct (메타-원칙 #14). Polygon face (≥3 verts) 동작
             // 무변화.
+            // Closed-curve exemption: outer loop = 1 vert + 1 self-loop edge
+            // with `Edge.curve.is_some()`. It exempts I2 — and only I2.
+            //
+            // This used to `continue`, which dropped the face out of I6, I3 and
+            // I4 as well. The comment justified skipping I2 ("the curve's
+            // analytic normal is the truth source") and the *outer* half of I4
+            // ("single HE already wired in add_face_closed_curve"), and said
+            // nothing about the rest. So every Path B primitive — every sphere,
+            // cylinder, cone, torus and drawn circle, i.e. the production
+            // default — was outside the verifier entirely: repoint one of a
+            // ring's inner half-edges at another face and `verify_face_invariants`
+            // still returned `valid=true, violations=[]`, with
+            // `collect_non_manifold_edges` and `detect_self_intersections` blind
+            // to it too. That is ADR-306's asymmetry one face class over, and
+            // "correct when we build it" is not a reason for a verifier to look
+            // away.
+            let mut is_closed_curve = false;
             if outer_verts.len() < 3 {
-                // Closed-curve exemption: outer loop = 1 vert + 1 self-loop
-                // edge with Edge.curve.is_some().
-                let is_closed_curve_face = outer_verts.len() == 1
+                is_closed_curve = outer_verts.len() == 1
                     && self.collect_loop_hes(outer_start).map(|hes| {
                         hes.len() == 1 && {
                             let he = &self.hes[hes[0]];
@@ -224,16 +239,12 @@ impl Mesh {
                                 .is_some()
                         }
                     }).unwrap_or(false);
-                if !is_closed_curve_face {
+                if !is_closed_curve {
                     violations.push(format!("face {:?}: outer loop has {} verts (< 3)",
                         fid, outer_verts.len()));
                     continue;
                 }
-                // Skip I2 (winding check via compute_normal) for closed-curve
-                // face — the curve's analytic normal is the truth source.
-                // Skip I4 (outer HE face check) — single HE already wired in
-                // add_face_closed_curve. Continue to next face for I5.
-                continue;
+                // Fall through: I6, I3 and I4 all still apply.
             }
 
             // I6 (ADR-304): a normal that is not finite is not a normal.
@@ -260,8 +271,11 @@ impl Mesh {
                 ));
                 continue;
             }
-            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반)
-            if cached.length_squared() > 1e-10 {
+            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반).
+            // `!is_closed_curve` — a 1-vertex loop has no winding to compute,
+            // and the curve's analytic normal is the truth source. This is the
+            // one check the closed-curve exemption actually buys.
+            if !is_closed_curve && cached.length_squared() > 1e-10 {
                 if let Ok(computed) = self.compute_normal(&outer_verts) {
                     let cn = cached.normalize_or_zero();
                     let gn = computed.normalize_or_zero();
@@ -680,6 +694,68 @@ mod adr267_tests {
             r.geometric_cracks.is_empty(),
             "radial single-EdgeId must not be flagged as geometric crack: {:?}",
             r.geometric_cracks
+        );
+    }
+}
+
+/// A closed-curve face is inside the verifier, not outside it.
+///
+/// Every Path B primitive — sphere, cylinder, cone, torus, drawn circle, i.e.
+/// the production default — used to `continue` past I6, I3 and I4, so the
+/// damage below was reported as `valid=true, violations=[]`. The exemption is
+/// now I2 only.
+#[cfg(test)]
+mod audit_closed_curve_invariant_tests {
+    use super::*;
+    use crate::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// Control first: a healthy Path B sphere must stay clean, or the checks
+    /// below prove nothing except that the verifier complains about everything.
+    #[test]
+    fn a_healthy_path_b_sphere_is_still_valid() {
+        let mut mesh = Mesh::new();
+        mesh.create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0)).unwrap();
+        let r = mesh.verify_face_invariants();
+        assert!(r.is_valid(), "a native sphere must verify clean: {:?}", r.violations);
+    }
+
+    #[test]
+    fn a_repointed_half_edge_on_a_closed_curve_face_is_caught() {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        assert_eq!(faces.len(), 2, "two hemispheres sharing one self-loop");
+
+        // ADR-306's damage, on the face class it could not reach: point one
+        // hemisphere's half-edge at the other face.
+        let start = mesh.faces[faces[0]].outer().start;
+        let hes = mesh.collect_loop_hes(start).unwrap();
+        mesh.hes[hes[0]].set_face(faces[1]);
+
+        let r = mesh.verify_face_invariants();
+        assert!(
+            !r.is_valid() && r.violations.iter().any(|v| v.contains("wrong face")),
+            "a repointed HE must be a violation, got {:?}",
+            r.violations
+        );
+    }
+
+    #[test]
+    fn a_non_finite_normal_on_a_closed_curve_face_is_caught() {
+        // I6 (ADR-304). A NaN normal is never right, on any face class.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        mesh.faces[faces[0]].set_normal(DVec3::new(f64::NAN, 0.0, 0.0));
+
+        let r = mesh.verify_face_invariants();
+        assert!(
+            !r.is_valid() && r.violations.iter().any(|v| v.contains("not finite")),
+            "a NaN normal must be a violation, got {:?}",
+            r.violations
         );
     }
 }

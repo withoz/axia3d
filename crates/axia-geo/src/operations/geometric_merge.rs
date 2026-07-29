@@ -99,6 +99,21 @@ impl Mesh {
         //   이 e8, e9 두 엣지 공유) 케이스. Single-overlap stitch 가 한 쪽만
         //   처리해 잔여 corner 발생 → 사용자가 잔여 edge erase 시 face cascade.
         //   Graph-based boundary tracing 으로 모든 shared edge 를 한 번에 제거.
+        // Both faces must exist before anything indexes them.
+        // `count_shared_edges_outer` reaches `self.faces[f1]` / `self.faces[f2]`
+        // directly, and that Index impl panics on a missing id — which does not
+        // merely fail the op, it poisons the engine's `&mut self` borrow so
+        // every later call throws "recursive use of an object detected". The
+        // graceful `.get(...).ok_or_else(...)` below was written to be this
+        // guard, but it sits *after* the multi-shared-edge branch.
+        //
+        // Same class as the `set_edge_class` panic found in the same audit.
+        if !self.faces.contains(f1) {
+            bail!("face {:?} not found", f1);
+        }
+        if !self.faces.contains(f2) {
+            bail!("face {:?} not found", f2);
+        }
         if self.count_shared_edges_outer(f1, f2) >= 2 {
             if let Ok(new_face) = self.merge_via_multi_shared_edges(f1, f2, tol_deg) {
                 return Ok(new_face);
@@ -1615,5 +1630,35 @@ mod tests {
             "sweep took {}ms (expected < 500ms for 64-face grid)",
             elapsed.as_millis()
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_missing_id_tests {
+    use super::*;
+    use crate::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A missing face id must not be able to kill the engine.
+    ///
+    /// `count_shared_edges_outer` indexed storage directly, ahead of the
+    /// graceful lookup that was meant to guard it, so a dead id panicked —
+    /// and a panic across the wasm boundary poisons the `&mut self` borrow,
+    /// leaving the user with no draw, no undo and no save.
+    #[test]
+    fn merge_coplanar_geometric_with_a_missing_face_errors_rather_than_panicking() {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 1000.0, 1000.0, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let ghost = crate::FaceId::new(999_999);
+
+        assert!(mesh.merge_coplanar_faces_geometric(faces[0], ghost, 1.0).is_err());
+        assert!(mesh.merge_coplanar_faces_geometric(ghost, faces[0], 1.0).is_err());
+        assert!(mesh.merge_coplanar_faces_geometric(ghost, ghost, 1.0).is_err());
+
+        // The mesh still works — the half a panic actually destroyed.
+        assert_eq!(mesh.face_count(), 6);
+        assert!(mesh.verify_face_invariants().is_valid());
     }
 }

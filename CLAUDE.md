@@ -6692,11 +6692,22 @@ DrawCircleTool surfaceKind (Cone=4, Torus=5).
 > #4 SSOT). HEAD `cd140e8`. 건강 baseline(2026-07-06 실측): Rust ~2927 pass / 0 fail
 > / 1 ignored, vitest 2496 pass / 0 fail / 1 skipped.
 
-**ADR-259 — Tapered / Draft Extrude** — **Proposed (α spec only, β 미구현)**.
+**ADR-259 — Tapered / Draft Extrude** — ~~Proposed (α spec only, β 미구현)~~.
+> ⚠ **이 줄은 stale — ADR-259 는 LOCKED #92 (2026-07-11) 로 closure.** β 는 물론
+> **draft-on-solid-face 까지 shipped** (`push_pull_move_only_tapered` /
+> `exec_push_pull_tapered`, 회귀 `adr259_*` 24건 green). Status = Accepted.
 concave-capable, fail-closed, exact-Plane sides. `docs/adr/259-*`.
 
 **ADR-264 — Embedded Boss Extrude: Fuse instead of Cleave/Preserve** —
-**Proposed (α spec only, 미구현)**. `docs/adr/264-*`.
+~~Proposed (α spec only, 미구현)~~.
+> ⚠ **이 줄은 stale — ADR-264 는 LOCKED #93 (2026-07-11) 로 closure.** fuse gate +
+> 본체가 `create_solid.rs` 에 있고 회귀 7건 + E2E 2건 green. Status = Accepted.
+`docs/adr/264-*`.
+
+> **왜 지우지 않고 표시만 하는가**: #88 의 가치는 *그때의 기록* 이고 메타-원칙 #10 이
+> ADR 본문 소급 수정을 금한다. 다만 **#88 은 doc-lag 이 오판을 낳는 걸 막으려고 쓴
+> 항목인데 그 자신이 stale 해졌다** — 2026-07-29 감사가 실측으로 찾았다. 새 세션은
+> "무엇이 안 됐나"를 이 목록에서 찾으므로, 여기 남은 stale 한 줄이 가장 비싸다.
 
 **ADR-265 / ADR-266 — Repo/CI hygiene** (ADR.md 없음, commit-only, shipped):
 npm workspace fresh-install fix (`8513ec3`) + CI workspace alignment
@@ -6763,8 +6774,8 @@ MCP 배선 가능 capability 9개 ✅ (`640e8a3`, get_schema_version/get_xia_geo
 boolean_union·intersect/rotate_xia·scale_xia/offset_face/draw_polyline/create_group —
 capability coverage 13→22, MCP vitest 189/0). 잔여 = **engine feature / product 결정 /
 파괴적 작업**(별도 세션): MCP create_xia(WASM export 부재)·chamfer_edge(edge-chamfer op
-부재)·not-ready(export/import/Tier3), tensor uv inversion(Path Y NURBS), ADR-259 tapered β
-/ ADR-264 embedded-boss (Proposed), tools/list 정직화(ADR-042 P27.4 product 결정) /
+부재)·not-ready(export/import/Tier3), tensor uv inversion(Path Y NURBS), ~~ADR-259 tapered β
+/ ADR-264 embedded-boss~~ (**둘 다 완료 — LOCKED #92 / #93**), tools/list 정직화(ADR-042 P27.4 product 결정) /
 Phase 5 repo 위생 (옛 repo dir 삭제·브랜치 486→~5·npm install↔opencascade — 파괴적/승인 게이트)
 (transform·deform·geometric-merge·trim·split-edge·intersectWithModel 무방비 — gate
 인프라 drop-in 재사용) / Phase 4 완결성(MCP 17/30 미배선, BoundaryTool cardinal-only,

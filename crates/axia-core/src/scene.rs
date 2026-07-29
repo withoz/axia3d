@@ -6577,6 +6577,22 @@ impl Scene {
         self.transactions.set_before_snapshot(self.scene_snapshot());
 
         let class = axia_geo::EdgeClass::from_raw(class_raw);
+        // Does the edge exist? This has to come FIRST. The Centerline branch
+        // below calls `get_faces_sharing_edge`, which indexes storage directly
+        // and PANICS on a missing id — and a panic here does not merely fail
+        // the call, it poisons the `&mut self` borrow so every later call on
+        // the engine throws "recursive use of an object detected". The user's
+        // session is then unrecoverable: no draw, no undo, no save, while the
+        // UI shows an ordinary failure toast.
+        //
+        // The asymmetry is what hid it: class 0 (Geometry) skips the branch and
+        // reaches the `get_mut` below, which returns a clean error. Only
+        // Centerline — the class the `convert-to-centerline` action passes —
+        // took the panicking path.
+        if !self.mesh.edges.contains(edge_id) {
+            self.transactions.cancel();
+            return CommandResult::Error(format!("set_edge_class: edge {:?} not found", edge_id));
+        }
         // Reject demoting a Geometry edge that bounds an active face —
         // centerlines must not participate in face topology, so demotion
         // would orphan the face. User should delete/reshape first.
@@ -24939,5 +24955,37 @@ mod tests {
             scene.mesh.verify_face_invariants().is_valid(),
             "windowed wall stays manifold"
         );
+    }
+}
+
+/// A missing id must not be able to kill the engine.
+///
+/// Found by an audit that fuzzed all 397 wasm exports with nonexistent ids and
+/// checked, after each call, whether the engine object was still usable.
+#[cfg(test)]
+mod audit_missing_id_tests {
+    use super::*;
+
+    #[test]
+    fn set_edge_class_on_a_missing_edge_errors_rather_than_panicking() {
+        let mut scene = Scene::new();
+        let ghost = axia_geo::EdgeId::new(999_999);
+
+        // Class 1 = Centerline. This is the branch `convert-to-centerline`
+        // takes, and it used to index storage directly and panic — which
+        // poisons the &mut self borrow, so every later call on the engine
+        // throws "recursive use of an object detected". Session unrecoverable.
+        let r = scene.execute(Command::SetEdgeClass { edge_id: ghost, class_raw: 1 });
+        assert!(matches!(r, CommandResult::Error(_)), "must be a clean error, got {r:?}");
+
+        // Class 0 = Geometry took a different path and was already graceful.
+        // Kept as the control: it proves the test is not passing merely because
+        // both classes fail somewhere.
+        let r0 = scene.execute(Command::SetEdgeClass { edge_id: ghost, class_raw: 0 });
+        assert!(matches!(r0, CommandResult::Error(_)), "got {r0:?}");
+
+        // The engine still works — the half the panic actually destroyed.
+        assert_eq!(scene.mesh.face_count(), 0);
+        assert!(scene.scene_snapshot().len() > 0, "the scene is still serializable");
     }
 }

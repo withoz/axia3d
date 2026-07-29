@@ -63,12 +63,20 @@ npm run build:all
 ```bash
 npm run typecheck                       # tsc --noEmit
 npm run test                            # vitest (전량 green)
-cargo test -p axia-geo --lib            # Rust 기하 커널
-cargo test -p axia-wasm --tests         # WASM 바인딩
+cargo test --workspace                  # Rust 전체 (crate 별 --lib 금지 — 아래 참조)
 node scripts/check-adr-catalog.mjs      # ADR ↔ README 카탈로그 정합
+node scripts/ifc-external-validate.mjs  # 외부 IFC 파서(web-ifc) 검증
 ```
 
-기준선 건강도(2026-07-01): **vitest 2470 pass / axia-geo 2100 / axia-wasm 71**.
+⚠️ **`--lib` 나 crate 별 나열을 쓰지 말 것.** 2026-07-29 감사 실측: CI 와 이 문서가
+`cargo test -p <crate> --lib` 를 나열하고 있어서 **107개 테스트가 실행조차 되지
+않았다** — 모든 `tests/` 통합 바이너리(axia-core 36 / axia-geo 60 / axia-foreign 6)
+와 **axia-transaction 전체(5)**. 그중에는 CLAUDE.md 가 ADR-291 / 302 / 303 의
+**lock 이라고 명시한** `phase3_gate_sim` · `fillet_rollback_sim` ·
+`mutate_on_failure_sim` 이 들어 있었다. crate 를 나열하면 언젠가 빠뜨린다.
+
+기준선 건강도(2026-07-29): **cargo --workspace 3281 pass / 0 fail / 1 ignored**
+(선재 slow-channel), **vitest 2970 / 1 skipped**, tsc 0.
 이보다 줄면 회귀다.
 
 - **`#[ignore]` / `.skip` 절대 금지.** 회귀 자산은 항상 실행되어야 한다.

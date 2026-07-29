@@ -39,16 +39,18 @@ concurrency:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
-  # Rust tests — axia-core + axia-geo + axia-wasm.
+  # Rust tests — the whole workspace.
   # build.yml does NOT run cargo test, only wasm-pack build.
   #
-  # axia-core added 2026-07-14 (pre-push audit): the job ran only axia-geo +
-  # axia-wasm, so an axia-core regression could not be caught by CI at all —
-  # even though axia-core holds the Scene/Command layer and its own regression
-  # suite (e.g. scene::tests::disjoint_coplanar_ground_rect_after_box_succeeds).
+  # This job has been widened twice, both times because something real was
+  # outside it. 2026-07-14: it ran only axia-geo + axia-wasm, so an axia-core
+  # regression could not be caught at all. 2026-07-29: the per-crate list used
+  # `--lib`, so 107 tests — every `tests/` binary plus all of axia-transaction —
+  # could not fail CI. It is now one `--workspace` run so there is no list to
+  # be incomplete.
   # ───────────────────────────────────────────────────────────────
   rust-test:
-    name: Rust tests (axia-core + axia-geo + axia-wasm)
+    name: Rust tests (cargo test --workspace)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -66,23 +68,24 @@ jobs:
             crates/axia-geo
             crates/axia-wasm
 
-      - name: cargo test -p axia-core --lib
-        run: cargo test -p axia-core --lib
-
-      - name: cargo test -p axia-geo --lib
-        run: cargo test -p axia-geo --lib
-
-      - name: cargo test -p axia-wasm --tests
-        run: cargo test -p axia-wasm --tests
-
-      # ADR-203 IFC exporter (β-1.5 FacetedBrep, β-2 IfcAdvancedBrep) + the
-      # I-1 importer analysis, which reuses the axia-foreign STEP-21 parser.
-      - name: cargo test -p axia-ifc --lib
-        run: cargo test -p axia-ifc --lib
-
-      # axia-foreign (STEP/IGES import parser) had no CI coverage either.
-      - name: cargo test -p axia-foreign --lib
-        run: cargo test -p axia-foreign --lib
+      # One workspace run, deliberately — NOT a list of per-crate `--lib`
+      # steps. An audit measured what that list actually executed:
+      #
+      #   axia-core   --lib 444  vs --tests 480   (36 never run)
+      #   axia-geo    --lib 2286 vs --tests 2346  (60 never run)
+      #   axia-foreign --lib 141 vs --tests 147   ( 6 never run)
+      #   axia-transaction                        ( 5 — no CI line at all)
+      #
+      # 107 Rust tests that CI could not fail on, including the three
+      # integration tests CLAUDE.md names as the LOCKS for ADR-291, ADR-302 and
+      # ADR-303 (phase3_gate_sim, fillet_rollback_sim, mutate_on_failure_sim).
+      # `--lib` skips every `tests/` binary, and a per-crate list also silently
+      # skips any crate nobody remembers to add.
+      #
+      # `--workspace` cannot have either hole. Keep it that way: adding a step
+      # for a new crate is a thing to forget, and this is what forgetting cost.
+      - name: cargo test --workspace
+        run: cargo test --workspace
 
   # ───────────────────────────────────────────────────────────────
   # Browser E2E — Playwright Chromium round-trip.
