@@ -79,7 +79,33 @@ on the corrupted mesh — the measurement that makes the first test load-bearing
 **Mutation-checked**: restricting I4 back to the outer loop fails with
 `a repointed INNER half-edge must be flagged. Nothing else sees it…`.
 
-## 6. What this does not do
+## 6. No producer reaches this — defence-in-depth, not remediation
+
+An adversarial re-measurement after this change landed found **no code path that
+produces the corruption.** Every creator, migrator and re-facer of inner loops is
+self-consistent: `make_loop` sets the face on every inner half-edge and
+`add_face_with_holes` goes through it; the punch/pierce/band family does
+`set_face` immediately before `add_inner`; `split_edge` propagates `info.face` to
+both replacement half-edges and repairs loop starts via `inners_mut`;
+`reassign_loop_face` — which the first pass nominated as the likely producer — is
+correct at all three of its call sites (`face_split.rs:512`, `:810`,
+`slice.rs:380`), always pairing the reparent with `faces[target].add_inner`.
+
+**The zero-regression result is itself that measurement.** If any op in the suite
+produced a detached inner half-edge, adding the check would have surfaced it.
+
+So this is the ADR-303 bucket: **structurally real, never reached.** Its value is
+defence-in-depth against a *future* producer bug, and against the 69 `set_face`
+call sites across 5 files that could introduce one — not remediation of a present
+defect. Severity **low**, and stated here so it is not cited as evidence of a live
+corruption. That is L-303-3 applied to my own ADR, for the same reason ADR-303's
+§2 premise had to be corrected before merging.
+
+The gate hole was real regardless of reachability, which is why the fix stays: a
+verifier's job is to see corruption whoever produced it, including code not
+written yet.
+
+## 7. What this does not do
 
 It does not make the verifier complete. It closes the one asymmetry that was
 measured; other invariants may have their own. ADR-298's advice — assert loop
