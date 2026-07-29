@@ -19,6 +19,16 @@ import { t } from '../i18n';
 export interface ConstraintPanelCallbacks {
   /** 제약 변경 후 뷰포트 재렌더 */
   syncMesh?: () => void;
+  /**
+   * 제약 오버레이(ConstraintVisual) 표시 토글. 새 표시 상태를 반환한다.
+   *
+   * ADR-301 — 이 토글은 전역 Shift+K 를 쥐고 있었고, 그 키는 Back view 의 것이라
+   * 한 번 누르면 두 일이 일어났다. 오버레이는 이 패널이 나열하는 바로 그 제약을
+   * 그리므로 여기가 제자리다. 전역 바인딩을 옮기지 않고 **없앤다**.
+   */
+  toggleVisual?: () => boolean;
+  /** 오버레이의 현재 표시 상태 — 버튼 초기 상태를 맞추는 데 쓴다. */
+  isVisualVisible?: () => boolean;
 }
 
 interface ConstraintListItem {
@@ -69,6 +79,7 @@ export class ConstraintPanel {
       <div class="cop-header">
         <span class="cop-title">${t('구속 (Constraints)')}</span>
         <div class="cop-actions">
+          <button class="cop-btn cop-btn-visual" title="${t('제약 표시 켜기/끄기')}" aria-pressed="true">👁</button>
           <button class="cop-btn cop-btn-solve" title="${t('모든 제약 재해결')}">⟳</button>
           <button class="cop-btn cop-btn-clear" title="${t('모두 삭제')}">✕ ALL</button>
         </div>
@@ -89,6 +100,24 @@ export class ConstraintPanel {
     this.panelEl.querySelector('.cop-btn-clear')?.addEventListener('click', () => {
       this.clearAll();
     });
+
+    // ADR-301 — 제약 오버레이 토글. 콜백이 없으면 버튼 자체를 두지 않는다:
+    // 아무것도 하지 않는 버튼은 죽은 메뉴와 같은 부류다 (ADR-299).
+    const visualBtn = this.panelEl.querySelector('.cop-btn-visual') as HTMLElement | null;
+    if (visualBtn) {
+      if (!this.callbacks.toggleVisual) {
+        visualBtn.remove();
+      } else {
+        const paint = (on: boolean) => {
+          visualBtn.setAttribute('aria-pressed', String(on));
+          visualBtn.classList.toggle('cop-btn-off', !on);
+        };
+        paint(this.callbacks.isVisualVisible?.() ?? true);
+        visualBtn.addEventListener('click', () => {
+          paint(this.callbacks.toggleVisual!());
+        });
+      }
+    }
 
     this.injectStyles();
   }
@@ -251,6 +280,8 @@ export class ConstraintPanel {
       }
       .cop-btn:hover { background: rgba(255,255,255,0.14); }
       .cop-btn-clear { color: #ff8a8a; }
+      /* ADR-301 - overlay off state. On is the default look. */
+      .cop-btn-off { opacity: 0.4; }
       .cop-status {
         padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.06);
         display: flex; justify-content: space-between; font-size: 11px;

@@ -943,6 +943,11 @@ async function main() {
       .__axia_componentPanel = componentPanel;
   }
 
+  // ADR-301 — §15 의 ConstraintVisual 은 이 패널보다 뒤에 생성되므로, 패널의 👁
+  // 버튼이 클릭 시점에 찾아갈 수 있도록 참조만 미리 둔다. 콜백은 init 이 끝난
+  // 뒤에야 불리므로 지연 조회로 충분하다.
+  let constraintVisualRef: ConstraintVisual | null = null;
+
   // ═══ 14. Constraint Panel (파라메트릭 제약 목록) ═══
   {
     const constraintPanel = new ConstraintPanel(
@@ -950,6 +955,11 @@ async function main() {
       bridge,
       {
         syncMesh: () => toolManager.syncMesh(),
+        toggleVisual: () => {
+          constraintVisualRef?.toggle();
+          return constraintVisualRef?.isVisible() ?? false;
+        },
+        isVisualVisible: () => constraintVisualRef?.isVisible() ?? true,
       },
     );
     // 전역 노출 — ToolManager가 제약 변경 후 refresh 호출하도록 함
@@ -1161,6 +1171,8 @@ async function main() {
     const constraintVisual = new ConstraintVisual(viewportEl, bridge);
     (window as unknown as { __axia_constraintVisual?: ConstraintVisual })
       .__axia_constraintVisual = constraintVisual;
+    // ADR-301 — §14 의 패널 👁 버튼이 이걸 통해 토글한다.
+    constraintVisualRef = constraintVisual;
 
     // 매 프레임 업데이트 (카메라 이동 시 마커 위치 즉시 추적)
     const tickCV = () => {
@@ -1169,19 +1181,16 @@ async function main() {
     };
     requestAnimationFrame(tickCV);
 
-    // Shift+K → 제약 인디케이터 토글.
+    // ADR-301 — 이 토글에는 전역 단축키가 없다. ADR-300 이 여기에 Shift+K 를
+    // 줬는데 그 키는 이미 Back view 의 것이었고(KeyboardShortcuts.ts 뷰 리스너,
+    // `key === 'k'` → mode = 'back'), 한 번 누르면 두 일이 일어났다 — 키 충돌을
+    // 없애려던 커밋이 만든 키 충돌.
     //
-    // ADR-300 — this held Shift+J, which is where the Constraint PANEL had to go
-    // once bare J was returned to the Slice tool. Between the two, the panel is
-    // the documented user-facing surface (ShortcutHelpModal lists it) while this
-    // indicator toggle appears in no menu and no help text, so the panel keeps
-    // the near-miss key and the dev toggle moves to a free one.
-    window.addEventListener('keydown', (e) => {
-      if (isTypingInInput(e.target)) return;
-      if ((e.key === 'k' || e.key === 'K') && e.shiftKey && !e.ctrlKey && !e.altKey) {
-        constraintVisual.toggle();
-      }
-    });
+    // 다른 글자로 옮기면 지뢰를 옮길 뿐이다. 이 오버레이는 제약 패널이 나열하는
+    // 바로 그 제약을 그리므로 토글은 그 패널의 👁 버튼으로 옮겼다. 전역 키 하나가
+    // 줄었고, 메뉴에도 도움말에도 없던 토글이 눈에 보이게 됐다.
+    //
+    // 배선은 §14 (Constraint Panel) 에서 callbacks.toggleVisual 로 이어진다.
   }
 
   // ═══ 15b. Dimension Manager (ADR-215 — 영구·편집가능 선형 치수) ═══
