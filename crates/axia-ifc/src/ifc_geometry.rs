@@ -63,6 +63,16 @@ pub struct FaceLoops {
     /// silent, and this was the one drop that said nothing. Reading the surface
     /// for real is the next step.
     pub dropped_surface: Option<String>,
+    /// The `IfcAdvancedFace.FaceSurface` read back as the engine's own type
+    /// (ADR-310 β-1), inverting the mapping `ifc_advancedbrep::emit_surface`
+    /// writes. `None` for a plain `IfcFace`, for a surface we cannot invert
+    /// yet (the B-spline family), and under a non-identity placement, where a
+    /// surface would be placed wrongly — worse than absent (L-310-4).
+    ///
+    /// The parameter range here is the surface's **natural full domain**. IFC
+    /// carries no extent for an elementary surface, so the real range is
+    /// decided later, per element, from the boundary (ADR-310 §5).
+    pub surface: Option<AnalyticSurface>,
 }
 
 impl FaceLoops {
@@ -655,7 +665,7 @@ fn polygonal_face_set_loops(
                 }
             }
         }
-        faces.push(FaceLoops { outer, inners, closed_curve: None, dropped_surface: None });
+        faces.push(FaceLoops { outer, inners, closed_curve: None, dropped_surface: None, surface: None });
     }
     Ok((faces, dropped))
 }
@@ -727,7 +737,7 @@ fn triangulated_face_set_loops(
             (Some(a), Some(b), Some(c))
                 if (b - a).cross(c - a).length_squared() > 1e-12 =>
             {
-                faces.push(FaceLoops { outer: vec![a, b, c], inners: vec![], closed_curve: None, dropped_surface: None });
+                faces.push(FaceLoops { outer: vec![a, b, c], inners: vec![], closed_curve: None, dropped_surface: None, surface: None });
             }
             _ => dropped += 1, // out-of-range index or a zero-area sliver
         }
@@ -848,14 +858,14 @@ fn extruded_area_solid_loops(
     // consistent-but-not-necessarily-outward input is enough to form a closed solid.
     let wall_quads = n + void_base.iter().map(|r| r.len()).sum::<usize>();
     let mut faces = Vec::with_capacity(wall_quads + 2);
-    faces.push(FaceLoops { outer: base.clone(), inners: void_base.clone(), closed_curve: None, dropped_surface: None });
-    faces.push(FaceLoops { outer: top.clone(), inners: void_top.clone(), closed_curve: None, dropped_surface: None });
+    faces.push(FaceLoops { outer: base.clone(), inners: void_base.clone(), closed_curve: None, dropped_surface: None, surface: None });
+    faces.push(FaceLoops { outer: top.clone(), inners: void_top.clone(), closed_curve: None, dropped_surface: None, surface: None });
     for i in 0..n {
         let j = (i + 1) % n;
         faces.push(FaceLoops {
             outer: vec![base[i], base[j], top[j], top[i]],
             inners: vec![],
-            closed_curve: None, dropped_surface: None });
+            closed_curve: None, dropped_surface: None, surface: None });
     }
     // A wall around each void, wound opposite to the outer wall so its normal faces
     // into the hole; its edges coincide with the caps' hole loops (watertight) —
@@ -867,7 +877,7 @@ fn extruded_area_solid_loops(
             faces.push(FaceLoops {
                 outer: vec![vb[i], vt[i], vt[j], vb[j]],
                 inners: vec![],
-                closed_curve: None, dropped_surface: None });
+                closed_curve: None, dropped_surface: None, surface: None });
         }
     }
     Ok((faces, 0))
@@ -941,7 +951,7 @@ fn push_revolved_side(faces: &mut Vec<FaceLoops>, rings: &[Vec<DVec3>], steps: u
             faces.push(FaceLoops {
                 outer: vec![r0[j], r0[k], r1[k], r1[j]],
                 inners: vec![],
-                closed_curve: None, dropped_surface: None });
+                closed_curve: None, dropped_surface: None, surface: None });
         }
     }
 }
@@ -1015,7 +1025,7 @@ fn revolved_area_solid_loops(
             faces.push(FaceLoops {
                 outer: outer_rings[ci].clone(),
                 inners: void_rings.iter().map(|vr| vr[ci].clone()).collect(),
-                closed_curve: None, dropped_surface: None });
+                closed_curve: None, dropped_surface: None, surface: None });
         }
     }
     Ok((faces, 0))
@@ -1417,7 +1427,7 @@ fn swept_disk_solid_loops(
             faces.push(FaceLoops {
                 outer: vec![outer[i][j], outer[i][k], outer[i + 1][k], outer[i + 1][j]],
                 inners: vec![],
-                closed_curve: None, dropped_surface: None });
+                closed_curve: None, dropped_surface: None, surface: None });
         }
     }
     if let Some(inner_rings) = &inner_rings {
@@ -1433,22 +1443,22 @@ fn swept_disk_solid_loops(
                         inner_rings[i][k],
                     ],
                     inners: vec![],
-                    closed_curve: None, dropped_surface: None });
+                    closed_curve: None, dropped_surface: None, surface: None });
             }
         }
         // Annular end caps — the outer ring with the inner ring as a hole.
         faces.push(FaceLoops {
             outer: outer[0].clone(),
             inners: vec![inner_rings[0].clone()],
-            closed_curve: None, dropped_surface: None });
+            closed_curve: None, dropped_surface: None, surface: None });
         faces.push(FaceLoops {
             outer: outer[m - 1].clone(),
             inners: vec![inner_rings[m - 1].clone()],
-            closed_curve: None, dropped_surface: None });
+            closed_curve: None, dropped_surface: None, surface: None });
     } else {
         // Solid disk end caps.
-        faces.push(FaceLoops { outer: outer[0].clone(), inners: vec![], closed_curve: None, dropped_surface: None });
-        faces.push(FaceLoops { outer: outer[m - 1].clone(), inners: vec![], closed_curve: None, dropped_surface: None });
+        faces.push(FaceLoops { outer: outer[0].clone(), inners: vec![], closed_curve: None, dropped_surface: None, surface: None });
+        faces.push(FaceLoops { outer: outer[m - 1].clone(), inners: vec![], closed_curve: None, dropped_surface: None, surface: None });
     }
     Ok((faces, 0))
 }
@@ -2070,7 +2080,13 @@ fn face_bounds(file: &StepFile, face: &Entity, scale: f64) -> Option<FaceLoops> 
     } else {
         None
     };
-    Some(FaceLoops { outer, inners, closed_curve, dropped_surface: curved_face_surface(file, face) })
+    Some(FaceLoops {
+        outer,
+        inners,
+        closed_curve,
+        dropped_surface: curved_face_surface(file, face),
+        surface: face_surface(file, face, scale),
+    })
 }
 
 /// Is this loop flat? Used only to sharpen a warning: a curved face whose
@@ -2116,6 +2132,51 @@ fn curved_face_surface(file: &StepFile, face: &Entity) -> Option<String> {
         return None; // the one kind the boundary already describes exactly
     }
     Some(surf.tag.to_ascii_uppercase())
+}
+
+/// ADR-310 β-1 — `IfcAdvancedFace.FaceSurface` read back as the engine's own
+/// [`AnalyticSurface`], inverting the mapping `ifc_advancedbrep::emit_surface`
+/// writes.
+///
+/// Only the two families this ADR reconstructs are inverted:
+///
+/// - **Sphere / Torus** have a natural full parameter domain, so the value
+///   stored here is always a *valid* surface even before the range is narrowed.
+/// - **Plane** is deliberately `None`: the boundary already describes it
+///   exactly (the same reason `curved_face_surface` skips it), and the polygon
+///   path's Newell best-fit is what every existing file is imported with.
+///   Taking a plane from the file instead is a separate decision.
+/// - **Cylinder / Cone** are `None` because IFC carries no extent along their
+///   axis. A value here would have to be `v_range: (0, 0)` — a lie — until the
+///   boundary is inverted, which is L-310-5's separate step.
+/// - **The B-spline family** is not inverted yet; those faces keep warning.
+fn face_surface(file: &StepFile, face: &Entity, scale: f64) -> Option<AnalyticSurface> {
+    if !face.tag.eq_ignore_ascii_case("IFCADVANCEDFACE") {
+        return None;
+    }
+    let surf = file.entity(face.args.get(1)?.as_ref()?)?;
+    let pl = crate::ifc_placement::axis_placement(file, surf.args.first()?.as_ref()?, scale)?;
+    let tau = std::f64::consts::TAU;
+    match surf.tag.to_ascii_uppercase().as_str() {
+        "IFCSPHERICALSURFACE" => Some(AnalyticSurface::Sphere {
+            center: pl.origin,
+            radius: surf.args.get(1)?.as_f64()? * scale,
+            axis_dir: pl.z,
+            ref_dir: pl.x,
+            u_range: (0.0, tau),
+            v_range: (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+        }),
+        "IFCTOROIDALSURFACE" => Some(AnalyticSurface::Torus {
+            center: pl.origin,
+            axis_dir: pl.z,
+            ref_dir: pl.x,
+            major_radius: surf.args.get(1)?.as_f64()? * scale,
+            minor_radius: surf.args.get(2)?.as_f64()? * scale,
+            u_range: (0.0, tau),
+            v_range: (0.0, tau),
+        }),
+        _ => None,
+    }
 }
 
 /// The exact curve when a face is a single closed-curve disk: exactly one
@@ -2554,6 +2615,85 @@ mod tests {
         // metres → mm: the far corner is (1000, 2000, 3000).
         let far = e.faces.iter().flat_map(|f| f.outer.iter()).fold(DVec3::ZERO, |a, &p| a.max(p));
         assert!((far - DVec3::new(1000.0, 2000.0, 3000.0)).length() < 1e-6, "far corner {:?}", far);
+
+        // ADR-310 β-1 control: a plain IfcFace has no FaceSurface to carry, so
+        // the tessellated-brep path every ordinary file uses is untouched.
+        assert!(e.faces.iter().all(|f| f.surface.is_none()), "a faceted brep carries no surface");
+    }
+
+    /// ADR-310 β-1 — an `IfcAdvancedFace` hands back its *surface*, not just the
+    /// tag of one. Stored here at the natural full domain; β-2 / β-3 narrow it.
+    #[test]
+    fn adr310_beta1_an_advanced_face_carries_its_surface() {
+        let tau = std::f64::consts::TAU;
+
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Ball".into(),
+            material_name: None,
+            material_style: None,
+            kind: crate::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Ball").unwrap();
+        let g = import_ifc_geometry(&s).unwrap();
+        let hemis = &g.elements[0].faces;
+        assert_eq!(hemis.len(), 2, "two hemispheres");
+        for f in hemis {
+            match &f.surface {
+                Some(AnalyticSurface::Sphere { center, radius, axis_dir, u_range, v_range, .. }) => {
+                    assert!(center.length() < 1e-6, "centre {center:?}");
+                    assert!((radius - 1000.0).abs() < 1e-6, "radius {radius}");
+                    assert!((axis_dir.dot(DVec3::Z) - 1.0).abs() < 1e-9, "axis {axis_dir:?}");
+                    // The natural full domain — IFC carries no extent for an
+                    // elementary surface, so this is not yet the face's range.
+                    assert_eq!(*u_range, (0.0, tau));
+                    assert_eq!(
+                        *v_range,
+                        (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)
+                    );
+                }
+                other => panic!("a hemisphere must carry its sphere, got {other:?}"),
+            }
+        }
+
+        let mut mesh = Mesh::new();
+        let f = mesh
+            .create_torus_kernel_native(DVec3::ZERO, 1000.0, 250.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Ring".into(),
+            material_name: None,
+            material_style: None,
+            kind: crate::IfcElementKind::Wall,
+            face_ids: vec![f],
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Ring").unwrap();
+        let g = import_ifc_geometry(&s).unwrap();
+        let ring = &g.elements[0].faces;
+        assert_eq!(ring.len(), 1, "one torus face");
+        match &ring[0].surface {
+            Some(AnalyticSurface::Torus { major_radius, minor_radius, u_range, v_range, .. }) => {
+                assert!((major_radius - 1000.0).abs() < 1e-6, "major {major_radius}");
+                assert!((minor_radius - 250.0).abs() < 1e-6, "minor {minor_radius}");
+                assert_eq!(*u_range, (0.0, tau));
+                assert_eq!(*v_range, (0.0, tau));
+            }
+            other => panic!("a torus face must carry its torus, got {other:?}"),
+        }
+
+        // Control — an advanced face whose surface is an IfcPlane stays `None`.
+        // The boundary already describes a plane exactly, and every existing
+        // file is imported with the polygon path's Newell best-fit; taking the
+        // plane from the file instead is a separate decision (L-310-5).
+        let g = import_ifc_geometry(&semicircle_ifc(".T.")).unwrap();
+        assert!(
+            g.elements[0].faces.iter().all(|f| f.surface.is_none()),
+            "an IfcPlane advanced face must not change here"
+        );
     }
 
     /// A semicircle face: an arc from A(4,0.5) to B(4,3.5) on the circle
@@ -4340,7 +4480,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 4.0, 5.0),
             ],
             inners: vec![],
-            closed_curve: None, dropped_surface: None };
+            closed_curve: None, dropped_surface: None, surface: None };
         match f.plane().expect("planar loop yields a plane") {
             AnalyticSurface::Plane {
                 origin,
@@ -4370,7 +4510,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 3.0, 0.0),
             ],
             inners: vec![],
-            closed_curve: None, dropped_surface: None };
+            closed_curve: None, dropped_surface: None, surface: None };
         let AnalyticSurface::Plane { normal, .. } = f.plane().expect("plane") else {
             panic!("expected a plane");
         };
@@ -4388,13 +4528,13 @@ END-ISO-10303-21;
                 DVec3::new(2.0, 0.0, 0.0),
             ],
             inners: vec![],
-            closed_curve: None, dropped_surface: None };
+            closed_curve: None, dropped_surface: None, surface: None };
         assert!(line.plane().is_none(), "collinear loop has no plane");
 
         let two = FaceLoops {
             outer: vec![DVec3::ZERO, DVec3::X],
             inners: vec![],
-            closed_curve: None, dropped_surface: None };
+            closed_curve: None, dropped_surface: None, surface: None };
         assert!(two.plane().is_none(), "2 points cannot span a plane");
     }
 }
