@@ -8803,6 +8803,10 @@ import 하려면 언젠가 필요하다.
 이고 깊이는 surface 가 갖는다. ADR-309 는 손실을 드러내려고 extent 를 쟀지만 **그 척도로는
 수리를 볼 수 없다** — 나중에 extent 로 확인하려는 사람이 이걸 회귀로 오독하면 안 된다.
 
+**시연 게이트** (실제 wasm, fresh reload): 브라우저에서 Path B 구 → export → 새 엔진으로
+import → `verts=1 edges=1 faces=2`, 두 면 모두 `faceSurfaceKind=3`(Sphere), `warnings []`,
+**렌더 z ∈ [−1000, +1000]** (원반이 아니라 지름 전체).
+
 #### Cross-link
 
 ADR-310 / ADR-309(이 손실에 이름을 붙였고 §1·§6 이 여기서 정정됨) / ADR-089 · LOCKED #35

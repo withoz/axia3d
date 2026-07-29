@@ -223,9 +223,19 @@ boundary *is* a flat circle, and the depth lives in the surface. A future reader
 who reaches for extent to check this will find it unchanged and must not read
 that as a regression — the round-trip test says so in its own comment.
 
-**Not verified in a browser.** The parity guard runs the real
-`AxiaEngine::import_ifc`, natively. The wasm binary and the UI wiring around it
-were not exercised for this change.
+**Demo gate** (CONTRIBUTING §4 — a green suite is not the scene path). Built the
+wasm, drew a Path B sphere in the browser, exported it, reloaded to a fresh
+engine, imported it back:
+
+```
+native   verts=1 edges=1 faces=2, both faceSurfaceKind=3 (Sphere)
+export   2 × IFCADVANCEDFACE, IFCSPHERICALSURFACE present, 2791 bytes
+import   verts=1 edges=1 faces=2, both faceSurfaceKind=3, warnings []
+render   125496 vertices, z ∈ [-1000, +1000]
+```
+
+The last line is the user-visible fix: the imported solid spans the full
+diameter instead of lying flat at z = 0.
 
 ## Cross-link
 
