@@ -5913,6 +5913,14 @@ impl AxiaEngine {
                             .mesh
                             .add_face_closed_curve(anchor, curve.clone(), material)
                     {
+                        // ADR-310 β-4 — a Path B face is a rim plus a surface;
+                        // rebuilding only the rim is what turned an imported
+                        // hemisphere into a disc. `add_face_closed_curve`
+                        // attaches the plane of the rim, so the real surface has
+                        // to replace it when the file carried one.
+                        if let Some(surface) = &f.surface {
+                            self.scene.mesh.set_face_surface(face_id, Some(surface.clone()));
+                        }
                         mine.push(face_id);
                         continue;
                     }
@@ -5933,8 +5941,10 @@ impl AxiaEngine {
                     // face (ADR-087 K-ε) — otherwise Push/Pull, Boolean and
                     // re-export all refuse it.
                     Ok(face_id) => {
-                        if let Some(plane) = f.plane() {
-                            self.scene.mesh.set_face_surface(face_id, Some(plane));
+                        // The file's own surface when it carried one (ADR-310),
+                        // otherwise the boundary's best-fit plane as before.
+                        if let Some(s) = f.surface.clone().or_else(|| f.plane()) {
+                            self.scene.mesh.set_face_surface(face_id, Some(s));
                         }
                         mine.push(face_id);
                     }
@@ -15000,3 +15010,136 @@ END-ISO-10303-21;
     }
 }
 
+
+/// ADR-310 β-4 — an imported Path B primitive must *be* the native one.
+///
+/// This is the guard whose absence let the defect exist: everything else about
+/// the round-trip was checked, but nobody had compared the result against the
+/// thing it was supposed to reproduce.
+#[cfg(test)]
+mod adr310_parity_tests {
+    use super::*;
+    use axia_geo::{AnalyticSurface, MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn ifc_for(build: impl Fn(&mut Mesh) -> Vec<axia_geo::FaceId>, name: &str) -> (Mesh, String) {
+        let mut mesh = Mesh::new();
+        let face_ids = build(&mut mesh);
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: None,
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids,
+        }];
+        let s = axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap();
+        (mesh, s)
+    }
+
+    /// Sorted (kind, v_range) of every active face, so two meshes can be
+    /// compared without depending on face order.
+    fn surface_fingerprint(mesh: &Mesh) -> Vec<(String, i64, i64)> {
+        let q = |x: f64| (x * 1e6).round() as i64; // 1e-6 rad
+        let mut v: Vec<(String, i64, i64)> = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| match mesh.face_surface(fid) {
+                Some(AnalyticSurface::Sphere { v_range, .. }) => {
+                    ("Sphere".to_string(), q(v_range.0), q(v_range.1))
+                }
+                Some(AnalyticSurface::Torus { v_range, .. }) => {
+                    ("Torus".to_string(), q(v_range.0), q(v_range.1))
+                }
+                Some(other) => (format!("{other:?}").split(' ').next().unwrap().into(), 0, 0),
+                None => ("none".to_string(), 0, 0),
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn total_area(mesh: &Mesh) -> f64 {
+        mesh.faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| mesh.face_area(fid))
+            .sum()
+    }
+
+    #[test]
+    fn adr310_imported_path_b_sphere_matches_native() {
+        let (native, ifc) = ifc_for(
+            |m| m.create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0)).unwrap(),
+            "Ball",
+        );
+
+        let mut engine = AxiaEngine::new();
+        let report = engine.import_ifc(ifc);
+        assert!(report.contains("\"ok\":true"), "import failed: {report}");
+        let imported = &engine.scene.mesh;
+
+        assert_eq!(
+            (imported.vert_count(), imported.edge_count(), imported.face_count()),
+            (native.vert_count(), native.edge_count(), native.face_count()),
+            "an imported sphere must have the native DCEL, not a rebuilt one"
+        );
+        assert_eq!(
+            surface_fingerprint(imported),
+            surface_fingerprint(&native),
+            "same surfaces, same caps"
+        );
+        // 4πr². The quantity is the point: two faces each covering the whole
+        // sphere would render correctly and measure twice as much.
+        let want = 4.0 * std::f64::consts::PI * 1000.0 * 1000.0;
+        let got = total_area(imported);
+        assert!(
+            (got - total_area(&native)).abs() < 1.0 && (got - want).abs() < want * 1e-3,
+            "area {got} (native {}, exact {want})",
+            total_area(&native)
+        );
+    }
+
+    #[test]
+    fn adr310_imported_path_b_torus_matches_native() {
+        let (native, ifc) = ifc_for(
+            |m| vec![m.create_torus_kernel_native(DVec3::ZERO, 1000.0, 250.0, MaterialId::new(0)).unwrap()],
+            "Ring",
+        );
+
+        let mut engine = AxiaEngine::new();
+        let report = engine.import_ifc(ifc);
+        assert!(report.contains("\"ok\":true"), "import failed: {report}");
+        let imported = &engine.scene.mesh;
+
+        assert_eq!(
+            (imported.vert_count(), imported.edge_count(), imported.face_count()),
+            (native.vert_count(), native.edge_count(), native.face_count()),
+        );
+        assert_eq!(surface_fingerprint(imported), surface_fingerprint(&native));
+        assert!(
+            (total_area(imported) - total_area(&native)).abs() < 1.0,
+            "area {} vs native {}",
+            total_area(imported),
+            total_area(&native)
+        );
+    }
+
+    /// The control: a box has no analytic surface to lose, so it must round-trip
+    /// exactly as it did before ADR-310 touched this path.
+    #[test]
+    fn adr310_imported_box_is_unchanged() {
+        let (native, ifc) = ifc_for(
+            |m| m.create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0)).unwrap(),
+            "Box",
+        );
+        let mut engine = AxiaEngine::new();
+        let report = engine.import_ifc(ifc);
+        assert!(report.contains("\"ok\":true"), "import failed: {report}");
+        assert_eq!(engine.scene.mesh.face_count(), native.face_count(), "six faces");
+        assert!(
+            (total_area(&engine.scene.mesh) - total_area(&native)).abs() < 1.0,
+            "a box's area is unaffected"
+        );
+    }
+}
