@@ -418,11 +418,20 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
         let mut dropped_faces = 0usize;
         // ADR-311 β-3 — the appearance the file gives this member, from the
         // first of its representation items that carries a style.
-        let style = el
-            .geometry
-            .iter()
-            .filter_map(|g| styled.get(&g.id).copied())
-            .find_map(|si| resolve_style(file, si));
+        let styled_here: Vec<u32> =
+            el.geometry.iter().filter_map(|g| styled.get(&g.id).copied()).collect();
+        let style = styled_here.iter().find_map(|&si| resolve_style(file, si));
+        if style.is_none() && !styled_here.is_empty() {
+            // L-311-5 — this module's contract is that a drop is visible. A
+            // style we could not follow (a shading-only surface style, a
+            // specular *exponent* rather than a roughness, a form we do not
+            // read yet) is a drop like any other.
+            warnings.push(format!(
+                "{}: has a presentation style we cannot read yet — the member's \
+                 appearance comes from its material name instead",
+                label()
+            ));
+        }
         // I-4 — a member's B-rep is written in its own coordinate system and
         // located by a placement chain. Our own files use the identity (we bake
         // world coordinates), so this is free for them and correct for Revit /

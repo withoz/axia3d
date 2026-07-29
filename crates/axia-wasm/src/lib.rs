@@ -6028,8 +6028,18 @@ impl AxiaEngine {
             // groups reference faces, Shapes own them, and the export reads
             // ownership.
             let sid = self.scene.create_shape(label.clone(), faces.clone());
-            if !el.ifc_type.trim().is_empty() {
-                self.scene.shape_element_kind.insert(sid, el.ifc_type.clone());
+            // The canonical stored value is the short key, not the raw tag.
+            // `set_shape_element_kind` normalises the same way and says why:
+            // storing something the exporter cannot use is worse than storing
+            // nothing. The Inspector's 부재 종류 picker reads this string
+            // directly, so a raw "IFCSLAB" leaves the dropdown blank on a
+            // member that is, in fact, correctly classified.
+            //
+            // An unrecognised tag (IFCPILE, IFCCURTAINWALL — in the importer's
+            // element list but not in `from_tag`) stores nothing and falls back
+            // to the export's default, exactly as it did before ADR-311.
+            if let Some(kind) = axia_ifc::IfcElementKind::from_tag(&el.ifc_type) {
+                self.scene.shape_element_kind.insert(sid, kind.key().to_string());
             }
             // ADR-311 β-2 — the material the file names. The geometry layer has
             // been recovering this string all along; nothing was using it, so
@@ -15216,10 +15226,14 @@ mod adr311_member_tests {
         let (sid, shape) = engine.scene.shapes.iter().next().unwrap();
         assert_eq!(shape.name, "Box", "the member keeps its name");
         assert_eq!(shape.face_ids.len(), 6, "and owns its faces");
+        // The canonical short key, not the raw tag. An adversarial review
+        // caught this asserting "IFCWALL" — locking in a value the Inspector's
+        // 부재 종류 picker cannot match, so an imported member showed a blank
+        // dropdown while exporting correctly.
         assert_eq!(
             engine.scene.shape_element_kind.get(sid).map(String::as_str),
-            Some("IFCWALL"),
-            "and its kind"
+            Some("wall"),
+            "and its kind, stored the way every other writer stores it"
         );
     }
 
@@ -15492,5 +15506,124 @@ mod adr311_style_tests {
         assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
         let mid = engine.scene.material_library.find_by_name("Unstyled").unwrap();
         assert_eq!(engine.scene.material_library.get(mid).unwrap().visual.color, 0xb0b0b0);
+    }
+}
+
+/// ADR-311 — the IFC type survives promotion.
+#[cfg(test)]
+mod adr311_kind_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A member of a kind that is NOT Wall. Wall is `#[default]`, so a test
+    /// using one cannot tell "kept the kind" from "lost it" — which is exactly
+    /// how this went unnoticed.
+    fn ifc_of_kind(kind: axia_ifc::IfcElementKind, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "M".into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
+    }
+
+    fn re_export_tag(ifc: String) -> String {
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+        let again = engine.export_ifc_model("Again".to_string());
+        again
+            .lines()
+            .find_map(|l| {
+                let rest = l.split_once('=')?.1;
+                let tag = rest.split_once('(')?.0;
+                tag.starts_with("IFC")
+                    .then(|| tag.to_string())
+                    .filter(|t| axia_ifc::IfcElementKind::from_tag(t).is_some())
+            })
+            .unwrap_or_else(|| "<none>".into())
+    }
+
+    #[test]
+    fn adr311_a_column_stays_a_column_with_or_without_a_material() {
+        use axia_ifc::IfcElementKind;
+        // Without a material the member stays a Shape, and shape_element_kind
+        // carries the type. With one it promotes to a Xia — and the kind has to
+        // come along, or the better-formed file loses more (L-311-2).
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Column, None)), "IFCCOLUMN");
+        assert_eq!(
+            re_export_tag(ifc_of_kind(IfcElementKind::Column, Some("벽돌"))),
+            "IFCCOLUMN",
+            "promotion must not turn a column into a wall"
+        );
+    }
+
+    #[test]
+    fn adr311_a_slab_and_a_door_keep_their_class_through_promotion() {
+        use axia_ifc::IfcElementKind;
+        // A door matters most: IfcDoor has 13 attributes to IfcWall's 9, so
+        // losing the kind changes the entity's class and drops OverallHeight /
+        // OverallWidth — a schedule keyed on doors stops seeing it.
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Slab, Some("벽돌"))), "IFCSLAB");
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Door, Some("벽돌"))), "IFCDOOR");
+    }
+}
+
+/// ADR-311 L-311-5 — a style we cannot read is named, like every other drop.
+#[cfg(test)]
+mod adr311_style_warning_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn styled_ifc() -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some("Anodised Blue".into()),
+            material_style: Some(axia_ifc::MaterialStyle {
+                rgb: (0.0, 0.0, 1.0),
+                transparency: 0.0,
+                roughness: 0.2,
+                metalness: 0.0,
+                textures: Vec::new(),
+            }),
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
+    }
+
+    #[test]
+    fn adr311_an_unreadable_style_is_named_in_warnings() {
+        // Swap the rendering for a shading-only surface style — valid IFC4 that
+        // this importer does not read. The style is attached, so silence would
+        // break this module's contract.
+        let ifc = styled_ifc().replace("IFCSURFACESTYLERENDERING", "IFCSURFACESTYLESHADING");
+        let g = axia_ifc::ifc_geometry::import_ifc_geometry(&ifc).unwrap();
+        assert!(g.elements[0].style.is_none(), "nothing readable");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("presentation style we cannot read")),
+            "an attached style we could not follow must say so: {:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn adr311_a_readable_style_warns_about_nothing() {
+        // The control. Without it, warning on every styled member would pass
+        // the assertion above.
+        let g = axia_ifc::ifc_geometry::import_ifc_geometry(&styled_ifc()).unwrap();
+        assert!(g.elements[0].style.is_some(), "read fine");
+        assert!(g.warnings.is_empty(), "a style we read is not a drop: {:?}", g.warnings);
     }
 }

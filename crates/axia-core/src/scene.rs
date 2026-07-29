@@ -1755,6 +1755,23 @@ impl Scene {
         // demote API (ADR-052) to find the form anchor.
         self.shape_to_xia.insert(shape_id, xia_id);
 
+        // ADR-311 — the element kind crosses with everything else.
+        //
+        // `shape_element_kind` and `xia_element_kind` are two halves of one
+        // fact (what kind of building element this is), and promotion moves a
+        // member from one half to the other. Leaving the kind behind meant the
+        // IFC export's Xia branch read `None` and fell to
+        // `IfcElementKind::default()` — Wall. So a slab or a door that carried
+        // a material re-exported as `IFCWALL`, losing its class and, for a
+        // door, four attributes with it.
+        //
+        // Found by adversarial review of ADR-311, and the guards missed it
+        // because they used a Wall — the one kind indistinguishable from a kind
+        // that was dropped.
+        if let Some(k) = self.shape_element_kind.get(&shape_id).cloned() {
+            self.xia_element_kind.insert(xia_id, k);
+        }
+
         // Note: Shape is preserved (P-2-c) — form layer is independent
         // of property layer. Demote (ADR-052) will use shape_to_xia
         // to find the anchor.
