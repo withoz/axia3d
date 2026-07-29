@@ -73,8 +73,18 @@ post-rebuild check is untouched, so this only moves the refusal earlier.
 - **L-298-3** Planarity guards key on the **boundary shape**, never on surface kind
   alone — a Path A facet is planar and must stay a valid ray target.
 - **L-298-4** A refused punch or drill leaves the mesh byte-unchanged (asserted).
-- **L-298-5** `verify_face_invariants` does not walk a face's inner loops, so it cannot
-  by itself prove a rewrite was safe; assert loop walkability on the *neighbours* too.
+- **L-298-5** `verify_face_invariants` cannot by itself prove a rewrite was safe; assert
+  loop walkability on the *neighbours* too.
+
+  > ⚠ **Corrected by ADR-306 (2026-07-29).** As written this said the checker "does not
+  > walk a face's inner loops". It does — **I3** walks them (null start, collect failure,
+  > `< 3` verts, with the ADR-089 1-vert exemption) and has since the `155e127` baseline,
+  > i.e. *before* this ADR. The real hole was an **asymmetry**: **I4** verified that
+  > half-edges point back at their face for the **outer loop only**, so an inner half-edge
+  > repointed at another face was invisible — measured `valid=true, violations=[]`, with
+  > `collect_non_manifold_edges` and `detect_self_intersections` both reporting 0 on the
+  > same mesh. ADR-306 extends I4 over inner loops. The lock-in's *advice* stands; its
+  > stated reason did not.
 - **L-298-6** Validate before mutating: the punch family must reject an ill-fitting
   opening *before* `polygonize_closed_curve_face`, because nothing rolls that back.
 - **L-298-7** 절대 #[ignore] 금지.

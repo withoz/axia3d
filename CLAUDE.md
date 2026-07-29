@@ -8687,8 +8687,11 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
 
 #### 아직 열린 것
 
-- `verify_face_invariants` 가 **inner loop 을 순회하지 않는다** (ADR-298). 두 번째
-  사각지대였던 NaN normal 은 ADR-304 가 닫았지만 이건 그대로.
+- ~~`verify_face_invariants` 가 inner loop 을 순회하지 않는다 (ADR-298)~~ → **ADR-306 이
+  정정·해소**. I3 는 **걷고 있었다**(baseline 부터). 진짜 구멍은 **I4 가 outer 전용**이라
+  hole 경계 HE 가 다른 face 를 가리켜도 `valid=true []` 였던 것 — `collect_non_manifold_
+  edges` 도 `detect_self_intersections` 도 0 이라 **모든 게이트에 안 보였다**. I4 를 inner
+  loop 까지 확장(회귀 0). ADR-304 의 NaN 비대칭과 같은 부류.
 - `transactions.cancel()` 이 복원하지 않는 것은 계통적 — WASM 에 `cancel()` Err arm 이
   **약 85개**. 대부분 애초에 mutate 하지 않는 경로라 일괄 변경은 별도 측정 필요.
   ADR-303 이 그 sweep 을 미룰 근거를 하나 더 줬다 (가장 필요해 보이던 3개 중 2개가 아니었음).
