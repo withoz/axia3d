@@ -841,7 +841,18 @@ mod tests {
             (ext.x - 1000.0).abs() < 5.0 && (ext.y - 1000.0).abs() < 5.0 && (ext.z - 1000.0).abs() < 1.0,
             "round-trip extent {:?}", ext
         );
-        assert!(g.elements[0].faces.len() > 20, "round-trips as a round column");
+        // ADR-309 — this records TODAY's behaviour, it does not endorse it. The
+        // importer rebuilds every face from its boundary, so a parametric
+        // cylinder comes back tessellated. When the importer learns to read
+        // IfcAdvancedFace.FaceSurface / IfcCircleProfileDef as a curve, this
+        // count drops to a small kernel-native one and this line goes red —
+        // that is progress. Update it deliberately; do not delete the check,
+        // which still catches a collapse to a degenerate handful of faces.
+        assert!(
+            g.elements[0].faces.len() > 20,
+            "currently tessellated on re-import ({} faces); see ADR-309 if this went red",
+            g.elements[0].faces.len()
+        );
     }
 
     #[test]
@@ -943,7 +954,86 @@ mod tests {
             (ext.x - 1000.0).abs() < 5.0 && (ext.y - 1000.0).abs() < 5.0 && (ext.z - 1000.0).abs() < 1.0,
             "round-trip extent {:?}", ext
         );
-        assert!(nfaces > 20, "revolved into many faces: {nfaces}");
+        // ADR-309 — as above: today the revolution is tessellated on re-import.
+        // A future importer that keeps the revolution analytic makes this red.
+        assert!(nfaces > 20, "currently tessellated on re-import ({nfaces}); see ADR-309");
+    }
+
+    #[test]
+    fn adr309_path_b_sphere_and_torus_round_trip_flat_and_say_so() {
+        // ADR-309 — this test DOCUMENTS A LOSS. It is not describing correct
+        // behaviour; it pins a defect so that (a) it cannot get quieter, and
+        // (b) fixing it turns this red on purpose.
+        //
+        // A Path B sphere is 2 faces sharing one self-loop equator edge; a Path B
+        // torus is 1 such face. We export them correctly — IFCSPHERICALSURFACE /
+        // IFCTOROIDALSURFACE, which other BIM tools read as the right solid. But
+        // our own importer rebuilds a face from its BOUNDARY alone, and for these
+        // two the whole boundary is one planar circle. So the solid returns as a
+        // flat disc: volume gone. Measured, not inferred.
+        //
+        // Until the importer reads FaceSurface and can rebuild a hemisphere
+        // kernel-native, the least we owe the user is to say it happened — this
+        // module's contract is that a thinner import is visible, and this was the
+        // one drop that was silent.
+        for label in ["sphere", "torus"] {
+            let mut mesh = Mesh::new();
+            let faces = if label == "sphere" {
+                mesh.create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0)).unwrap()
+            } else {
+                vec![mesh
+                    .create_torus_kernel_native(DVec3::ZERO, 1000.0, 250.0, MaterialId::new(0))
+                    .unwrap()]
+            };
+            let elements = vec![IfcElement {
+                name: label.into(), material_name: None, material_style: None,
+                kind: crate::IfcElementKind::Wall, face_ids: faces,
+            }];
+            let s = emit_ifc_model(&mesh, &elements, 0.001, label).unwrap();
+
+            // The EXPORT is right — that half is not the defect.
+            let surf = if label == "sphere" { "IFCSPHERICALSURFACE" } else { "IFCTOROIDALSURFACE" };
+            assert!(s.contains(surf), "{label}: export must carry its analytic surface");
+
+            let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+            let (lo, hi, _) = imported_extent(&s);
+            let ext = hi - lo;
+
+            // THE LOSS. Delete this assertion only together with the fix.
+            assert!(
+                ext.z.abs() < 1.0,
+                "{label} now has depth ({:.1} mm) — the importer learned to rebuild the surface. Good: remove this assertion and check the real solid instead.",
+                ext.z
+            );
+
+            // AND IT MUST NOT BE SILENT. This half outlives the one above.
+            assert!(
+                g.warnings.iter().any(|w| w.contains(surf)),
+                "{label}: the dropped surface must be named in warnings, got {:?}",
+                g.warnings
+            );
+            assert!(
+                g.warnings.iter().any(|w| w.contains("FLAT")),
+                "{label}: a flattened solid must say so, got {:?}", g.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn adr309_a_box_round_trip_warns_about_nothing() {
+        // The control. Without it, the assertions above would still pass if the
+        // importer simply warned about everything.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![IfcElement {
+            name: "Box".into(), material_name: None, material_style: None,
+            kind: crate::IfcElementKind::Wall, face_ids: faces,
+        }];
+        let s = emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
+        let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
+        assert!(g.warnings.is_empty(), "a clean box must round-trip silently: {:?}", g.warnings);
     }
 
     #[test]

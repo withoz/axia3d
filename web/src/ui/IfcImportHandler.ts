@@ -143,8 +143,20 @@ export async function importIfcFileObject(file: File, deps: IfcImportDeps): Prom
       if (groups > 0) {
         lines.push(t('공간 구조를 그룹 {groups}개로 만들었습니다 (층·건물·부재).', { groups }));
       }
-      for (const w of (imported.warnings ?? []).slice(0, 3)) lines.push(`· ${w}`);
-      Toast.success(lines.join('\n'), 9000);
+      const warnings = imported.warnings ?? [];
+      for (const w of warnings.slice(0, 3)) lines.push(`· ${w}`);
+      // ADR-309 — geometry arrived, so this is not a failure. But a warning that
+      // says the solid came back FLAT means its volume is gone, and announcing
+      // that in a green success toast is the exact misreading ADR-309 exists to
+      // prevent. Escalate on real loss only: a benign note (an assumed unit, a
+      // coarser-but-correct surface) stays green, because turning every warning
+      // yellow trains people to ignore yellow.
+      const lostVolume = warnings.some((w) => w.includes('FLAT'));
+      if (lostVolume) {
+        Toast.warning(lines.join('\n'), 9000);
+      } else {
+        Toast.success(lines.join('\n'), 9000);
+      }
     } else {
       // Nothing was placed — say why instead of implying success.
       lines.push(
