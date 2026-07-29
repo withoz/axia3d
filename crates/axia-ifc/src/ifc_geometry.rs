@@ -2218,7 +2218,12 @@ fn boundary_circle(f: &FaceLoops) -> Option<(DVec3, f64, DVec3)> {
 /// which keeps it out of every group.
 fn same_surface(a: &AnalyticSurface, b: &AnalyticSurface) -> bool {
     let near = |p: DVec3, q: DVec3| (p - q).length() < SURFACE_TOL;
-    let along = |p: DVec3, q: DVec3| p.cross(q).length() < 1e-9;
+    // Same axis *and the same way up*. Collinear-but-opposite frames describe
+    // the same sphere, but not the same parameterization: v is latitude about
+    // `axis_dir`, so the caps would be assigned in one face's frame and written
+    // into the other's, swapping them. Anti-parallel is therefore refused, not
+    // accommodated — the file keeps its warning instead of a wrong cap.
+    let along = |p: DVec3, q: DVec3| p.cross(q).length() < 1e-9 && p.dot(q) > 0.0;
     match (a, b) {
         (
             AnalyticSurface::Sphere { center: c1, radius: r1, axis_dir: a1, .. },
@@ -2292,6 +2297,11 @@ fn reconstruct_surfaces(faces: &mut [FaceLoops]) {
         groups.push(vec![i]);
     }
 
+    // Every test below is written so that a NaN fails it. `NaN > eps` is false,
+    // so a `continue` guarded that way would fall THROUGH on NaN and write a
+    // NaN range — the trap ADR-304 found twice and LOCKED #100 L-100-1 forbids.
+    let ok = |x: f64| x.is_finite();
+
     for g in groups {
         let (circle_c, circle_r, circle_n) = boundary_circle(&faces[g[0]]).unwrap();
         match faces[g[0]].surface.as_ref().unwrap().clone() {
@@ -2299,19 +2309,23 @@ fn reconstruct_surfaces(faces: &mut [FaceLoops]) {
                 if g.len() != 2 {
                     continue; // L-310-2 — a lone cap is undecidable, three is nonsense
                 }
-                if circle_n.cross(axis_dir).length() > 1e-9 {
-                    continue; // not a circle of latitude: the split is not in v
-                }
+                // A circle of latitude, centred on the axis, lying on the sphere.
                 let h = (circle_c - center).dot(axis_dir);
-                if (circle_c - center - axis_dir * h).length() > SURFACE_TOL {
-                    continue; // not centred on the axis
-                }
+                let off_axis = (circle_c - center - axis_dir * h).length();
                 let v0 = (h / radius).clamp(-1.0, 1.0).asin();
-                if (radius * v0.cos() - circle_r).abs() > SURFACE_TOL {
-                    continue; // the circle does not lie on this sphere
+                let fits = radius * v0.cos() - circle_r;
+                let good = ok(h)
+                    && ok(v0)
+                    && circle_n.cross(axis_dir).length() < 1e-9
+                    && off_axis < SURFACE_TOL
+                    && fits.abs() < SURFACE_TOL;
+                if !good {
+                    continue;
                 }
                 // The two caps. The assignment is arbitrary because it is
-                // unobservable — swapping them gives the same sphere.
+                // unobservable — swapping them gives the same sphere. It is only
+                // sound because `same_surface` required the two frames to agree
+                // in direction, so v0 means the same thing in both.
                 for (k, &fi) in g.iter().enumerate() {
                     if let Some(AnalyticSurface::Sphere { v_range, .. }) = faces[fi].surface.as_mut()
                     {
@@ -2324,15 +2338,13 @@ fn reconstruct_surfaces(faces: &mut [FaceLoops]) {
                 if g.len() != 1 {
                     continue;
                 }
-                if circle_n.cross(axis_dir).length() > 1e-9 {
-                    continue;
-                }
-                if (circle_c - center).length() > SURFACE_TOL {
-                    continue; // a parallel through v = 0 or v = π sits on the centre
-                }
                 let outer = (circle_r - (major_radius + minor_radius)).abs() < SURFACE_TOL;
                 let inner = (circle_r - (major_radius - minor_radius)).abs() < SURFACE_TOL;
-                if !(outer || inner) {
+                let good = circle_n.cross(axis_dir).length() < 1e-9
+                    // a parallel through v = 0 or v = π sits on the centre
+                    && (circle_c - center).length() < SURFACE_TOL
+                    && (outer || inner);
+                if !good {
                     continue;
                 }
                 // One parallel does not disconnect a torus, so this face is the
@@ -2341,6 +2353,28 @@ fn reconstruct_surfaces(faces: &mut [FaceLoops]) {
             }
             _ => {}
         }
+    }
+
+    // THE INVARIANT, and the reason this loop exists rather than a bare
+    // `continue` doing the job: `face_surface` fills every advanced face with
+    // its surface at the **natural full domain**, because the range is not
+    // knowable one face at a time. A face we then refused to narrow is
+    // therefore carrying a lie — a lone hemisphere would hold the whole sphere,
+    // which doubles its area and renders a full ball where half of one exists.
+    // That is worse than the flat disc this ADR set out to fix.
+    //
+    // `dropped_surface` already means exactly "named a curved surface we did
+    // not rebuild", so it is the marker: refusal drops the surface with it, and
+    // the face falls back to the boundary's best-fit plane exactly as before
+    // ADR-310 — which is the state ADR-309's warning describes.
+    for f in faces.iter_mut() {
+        if f.dropped_surface.is_some() {
+            f.surface = None;
+        }
+        debug_assert!(
+            f.surface.is_none() || f.dropped_surface.is_none(),
+            "a surface that survives must be one we decided the range of"
+        );
     }
 }
 

@@ -1077,9 +1077,26 @@ mod tests {
             Some("IFCSPHERICALSURFACE"),
             "a lone cap must stay dropped, not be guessed"
         );
+        // The half an adversarial review caught missing. Asserting only the tag
+        // above let a refused face keep the surface `face_surface` had stocked
+        // it with — the FULL sphere, since a range is not knowable one face at a
+        // time. That doubles the cap's area and renders a whole ball: worse than
+        // the flat disc ADR-309 described. "Refused" has to mean nothing was
+        // attached, not just that something was said.
+        assert!(
+            f[0].surface.is_none(),
+            "refused must leave NO surface, got {:?}",
+            f[0].surface
+        );
         assert!(
             g.warnings.iter().any(|w| w.contains("IFCSPHERICALSURFACE")),
             "and it must still say so: {:?}", g.warnings
+        );
+        // ADR-309's FLAT clause: this is now its only behavioural cover, since
+        // the test that carried it was replaced. A lone cap really is flat.
+        assert!(
+            g.warnings.iter().any(|w| w.contains("FLAT (volume lost)")),
+            "a flattened solid must still say so: {:?}", g.warnings
         );
     }
 
