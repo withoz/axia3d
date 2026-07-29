@@ -215,10 +215,11 @@ STEP file puts every coordinate through).
 | β-4 | (this branch) | the wasm import attaches the surface; three parity tests |
 | γ | (this commit) | Status, ADR-309's correction note, the stale comments, LOCKED |
 
-**Regressions**: `cargo test --workspace` **3262 → 3267** (β-1 +1; β-2/β-3 +2
-new − 1 removed; β-4 +3), 0 failed, 1 ignored (pre-existing slow channel).
-`vitest` **2970 / 1 skipped**, unchanged. `tsc` 0. `check-adr-catalog` ✓.
-`scripts/ifc-external-validate.mjs` — all external-parser checks pass.
+**Regressions**: `cargo test --workspace` **3262 → 3268** (β-1 +1; β-2/β-3 +2
+new − 1 removed; β-4 +3; the review's patch test +1), 0 failed, 1 ignored
+(pre-existing slow channel). `vitest` **2970 / 1 skipped**, unchanged. `tsc` 0.
+`check-adr-catalog` ✓. `scripts/ifc-external-validate.mjs` — all external-parser
+checks pass.
 
 **Mutation-checked**, each guard against the change it is supposed to hold:
 
@@ -228,6 +229,7 @@ new − 1 removed; β-4 +3), 0 failed, 1 ignored (pre-existing slow channel).
 | `reconstruct_surfaces` is a no-op | `adr310_sphere_and_torus_round_trip_keep_their_surface` |
 | the `g.len() != 2` guard accepts a lone cap | `adr310_a_lone_hemisphere_is_undecidable_and_still_says_so` |
 | the wasm does not attach the surface | both parity tests (the box control stays green, correctly) |
+| refusal keeps its un-narrowed surface (with the `debug_assert` disabled too, so the assertion is what fails) | the lone-cap guard, and `adr310_a_spherical_patch_keeps_no_surface_and_still_warns` |
 
 **What the tests deliberately do not assert.** ADR-309 measured `f.outer`'s
 extent to expose the loss. That measure cannot show the repair: a hemisphere's

@@ -8828,7 +8828,7 @@ import 하려면 언젠가 필요하다.
 
 #### 검증
 
-`cargo test --workspace` **3262 → 3267** / `vitest` 2970 (불변) / `tsc` 0 /
+`cargo test --workspace` **3262 → 3268** / `vitest` 2970 (불변) / `tsc` 0 /
 `ifc-external-validate.mjs` 통과 / ADR catalog ✓. **뮤테이션 4건 각각 해당 가드가 잡음**
 (surface 를 안 읽으면 β-1, 재구성을 끄면 왕복 테스트, 홀로 있는 캡을 추측하면 lone-hemisphere
 가드, wasm 이 부착 안 하면 parity 2건 — 박스 대조군은 정상적으로 green 유지).
