@@ -563,6 +563,9 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-corner-chamfer': setActiveTool('corner-chamfer'); break;
       // Join (ADR-213) — collinear merge at a valence-2 vertex.
       case 'tool-join': setActiveTool('join'); break;
+      // Split (ADR-308) — split an edge at an arbitrary picked point. The
+      // tool has always worked on bare X; this is the browse surface it lacked.
+      case 'tool-split': setActiveTool('split'); break;
       // Fillet — 선택된 엣지 1개에 모깎기 적용. 도구가 아니라 액션이므로
       // 활성 도구 전환 없이 즉시 실행.
       case 'tool-fillet': toolManager.executeAction('fillet-edge'); break;

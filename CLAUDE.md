@@ -8702,7 +8702,10 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
 - `compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).
 - 생성이 퇴화를 **거부해야 하는지**는 ADR-304 가 의도적으로 답하지 않은 정책 질문.
 - IFC import 가 `IfcAdvancedFace.FaceSurface` 를 읽지 않아 왕복 시 analytic surface 상실.
-- `SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다 (발견성).
+- ~~`SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다~~ → **ADR-308 이 노출**(사용자 결재).
+  가드 통과는 구멍이 아니라 **의도** 였다 — `ActionWiring` 이 단축키를 도달 표면으로 세는 것은
+  commit `553aedb` 에 근거·변이검증까지 기록된 계약. 따라서 제품 결정이었고, 메뉴 항목은
+  **MenuBar `case` 와 같은 변경에서** 넣어야 한다(안 그러면 ADR-299 죽은 메뉴 — 가드가 잡음).
 
 #### Cross-link
 

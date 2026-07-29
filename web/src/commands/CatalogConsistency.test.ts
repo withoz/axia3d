@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (187, after -4 ghosts, +1 surfaced tool, -1 hover-only)', () => {
+  it('CommandCatalog count matches expected total (188, after -4 ghosts, +2 surfaced tools, -1 hover-only)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -123,7 +123,13 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // in the repo. Its handler read a global nothing assigns and swallowed
     // the miss with `sp?.toggle()`, while the menu advertised a Shift+U hint
     // bound to nothing. Removed from menu, palette and catalog together.
-    expect(count).toBe(187);
+    //
+    // 188: tool-split added (ADR-308). SplitTool was registered and bound to
+    // bare X and listed in the shortcut sheet, but appeared in no menu and no
+    // catalog — of 57 registered tools it was the only one that could not be
+    // *browsed* to. Adding the menu item alone would have made it a DEAD menu
+    // (the ADR-299 class); the MenuBar `case` went in with it.
+    expect(count).toBe(188);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

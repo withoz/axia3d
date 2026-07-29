@@ -604,6 +604,15 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     adrs: ['ADR-213'],
   },
   {
+    id: 'tool-split',
+    label: '엣지 분할',
+    description: 'Split an edge at an arbitrary picked point (hover + click).',
+    tier: 2,
+    surfaces: ['menu'],
+    aliases: { bridge: 'splitEdge', wasm: 'split_edge' },
+    adrs: ['ADR-308'],
+  },
+  {
     id: 'tool-dimension',
     label: '선형 치수',
     description: 'Linear dimension — persistent, editable driving distance.',

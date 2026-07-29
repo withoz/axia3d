@@ -163,6 +163,10 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   // 아님). ungroup 은 단축키(Ctrl+Shift+G)+메뉴 현행 유지 (동의어 공존).
   cmds.push(action('tool-explode', 'modify', '분해 (Explode · = 그룹 해제)', '분해', undefined, false, deps, () => deps.toolManager.executeAction('ungroup')));
   cmds.push(tool('tool-slice',    'slice',    'modify', '평면으로 자르기/칼 (Slice/Cut)', 'Slice', 'J', false, undefined, deps));
+  // ADR-308 — SplitTool was registered and bound to X, and documented in the
+  // shortcut sheet, but appeared in no menu and no catalog: the one tool of 57
+  // that could not be *browsed* to. Additive — the X binding is unchanged.
+  cmds.push(tool('tool-split',    'split',    'modify', '엣지 분할 (Split · 임의 점)', 'Split', 'X', false, undefined, deps));
 
   // ── Modify (one-shot actions) ────────────────────────────────────
   cmds.push(action('mirror-x',         'modify', 'Mirror · YZ 평면 (X 반전)',  'Mirror X', undefined, false, deps));
