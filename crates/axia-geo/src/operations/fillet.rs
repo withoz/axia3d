@@ -282,6 +282,12 @@ impl Mesh {
             None => None,
         };
 
+        // ADR-302 — validate before mutate. Everything below this point tears
+        // faces down; these two conditions are decidable from what was just
+        // captured, and reaching them afterwards left the solid open with no
+        // undo frame. See `preflight_f3`.
+        preflight_f3("fillet", &f3_a_info, &f3_b_info, v_a, v_b)?;
+
         // ─── Tear down affected faces ───────────────────────────
         // Collect IDs first — mutation inside the loop below.
         let mut faces_to_remove: Vec<FaceId> = vec![f1, f2];
@@ -504,6 +510,11 @@ impl Mesh {
                 self.faces[fid].material())),
             None => None,
         };
+
+        // ADR-302 — validate before mutate (see `preflight_f3`). This is the op
+        // the measured reproduction actually reaches: chamfering a hole-rim edge
+        // of a drilled box hit "endpoint N not in F3 loop" AFTER the teardown.
+        preflight_f3("chamfer_edge", &f3_a_info, &f3_b_info, v_a, v_b)?;
 
         // ─── Tear down affected faces ────────────────────────────
         let mut faces_to_remove: Vec<FaceId> = vec![f1, f2];
@@ -848,6 +859,58 @@ fn splice_edge_replacement(
 /// edges and the solid silently opened (boundary edges), while
 /// `verify_face_invariants` still passed. Choosing the order by which neighbour
 /// aligns with `f1_dir` keeps every shared edge matched.
+/// ADR-302 — validate before mutate.
+///
+/// `fillet_edge` / `chamfer_edge` tear down F1, F2 and the optional F3 faces,
+/// and only afterwards run the fallible steps that rebuild them. Two of those
+/// failures are decidable from data captured BEFORE the teardown:
+///
+/// - `orient_arc_for_f3` needs the endpoint to appear in the F3 loop; it errors
+///   with "endpoint N not in F3 loop" when it does not.
+/// - the two-F3 path refuses when one face wraps both ends of the edge.
+///
+/// Reaching either one *after* the teardown left the solid permanently open —
+/// the op reported failure while the mesh had lost its faces, and the WASM Err
+/// arm calls `transactions.cancel()`, which clears the recording and restores
+/// nothing, so there was not even an undo frame to recover from. Measured on a
+/// box with a rectangular through-hole: chamfering any of the four hole-rim
+/// edges took it from 10 faces / closed to 8 faces / open, reporting -1.
+///
+/// Checking here turns that into a clean refusal with the mesh untouched.
+fn preflight_f3(
+    op: &str,
+    f3_a_info: &Option<(FaceId, Vec<VertId>, MaterialId)>,
+    f3_b_info: &Option<(FaceId, Vec<VertId>, MaterialId)>,
+    v_a: VertId,
+    v_b: VertId,
+) -> Result<()> {
+    if let Some((_, verts, _)) = f3_a_info {
+        ensure!(
+            verts.contains(&v_a),
+            "{}: endpoint {} not in F3 loop",
+            op,
+            v_a.raw()
+        );
+    }
+    if let Some((_, verts, _)) = f3_b_info {
+        ensure!(
+            verts.contains(&v_b),
+            "{}: endpoint {} not in F3 loop",
+            op,
+            v_b.raw()
+        );
+    }
+    if let (Some((a, _, _)), Some((b, _, _))) = (f3_a_info, f3_b_info) {
+        ensure!(
+            a != b,
+            "{}: same face on both endpoints of edge — single face wrapping \
+             both ends is not supported (MVP)",
+            op
+        );
+    }
+    Ok(())
+}
+
 fn orient_arc_for_f3(
     mesh: &Mesh,
     verts: &[VertId],
