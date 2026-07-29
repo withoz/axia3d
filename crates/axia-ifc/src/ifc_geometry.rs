@@ -43,6 +43,26 @@ pub struct FaceLoops {
     /// kernel-native build is not applicable — e.g. under a non-identity
     /// placement, which moves the polygon but not this curve.
     pub closed_curve: Option<axia_geo::AnalyticCurve>,
+    /// The IFC tag of an `IfcAdvancedFace.FaceSurface` we did **not**
+    /// reconstruct — `IFCSPHERICALSURFACE`, `IFCTOROIDALSURFACE`, and so on.
+    ///
+    /// The importer rebuilds a face from its boundary only. For a face whose
+    /// surface is curved, that boundary is a strictly poorer description, and
+    /// for the two cases where the *whole* boundary is one planar circle —
+    /// a Path B sphere hemisphere and a Path B torus — it is a fatally poorer
+    /// one: the solid comes back as a flat disc. Measured, on our own export:
+    ///
+    /// ```text
+    /// sphere r=1000  → IFCSPHERICALSURFACE ×2 emitted → re-import extent (2000, 2000, 0.0)
+    /// torus  R=1000 r=250 → IFCTOROIDALSURFACE  ×1    → re-import extent (2500, 2500, 0.0)
+    /// box (control)                                    → (2000, 3000, 1000)  ✓
+    /// ```
+    ///
+    /// This field does not fix that. It names it, so the caller can warn —
+    /// this module's contract is that a thinner import is *visible* rather than
+    /// silent, and this was the one drop that said nothing. Reading the surface
+    /// for real is the next step.
+    pub dropped_surface: Option<String>,
 }
 
 impl FaceLoops {
@@ -406,6 +426,39 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
                 dropped_faces
             ));
         }
+        // A face kept, but rebuilt from its boundary alone while its
+        // IfcAdvancedFace named a curved surface. The boundary is a poorer
+        // description of a curved face, and where the *whole* boundary is one
+        // planar circle — a Path B sphere hemisphere, a Path B torus — it is a
+        // fatally poorer one: the solid returns as a flat disc, volume zero.
+        // Measured on our own export: sphere r=1000 came back with extent
+        // (2000, 2000, 0.0); torus R=1000 r=250 as (2500, 2500, 0.0); a control
+        // box round-tripped correctly. It used to say nothing at all, which is
+        // the one thing this module's contract forbids.
+        let mut curved: std::collections::BTreeMap<String, usize> = Default::default();
+        for f in &faces {
+            if let Some(tag) = &f.dropped_surface {
+                *curved.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        for (tag, n) in curved {
+            let flat = faces
+                .iter()
+                .filter(|f| f.dropped_surface.as_deref() == Some(tag.as_str()))
+                .all(|f| face_loop_is_planar(&f.outer));
+            warnings.push(format!(
+                "{}: {} face(s) carried {} but were rebuilt from their boundary — \
+                 the analytic surface is lost{}",
+                label(),
+                n,
+                tag,
+                if flat {
+                    ", and the boundary is planar, so this solid is now FLAT (volume lost)"
+                } else {
+                    ""
+                }
+            ));
+        }
         // IfcRelVoidsElement — cut this element's openings out of it. Both the
         // wall (already world, above) and each opening (placed by its own chain,
         // which runs through the wall) are in world space, so the synthesized
@@ -602,7 +655,7 @@ fn polygonal_face_set_loops(
                 }
             }
         }
-        faces.push(FaceLoops { outer, inners, closed_curve: None });
+        faces.push(FaceLoops { outer, inners, closed_curve: None, dropped_surface: None });
     }
     Ok((faces, dropped))
 }
@@ -674,7 +727,7 @@ fn triangulated_face_set_loops(
             (Some(a), Some(b), Some(c))
                 if (b - a).cross(c - a).length_squared() > 1e-12 =>
             {
-                faces.push(FaceLoops { outer: vec![a, b, c], inners: vec![], closed_curve: None });
+                faces.push(FaceLoops { outer: vec![a, b, c], inners: vec![], closed_curve: None, dropped_surface: None });
             }
             _ => dropped += 1, // out-of-range index or a zero-area sliver
         }
@@ -795,15 +848,14 @@ fn extruded_area_solid_loops(
     // consistent-but-not-necessarily-outward input is enough to form a closed solid.
     let wall_quads = n + void_base.iter().map(|r| r.len()).sum::<usize>();
     let mut faces = Vec::with_capacity(wall_quads + 2);
-    faces.push(FaceLoops { outer: base.clone(), inners: void_base.clone(), closed_curve: None });
-    faces.push(FaceLoops { outer: top.clone(), inners: void_top.clone(), closed_curve: None });
+    faces.push(FaceLoops { outer: base.clone(), inners: void_base.clone(), closed_curve: None, dropped_surface: None });
+    faces.push(FaceLoops { outer: top.clone(), inners: void_top.clone(), closed_curve: None, dropped_surface: None });
     for i in 0..n {
         let j = (i + 1) % n;
         faces.push(FaceLoops {
             outer: vec![base[i], base[j], top[j], top[i]],
             inners: vec![],
-            closed_curve: None,
-        });
+            closed_curve: None, dropped_surface: None });
     }
     // A wall around each void, wound opposite to the outer wall so its normal faces
     // into the hole; its edges coincide with the caps' hole loops (watertight) —
@@ -815,8 +867,7 @@ fn extruded_area_solid_loops(
             faces.push(FaceLoops {
                 outer: vec![vb[i], vt[i], vt[j], vb[j]],
                 inners: vec![],
-                closed_curve: None,
-            });
+                closed_curve: None, dropped_surface: None });
         }
     }
     Ok((faces, 0))
@@ -890,8 +941,7 @@ fn push_revolved_side(faces: &mut Vec<FaceLoops>, rings: &[Vec<DVec3>], steps: u
             faces.push(FaceLoops {
                 outer: vec![r0[j], r0[k], r1[k], r1[j]],
                 inners: vec![],
-                closed_curve: None,
-            });
+                closed_curve: None, dropped_surface: None });
         }
     }
 }
@@ -965,8 +1015,7 @@ fn revolved_area_solid_loops(
             faces.push(FaceLoops {
                 outer: outer_rings[ci].clone(),
                 inners: void_rings.iter().map(|vr| vr[ci].clone()).collect(),
-                closed_curve: None,
-            });
+                closed_curve: None, dropped_surface: None });
         }
     }
     Ok((faces, 0))
@@ -1368,8 +1417,7 @@ fn swept_disk_solid_loops(
             faces.push(FaceLoops {
                 outer: vec![outer[i][j], outer[i][k], outer[i + 1][k], outer[i + 1][j]],
                 inners: vec![],
-                closed_curve: None,
-            });
+                closed_curve: None, dropped_surface: None });
         }
     }
     if let Some(inner_rings) = &inner_rings {
@@ -1385,25 +1433,22 @@ fn swept_disk_solid_loops(
                         inner_rings[i][k],
                     ],
                     inners: vec![],
-                    closed_curve: None,
-                });
+                    closed_curve: None, dropped_surface: None });
             }
         }
         // Annular end caps — the outer ring with the inner ring as a hole.
         faces.push(FaceLoops {
             outer: outer[0].clone(),
             inners: vec![inner_rings[0].clone()],
-            closed_curve: None,
-        });
+            closed_curve: None, dropped_surface: None });
         faces.push(FaceLoops {
             outer: outer[m - 1].clone(),
             inners: vec![inner_rings[m - 1].clone()],
-            closed_curve: None,
-        });
+            closed_curve: None, dropped_surface: None });
     } else {
         // Solid disk end caps.
-        faces.push(FaceLoops { outer: outer[0].clone(), inners: vec![], closed_curve: None });
-        faces.push(FaceLoops { outer: outer[m - 1].clone(), inners: vec![], closed_curve: None });
+        faces.push(FaceLoops { outer: outer[0].clone(), inners: vec![], closed_curve: None, dropped_surface: None });
+        faces.push(FaceLoops { outer: outer[m - 1].clone(), inners: vec![], closed_curve: None, dropped_surface: None });
     }
     Ok((faces, 0))
 }
@@ -2025,7 +2070,52 @@ fn face_bounds(file: &StepFile, face: &Entity, scale: f64) -> Option<FaceLoops> 
     } else {
         None
     };
-    Some(FaceLoops { outer, inners, closed_curve })
+    Some(FaceLoops { outer, inners, closed_curve, dropped_surface: curved_face_surface(file, face) })
+}
+
+/// Is this loop flat? Used only to sharpen a warning: a curved face whose
+/// whole boundary lies in one plane has nothing left to give the solid its
+/// depth, so the round-trip result is a disc rather than merely a coarser
+/// approximation. Deliberately generous (1 μm, ADR-147's spatial-hash floor)
+/// — a false 'flat' would overstate, a false 'not flat' would understate, and
+/// understating is the failure mode this whole change exists to remove.
+fn face_loop_is_planar(pts: &[DVec3]) -> bool {
+    if pts.len() < 4 {
+        return true; // three points are always coplanar
+    }
+    let o = pts[0];
+    // Best-fit normal by Newell — robust to a nearly-collinear first triple.
+    let mut n = DVec3::ZERO;
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if n.length() < 1e-12 {
+        return true; // degenerate ring — treat as flat
+    }
+    let n = n.normalize();
+    pts.iter().all(|p| (*p - o).dot(n).abs() < 1.5e-3)
+}
+/// The tag of this face's `FaceSurface` when it is a surface we do not
+/// reconstruct, i.e. anything other than `IfcPlane`.
+///
+/// `IfcAdvancedFace` is `(Bounds, FaceSurface, SameSense)`; we read attribute 0
+/// and have never read attribute 1. Plain `IfcFace` has no such attribute and
+/// yields `None` here, so nothing changes for the tessellated-brep path that
+/// most files use.
+fn curved_face_surface(file: &StepFile, face: &Entity) -> Option<String> {
+    if !face.tag.eq_ignore_ascii_case("IFCADVANCEDFACE") {
+        return None;
+    }
+    let surf_id = face.args.get(1)?.as_ref()?;
+    let surf = file.entity(surf_id)?;
+    if surf.tag.eq_ignore_ascii_case("IFCPLANE") {
+        return None; // the one kind the boundary already describes exactly
+    }
+    Some(surf.tag.to_ascii_uppercase())
 }
 
 /// The exact curve when a face is a single closed-curve disk: exactly one
@@ -4250,8 +4340,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 4.0, 5.0),
             ],
             inners: vec![],
-            closed_curve: None,
-        };
+            closed_curve: None, dropped_surface: None };
         match f.plane().expect("planar loop yields a plane") {
             AnalyticSurface::Plane {
                 origin,
@@ -4281,8 +4370,7 @@ END-ISO-10303-21;
                 DVec3::new(0.0, 3.0, 0.0),
             ],
             inners: vec![],
-            closed_curve: None,
-        };
+            closed_curve: None, dropped_surface: None };
         let AnalyticSurface::Plane { normal, .. } = f.plane().expect("plane") else {
             panic!("expected a plane");
         };
@@ -4300,15 +4388,13 @@ END-ISO-10303-21;
                 DVec3::new(2.0, 0.0, 0.0),
             ],
             inners: vec![],
-            closed_curve: None,
-        };
+            closed_curve: None, dropped_surface: None };
         assert!(line.plane().is_none(), "collinear loop has no plane");
 
         let two = FaceLoops {
             outer: vec![DVec3::ZERO, DVec3::X],
             inners: vec![],
-            closed_curve: None,
-        };
+            closed_curve: None, dropped_surface: None };
         assert!(two.plane().is_none(), "2 points cannot span a plane");
     }
 }

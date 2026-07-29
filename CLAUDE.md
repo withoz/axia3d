@@ -8712,7 +8712,13 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   대신 **결합을 끊는다** — ADR-307 이 `punch_*` 에 한 것(이미 뜬 snapshot 복원)을 나머지
   teardown op 에도 적용하면 안전 논증이 죽은 가드에 안 기대고, 이 질문은 나중에 자유롭게
   답할 수 있게 된다.
-- IFC import 가 `IfcAdvancedFace.FaceSurface` 를 읽지 않아 왕복 시 analytic surface 상실.
+- IFC 왕복 손실 — **실측(ADR-309)**: Path B **구·토러스가 납작해진다**(extent Z=0, 부피 0). 
+  `face_bounds` 가 `IfcAdvancedFace` 속성 0(Bounds)만 읽고 속성 1(FaceSurface)을 안 읽어서, 
+  경계가 평면 적도 원 하나뿐인 그 둘은 충실히 복원하면 원반이 된다. 콘은 `IfcRevolvedAreaSolid` 
+  경로라 형상은 살고 surface 만 잃는다 — **서로 다른 두 손실**. ADR-309 가 **1단계(경고)만** 
+  완료: 이제 손실이 이름을 갖는다("…is now FLAT (volume lost)"). 남은 2~4단계 = FaceSurface 
+  읽기(큼, **내보내기도 u/v 를 버리므로 import-only 수리 불가**) / 구·토러스 kernel-native 재구성
+  (큼) / appearance·재질 이름 import(중).
 - ~~`SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다~~ → **ADR-308 이 노출**(사용자 결재).
   가드 통과는 구멍이 아니라 **의도** 였다 — `ActionWiring` 이 단축키를 도달 표면으로 세는 것은
   commit `553aedb` 에 근거·변이검증까지 기록된 계약. 따라서 제품 결정이었고, 메뉴 항목은
