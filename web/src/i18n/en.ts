@@ -164,6 +164,7 @@ export const EN: Record<string, string> = {
   '포켓 (Recess · Pocket · 면 클릭→여유 깊이)':
     'Recess (pocket · click a face → depth)',
   '서브디비전 (Subdivide)': 'Subdivide (smooth)',
+  '엣지 분할 (Split)': 'Split edge',
   '조인 (Join · 일직선)': 'Join lines (collinear)',
   '엣지 필렛 (Fillet)…': 'Fillet edge…',
   '엣지 챔퍼 (Chamfer)…': 'Chamfer edge…',
@@ -756,6 +757,7 @@ export const EN: Record<string, string> = {
   // '조인', because the transliteration is already short enough not to need an
   // abbreviation. One key, one English.
   '조인 (Join · 일직선 2-valence 코너)': 'Join lines (collinear, 2-valence corner)',
+  '엣지 분할': 'Split edge',
   '조인': 'Join',
   '🧩 솔리드화 (Solidify)': '🧩 Solidify',
   '🩹 메시 수리': '🩹 Mesh repair',

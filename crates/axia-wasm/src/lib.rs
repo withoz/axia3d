@@ -9240,6 +9240,20 @@ impl AxiaEngine {
                 new_face.raw() as i32
             }
             Err(e) => {
+                // ADR-307 — the snapshot taken at the top of this fn is right here;
+                // use it. `cancel()` ends the recording and restores NO geometry, and
+                // punch tears the host face down (`faces.remove(host)`) before its last
+                // fallible step, so a late Err would leave the user's face simply gone.
+                //
+                // Measured unreachable today: after the teardown the only fallible step
+                // is `add_face_with_holes`, whose two doors are `< 3 verts` (excluded by
+                // ADR-298's host filter + polygonize) and `compute_normal`, which
+                // ADR-304 showed can never return Err — `NORMAL_EPSILON = 0.0` makes
+                // `len < NORMAL_EPSILON` dead. That second door is only shut because a
+                // guard is dead; answering ADR-304's open policy question ("should
+                // creation reject degenerates?") re-opens it. Restoring here costs one
+                // line and removes the dependence on that coupling.
+                self.scene.restore_scene_snapshot(&integrity_snapshot);
                 self.scene.transactions.cancel();
                 self.set_error(e.to_string());
                 -1
@@ -9331,6 +9345,20 @@ impl AxiaEngine {
                 new_face.raw() as i32
             }
             Err(e) => {
+                // ADR-307 — the snapshot taken at the top of this fn is right here;
+                // use it. `cancel()` ends the recording and restores NO geometry, and
+                // punch tears the host face down (`faces.remove(host)`) before its last
+                // fallible step, so a late Err would leave the user's face simply gone.
+                //
+                // Measured unreachable today: after the teardown the only fallible step
+                // is `add_face_with_holes`, whose two doors are `< 3 verts` (excluded by
+                // ADR-298's host filter + polygonize) and `compute_normal`, which
+                // ADR-304 showed can never return Err — `NORMAL_EPSILON = 0.0` makes
+                // `len < NORMAL_EPSILON` dead. That second door is only shut because a
+                // guard is dead; answering ADR-304's open policy question ("should
+                // creation reject degenerates?") re-opens it. Restoring here costs one
+                // line and removes the dependence on that coupling.
+                self.scene.restore_scene_snapshot(&integrity_snapshot);
                 self.scene.transactions.cancel();
                 self.set_error(e.to_string());
                 -1
@@ -9475,6 +9503,20 @@ impl AxiaEngine {
                 new_face.raw() as i32
             }
             Err(e) => {
+                // ADR-307 — the snapshot taken at the top of this fn is right here;
+                // use it. `cancel()` ends the recording and restores NO geometry, and
+                // punch tears the host face down (`faces.remove(host)`) before its last
+                // fallible step, so a late Err would leave the user's face simply gone.
+                //
+                // Measured unreachable today: after the teardown the only fallible step
+                // is `add_face_with_holes`, whose two doors are `< 3 verts` (excluded by
+                // ADR-298's host filter + polygonize) and `compute_normal`, which
+                // ADR-304 showed can never return Err — `NORMAL_EPSILON = 0.0` makes
+                // `len < NORMAL_EPSILON` dead. That second door is only shut because a
+                // guard is dead; answering ADR-304's open policy question ("should
+                // creation reject degenerates?") re-opens it. Restoring here costs one
+                // line and removes the dependence on that coupling.
+                self.scene.restore_scene_snapshot(&integrity_snapshot);
                 self.scene.transactions.cancel();
                 self.set_error(e.to_string());
                 -1

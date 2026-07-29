@@ -1953,6 +1953,45 @@ fn face_rebuild_ops_wire_closure_preserving_gate() {
     }
 }
 
+// ── ADR-307 — a punch that fails restores the mesh ───────────────────
+//
+// All three punch entries tear the host face down (`faces.remove(host)`)
+// before their last fallible step, and `TransactionManager::cancel()`
+// restores nothing. The snapshot they need is already captured at the top of
+// each fn for the integrity gate — the Err arm just was not using it.
+//
+// Measured unreachable today (after the teardown the only fallible step is
+// `add_face_with_holes`, whose `< 3 verts` door is excluded by ADR-298's host
+// filter and whose `compute_normal` door is dead per ADR-304). That second
+// door is shut only because a guard is dead, so this pins the restore rather
+// than the reachability.
+#[test]
+fn adr307_punch_err_arms_restore_the_snapshot() {
+    let l = lib_src();
+    let method_body = |sig: &str| -> String {
+        let start = l.find(sig).unwrap_or_else(|| panic!("method not found: {sig}"));
+        let rest = &l[start + sig.len()..];
+        let end = rest.find("\n    pub fn ").map(|e| e + sig.len()).unwrap_or(l.len() - start);
+        l[start..start + end].to_string()
+    };
+    for sig in [
+        "pub fn punch_hole(",
+        "pub fn punch_rect_hole(",
+        "pub fn punch_polygon_hole(",
+    ] {
+        let body = method_body(sig);
+        assert!(
+            body.contains("let integrity_snapshot = self.scene.scene_snapshot();"),
+            "{sig} must capture the snapshot it restores from"
+        );
+        assert!(
+            body.contains("restore_scene_snapshot(&integrity_snapshot)"),
+            "{sig} tears down the host before a fallible step, so its Err arm must \
+             restore — cancel() alone ends the recording and restores no geometry"
+        );
+    }
+}
+
 // ── ADR-203 δ — element classification is wired and canonical ────────
 //
 // Two things must hold or the classification is decoration: the five
