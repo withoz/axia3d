@@ -6021,6 +6021,49 @@ impl AxiaEngine {
                 Some(n) if !n.trim().is_empty() => n.clone(),
                 _ => format!("#{}", el.element_id),
             };
+            // ADR-311 β-1 — a member owns its faces. Without this the faces
+            // arrive unowned, and `export_ifc_model` sweeps every one of them
+            // into a single 'Model' wall: the member's name, material and IFC
+            // type all gone on a re-export. A group alone cannot carry that —
+            // groups reference faces, Shapes own them, and the export reads
+            // ownership.
+            let sid = self.scene.create_shape(label.clone(), faces.clone());
+            // The canonical stored value is the short key, not the raw tag.
+            // `set_shape_element_kind` normalises the same way and says why:
+            // storing something the exporter cannot use is worse than storing
+            // nothing. The Inspector's 부재 종류 picker reads this string
+            // directly, so a raw "IFCSLAB" leaves the dropdown blank on a
+            // member that is, in fact, correctly classified.
+            //
+            // An unrecognised tag (IFCPILE, IFCCURTAINWALL — in the importer's
+            // element list but not in `from_tag`) stores nothing and falls back
+            // to the export's default, exactly as it did before ADR-311.
+            if let Some(kind) = axia_ifc::IfcElementKind::from_tag(&el.ifc_type) {
+                self.scene.shape_element_kind.insert(sid, kind.key().to_string());
+            }
+            // ADR-311 β-2 — the material the file names. The geometry layer has
+            // been recovering this string all along; nothing was using it, so
+            // every imported face got FORM_MATERIAL.
+            //
+            // Matched by name, the library material comes back whole — which is
+            // how our own files recover their colour with no appearance parsing
+            // at all (L-311-3). An unmatched name is a new Project-tier
+            // material rather than a guess at which built-in was meant.
+            if let Some(mname) = el.material.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                let mid = self.resolve_import_material(mname, el.style.as_ref());
+                for &fid in faces {
+                    if let Some(face) = self.scene.mesh.faces.get_mut(fid) {
+                        face.set_material(mid);
+                    }
+                }
+                // ADR-050's rule, applied rather than forced: material +
+                // watertight + manifold + volume > 0 makes a member
+                // property-layer. A closed box came from a Xia and goes back to
+                // one; an open shell stays a Shape, with its faces materialled,
+                // which the export already honours. A refusal here is the
+                // model's own answer, not a drop.
+                let _ = self.scene.promote_shape_to_xia(sid, mid);
+            }
             let gid = self.scene.groups.create_group(label, faces.clone());
             groups_made += 1;
             element_group.insert(el.element_id, gid);
@@ -15141,5 +15184,446 @@ mod adr310_parity_tests {
             (total_area(&engine.scene.mesh) - total_area(&native)).abs() < 1.0,
             "a box's area is unaffected"
         );
+    }
+}
+
+/// ADR-311 — an imported member owns its faces, keeps its name and its kind.
+///
+/// Measured before this existed: the faces arrived unowned, so `export_ifc_model`
+/// swept all of them into a single `IFCWALL` named 'Model' and the member's
+/// name, material and IFC type were gone on a re-export.
+#[cfg(test)]
+mod adr311_member_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A one-member file, exported straight from a mesh so no `debug_log!`
+    /// (which is `web_sys::console` and aborts a native test) is on the path.
+    fn one_wall_ifc(name: &str, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn adr311_beta1_an_imported_member_is_owned_named_and_kinded() {
+        let ifc = one_wall_ifc("Box", None);
+        let mut engine = AxiaEngine::new();
+        let report = engine.import_ifc(ifc);
+        assert!(report.contains("\"ok\":true"), "import failed: {report}");
+
+        assert_eq!(engine.scene.shapes.len(), 1, "one member, one Shape");
+        let (sid, shape) = engine.scene.shapes.iter().next().unwrap();
+        assert_eq!(shape.name, "Box", "the member keeps its name");
+        assert_eq!(shape.face_ids.len(), 6, "and owns its faces");
+        // The canonical short key, not the raw tag. An adversarial review
+        // caught this asserting "IFCWALL" — locking in a value the Inspector's
+        // 부재 종류 picker cannot match, so an imported member showed a blank
+        // dropdown while exporting correctly.
+        assert_eq!(
+            engine.scene.shape_element_kind.get(sid).map(String::as_str),
+            Some("wall"),
+            "and its kind, stored the way every other writer stores it"
+        );
+    }
+
+    #[test]
+    fn adr311_beta1_a_re_export_emits_the_member_not_a_model_catch_all() {
+        // The user-visible half. Ownership is what the export reads, so this is
+        // the assertion that would have caught the whole defect.
+        let ifc = one_wall_ifc("Box", None);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let again = engine.export_ifc_model("Probe".to_string());
+        let walls: Vec<&str> = again.lines().filter(|l| l.contains("=IFCWALL(")).collect();
+        assert!(again.contains("'Box'"), "the member comes back by name: {walls:?}");
+        assert!(
+            !walls.iter().any(|l| l.contains("'Model'")),
+            "and not as the unowned-faces catch-all: {walls:?}"
+        );
+        assert_eq!(walls.len(), 1, "exactly one member: {walls:?}");
+    }
+}
+
+impl AxiaEngine {
+    /// ADR-311 β-2 — the `MaterialId` an IFC material name refers to: the
+    /// library's own if the name matches, otherwise a new Project-tier one.
+    ///
+    /// The physical properties of an unknown material are not in the file, so
+    /// they are neutral placeholders rather than an invention with authority —
+    /// a mass takeoff on an imported foreign material should be corrected by
+    /// the user, not quietly believed. Its *appearance* is refined from the
+    /// file's style graph where there is one (β-3).
+    fn resolve_import_material(
+        &mut self,
+        name: &str,
+        style: Option<&axia_ifc::ifc_geometry::ImportedStyle>,
+    ) -> axia_geo::MaterialId {
+        if let Some(id) = self.scene.material_library.find_by_name(name) {
+            // A name we know keeps its own appearance — a file does not get to
+            // repaint 벽돌 (L-311-3).
+            return id;
+        }
+        use axia_core::material::{
+            FireRating, MaterialCategory, PhysicalProperties, VisualProperties,
+        };
+        let ch = |x: f64| ((x.clamp(0.0, 1.0) * 255.0).round() as u32) & 0xff;
+        let visual = match style {
+            Some(s) => VisualProperties {
+                color: (ch(s.rgb.0) << 16) | (ch(s.rgb.1) << 8) | ch(s.rgb.2),
+                roughness: s.roughness,
+                metalness: s.metalness,
+                opacity: 1.0 - s.transparency,
+                layered: None,
+            },
+            // No style in the file either: a neutral grey, so an unstyled
+            // foreign material is visibly unremarkable rather than a guess.
+            None => VisualProperties {
+                color: 0xb0b0b0,
+                roughness: 0.8,
+                metalness: 0.0,
+                opacity: 1.0,
+                layered: None,
+            },
+        };
+        self.scene.material_library.create_material(
+            name.to_string(),
+            name.to_string(),
+            MaterialCategory::Custom,
+            PhysicalProperties {
+                density: 1000.0,
+                friction: 0.5,
+                restitution: 0.3,
+                specific_gravity: 1.0,
+                thermal_conductivity: 0.5,
+                fire_rating: FireRating::None,
+            },
+            visual,
+        )
+    }
+}
+
+/// ADR-311 β-2 — the material an imported member carries.
+#[cfg(test)]
+mod adr311_material_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn ifc_with_material(name: &str, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn adr311_beta2_a_library_material_comes_back_as_itself() {
+        // 벽돌 is built-in id 4. Matching by name is what returns the SAME
+        // material — appearance included, with no style parsing (L-311-3).
+        let before = {
+            let e = AxiaEngine::new();
+            e.scene.material_library.count()
+        };
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_with_material("Box", Some("벽돌"))).contains("\"ok\":true"));
+
+        let (_, shape_or_xia_faces) = {
+            let f: Vec<_> = engine
+                .scene
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(fid, f)| (fid, f.material()))
+                .collect();
+            (f.len(), f)
+        };
+        assert!(!shape_or_xia_faces.is_empty(), "faces exist");
+        for (fid, mid) in &shape_or_xia_faces {
+            assert_eq!(mid.raw(), 4, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
+        }
+        assert_eq!(
+            engine.scene.material_library.count(),
+            before,
+            "a name the library knows creates nothing"
+        );
+    }
+
+    #[test]
+    fn adr311_beta2_an_unknown_name_creates_a_material_rather_than_guessing() {
+        let mut engine = AxiaEngine::new();
+        let before = engine.scene.material_library.count();
+        assert!(engine
+            .import_ifc(ifc_with_material("Box", Some("Concrete C30/37")))
+            .contains("\"ok\":true"));
+
+        assert_eq!(
+            engine.scene.material_library.count(),
+            before + 1,
+            "an unmatched name is a new material, not a fuzzy match onto 콘크리트"
+        );
+        let made = engine
+            .scene
+            .material_library
+            .find_by_name("Concrete C30/37")
+            .expect("created under the file's own name");
+        assert!(made.raw() >= 100, "custom materials live at 100+ (ADR-098): {}", made.raw());
+        let f = engine.scene.mesh.faces.iter().find(|(_, f)| f.is_active()).unwrap();
+        assert_eq!(f.1.material(), made, "and the faces carry it");
+    }
+
+    #[test]
+    fn adr311_beta2_a_closed_box_comes_back_property_layer() {
+        // ADR-050's four conditions are met by a closed box, so the member that
+        // left as a Xia returns as one. Applied, not forced — the open-shell
+        // case is the next test.
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_with_material("Box", Some("벽돌"))).contains("\"ok\":true"));
+        assert_eq!(engine.scene.xias.len(), 1, "promoted");
+        assert_eq!(engine.scene.xias.values().next().unwrap().name, "Box", "keeping its name");
+    }
+
+    #[test]
+    fn adr311_beta2_no_material_named_means_no_material_invented() {
+        // The control. Without it, "assign something to everything" would pass
+        // every assertion above.
+        let mut engine = AxiaEngine::new();
+        let before = engine.scene.material_library.count();
+        assert!(engine.import_ifc(ifc_with_material("Box", None)).contains("\"ok\":true"));
+
+        assert_eq!(engine.scene.material_library.count(), before, "nothing created");
+        assert_eq!(engine.scene.xias.len(), 0, "and nothing promoted");
+        assert_eq!(engine.scene.shapes.len(), 1, "it stays a form-layer member");
+        let f = engine.scene.mesh.faces.iter().find(|(_, f)| f.is_active()).unwrap();
+        assert_eq!(f.1.material(), axia_core::FORM_MATERIAL, "faces stay form-layer");
+    }
+}
+
+/// ADR-311 β-3 — the appearance a *created* material takes from the file.
+#[cfg(test)]
+mod adr311_style_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A file whose member carries both a material name and a style, the way
+    /// the export writes one (§38/§39).
+    fn styled_ifc(material: &str, rgb: (f64, f64, f64), rough: f64, metal: f64) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some(material.to_string()),
+            material_style: Some(axia_ifc::MaterialStyle {
+                rgb,
+                transparency: 0.0,
+                roughness: rough,
+                metalness: metal,
+                textures: Vec::new(),
+            }),
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
+    }
+
+    #[test]
+    fn adr311_beta3_a_created_material_takes_the_files_appearance() {
+        // A name the library does not know, so the style graph is what decides
+        // how it looks. Pure blue, mirror-smooth, fully metallic.
+        let ifc = styled_ifc("Anodised Blue", (0.0, 0.0, 1.0), 0.05, 1.0);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let mid = engine
+            .scene
+            .material_library
+            .find_by_name("Anodised Blue")
+            .expect("created under its own name");
+        let m = engine.scene.material_library.get(mid).unwrap();
+        assert_eq!(m.visual.color, 0x0000ff, "colour from IfcColourRgb: {:#08x}", m.visual.color);
+        assert!((m.visual.roughness - 0.05).abs() < 1e-6, "roughness {}", m.visual.roughness);
+        assert!((m.visual.metalness - 1.0).abs() < 1e-9, "METAL → metalness 1: {}", m.visual.metalness);
+    }
+
+    #[test]
+    fn adr311_beta3_a_known_name_is_not_repainted_by_the_file() {
+        // The control, and the point of L-311-3. 벽돌 is built-in id 4 and red;
+        // a file claiming it is pure green must not change the library.
+        let before = {
+            let e = AxiaEngine::new();
+            e.scene.material_library.get(MaterialId::new(4)).unwrap().visual.color
+        };
+        let ifc = styled_ifc("벽돌", (0.0, 1.0, 0.0), 0.01, 1.0);
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+
+        let m = engine.scene.material_library.get(MaterialId::new(4)).unwrap();
+        assert_eq!(m.visual.color, before, "the library material keeps its own colour");
+        assert_ne!(m.visual.color, 0x00ff00, "and is emphatically not the file's green");
+    }
+
+    #[test]
+    fn adr311_beta3_an_unstyled_unknown_name_gets_a_neutral_grey() {
+        // No style to read: the material exists but claims nothing.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some("Unstyled".into()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        let ifc = axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
+        assert_eq!(ifc.matches("=IFCSTYLEDITEM(").count(), 0, "no style emitted");
+
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+        let mid = engine.scene.material_library.find_by_name("Unstyled").unwrap();
+        assert_eq!(engine.scene.material_library.get(mid).unwrap().visual.color, 0xb0b0b0);
+    }
+}
+
+/// ADR-311 — the IFC type survives promotion.
+#[cfg(test)]
+mod adr311_kind_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// A member of a kind that is NOT Wall. Wall is `#[default]`, so a test
+    /// using one cannot tell "kept the kind" from "lost it" — which is exactly
+    /// how this went unnoticed.
+    fn ifc_of_kind(kind: axia_ifc::IfcElementKind, material: Option<&str>) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "M".into(),
+            material_name: material.map(|s| s.to_string()),
+            material_style: None,
+            kind,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
+    }
+
+    fn re_export_tag(ifc: String) -> String {
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
+        let again = engine.export_ifc_model("Again".to_string());
+        again
+            .lines()
+            .find_map(|l| {
+                let rest = l.split_once('=')?.1;
+                let tag = rest.split_once('(')?.0;
+                tag.starts_with("IFC")
+                    .then(|| tag.to_string())
+                    .filter(|t| axia_ifc::IfcElementKind::from_tag(t).is_some())
+            })
+            .unwrap_or_else(|| "<none>".into())
+    }
+
+    #[test]
+    fn adr311_a_column_stays_a_column_with_or_without_a_material() {
+        use axia_ifc::IfcElementKind;
+        // Without a material the member stays a Shape, and shape_element_kind
+        // carries the type. With one it promotes to a Xia — and the kind has to
+        // come along, or the better-formed file loses more (L-311-2).
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Column, None)), "IFCCOLUMN");
+        assert_eq!(
+            re_export_tag(ifc_of_kind(IfcElementKind::Column, Some("벽돌"))),
+            "IFCCOLUMN",
+            "promotion must not turn a column into a wall"
+        );
+    }
+
+    #[test]
+    fn adr311_a_slab_and_a_door_keep_their_class_through_promotion() {
+        use axia_ifc::IfcElementKind;
+        // A door matters most: IfcDoor has 13 attributes to IfcWall's 9, so
+        // losing the kind changes the entity's class and drops OverallHeight /
+        // OverallWidth — a schedule keyed on doors stops seeing it.
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Slab, Some("벽돌"))), "IFCSLAB");
+        assert_eq!(re_export_tag(ifc_of_kind(IfcElementKind::Door, Some("벽돌"))), "IFCDOOR");
+    }
+}
+
+/// ADR-311 L-311-5 — a style we cannot read is named, like every other drop.
+#[cfg(test)]
+mod adr311_style_warning_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn styled_ifc() -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: "Box".into(),
+            material_name: Some("Anodised Blue".into()),
+            material_style: Some(axia_ifc::MaterialStyle {
+                rgb: (0.0, 0.0, 1.0),
+                transparency: 0.0,
+                roughness: 0.2,
+                metalness: 0.0,
+                textures: Vec::new(),
+            }),
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
+    }
+
+    #[test]
+    fn adr311_an_unreadable_style_is_named_in_warnings() {
+        // Swap the rendering for a shading-only surface style — valid IFC4 that
+        // this importer does not read. The style is attached, so silence would
+        // break this module's contract.
+        let ifc = styled_ifc().replace("IFCSURFACESTYLERENDERING", "IFCSURFACESTYLESHADING");
+        let g = axia_ifc::ifc_geometry::import_ifc_geometry(&ifc).unwrap();
+        assert!(g.elements[0].style.is_none(), "nothing readable");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("presentation style we cannot read")),
+            "an attached style we could not follow must say so: {:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn adr311_a_readable_style_warns_about_nothing() {
+        // The control. Without it, warning on every styled member would pass
+        // the assertion above.
+        let g = axia_ifc::ifc_geometry::import_ifc_geometry(&styled_ifc()).unwrap();
+        assert!(g.elements[0].style.is_some(), "read fine");
+        assert!(g.warnings.is_empty(), "a style we read is not a drop: {:?}", g.warnings);
     }
 }
