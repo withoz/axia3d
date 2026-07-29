@@ -8712,15 +8712,14 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   대신 **결합을 끊는다** — ADR-307 이 `punch_*` 에 한 것(이미 뜬 snapshot 복원)을 나머지
   teardown op 에도 적용하면 안전 논증이 죽은 가드에 안 기대고, 이 질문은 나중에 자유롭게
   답할 수 있게 된다.
-- ~~IFC 왕복 손실 — Path B 구·토러스가 납작해진다~~ → **2·3단계 완료 (ADR-310, LOCKED #101)**.
-  구·토러스가 자기 surface 를 갖고 돌아온다. 남은 것은 **4단계뿐** — appearance + 재질 *이름*
-  import(중). 우리가 내보내는 presentation 엔티티는 전부 emit 전용(import 가 아는 84 태그 중
-  presentation 0개)이고 재질 이름은 파싱되나 버려져 모든 face 가 `FORM_MATERIAL` 이 된다.
-  또한 re-export 시 import 된 건물이 "Model" 이라는 **하나의 `IFCWALL`** 로 뭉개진다 — import 는
-  group 만 만들고 export 는 `scene.xias`/`shapes` 에서 소스를 얻기 때문.
+- ~~IFC 왕복 손실 (ADR-309 의 2~4단계)~~ → **전부 완료**. 2·3단계 = ADR-310 (LOCKED #101),
+  **4단계 = ADR-311 (LOCKED #102)**. 왕복이 대칭이다 — 구·토러스가 자기 surface 를, member 가
+  자기 이름·IFC 타입·재질을 갖고 돌아온다.
   **⚠ ADR-309 의 두 주장은 ADR-310 §6 이 정정**: ① "다른 BIM 툴은 제대로 본다" 는 **거짓**
   (web-ifc 도 extent Z=0.0000 로 납작하게 만든다) ② "부피 0" 은 **과장** — 네이티브 Path B 구도
   부피 0 이다(`mesh.rs:13067`). 진짜 손실은 extent·형상·surface 였고 부피는 원래 없었다.
+  **남은 것** (ADR-311 §7): 텍스처 import / `IfcSpecularExponent` / per-face style /
+  생성된 재질의 물성(`IfcMaterialProperties` 미독).
 - ~~`SplitTool` (X) 이 툴바·메뉴·카탈로그 어디에도 없다~~ → **ADR-308 이 노출**(사용자 결재).
   가드 통과는 구멍이 아니라 **의도** 였다 — `ActionWiring` 이 단축키를 도달 표면으로 세는 것은
   commit `553aedb` 에 근거·변이검증까지 기록된 계약. 따라서 제품 결정이었고, 메뉴 항목은
@@ -8850,6 +8849,79 @@ ADR-310 / ADR-309(이 손실에 이름을 붙였고 §1·§6 이 여기서 정�
 (Path B closed-curve face — DCEL 은 rim 이고 surface 가 형상을 갖는다) / ADR-031
 (AnalyticSurface) / ADR-104 family / ADR-147(1μm floor) / ADR-087 K-ε(surface-less face 거부)
 / LOCKED #44 / 메타-원칙 #4 · #6.
+
+### 102. ADR-311 — An imported member comes back a member (IFC 왕복 4단계 = 마지막, 2026-07-29) ✅
+
+**사용자 결재 (2026-07-29)**: "진행" — ADR-309 4단계 중 마지막.
+
+#### §1 측정 — 왕복을 돌려서
+
+벽돌(#c85a54) 붙인 박스: export **2360 bytes** (IFCMATERIAL / IFCRELASSOCIATESMATERIAL /
+IFCSTYLEDITEM / IFCSURFACESTYLE / IFCSURFACESTYLERENDERING / IFCCOLOURRGB 각 1, 한글 이름의
+`\X2\` 이스케이프까지 정확) → import 기하 계층이 **이미 `material=Some("벽돌")`** 를 복원해
+wasm 경계까지 전달 → `import_ifc` 가 **그걸 무시하고 전부 `FORM_MATERIAL`**(`lib.rs:5896`)
+→ `xias:0` → 재-export **1999 bytes**, `#35=IFCWALL(...,'Model',...)` **하나**.
+
+#### §2 두 gap 이 사실 한 수정 — 빠져 있던 것은 **소유권**
+
+`export_ifc_model` 은 `scene.xias`(이름·재질·`xia_element_kind`) 와 `scene.shapes`
+(이름·`shape_element_kind`) 에서 element 를 만들고, **둘 다 소유하지 않은 face 만**
+`// Leftover active faces (unowned) → one "Model" wall`(`lib.rs:5679`) 로 떨어뜨린다.
+⇒ import 가 element 당 이름·kind 를 가진 **Shape** 를 만들면 **export 경로 변경 0** 으로
+재-export 가 정상화된다. **그룹으로는 안 된다** — 그룹은 face 를 *참조* 하고 Shape 는
+*소유* 하며, export 가 읽는 것은 소유권이다.
+
+재질 위치도 이걸로 결정 — export 는 form-layer Shape 의 **face-level 재질을 이미 존중**한다
+(코드 주석: *"A Shape is form-layer … but its faces may carry an assigned material — honour
+it so the viewport + export agree"*).
+
+#### §3 이름이 색을 되살린다
+
+재질은 **이름으로 find-or-create**(`MaterialLibrary::find_by_name`, `name`/`name_en` 정확
+일치). 라이브러리 매칭이면 그 재질을 **외관째** 재사용 — 이것이 **style 을 하나도 파싱하지
+않고 우리 파일의 색이 살아나는 이유**다. 매칭은 **의도적으로 fuzzy 아님**: "Concrete C30/37"
+을 콘크리트로 읽으면 부분 문자열을 근거로 member 를 덧칠하는 것이 된다. 미매칭 이름만
+Project tier 신규 생성(ADR-098) 하고, **그때만** 파일의 style graph
+(`IfcStyledItem→IfcSurfaceStyle→IfcSurfaceStyleRendering→IfcColourRgb`) 가 외관을 정한다.
+IFC 는 Phong 이라 역매핑은 `IfcSpecularRoughness`→roughness, `.METAL.`→metalness 1.
+
+승격은 **ADR-050 4조건의 적용이지 강제가 아님** — 닫힌 박스는 Xia 로 돌아오고 열린 shell 은
+face 재질을 단 Shape 로 남는다(거부는 누락이 아니라 모델 자신의 답).
+
+#### Lock-ins (L-311-1 ~ 7)
+
+imported member 는 자기 face 를 **소유** 한다("unowned → Model wall" 은 member 없는 기하의
+fallback) / 내보낸 이름·IFC 타입 그대로 돌아온다 / 라이브러리 매칭 재질은 외관까지 재사용,
+**미매칭일 때만** 파일이 외관을 정한다 / 승격은 시도하되 강제 안 함 / 못 읽은 style 은
+`warnings` 에 이름 / **텍스처 미import 는 계약의 일부** / 절대 #[ignore] 금지.
+
+#### 검증
+
+`cargo test --workspace` **3268 → 3277** (+9) / 외부 IFC 검증기 통과 / ADR catalog ✓.
+**뮤테이션 6건** 각각 해당 가드가 잡음 — 특히 *"a known name is not repainted by the file"*
+대조군이 없으면 "찾은 style 을 그냥 적용" 구현이 나머지 전부를 통과한다.
+
+**시연 게이트** (실제 wasm, fresh reload) — 왕복 대칭:
+
+```
+              ADR-311 이전                       이후
+import        xias 0, 전부 FORM_MATERIAL         xias 1, 6면 모두 재질 4, warnings []
+재-export     1999 B, 'Model', 재질 없음          2363 B, 'Box', IFCMATERIAL('벽돌'), 동일 IFCCOLOURRGB
+```
+
+GUID(`2$9yajP4ccgJ4IbCuhZ4Ta`)도 동일 — 이름에서 유도되기 때문.
+
+#### 아직 import 안 하는 것 (ADR-311 §7)
+
+텍스처(§40 로 내보내지만 이미지 바이트 + UV 재구성 필요) / `IfcSpecularExponent`(다른 물리량,
+변환 발명 거부) / per-face style(member 당 하나만 읽음) / 생성된 재질의 **물성**
+(`IfcMaterialProperties` 미독 — 외부 재질의 물량 산출은 사용자가 교정해야).
+
+#### Cross-link
+
+ADR-311 / ADR-309(이 단계를 명명) / ADR-310 · LOCKED #101(2·3단계) / ADR-050 · LOCKED #26
+(두 계층 시민권 — 승격 정책의 근거) / ADR-098(재질 tier) / ADR-099(layered material —
+텍스처가 연기된 곳) / 메타-원칙 #4 · #6 / LOCKED #44.
 
 ## 향후 과제
 

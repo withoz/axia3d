@@ -1,6 +1,6 @@
 # ADR-311 — An imported member comes back a member
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07-29
 **Category**: IFC / import
 **Scope**: step 4 of ADR-309's four — the last one
@@ -109,6 +109,58 @@ material the file names.**
 | **β-2** | material by name, find or create; promotion attempted | 벽돌 round-trips to the same library id; an unknown name creates a Project-tier material; a closed box comes back a Xia |
 | **β-3** | the style graph gives a *created* material its appearance | a foreign colour survives; a library-matched name is not repainted |
 | **γ** | closure — demo gate, ADR, LOCKED, memory | — |
+
+## 6. Acceptance
+
+| step | commit | what landed |
+|---|---|---|
+| α | `bdee642` | this document, and the round-trip measured before designing |
+| β-1 | `5a7d298` | a Shape per element, named and kinded; `ElementGeometry.ifc_type` |
+| β-2 | `ba78cda` | material by name, matched or created; promotion attempted |
+| β-3 | `0d437ed` | the style graph, read only for a material the name could not supply |
+| γ | (this commit) | closure — demo gate, LOCKED, memory |
+
+**Regressions**: `cargo test --workspace` **3268 → 3277** (+9: β-1 2, β-2 4,
+β-3 3), 0 failed, 1 ignored (pre-existing slow channel).
+`scripts/ifc-external-validate.mjs` — all external-parser checks pass.
+
+**Mutation-checked**, each against the behaviour it is supposed to hold:
+
+| mutation | caught by |
+|---|---|
+| the member owns nothing | both β-1 tests |
+| the material name is never read | *promoted* and *an unmatched name is a new material* |
+| a library name is never reused (always mint) | *face FaceId(0) must carry the library 벽돌* |
+| promotion never attempted | *promoted* |
+| the file's style is never read | *colour from IfcColourRgb* |
+| a library-matched material is repainted by the file | *the library material keeps its own colour* |
+
+**Demo gate** (real wasm, fresh reload) — the round-trip is now symmetric:
+
+```
+              before ADR-311                     after
+export        2360 B, 'Box', 벽돌, colour        (unchanged)
+import        xias 0, every face FORM_MATERIAL   xias 1, all six faces material 4, warnings []
+re-export     1999 B, 'Model', no material       2363 B, 'Box', IFCMATERIAL('벽돌'), same IFCCOLOURRGB
+```
+
+The GUID comes back identical too (`2$9yajP4ccgJ4IbCuhZ4Ta`), since it is
+derived from the member's name.
+
+## 7. What is still not imported
+
+- **Textures** (D5). `IfcImageTexture` / `IfcSurfaceStyleWithTextures` are
+  emitted by §40 and read by nobody; the image bytes and the UV mapping would
+  both have to be rebuilt.
+- **`IfcSpecularExponent`.** Files that use the exponent form of
+  `SpecularHighlight` fall back to the default roughness rather than have a
+  conversion invented for them.
+- **Per-face styles.** One style per member is read — the first representation
+  item that carries one. A file styling individual faces differently loses that
+  distinction.
+- **Physical properties of a created material** are placeholders. IFC carries
+  them in property sets (`IfcMaterialProperties`), which this step does not read,
+  so a mass takeoff on a foreign material is the user's to correct.
 
 ## Cross-link
 
