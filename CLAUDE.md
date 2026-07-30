@@ -8195,6 +8195,13 @@ hole_preserves_other`, `phase_g2_cuts_through_two_holes`.
   `count_incident_edges`, `other_edge_at_valence2` (v_next 방사형 순회).
   WASM `collectEdgeChain` + `SelectTool` Alt+edge 클릭 → 자동 체인 선택.
 
+  > ⚠ **제스처 변경됨 (2026-04-27, SelectTool.ts:165-168).** 체인 선택은 이제
+  > **인접 면이 없는 엣지를 400ms 안에 3회 클릭**하는 것이다. Alt+좌클릭은
+  > 어떤 도구에도 도달하지 않는다 — 캔버스 mousedown 이 `e.altKey` 에서
+  > 반환한다(ToolManagerRefactored.ts:4498). 위 문장은 당시 기록이라 남기되,
+  > 이 줄이 F1 시트의 'Alt+엣지 클릭' 행을 2026-07-30 까지 살려두었다.
+  > 그 행을 따라 하면 Erase 도구가 무장됐다.
+
 ### Tier 2 (파이프라인 성숙)
 - **2D Solidify 🧩** — Rust `meshManifoldInfo()` WASM 바인딩 (전역 활성
   면 manifold 분석 JSON). `solidify` 액션: 이미 닫힘 / non-manifold /

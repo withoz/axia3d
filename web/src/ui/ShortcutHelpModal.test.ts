@@ -56,8 +56,15 @@ describe('ShortcutHelpModal — i18n (ADR-294)', () => {
     const keys = [...open().querySelectorAll('.sh-key kbd')].map((e) => e.textContent);
     expect(keys).toContain('Ctrl+Z');
     expect(keys).toContain('F1');
-    // …except the three that describe a gesture rather than name a key
-    expect(keys).toContain('Alt + click an edge');
+    // …except the ones that describe a gesture or a menu route rather than name
+    // a key. This used to pin 'Alt + click an edge', a gesture that never
+    // worked: Alt+left-click is dropped by the canvas mousedown before any tool
+    // sees it, so following the sheet armed Erase instead. Chain selection is a
+    // triple-click on an edge with no adjacent faces.
+    expect(keys).toContain('Triple-click an edge');
+    expect(keys, 'the sheet is advertising the Alt gesture again').not.toContain(
+      'Alt + click an edge',
+    );
   });
 });
 

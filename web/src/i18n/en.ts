@@ -554,7 +554,7 @@ export const EN: Record<string, string> = {
   'Redo (다시 실행)': 'Redo',
   '복사 (선택된 면)': 'Copy (selected faces)',
   '잘라내기 (복사 + 삭제)': 'Cut (copy + delete)',
-  '붙여넣기 (offset 500,0,500mm)': 'Paste (offset 500,0,500mm)',
+  '붙여넣기 (커서에 부착 → 클릭으로 배치)': 'Paste (attaches to the cursor, click to place)',
   '복제 (즉시 duplicate)': 'Duplicate (immediately)',
   'Select All (전체 선택)': 'Select all',
   '프로젝트 저장': 'Save project',
@@ -594,10 +594,10 @@ export const EN: Record<string, string> = {
   'Constraint 패널': 'Constraints panel',
   '작업 기록 패널 (Parametric History)': 'History panel (parametric)',
 
-  'Alt+엣지 클릭': 'Alt + click an edge',
+  '엣지 3회 클릭': 'Triple-click an edge',
   '메뉴 → ✏️': 'Menu → ✏️',
   '메뉴 → 스케치 종료': 'Menu → Exit sketch',
-  '폴리라인 체인 자동 선택 (Loop Select)': 'Select the whole polyline chain (loop select)',
+  '폴리라인 체인 선택 (인접 면 없는 엣지)': 'Select the polyline chain (edges with no adjacent face)',
   'Sketch 모드 시작 (XZ 정면 / XY 바닥 / YZ 측면 / 선택 면)':
     'Start sketch mode (XZ front / XY ground / YZ side / selected face)',
   '닫힌 프로필 자동 감지 → 높이 prompt → Extrude/Cut':
