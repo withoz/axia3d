@@ -342,7 +342,7 @@ export const EN: Record<string, string> = {
   '그리드 색': 'Grid color',
   '색상': 'Color',
   '투명도': 'Opacity',
-  '프로필 엣지 (외곽 강조)': 'Profile edges (emphasize silhouette)',
+  '프로필 엣지 (외곽 강조) — 준비중': 'Profile edges (emphasize silhouette) — not yet implemented',
   '각도 임계': 'Angle threshold',
   '모드': 'Mode',
   '환경': 'Environment',

@@ -104,6 +104,12 @@ export class Viewport {
   private _showFaceOrientation = false;
   private _faceOpacity = 1.0;
   private _edgeVisible = true;
+  /** Stored, reported by `getStyleSettings()`, and read by no renderer — there
+   *  is no silhouette pass. Kept as the entry point for whoever adds one; the
+   *  Style panel's checkbox is disabled meanwhile so it stops implying the
+   *  feature exists. Drawing from it would need an extra LineSegments2 built
+   *  when true, and `setEdgeStyle` would have to trigger a rebuild (today it
+   *  only mutates state). */
   private _profileEdge = true;
   /** Edge line width in CSS pixels (world-space, respects DPR). Controls the
    *  `LineMaterial.linewidth` used by LineSegments2 — unlike LineBasicMaterial,

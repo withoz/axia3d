@@ -198,7 +198,9 @@ export function initStylePanel(deps: StylePanelDeps): void {
 
     // Edges
     (document.getElementById('sty-edge-visible') as HTMLInputElement).checked = s.edgeVisible;
-    (document.getElementById('sty-edge-profile') as HTMLInputElement).checked = s.profileEdge;
+    // `sty-edge-profile` is deliberately not synced: no renderer reads
+    // profileEdge, so the box is disabled and unchecked in the markup. Pushing
+    // the stored `true` back into it would re-tick a control that does nothing.
 
     // Environment
     (document.getElementById('sty-grid-visible') as HTMLInputElement).checked = s.gridVisible;
@@ -289,9 +291,9 @@ export function initStylePanel(deps: StylePanelDeps): void {
   document.getElementById('sty-edge-visible')?.addEventListener('change', (e) => {
     viewport.setEdgeStyle({ visible: (e.target as HTMLInputElement).checked });
   });
-  document.getElementById('sty-edge-profile')?.addEventListener('change', (e) => {
-    viewport.setEdgeStyle({ profileEdge: (e.target as HTMLInputElement).checked });
-  });
+  // No listener for `sty-edge-profile`: the control is disabled until profile
+  // (silhouette) edges are actually rendered. `setEdgeStyle({ profileEdge })`
+  // stays on Viewport as the entry point for whoever implements them.
 
   // Grid / Axis
   document.getElementById('sty-grid-visible')?.addEventListener('change', (e) => {
