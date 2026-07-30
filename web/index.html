@@ -2839,29 +2839,38 @@
 
     <!-- 스냅 재지정 서브메뉴 (AutoCAD/ZWCAD 스타일) -->
     <div id="snap-submenu" class="snap-sub">
-      <div class="ctx-item snap-ov" data-snap="tempTrack"><span class="snap-icon si-plus">+</span>임시 추적점<span class="ctx-key">K</span></div>
-      <div class="ctx-item snap-ov" data-snap="from"><span class="snap-icon si-dot">&#9679;</span>시작점<span class="ctx-key">F</span></div>
-      <div class="ctx-item snap-ov" data-snap="mid2p"><span class="snap-icon si-tri">&#9650;</span>2점 사이의 중간<span class="ctx-key">W</span></div>
+      <!-- No key hints here. Every one of the 18 that used to sit in these rows
+           named a letter bound to something else: E armed Erase, M armed Move,
+           T jumped to Top view, K took the inference lock. Following the 끝점
+           row meant arming Erase with the menu still open, so the next click
+           deleted geometry. Nothing sets a one-shot snap override from the
+           keyboard — setOverride has exactly two callers, both clicks — and the
+           app has no menu-mnemonic handler at all, so parenthesising the letters
+           would only have made the lie quieter. Adding real hints means binding
+           them first, against a window listener that K already intercepts. -->
+      <div class="ctx-item snap-ov" data-snap="tempTrack"><span class="snap-icon si-plus">+</span>임시 추적점</div>
+      <div class="ctx-item snap-ov" data-snap="from"><span class="snap-icon si-dot">&#9679;</span>시작점</div>
+      <div class="ctx-item snap-ov" data-snap="mid2p"><span class="snap-icon si-tri">&#9650;</span>2점 사이의 중간</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="endpoint"><span class="snap-icon si-sq">&#9632;</span>끝점<span class="ctx-key">E</span></div>
-      <div class="ctx-item snap-ov" data-snap="midpoint"><span class="snap-icon si-tri">&#9650;</span>중간점<span class="ctx-key">M</span></div>
-      <div class="ctx-item snap-ov" data-snap="intersection"><span class="snap-icon si-x">&times;</span>교차점<span class="ctx-key">I</span></div>
-      <div class="ctx-item snap-ov" data-snap="apparent"><span class="snap-icon si-x">&times;</span>가상 교차점<span class="ctx-key">A</span></div>
-      <div class="ctx-item snap-ov" data-snap="extension"><span class="snap-icon si-ext">&#8230;</span>연장선<span class="ctx-key">X</span></div>
+      <div class="ctx-item snap-ov" data-snap="endpoint"><span class="snap-icon si-sq">&#9632;</span>끝점</div>
+      <div class="ctx-item snap-ov" data-snap="midpoint"><span class="snap-icon si-tri">&#9650;</span>중간점</div>
+      <div class="ctx-item snap-ov" data-snap="intersection"><span class="snap-icon si-x">&times;</span>교차점</div>
+      <div class="ctx-item snap-ov" data-snap="apparent"><span class="snap-icon si-x">&times;</span>가상 교차점</div>
+      <div class="ctx-item snap-ov" data-snap="extension"><span class="snap-icon si-ext">&#8230;</span>연장선</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="center"><span class="snap-icon si-cir">&#9675;</span>중심점<span class="ctx-key">C</span></div>
-      <div class="ctx-item snap-ov" data-snap="geometric"><span class="snap-icon si-sq-o">&#9633;</span>기하학적 중심<span class="ctx-key">G</span></div>
-      <div class="ctx-item snap-ov" data-snap="quadrant"><span class="snap-icon si-dia">&#9671;</span>사분점<span class="ctx-key">Q</span></div>
-      <div class="ctx-item snap-ov" data-snap="tangent"><span class="snap-icon si-cir">&#9675;</span>접점<span class="ctx-key">T</span></div>
+      <div class="ctx-item snap-ov" data-snap="center"><span class="snap-icon si-cir">&#9675;</span>중심점</div>
+      <div class="ctx-item snap-ov" data-snap="geometric"><span class="snap-icon si-sq-o">&#9633;</span>기하학적 중심</div>
+      <div class="ctx-item snap-ov" data-snap="quadrant"><span class="snap-icon si-dia">&#9671;</span>사분점</div>
+      <div class="ctx-item snap-ov" data-snap="tangent"><span class="snap-icon si-cir">&#9675;</span>접점</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="perpendicular"><span class="snap-icon si-perp">&#8869;</span>수직점<span class="ctx-key">P</span></div>
-      <div class="ctx-item snap-ov" data-snap="parallel"><span class="snap-icon si-para">//</span>평행<span class="ctx-key">L</span></div>
+      <div class="ctx-item snap-ov" data-snap="perpendicular"><span class="snap-icon si-perp">&#8869;</span>수직점</div>
+      <div class="ctx-item snap-ov" data-snap="parallel"><span class="snap-icon si-para">//</span>평행</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="node"><span class="snap-icon si-dot">&#9679;</span>노드<span class="ctx-key">D</span></div>
-      <div class="ctx-item snap-ov" data-snap="insertion"><span class="snap-icon si-plus">&#8862;</span>삽입<span class="ctx-key">S</span></div>
-      <div class="ctx-item snap-ov" data-snap="nearest"><span class="snap-icon si-x">&times;</span>근처점<span class="ctx-key">R</span></div>
+      <div class="ctx-item snap-ov" data-snap="node"><span class="snap-icon si-dot">&#9679;</span>노드</div>
+      <div class="ctx-item snap-ov" data-snap="insertion"><span class="snap-icon si-plus">&#8862;</span>삽입</div>
+      <div class="ctx-item snap-ov" data-snap="nearest"><span class="snap-icon si-x">&times;</span>근처점</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="none">없음<span class="ctx-key">N</span></div>
+      <div class="ctx-item snap-ov" data-snap="none">없음</div>
       <div class="ctx-item snap-ov" data-snap="settings">객체 스냅 설정(O)...</div>
     </div>
 
@@ -3266,7 +3275,15 @@
         <!-- 마스터 토글 -->
         <div class="osnap-toggles">
           <label><input type="checkbox" id="osnap-master" checked> 객체 스냅 켜기 (F3)(O)</label>
-          <label><input type="checkbox" id="osnap-tracking"> 객체 스냅 추적 켜기 (F11)(K)</label>
+          <!-- "객체 스냅 추적 켜기 (F11)(K)" removed: object snap tracking does not
+               exist. `trackPoints` is pushed to and cleared, never read; nothing
+               emits a tempTrack candidate; `addTrackPoint` has no production
+               caller. The checkbox had no listener either, so it toggled and did
+               nothing. Same reason the tempTrack mode box below was already
+               dropped — this was the master switch for that same feature, left
+               behind. F11 was bound to nothing and K is the inference lock, which
+               even raises its own toast, so pressing it read as tracking engaging.
+               Re-introducing the row means implementing tracking first. -->
         </div>
 
         <div class="osnap-section-label">객체 스냅 모드</div>

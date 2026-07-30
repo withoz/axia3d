@@ -256,7 +256,6 @@ export const EN: Record<string, string> = {
   '객체 스냅 설정': 'Object snap settings',
   '객체 스냅 설정(O)...': 'Object snap settings (O)…',
   '객체 스냅 켜기 (F3)(O)': 'Object snap on (F3) (O)',
-  '객체 스냅 추적 켜기 (F11)(K)': 'Object snap tracking on (F11) (K)',
   '끝점': 'Endpoint',
   '끝점(E)': 'Endpoint (E)',
   '중간점': 'Midpoint',

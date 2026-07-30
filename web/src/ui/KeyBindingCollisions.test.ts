@@ -186,8 +186,13 @@ describe('ADR-300/301 — keystroke ownership', () => {
     // context row keyed `data-snap="tempTrack"` carries its own `K` hint, and a
     // narrower stop paired that hint with the `view-3d` row five lines above
     // it — a false accusation, which is as bad as a missed one.
+    // `data-snap` joins the alternation because the snap-override submenu had
+    // eighteen of these chips and not one of them was reachable: E armed Erase,
+    // T jumped to Top view. They were invisible here for a structural reason —
+    // the anchor only knew action/tool — and the row-boundary stop added later
+    // guaranteed no earlier anchor could reach forward into them either.
     const re =
-      /data-(action|tool)="([^"]+)"(?:(?!data-[a-z-]+=)[\s\S])*?<span class="(?:mk|tdi-key|ctx-key)">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
+      /data-(action|tool|snap)="([^"]+)"(?:(?!data-[a-z-]+=)[\s\S])*?<span class="(?:mk|tdi-key|ctx-key)">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(HTML)) !== null) {
       hintCount++;
@@ -227,5 +232,20 @@ describe('ADR-300/301 — keystroke ownership', () => {
     expect(hintCount, 'the menu-hint regex reaches fewer hints than it used to — did it narrow?')
       .toBeGreaterThanOrEqual(39);
     expect(wrong, `menu hints that lie: ${wrong.join('; ')}`).toEqual([]);
+  });
+
+  it('the snap-override submenu advertises no keys, because none of them work', () => {
+    // The check above would now catch a hint here, but only once someone adds
+    // one back. This says the rows are clean today, so the removal cannot be
+    // quietly undone by a merge. Nothing sets a one-shot snap override from the
+    // keyboard: setOverride has exactly two callers and both are clicks.
+    const sub = HTML.slice(HTML.indexOf('<div id="snap-submenu"'), HTML.indexOf('data-snap="settings"'));
+    expect(sub.length, 'the snap submenu markup moved — this slice found nothing').toBeGreaterThan(500);
+    const chips = [...sub.matchAll(/<span class="ctx-key">([^<]*)<\/span>/g)].map((m) => m[1]);
+    expect(chips, `snap rows are advertising keys again: ${chips.join(', ')}`).toEqual([]);
+    expect(
+      /setOverride/.test(read('src/ui/KeyboardShortcuts.ts')),
+      'a keyboard path to setOverride appeared — then the rows may advertise keys again',
+    ).toBe(false);
   });
 });
