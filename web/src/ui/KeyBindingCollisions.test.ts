@@ -218,8 +218,14 @@ describe('ADR-300/301 — keystroke ownership', () => {
       }
     }
 
-    expect(hintCount, 'the menu-hint regex matched nothing — check index.html markup')
-      .toBeGreaterThan(15);
+    // A floor that tracks what the regex actually reaches, not a token
+    // "matched something". The old floor was 15 while the old regex matched 26
+    // — so the regex could have silently narrowed by ten and still passed, and
+    // narrowing is exactly the failure this guard has already had once (it saw
+    // `class="mk"` only, which is how the Pie dropdown kept printing `I`).
+    // Measured after widening to mk + tdi-key + ctx-key: 39.
+    expect(hintCount, 'the menu-hint regex reaches fewer hints than it used to — did it narrow?')
+      .toBeGreaterThanOrEqual(39);
     expect(wrong, `menu hints that lie: ${wrong.join('; ')}`).toEqual([]);
   });
 });
