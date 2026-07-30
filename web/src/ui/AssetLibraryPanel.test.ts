@@ -265,3 +265,70 @@ describe('AssetLibraryPanel (S-δ)', () => {
     });
   });
 });
+
+/**
+ * ADR-098 — the User tier is opt-in, and for a long time the panel did not
+ * know it. The setting ("User 라이브러리 활성화 (실험)", default OFF) rendered,
+ * persisted to localStorage and read itself back, but the only other consumer
+ * was an unread getter on main.ts's instance object — so refresh() listed all
+ * three tiers whatever the box said, and ticking it changed nothing on screen.
+ */
+describe('AssetLibraryPanel — User tier is opt-in', () => {
+  let container: HTMLElement;
+  let bridge: BridgeStub;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    bridge = makeBridge();
+  });
+
+  const tiersOf = (panel: AssetLibraryPanel) =>
+    Array.from(panel.getPanelElement().querySelectorAll('.al-section')).map((s) =>
+      s.getAttribute('data-tier'),
+    );
+  const addUserHidden = (panel: AssetLibraryPanel) =>
+    panel.getPanelElement().querySelector<HTMLElement>('.al-btn-add-user')!.style.display ===
+    'none';
+
+  it('off → no User section, and no way to add one', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = new AssetLibraryPanel(container, bridge as any, {
+      userTierEnabled: () => false,
+    });
+    panel.show();
+    expect(tiersOf(panel)).toEqual(['System', 'Project']);
+    expect(addUserHidden(panel)).toBe(true);
+    // Not merely hidden in the DOM — the tier is never even queried.
+    expect(bridge.listMaterialsByTier).toHaveBeenCalledTimes(2);
+    expect(bridge.listMaterialsByTier).not.toHaveBeenCalledWith('User');
+  });
+
+  it('on → User section is back', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = new AssetLibraryPanel(container, bridge as any, {
+      userTierEnabled: () => true,
+    });
+    panel.show();
+    expect(tiersOf(panel)).toEqual(['System', 'Project', 'User']);
+    expect(addUserHidden(panel)).toBe(false);
+  });
+
+  it('the flag is read per refresh, so toggling the setting takes effect on reopen', () => {
+    // main.ts passes a getter rather than a captured boolean; if it ever
+    // captures, this is the test that notices.
+    let on = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = new AssetLibraryPanel(container, bridge as any, {
+      userTierEnabled: () => on,
+    });
+    panel.show();
+    expect(tiersOf(panel)).toEqual(['System', 'Project']);
+    on = true;
+    panel.hide();
+    panel.show();
+    expect(tiersOf(panel)).toEqual(['System', 'Project', 'User']);
+    expect(addUserHidden(panel)).toBe(false);
+  });
+});

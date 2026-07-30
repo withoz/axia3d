@@ -392,7 +392,7 @@ async function main() {
       ]);
     if (!bridge.isReady()) return null;
     // Single-instance: cache on container key after first creation.
-    const existing = container.tryGet<{ panel: unknown; userTierEnabled: boolean }>(
+    const existing = container.tryGet<{ panel: unknown }>(
       '__assetLibraryPanelInstance' as never,
     );
     if (existing) return existing;
@@ -406,11 +406,16 @@ async function main() {
       hasLayeredMaterial: (id) => bridge.hasLayeredMaterial(id),
       onLayeredChannelUpload: (id, channel, info) =>
         bridge.setLayeredChannel(id, channel, info),
+      // ADR-098 — read the opt-in setting the panel used to ignore. Read on
+      // every refresh, not captured, so toggling the box takes effect on the
+      // next refresh without rebuilding the panel.
+      userTierEnabled: () => getAssetLibraryUserTierMode(),
     });
-    const instance = {
-      panel,
-      get userTierEnabled() { return getAssetLibraryUserTierMode(); },
-    };
+    // The instance used to carry a `userTierEnabled` getter that nothing read.
+    // It was the only thing making the setting look consumed, which is how the
+    // panel went on showing the User tier regardless. The flag now reaches the
+    // panel as a callback above; the getter is gone so it cannot mislead again.
+    const instance = { panel };
     return instance;
   };
   container.register('assetLibraryPanel', assetLibraryPanel);
