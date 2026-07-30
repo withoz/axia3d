@@ -17,17 +17,24 @@ import { resolve } from 'node:path';
 
 const read = (p: string) => readFileSync(resolve(__dirname, '../..', p), 'utf8');
 
-/** Every non-test line in web/src mentioning the flag, comments excluded. */
+/**
+ * Every non-test line in web/src mentioning the flag, comments excluded.
+ *
+ * Returns the line's text rather than its number: pinning line numbers made
+ * this fail on any unrelated edit higher up the file, and a guard that cries
+ * wolf gets weakened rather than heeded. The text still changes when a real
+ * reference is added, which is the thing being watched.
+ */
 function codeReferences(): string[] {
   const files = ['src/viewport/Viewport.ts', 'src/ui/StylePanel.ts'];
   const out: string[] = [];
   for (const f of files) {
     read(f)
       .split('\n')
-      .forEach((line, i) => {
+      .forEach((line) => {
         if (!/profileEdge/.test(line)) return;
         if (/^\s*(\/\/|\*|\/\*)/.test(line)) return; // prose, not plumbing
-        out.push(`${f}:${i + 1}`);
+        out.push(line.trim());
       });
   }
   return out;
@@ -46,10 +53,10 @@ describe('profile edges — the checkbox is disabled exactly while nothing rende
     // now wrong and this test is the prompt to fix it.
     expect(codeReferences(), 'profileEdge gained a reference — if it now renders, re-enable the checkbox')
       .toEqual([
-        'src/viewport/Viewport.ts:113',
-        'src/viewport/Viewport.ts:2524',
-        'src/viewport/Viewport.ts:2527',
-        'src/viewport/Viewport.ts:2954',
+        'private _profileEdge = true;',
+        'setEdgeStyle(opts: { color?: number; visible?: boolean; profileEdge?: boolean; width?: number }) {',
+        'if (opts.profileEdge !== undefined) this._profileEdge = opts.profileEdge;',
+        'profileEdge: this._profileEdge,',
       ]);
   });
 
