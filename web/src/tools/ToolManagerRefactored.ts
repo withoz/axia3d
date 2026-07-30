@@ -721,8 +721,8 @@ export class ToolManager {
     'solidify': '열린 쉘을 닫힌 솔리드로 변환 (Solidify)',
     'mesh-repair': '메시 정리 (퇴화면/와인딩/고립 정점)',
     'resynthesize-faces': '경계 도구 (Boundary) — 닫힌 line cycle 명시 면 합성 (ADR-139)',
-    'sketch-start-xz': '스케치 시작 — XZ 바닥 평면',
-    'sketch-start-xy': '스케치 시작 — XY 정면 평면',
+    'sketch-start-xz': '스케치 시작 — XZ 정면 평면',
+    'sketch-start-xy': '스케치 시작 — XY 바닥 평면',
     'sketch-start-yz': '스케치 시작 — YZ 측면 평면',
     'sketch-start-face': '스케치 시작 — 선택 면',
     'sketch-start-auto': '스케치 시작 — 자동 평면 감지',
@@ -1373,23 +1373,27 @@ export class ToolManager {
         );
       }
     } else if (action === 'sketch-start-xz') {
-      // XZ 바닥 — Y=0, 평면도 기본. up = -Z so "북쪽"이 위.
+      // XZ 정면(입면도) — Y=0 wall.
+      // NOTE: up is -Z, chosen back when this plane was mislabelled a floor
+      // ("북쪽이 위"). For an elevation the natural up is +Z, so drawing runs
+      // upside-down here. Left as-is: flipping it changes drawing orientation,
+      // which is a behaviour change and not part of renaming the plane.
       this.enterSketch({
-        label: 'XZ 바닥',
+        label: 'XZ 정면',
         origin: new THREE.Vector3(0, 0, 0),
         normal: new THREE.Vector3(0, 1, 0),
         up: new THREE.Vector3(0, 0, -1),
       });
-      Toast.info(t('✏️ 스케치 시작 — XZ 바닥 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
+      Toast.info(t('✏️ 스케치 시작 — XZ 정면 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-xy') {
-      // XY 정면 — Z=0, 입면도.
+      // XY 바닥(평면도) — Z=0 ground.
       this.enterSketch({
-        label: 'XY 정면',
+        label: 'XY 바닥',
         origin: new THREE.Vector3(0, 0, 0),
         normal: new THREE.Vector3(0, 0, 1),
         up: new THREE.Vector3(0, 1, 0),
       });
-      Toast.info(t('✏️ 스케치 시작 — XY 정면 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
+      Toast.info(t('✏️ 스케치 시작 — XY 바닥 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-yz') {
       // YZ 측면 — X=0.
       this.enterSketch({
@@ -2647,13 +2651,14 @@ export class ToolManager {
 
   /** Phase 4 — Auto-detect best sketch plane.
    *
-   *  Priority:
-   *    1. If exactly 1 face is selected → use that face's plane.
-   *    2. Else if camera direction is dominantly aligned with a world axis →
-   *       use the perpendicular world plane (looking down → XZ floor;
-   *       looking front → XY wall; looking sideways → YZ wall).
-   *    3. Else → fall back to last-used plane from localStorage.
-   *    4. Else → XZ floor (Y=0).
+   *    1. Exactly one face selected → that face's plane.
+   *    2. Otherwise the camera's dominant axis picks the perpendicular world
+   *       plane, under Z-up:
+   *         looking down/up   (±Z) → XY ground (Z=0)
+   *         looking front/back (±Y) → XZ wall  (Y=0)
+   *         looking sideways   (±X) → YZ wall  (X=0)
+   *       One of the three always wins — there is no localStorage fallback and
+   *       no final default, though this comment used to describe both.
    */
   startSketchAuto(): void {
     const sel = this.selection.getSelectedFaces();

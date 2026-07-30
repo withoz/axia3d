@@ -209,8 +209,8 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
 
   // ── Sketch ──────────────────────────────────────────────────────
   cmds.push(action('sketch-start-auto',  'sketch', '✨ 스케치 시작 · 자동 평면',  '자동',  '⇧S', false, deps));
-  cmds.push(action('sketch-start-xz',    'sketch', '✏️ 스케치 시작 · XZ 바닥',   'XZ',   undefined, false, deps));
-  cmds.push(action('sketch-start-xy',    'sketch', '✏️ 스케치 시작 · XY 정면',   'XY',   undefined, false, deps));
+  cmds.push(action('sketch-start-xz',    'sketch', '✏️ 스케치 시작 · XZ 정면',   'XZ',   undefined, false, deps));
+  cmds.push(action('sketch-start-xy',    'sketch', '✏️ 스케치 시작 · XY 바닥',   'XY',   undefined, false, deps));
   cmds.push(action('sketch-start-yz',    'sketch', '✏️ 스케치 시작 · YZ 측면',   'YZ',   undefined, false, deps));
   cmds.push(action('sketch-start-face',  'sketch', '✏️ 스케치 시작 · 선택 면',   '면',   undefined, false, deps));
   cmds.push(action('sketch-resume-last', 'sketch', '↩ 스케치 재개',             '재개', undefined, false, deps));

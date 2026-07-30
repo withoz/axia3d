@@ -236,12 +236,12 @@ export const EN: Record<string, string> = {
   '📁 컴포넌트 / 그룹 패널': '📁 Components / groups panel',
 
   // ── Sketch ──
-  '✏️ XZ 바닥 (평면도)': '✏️ XZ ground (plan)',
-  '✏️ XY 정면 (입면도)': '✏️ XY front (elevation)',
+  '✏️ XZ 정면 (입면도)': '✏️ XZ front (elevation)',
+  '✏️ XY 바닥 (평면도)': '✏️ XY ground (plan)',
   '✏️ YZ 측면': '✏️ YZ side',
   '✏️ 선택 면에서 스케치': '✏️ Sketch on selected face',
-  '✏️ 스케치 시작 · XZ 바닥 (평면도)': '✏️ Start sketch · XZ ground (plan)',
-  '✏️ 스케치 시작 · XY 정면 (입면도)': '✏️ Start sketch · XY front (elevation)',
+  '✏️ 스케치 시작 · XZ 정면 (입면도)': '✏️ Start sketch · XZ front (elevation)',
+  '✏️ 스케치 시작 · XY 바닥 (평면도)': '✏️ Start sketch · XY ground (plan)',
   '✏️ 스케치 시작 · YZ 측면': '✏️ Start sketch · YZ side',
   '✏️ 스케치 시작 · 선택 면': '✏️ Start sketch · selected face',
   '✨ 스케치 시작 · 자동 평면 감지': '✨ Start sketch · auto-detect plane',
@@ -445,7 +445,7 @@ export const EN: Record<string, string> = {
   'Solidify (열린 쉘 → 닫힌 솔리드)': 'Solidify (open shell → closed solid)',
   'BREP ∪ · 합집합 (Union) [F8]': 'BREP ∪ · Union [F8]',
   '3-Point Plane · 3점으로 작업 평면 고정': '3-point plane · fix a work plane from 3 points',
-  '스케치 시작 · XZ 바닥 (평면도)': 'Start sketch · XZ ground (plan)',
+  '스케치 시작 · XZ 정면 (입면도)': 'Start sketch · XZ front (elevation)',
   '스케치 모드 활성 — 모든 드로잉이 평면에 고정됩니다':
     'Sketch mode on — every drawing is pinned to the plane',
   '마지막 그린 평면 기억 활성 — 다음 도형이 같은 평면에 그려집니다 (ADR-164 sticky)':
@@ -599,8 +599,8 @@ export const EN: Record<string, string> = {
   '메뉴 → ✏️': 'Menu → ✏️',
   '메뉴 → 스케치 종료': 'Menu → Exit sketch',
   '폴리라인 체인 자동 선택 (Loop Select)': 'Select the whole polyline chain (loop select)',
-  'Sketch 모드 시작 (XZ 바닥 / XY 정면 / YZ 측면 / 선택 면)':
-    'Start sketch mode (XZ ground / XY front / YZ side / selected face)',
+  'Sketch 모드 시작 (XZ 정면 / XY 바닥 / YZ 측면 / 선택 면)':
+    'Start sketch mode (XZ front / XY ground / YZ side / selected face)',
   '닫힌 프로필 자동 감지 → 높이 prompt → Extrude/Cut':
     'Detects a closed profile → asks for a height → extrudes / cuts',
   '우클릭 → 색상 지정 (선택 면에 즉석 커스텀 material)':
@@ -839,8 +839,8 @@ export const EN: Record<string, string> = {
   '스케치 시작 · XY': 'Start sketch · XY',
   '스케치 시작 · YZ': 'Start sketch · YZ',
   '스케치 시작 · 자동': 'Start sketch · auto',
-  '✏️ 스케치 시작 · XZ 바닥': '✏️ Start sketch · XZ ground',
-  '✏️ 스케치 시작 · XY 정면': '✏️ Start sketch · XY front',
+  '✏️ 스케치 시작 · XZ 정면': '✏️ Start sketch · XZ front',
+  '✏️ 스케치 시작 · XY 바닥': '✏️ Start sketch · XY ground',
   '✨ 스케치 시작 · 자동 평면': '✨ Start sketch · auto plane',
   '↩ 스케치 재개': '↩ Resume sketch',
   '↻ up 카메라 정렬': '↻ Align camera to up',
@@ -1290,8 +1290,8 @@ export const EN: Record<string, string> = {
     'Clean the mesh (degenerate faces / winding / orphan vertices)',
   '경계 도구 (Boundary) — 닫힌 line cycle 명시 면 합성 (ADR-139)':
     'Boundary tool — build a face from a closed line cycle (ADR-139)',
-  '스케치 시작 — XZ 바닥 평면': 'Start sketch — XZ ground plane',
-  '스케치 시작 — XY 정면 평면': 'Start sketch — XY front plane',
+  '스케치 시작 — XZ 정면 평면': 'Start sketch — XZ front plane',
+  '스케치 시작 — XY 바닥 평면': 'Start sketch — XY ground plane',
   '스케치 시작 — YZ 측면 평면': 'Start sketch — YZ side plane',
   '스케치 시작 — 선택 면': 'Start sketch — selected face',
   '스케치 시작 — 자동 평면 감지': 'Start sketch — auto-detect plane',
@@ -1355,8 +1355,8 @@ export const EN: Record<string, string> = {
   '축은 X, Y, Z 중 하나여야 합니다': 'The axis must be X, Y or Z',
   '면 평면이 축(원점 통과)을 포함하고 축에서 떨어져 있는지 확인하세요':
     'Check the face plane contains the axis (through the origin) and stands off it',
-  'XZ 바닥': 'XZ ground',
-  'XY 정면': 'XY front',
+  'XZ 정면': 'XZ front',
+  'XY 바닥': 'XY ground',
   'YZ 측면': 'YZ side',
   '스케치 기준 면 1개를 선택하세요': 'Select 1 face to sketch on',
   '선택 면의 경계를 읽을 수 없습니다': 'Could not read the boundary of the selected face',
@@ -1542,8 +1542,8 @@ export const EN: Record<string, string> = {
   '로프트는 정확히 2개의 프로파일 면을 선택하세요 (현재 {lofts}개)': 'Loft needs exactly 2 profile faces ({lofts} selected)',
   '로프트 실패: {error}': 'Loft failed: {error}',
   '회전체 실패: {error}': 'Revolve failed: {error}',
-  '✏️ 스케치 시작 — XZ 바닥 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.': '✏️ Sketch started — XZ ground (Y=0). All drawing is locked to this plane.',
-  '✏️ 스케치 시작 — XY 정면 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.': '✏️ Sketch started — XY front (Z=0). All drawing is locked to this plane.',
+  '✏️ 스케치 시작 — XZ 정면 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.': '✏️ Sketch started — XZ front (Y=0). All drawing is locked to this plane.',
+  '✏️ 스케치 시작 — XY 바닥 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.': '✏️ Sketch started — XY ground (Z=0). All drawing is locked to this plane.',
   '✏️ 스케치 시작 — YZ 측면 (X=0). 모든 드로잉이 이 평면에 고정됩니다.': '✏️ Sketch started — YZ side (X=0). All drawing is locked to this plane.',
   '면 #{faceId}': 'Face #{faceId}',
   '{label} (재개)': '{label} (resumed)',
