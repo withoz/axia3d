@@ -1,6 +1,6 @@
 # ADR-067 — Press-Pull Engine (Smart Push/Pull Orchestration)
 
-**Status**: Draft (Step 1 entry — 자동 진입 from ADR-063 §4 큐 commitment 2026-05-04)
+**Status**: Accepted (Step 1 entry — 자동 진입 from ADR-063 §4 큐 commitment 2026-05-04) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-05-04
 **Anchor**: ADR-052 master roadmap §Phase R (UX integration layer)
 **Parent**: ADR-060 Phase O Step 3 (push_pull) + Step 4 (boolean_dispatch)

@@ -176,3 +176,30 @@ jobs:
         run: |
           npx vitest run \
             --testNamePattern "mcp_handshake_rejects_schema_mismatch|mcp_tier3_blocked_when_not_enabled|mcp_owner_ids_only_no_raw_indices|mcp_session_isolation_user_unaffected|mcp_audit_log_records_tier2_calls|mcp_latency_budget_tier1_under_33ms|mcp_capability_surface_matches_adr_041_p26_1"
+
+  # ───────────────────────────────────────────────────────────────
+  # create-axia-mcp — the scaffold (ADR-043).
+  #
+  # It has a real vitest suite, and until 2026-07-29 no PR-triggered workflow
+  # ran it: the only place it appeared was release.yml, which fires on a tag.
+  # A scaffold regression therefore reached a release before anything objected.
+  # It needs no WASM artifact, so it does not depend on wasm-node-build.
+  # ───────────────────────────────────────────────────────────────
+  create-scaffold-test:
+    name: Test create-axia-mcp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Install
+        working-directory: packages/create-axia-mcp
+        run: npm install
+
+      - name: Test
+        working-directory: packages/create-axia-mcp
+        run: npm test

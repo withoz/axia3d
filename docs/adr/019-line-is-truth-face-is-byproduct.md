@@ -1,6 +1,6 @@
 # ADR-019: Line is Truth, Face is Byproduct (v2.1)
 
-**Status**: Draft (canonical statement upgraded to 메타-원칙 #14, 2026-05-08)
+**Status**: Accepted (canonical statement upgraded to 메타-원칙 #14, 2026-05-08) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Owner**: AXiA Geometry/Core
 **Related**: ADR-007 (Winding), ADR-008 (Axioms), ADR-016 (Conditional B1),
 ADR-017 (Edge/Line elevation; future), ADR-018 (Uniform Surface Render),

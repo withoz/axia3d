@@ -110,10 +110,13 @@ node scripts/ifc-external-validate.mjs  # 외부 IFC 파서(web-ifc) 검증
 
 ---
 
-## 6. 원격 연결 시 활성화할 것 (branch protection)
+## 6. 원격 + branch protection
 
-현재 이 저장소는 **로컬 전용**이다. GitHub 등 원격에 연결하는 시점에 아래를
-**즉시 설정**한다 (486-브랜치 재발 방지의 마지막 방어선):
+**origin = `https://github.com/withoz/axia3d.git`** (이 문서가 "로컬 전용" 이라고
+말하던 것은 2026-07-29 감사에서 stale 로 확인 — 원격은 이 baseline 이전부터
+있었다). 아래는 486-브랜치 재발 방지의 마지막 방어선이며, **어느 것이 실제로
+켜져 있는지는 GitHub 설정에만 있고 이 저장소 어디에도 기록되지 않는다** — 확인은
+repo Settings → Branches 에서:
 
 - `main` 직접 push 제한 → PR 필수
 - **CI green 필수** (build / test / rust-test / adr-catalog-check 통과해야 병합)

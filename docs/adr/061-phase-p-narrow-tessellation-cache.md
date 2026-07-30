@@ -1,6 +1,6 @@
 # ADR-061 — Phase P (Narrow): Hot-Path Tessellation Cache
 
-**Status**: Draft (Path Z 사용자 결정 2026-05-04, sign-off 대기)
+**Status**: Accepted (Path Z 사용자 결정 2026-05-04, sign-off 대기) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-05-04
 **Anchor**: ADR-052 master roadmap (Phase P, scope 재정의)
 **Parent**: ADR-052 §2.x Phase P

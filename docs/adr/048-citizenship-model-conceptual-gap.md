@@ -1,6 +1,6 @@
 # ADR-048 — Citizenship Model Conceptual Gap (v3.2 Foundation Lock + Migration Roadmap)
 
-**Status**: Accepted (Phase 0 — documentation only, no code change) — **§1.2-1.3, §2.3, §3, §4 분석 부분은 ADR-049 의 Two-Layer Citizenship Model 로 supersede 됨 (2026-05-03 amendment)**
+**Status**: Superseded by ADR-049 (2026-05-03) — kept for the decision record; new work reads ADR-049 first (LOCKED #26). Originally Accepted (Phase 0 — documentation only, no code change) — **§1.2-1.3, §2.3, §3, §4 분석 부분은 ADR-049 의 Two-Layer Citizenship Model 로 supersede 됨 (2026-05-03 amendment)**
 **Date**: 2026-05-03
 **Anchor**: AixxiA Design Specification v3.2 (May 3, 2026, Author: WYKO)
 **Related**: ADR-007 (Face Orientation), ADR-019 (Line is Truth), ADR-021

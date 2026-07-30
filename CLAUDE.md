@@ -9520,7 +9520,11 @@ ADR-311 / ADR-309(이 단계를 명명) / ADR-310 · LOCKED #101(2·3단계) / A
   Phase 5/6/7 자연 완료 + Deferred boundary)
 
 ### 기타
-- Material / Texture (텍스처 이미지 매핑 미구현)
+- ~~Material / Texture (텍스처 이미지 매핑 미구현)~~ → **텍스처는 구현됨**
+  (ADR-099 / LOCKED #39): albedo·normal·roughness·metallic 4 PBR 채널이
+  `LayeredMaterialBinding.ts` 로 Three.js 에 바인딩되고 업로드 다이얼로그 2개가
+  있다. 남은 것은 **IFC 왕복의 텍스처 import** (ADR-311 §7) — per-face style,
+  `IfcMaterialProperties` 물성과 함께.
 - Electron/Tauri 데스크톱 앱
 - Boundary Extraction (Solid → Face)
 - Worker thread / GPU picking (ADR-012 강등 정책 트리거 시)

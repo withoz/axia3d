@@ -1,6 +1,6 @@
 # ADR-070 — ADR-046 Phase 1 Path Y: Analytic Hover Overlay Pilot
 
-**Status**: Draft (Path Z 사용자 결정 2026-05-04)
+**Status**: Accepted (Path Z 사용자 결정 2026-05-04) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-05-04
 **Anchor**: ADR-046 P31 Phase 1 PR-4 (Debug Panel) §D5 sub-feature C
 **Parent**: ADR-046 §Phase 1 PR-4

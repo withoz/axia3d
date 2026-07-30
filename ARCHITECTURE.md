@@ -218,7 +218,8 @@ npm run build  # Vite → dist/
 - [x] Snap System (vertex, edge, midpoint, center) — robust predicates(ADR-058 Phase M)는 opt-in
 - [x] Inference Engine (평행, 수직, 접선) — SnapManager.findSnap (ADR Phase A/B/C)
 - [x] Dimension Input (VCB) — DimensionLabel
-- [ ] Boundary 추출 — 명시 Boundary tool (ADR-139)
+- [x] Boundary 추출 — 명시 Boundary tool (ADR-139/148). `Ctrl+B`, 메뉴·툴바·
+      카탈로그 노출 완료 (`553aedb`). 2026-07-29 감사에서 이 줄이 stale 로 확인.
 
 ## Push/Pull 구현 상세 (2026-04-09 확정)
 
@@ -254,7 +255,11 @@ Two-tone rendering (SketchUp 스타일):
 ### Phase 4: Advanced
 - [x] Boolean Operations (Union, Subtract, Intersect) — convex polygonal MVP +
       곡면(sphere/cylinder/cone/torus) surface-preserving (ADR-197 β-3, ~9k LOC).
-      미지원: multi-loop(hole) 면, 비-Z축 곡면, NURBS surface SSI
+      **비-Z축 곡면도 지원** — ADR-278 follow-up (LOCKED #94) 이 operand 를
+      실제 축/방향으로 재생성. 회귀 `adr278_pathb_rotated_cyl_inverted_cone_
+      subtract_cuts` 가 X축 30° 회전 실린더 + 180° 뒤집힌 콘으로 봉인.
+      미지원: multi-loop(hole) 면, NURBS surface SSI, grazing/tangential
+      (접하면 self-intersect → fail-closed)
 - [x] Group/Component — axia-core `group.rs` (중첩/가시성/잠금/컴포넌트)
 - [~] Material/Texture — material 시스템 있음; texture 매핑 일부
 - [ ] Follow Me (path sweep) — Sweep/Loft 일부 (ADR-079 W-3/W-4)
