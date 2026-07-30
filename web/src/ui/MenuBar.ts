@@ -17,6 +17,11 @@ import { startBooleanOp, intersectWithModel } from './BooleanHandler';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import type { ImportFormat } from '../import/FileImporter';
+import {
+  markActionUnavailable,
+  consumeActionUnavailable,
+  resetActionUnavailable,
+} from './actionAvailability';
 import { timestampedName } from '../export/ExportUtils';
 import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
 
@@ -48,20 +53,10 @@ export interface MenuBarDeps {
  * (ADR-299). A handler that cannot proceed calls {@link markActionUnavailable};
  * the dispatcher reads it back and reports honestly.
  */
-let actionUnavailable = false;
-
-/** A handler declares it could not carry the action out. */
-export function markActionUnavailable(message: string): void {
-  actionUnavailable = true;
-  Toast.warning(message);
-}
-
-/** Read and clear the flag — call immediately after dispatching a click. */
-export function consumeActionUnavailable(): boolean {
-  const was = actionUnavailable;
-  actionUnavailable = false;
-  return was;
-}
+// The pair moved to ./actionAvailability so handlers inside ToolManager can
+// reach it — MenuBar imports ToolManager, so importing back would close a
+// cycle. Re-exported here because that is where every existing caller looks.
+export { markActionUnavailable, consumeActionUnavailable };
 
 export function initMenuBar(deps: MenuBarDeps): void {
   const { viewport, bridge, toolManager, scene, fileManager,
@@ -231,7 +226,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
 
     // Fresh slate: a handler that cannot proceed sets this via
     // markActionUnavailable, and the palette dispatcher reads it back.
-    actionUnavailable = false;
+    resetActionUnavailable();
 
     closeAllMenus();
 

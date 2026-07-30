@@ -233,6 +233,8 @@ export const EN: Record<string, string> = {
   '그룹 숨기기/표시': 'Hide/show group',
   '그룹 잠금/해제': 'Lock/unlock group',
   '컴포넌트로 변환': 'Convert to component',
+  '컴포넌트로 변환했습니다': 'Converted to a component',
+  '컴포넌트 변환에 실패했습니다': 'Could not convert to a component',
   '📁 컴포넌트 / 그룹 패널': '📁 Components / groups panel',
 
   // ── Sketch ──

@@ -10,9 +10,13 @@ vi.mock('../utils/debug', () => ({ debugLog: vi.fn(), debugWarn: vi.fn() }));
 vi.mock('../ui/BooleanHandler', () => ({ startBooleanOp: vi.fn(), intersectWithModel: vi.fn() }));
 
 import { Toast } from '../ui/Toast';
+import { consumeActionUnavailable } from '../ui/actionAvailability';
 vi.mock('../ui/Toast', () => ({
+  // `success` was missing here while Toast really has it, so the first caller
+  // to reach it failed with "Toast.success is not a function" rather than the
+  // mock quietly absorbing it. Keep this in step with Toast's static surface.
   Toast: {
-    info: vi.fn(), warning: vi.fn(), error: vi.fn(), show: vi.fn(),
+    info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn(), show: vi.fn(),
     fromBridgeError: vi.fn(),
   },
 }));
@@ -168,6 +172,10 @@ function mockBridge() {
     getStats: vi.fn().mockReturnValue({ verts: 3, faces: 1 }),
     getFaceNormal: vi.fn().mockReturnValue([0, 1, 0]),
     makeComponent: vi.fn().mockReturnValue(1),
+    // Real bridge method — the constraint handlers in this file already call it
+    // unguarded to surface an engine refusal. The stub lacked it, so the first
+    // failure path to ask threw instead of reporting.
+    lastError: vi.fn().mockReturnValue(''),
     getGroupForFace: vi.fn().mockReturnValue(undefined),
     getGroupFaces: vi.fn().mockReturnValue(null),
     createGroup: vi.fn(),
@@ -865,24 +873,53 @@ describe('ToolManager', () => {
       // Should not throw
     });
 
-    it('make-component with selected group face', () => {
+    // These three used to assert only whether bridge.makeComponent was called,
+    // which is why nothing noticed that every outcome was silent: success, "not
+    // a group" and "nothing selected" all ended in debugLog, a no-op unless
+    // window.__AXIA_DEBUG is set. Each now asserts what the user is told.
+    it('make-component with selected group face — converts and says so', () => {
       vi.spyOn(tm.selection, 'getSelectedFaces').mockReturnValue([5]);
       vi.spyOn(tm.selection, 'getGroupId').mockReturnValue(2);
+      vi.mocked(bridge.makeComponent).mockReturnValue(7);
+      vi.mocked(Toast.success).mockClear();
       tm.executeAction('make-component');
       expect(bridge.makeComponent).toHaveBeenCalledWith(2, 'Component-2');
+      expect(Toast.success, 'a successful conversion told the user nothing').toHaveBeenCalled();
     });
 
-    it('make-component without group does nothing', () => {
+    it('make-component without group — warns instead of going quiet', () => {
       vi.spyOn(tm.selection, 'getSelectedFaces').mockReturnValue([5]);
       vi.spyOn(tm.selection, 'getGroupId').mockReturnValue(undefined);
+      vi.mocked(Toast.warning).mockClear();
       tm.executeAction('make-component');
       expect(bridge.makeComponent).not.toHaveBeenCalled();
+      // markActionUnavailable raises a warning AND flags the dispatcher, so the
+      // Capability Explorer stops recording a no-op as `result:'ok'` (ADR-299).
+      expect(Toast.warning, 'the user was told nothing').toHaveBeenCalled();
+      expect(consumeActionUnavailable(), 'the dispatcher would still call this a success').toBe(true);
     });
 
-    it('make-component with no selection does nothing', () => {
+    it('make-component with no selection — warns instead of falling off the end', () => {
+      // There was no branch at all for this: `if (selected.length > 0)` had no
+      // else, so an empty selection returned having done and said nothing.
       vi.spyOn(tm.selection, 'getSelectedFaces').mockReturnValue([]);
+      vi.mocked(Toast.warning).mockClear();
       tm.executeAction('make-component');
       expect(bridge.makeComponent).not.toHaveBeenCalled();
+      expect(Toast.warning, 'the user was told nothing').toHaveBeenCalled();
+      expect(consumeActionUnavailable()).toBe(true);
+    });
+
+    it('make-component when the engine refuses — surfaces the engine error', () => {
+      vi.spyOn(tm.selection, 'getSelectedFaces').mockReturnValue([5]);
+      vi.spyOn(tm.selection, 'getGroupId').mockReturnValue(2);
+      vi.mocked(bridge.makeComponent).mockReturnValue(-1);
+      vi.mocked(Toast.warning).mockClear();
+      vi.mocked(Toast.success).mockClear();
+      tm.executeAction('make-component');
+      expect(Toast.success, 'a refusal was reported as a success').not.toHaveBeenCalled();
+      expect(Toast.warning).toHaveBeenCalled();
+      expect(consumeActionUnavailable()).toBe(true);
     });
 
     it('undo when tool is busy cancels tool instead', () => {

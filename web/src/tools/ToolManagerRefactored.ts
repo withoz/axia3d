@@ -19,6 +19,8 @@ import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { ConstraintCommands } from './ConstraintCommands';
 import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
+// Not from '../ui/MenuBar' — MenuBar imports this file, so that would be a cycle.
+import { markActionUnavailable } from '../ui/actionAvailability';
 import { getMergeTolerance, getRespectMaterial, groupFacesByMaterial } from './MergeSettings';
 import { extractEdgeChain } from './EdgeChain';
 import { getMaterialLibrary } from '../materials/MaterialLibrary';
@@ -2126,17 +2128,41 @@ export class ToolManager {
         debugLog('[Action] ungroup =>', result);
       }
     } else if (action === 'make-component') {
-      // 선택된 그룹을 컴포넌트로 변환
+      // 선택된 그룹을 컴포넌트로 변환.
+      //
+      // Every path here used to end in debugLog, which is a no-op unless
+      // window.__AXIA_DEBUG is set — so success, "nothing selected" and "not a
+      // group" were equally silent, and the empty-selection case had no branch
+      // at all. The five sibling group rows all toast. The toasts live in this
+      // branch rather than in the context menu because all four surfaces —
+      // menubar, toolbar dropdown, right-click and the palette — funnel through
+      // dispatchAction, so one place covers them.
+      //
+      // The bail-outs use markActionUnavailable, which toasts AND tells the
+      // dispatcher the action did not happen; otherwise the Capability Explorer
+      // records `result:'ok'` for a no-op, which is the ADR-299 defect.
+      //
+      // No syncMesh: make_component touches scene.groups only, never geometry.
+      // The Outliner is the surface that changes (▣ → ◆), so it is refreshed.
       const selected = this.selection.getSelectedFaces();
-      if (selected.length > 0) {
+      if (selected.length === 0) {
+        markActionUnavailable(t('그룹 안의 면을 먼저 선택하세요'));
+      } else {
         const groupId = this.selection.getGroupId(selected[0]);
-        if (groupId !== undefined) {
+        if (groupId === undefined) {
+          markActionUnavailable(t('선택한 면은 그룹에 속해 있지 않습니다'));
+        } else {
           const defId = this.bridge.makeComponent(groupId, `Component-${groupId}`);
           if (defId > 0) {
             debugLog(`[Action] make-component: Group-${groupId} → Component def ${defId}`);
+            Toast.success(t('컴포넌트로 변환했습니다'), 2500);
+            const panel = (window as unknown as { __axia_componentPanel?: { refresh: () => void } })
+              .__axia_componentPanel;
+            panel?.refresh();
+          } else {
+            const err = this.bridge.lastError();
+            markActionUnavailable(err || t('컴포넌트 변환에 실패했습니다'));
           }
-        } else {
-          debugLog('[Action] make-component — 먼저 그룹을 선택하세요');
         }
       }
     } else if (action === 'bool-union' || action === 'bool-subtract' || action === 'bool-intersect') {
