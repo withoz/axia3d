@@ -356,7 +356,7 @@ export function initKeyboardShortcuts(deps: KeyboardShortcutsDeps): void {
       return;
     }
     // Home: 작업 평면 초기화 (Plane reset — lock + sticky 해제 → 빈 공간 바닥 z=0).
-    // ADR-270 §amendment 2 (사용자 요청 2026-07-03) — 기존 Ctrl+Shift+P 는
+    // ADR-270 §amendment 2 (사용자 요청 2026-07-03) — 기존 Home 는
     // Command Palette(명령어 찾기, main.ts Ctrl+K / Ctrl+Shift+P)와 충돌하여
     // Home 키로 이전. Home 은 keydown 미배정(카메라 홈은 F5 + 🏠 버튼)이라 충돌
     // 없음. 면에 그린 뒤 커서가 면 위면 그 면 우선, 빈 공간만 바닥으로 복귀.

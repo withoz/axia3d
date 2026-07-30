@@ -356,7 +356,7 @@ export function initContextMenu(deps: ContextMenuDeps): void {
         }
         break;
       }
-      // ─ ADR-270 §amendment — 단일 "평면 초기화" (Ctrl+Shift+P 와 동일 entry) ─
+      // ─ ADR-270 §amendment — 단일 "평면 초기화" (Home 와 동일 entry) ─
       // 사용자 워크플로우:
       //   1. Draw 도구로 면/평면에 도형 그림 → lock/sticky 활성
       //   2. 의도 변경: 다시 바닥(z=0) 또는 다른 면에 그리고 싶음

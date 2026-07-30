@@ -141,6 +141,55 @@ for (const filename of adrFiles) {
   }
 }
 
+// --- Step 6: the catalog's own Status column must match the ADR body ---
+//
+// Steps 3-5 check that every ADR is listed, that links resolve, and that the
+// Status *inside each body* is canonical. Nobody checked the Status column of
+// the catalog itself — which is the column a session actually reads, since the
+// catalog is the index and there are 290+ bodies. A 2026-07-29 audit measured
+// 17 rows disagreeing with their own ADR, including ADR-021 shown as `Accepted`
+// when its body says `Superseded by ADR-139`. A guard that appears to cover the
+// catalog and does not is worse than no guard.
+//
+// Row shape: | [NNN](./NNN-….md) | …description… | Status | …optional… |
+const rowRe = /^\|\s*\[(\d+)\]\(\.\/(\d+-[^)]+\.md)\)\s*\|(.*)$/gm;
+let row;
+while ((row = rowRe.exec(readme)) !== null) {
+  const num = row[1];
+  const filename = row[2];
+  // Cells after the link; the Status cell is the one holding a canonical token.
+  const cells = row[3].split('|').map((c) => c.replace(/\*\*/g, '').trim());
+  const catalogStatus = cells.find((c) => CANONICAL_STATES.has(c.split(/[\s,;.(]/)[0]));
+  if (!catalogStatus) continue; // rows without a Status column are not claims
+
+  const bodyPath = join(ADR_DIR, filename);
+  let body;
+  try {
+    body = await readFile(bodyPath, 'utf-8');
+  } catch {
+    continue; // Step 4 already reported the broken link
+  }
+  let bodyStatus = null;
+  for (const re of statusFormats) {
+    const m = body.match(re);
+    if (m) {
+      bodyStatus = m[1].replace(/\*\*/g, '').trim();
+      break;
+    }
+  }
+  if (bodyStatus === null) continue; // Step 5 already warned
+
+  const catalogToken = catalogStatus.split(/[\s,;.(]/)[0];
+  const bodyToken = bodyStatus.split(/[\s,;.(]/)[0];
+  if (catalogToken !== bodyToken) {
+    err(
+      `CATALOG STATUS DRIFT: ADR-${num}\n` +
+        `  catalog says: ${catalogToken}\n` +
+        `  body says:    ${bodyToken}  (${bodyStatus.slice(0, 80)})`
+    );
+  }
+}
+
 // --- Report ---
 const totalFiles = adrFiles.length;
 const totalNumbers = adrNumbers.size;

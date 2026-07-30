@@ -181,6 +181,27 @@ impl VolumeIntegrityReport {
 // ─── Mesh impl — read-only invariant verifiers ───────────────────────
 
 impl Mesh {
+    /// Is this loop a single self-loop edge carrying an analytic curve — the
+    /// ADR-089 Path B boundary shape?
+    ///
+    /// Such an edge is `twin == self`, so the faces on both sides of it share
+    /// one half-edge and `he.face()` can only name one. Any check that asks
+    /// "does this half-edge belong to this face?" is therefore inapplicable
+    /// here, and says nothing about whether the mesh is damaged.
+    fn loop_is_self_loop_curve(&self, start: HeId) -> bool {
+        self.collect_loop_hes(start)
+            .map(|hes| {
+                hes.len() == 1
+                    && self
+                        .edges
+                        .get(self.hes[hes[0]].edge())
+                        .filter(|e| e.is_active())
+                        .and_then(|e| e.curve())
+                        .is_some()
+            })
+            .unwrap_or(false)
+    }
+
     /// 전체 mesh의 face orientation invariants 검증 결과.
     ///
     /// 위반 사항이 있으면 `violations`에 Human-readable 메시지 열거.
@@ -211,10 +232,25 @@ impl Mesh {
             // analytic curve attached) 도 valid — face = closed boundary
             // 의 byproduct (메타-원칙 #14). Polygon face (≥3 verts) 동작
             // 무변화.
+            // Closed-curve exemption: outer loop = 1 vert + 1 self-loop edge
+            // with `Edge.curve.is_some()`. It exempts I2 — and only I2.
+            //
+            // This used to `continue`, which dropped the face out of I6, I3 and
+            // I4 as well. The comment justified skipping I2 ("the curve's
+            // analytic normal is the truth source") and the *outer* half of I4
+            // ("single HE already wired in add_face_closed_curve"), and said
+            // nothing about the rest. So every Path B primitive — every sphere,
+            // cylinder, cone, torus and drawn circle, i.e. the production
+            // default — was outside the verifier entirely: repoint one of a
+            // ring's inner half-edges at another face and `verify_face_invariants`
+            // still returned `valid=true, violations=[]`, with
+            // `collect_non_manifold_edges` and `detect_self_intersections` blind
+            // to it too. That is ADR-306's asymmetry one face class over, and
+            // "correct when we build it" is not a reason for a verifier to look
+            // away.
+            let mut is_closed_curve = false;
             if outer_verts.len() < 3 {
-                // Closed-curve exemption: outer loop = 1 vert + 1 self-loop
-                // edge with Edge.curve.is_some().
-                let is_closed_curve_face = outer_verts.len() == 1
+                is_closed_curve = outer_verts.len() == 1
                     && self.collect_loop_hes(outer_start).map(|hes| {
                         hes.len() == 1 && {
                             let he = &self.hes[hes[0]];
@@ -224,16 +260,12 @@ impl Mesh {
                                 .is_some()
                         }
                     }).unwrap_or(false);
-                if !is_closed_curve_face {
+                if !is_closed_curve {
                     violations.push(format!("face {:?}: outer loop has {} verts (< 3)",
                         fid, outer_verts.len()));
                     continue;
                 }
-                // Skip I2 (winding check via compute_normal) for closed-curve
-                // face — the curve's analytic normal is the truth source.
-                // Skip I4 (outer HE face check) — single HE already wired in
-                // add_face_closed_curve. Continue to next face for I5.
-                continue;
+                // Fall through: I6, I3 and I4 all still apply.
             }
 
             // I6 (ADR-304): a normal that is not finite is not a normal.
@@ -260,8 +292,11 @@ impl Mesh {
                 ));
                 continue;
             }
-            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반)
-            if cached.length_squared() > 1e-10 {
+            // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반).
+            // `!is_closed_curve` — a 1-vertex loop has no winding to compute,
+            // and the curve's analytic normal is the truth source. This is the
+            // one check the closed-curve exemption actually buys.
+            if !is_closed_curve && cached.length_squared() > 1e-10 {
                 if let Ok(computed) = self.compute_normal(&outer_verts) {
                     let cn = cached.normalize_or_zero();
                     let gn = computed.normalize_or_zero();
@@ -326,10 +361,28 @@ impl Mesh {
             // ADR-298 L-298-5 는 이를 "verify_face_invariants 가 inner loop 을
             // 걷지 않는다" 로 적었는데 부정확하다 — I3 는 baseline(155e127,
             // ADR-298 이전)부터 걷고 있었다. 실제 구멍은 이 **비대칭** 이다.
+            // I4 is skipped per LOOP, not per face, and only for a self-loop
+            // boundary. A self-loop edge is `twin == self` in the Path B
+            // representation (ADR-192 §3.2 records that as deliberate), so the
+            // faces on both sides of such a boundary reference the SAME
+            // half-edge and it can only name one of them — I4 would flag the
+            // other every time. Measured both ways: a freshly drawn Path B
+            // sphere produced three "outer HE points to wrong face"
+            // violations, and extruding a ring produced "inner[0] HE points to
+            // wrong face", each of which made the ADR-267 gate roll back a
+            // perfectly good operation.
+            //
+            // Everything else still runs on a closed-curve face — I6, I3, and
+            // I4 on any POLYGONAL loop it may carry. Those are the checks the
+            // ADR-089 exemption never justified.
             let loop_starts = std::iter::once(outer_start)
                 .chain(face.inners().iter().map(|inner| inner.start))
                 .enumerate();
             for (li, start) in loop_starts {
+                if start.is_null() { continue; }
+                if self.loop_is_self_loop_curve(start) {
+                    continue;
+                }
                 if start.is_null() { continue; }   // I1/I3 가 이미 보고함
                 let Ok(hes) = self.collect_loop_hes(start) else { continue; };
                 for he in hes {
@@ -680,6 +733,122 @@ mod adr267_tests {
             r.geometric_cracks.is_empty(),
             "radial single-EdgeId must not be flagged as geometric crack: {:?}",
             r.geometric_cracks
+        );
+    }
+}
+
+/// A closed-curve face is inside the verifier, not outside it.
+///
+/// Every Path B primitive — sphere, cylinder, cone, torus, drawn circle, i.e.
+/// the production default — used to `continue` past I6, I3 and I4, so the
+/// damage below was reported as `valid=true, violations=[]`. The exemption is
+/// now I2 only.
+#[cfg(test)]
+mod audit_closed_curve_invariant_tests {
+    use super::*;
+    use crate::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    /// Control first: a healthy Path B sphere must stay clean, or the checks
+    /// below prove nothing except that the verifier complains about everything.
+    #[test]
+    fn a_healthy_path_b_sphere_is_still_valid() {
+        let mut mesh = Mesh::new();
+        mesh.create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0)).unwrap();
+        let r = mesh.verify_face_invariants();
+        assert!(r.is_valid(), "a native sphere must verify clean: {:?}", r.violations);
+    }
+
+    /// A closed-curve ring, so there is an INNER loop to damage. Two concentric
+    /// Path B circles promoted to an annulus is what the draw path produces
+    /// (`assign_circle_holes_innermost`).
+    fn ring(mesh: &mut Mesh) -> crate::FaceId {
+        use crate::curves::AnalyticCurve;
+        let mut disc = |r: f64| {
+            let anchor = mesh.add_vertex(DVec3::new(r, 0.0, 0.0));
+            let curve = AnalyticCurve::Circle {
+                center: DVec3::ZERO,
+                radius: r,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+            };
+            mesh.add_face_closed_curve(anchor, curve, MaterialId::new(0)).unwrap()
+        };
+        let outer = disc(10.0);
+        let inner = disc(5.0);
+        crate::operations::annulus::promote_circles_to_annulus(mesh, outer, inner)
+            .expect("two concentric circles promote to a ring");
+        outer
+    }
+
+    #[test]
+    fn a_healthy_closed_curve_ring_is_valid() {
+        let mut mesh = Mesh::new();
+        let outer = ring(&mut mesh);
+        assert_eq!(mesh.faces[outer].inners().len(), 1, "a ring has one hole");
+        let r = mesh.verify_face_invariants();
+        assert!(r.is_valid(), "a healthy ring must verify clean: {:?}", r.violations);
+    }
+
+    /// I4 cannot speak about a self-loop boundary, in either direction — and
+    /// this test exists so nobody "fixes" that back.
+    ///
+    /// A closed-curve edge is twin-of-itself, so the faces on both sides share
+    /// one half-edge and it can only name one of them (ADR-192 §3.2 records
+    /// that representation as deliberate). Repointing it is therefore not
+    /// detectable damage. Measured both ways while narrowing this: a bare
+    /// Path B sphere produced three "outer HE points to wrong face", and
+    /// extruding a ring produced "inner[0] HE points to wrong face" — each of
+    /// which made the ADR-267 gate roll back a healthy operation.
+    ///
+    /// What the widening does buy on this face class is I6 and I3, covered by
+    /// the tests either side of this one.
+    #[test]
+    fn a_self_loop_boundary_is_exempt_from_i4_in_both_directions() {
+        let mut mesh = Mesh::new();
+        let outer = ring(&mut mesh);
+        let far_anchor = mesh.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let other = mesh
+            .add_face_closed_curve(
+                far_anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::new(90.0, 0.0, 0.0),
+                    radius: 10.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+
+        for start in [mesh.faces[outer].outer().start, mesh.faces[outer].inners()[0].start] {
+            let hes = mesh.collect_loop_hes(start).unwrap();
+            assert_eq!(hes.len(), 1, "a closed-curve boundary is one half-edge");
+            mesh.hes[hes[0]].set_face(other);
+        }
+
+        let r = mesh.verify_face_invariants();
+        assert!(
+            !r.violations.iter().any(|v| v.contains("wrong face")),
+            "a shared self-loop HE must not be reported as ownership damage: {:?}",
+            r.violations
+        );
+    }
+
+    #[test]
+    fn a_non_finite_normal_on_a_closed_curve_face_is_caught() {
+        // I6 (ADR-304). A NaN normal is never right, on any face class.
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_sphere_kernel_native(DVec3::ZERO, 1000.0, MaterialId::new(0))
+            .unwrap();
+        mesh.faces[faces[0]].set_normal(DVec3::new(f64::NAN, 0.0, 0.0));
+
+        let r = mesh.verify_face_invariants();
+        assert!(
+            !r.is_valid() && r.violations.iter().any(|v| v.contains("not finite")),
+            "a NaN normal must be a violation, got {:?}",
+            r.violations
         );
     }
 }

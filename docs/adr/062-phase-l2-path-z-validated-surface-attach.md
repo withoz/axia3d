@@ -1,6 +1,6 @@
 # ADR-062 — Phase L₂ Path Z: Validated Surface Attach (Pilot)
 
-**Status**: Draft + Amendment 1 (refinements 적용 2026-05-04, Step 1 진입 승인)
+**Status**: Accepted + Amendment 1 (refinements 적용 2026-05-04, Step 1 진입 승인) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-05-04
 **Anchor**: ADR-052 master roadmap (Phase L₂, Path Z 좁은 pilot)
 **Parent**: ADR-052 §2.x Phase L₂

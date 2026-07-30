@@ -13,9 +13,13 @@
  * - Project tier 활성 토글 (Project 는 항상 ON, S-E)
  *
  * 의의: 사용자가 User tier 를 명시 활성하지 않으면 AssetLibraryPanel
- * 가 User 섹션을 hide / disabled (host 가 본 flag 를 조회하여 panel
- * 의 User row 를 conditional 처리). MVP 는 panel-level filtering 없이
- * 항상 3 섹션 보여줌 — Settings flag 는 향후 확장 anchor.
+ * 가 User 섹션을 hide (host 가 본 flag 를 조회하여 panel 의 User row 를
+ * conditional 처리).
+ *
+ * 그 conditional 처리가 오랫동안 없었다 — MVP 가 "항상 3 섹션" 이었고
+ * flag 는 "향후 확장 anchor" 로 남아, 체크박스를 켜도 꺼도 화면이 같았다.
+ * 지금은 main.ts 가 `userTierEnabled` 콜백으로 panel 에 넘기고,
+ * `onAssetLibraryUserTierModeChange` 로 열려 있는 panel 을 즉시 갱신한다.
  */
 
 const STORAGE_KEY = 'axia:asset-library-user-tier';

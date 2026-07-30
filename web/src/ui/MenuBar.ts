@@ -17,6 +17,11 @@ import { startBooleanOp, intersectWithModel } from './BooleanHandler';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import type { ImportFormat } from '../import/FileImporter';
+import {
+  markActionUnavailable,
+  consumeActionUnavailable,
+  resetActionUnavailable,
+} from './actionAvailability';
 import { timestampedName } from '../export/ExportUtils';
 import { toolDisplayName, viewDisplayName } from './toolDisplayNames';
 
@@ -48,20 +53,10 @@ export interface MenuBarDeps {
  * (ADR-299). A handler that cannot proceed calls {@link markActionUnavailable};
  * the dispatcher reads it back and reports honestly.
  */
-let actionUnavailable = false;
-
-/** A handler declares it could not carry the action out. */
-export function markActionUnavailable(message: string): void {
-  actionUnavailable = true;
-  Toast.warning(message);
-}
-
-/** Read and clear the flag — call immediately after dispatching a click. */
-export function consumeActionUnavailable(): boolean {
-  const was = actionUnavailable;
-  actionUnavailable = false;
-  return was;
-}
+// The pair moved to ./actionAvailability so handlers inside ToolManager can
+// reach it — MenuBar imports ToolManager, so importing back would close a
+// cycle. Re-exported here because that is where every existing caller looks.
+export { markActionUnavailable, consumeActionUnavailable };
 
 export function initMenuBar(deps: MenuBarDeps): void {
   const { viewport, bridge, toolManager, scene, fileManager,
@@ -231,7 +226,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
 
     // Fresh slate: a handler that cannot proceed sets this via
     // markActionUnavailable, and the palette dispatcher reads it back.
-    actionUnavailable = false;
+    resetActionUnavailable();
 
     closeAllMenus();
 
@@ -501,9 +496,13 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-offset': setActiveTool('offset'); break;
       case 'tool-recess': setActiveTool('recess'); break;
       case 'tool-erase': setActiveTool('erase'); break;
-      // Mirror (world-axis) — 메뉴에서 직접 X/Y/Z 반전 선택. tool-mirror alias는
-      // 레거시 진입점 (x축 기본값).
-      case 'tool-mirror': toolManager.executeAction('mirror-x'); break;
+      // Mirror (world-axis) — 메뉴에서 직접 X/Y/Z 반전 선택.
+      // `tool-mirror` activates MirrorTool, which is what its label promises
+      // ("미러 도구 · X/Y/Z 전환 · 반복"). It used to fire the one-shot mirror-x,
+      // described here as a legacy alias — ADR-220 L-220-3 established these are
+      // separate current tools and dropped that alias from the catalog, but this
+      // half of the correction was missed. The one-shot ops keep their own rows.
+      case 'tool-mirror': setActiveTool('mirror'); break;
       case 'mirror-x':
       case 'mirror-y':
       case 'mirror-z':
@@ -566,12 +565,15 @@ export function initMenuBar(deps: MenuBarDeps): void {
       // Split (ADR-308) — split an edge at an arbitrary picked point. The
       // tool has always worked on bare X; this is the browse surface it lacked.
       case 'tool-split': setActiveTool('split'); break;
-      // Fillet — 선택된 엣지 1개에 모깎기 적용. 도구가 아니라 액션이므로
-      // 활성 도구 전환 없이 즉시 실행.
-      case 'tool-fillet': toolManager.executeAction('fillet-edge'); break;
-      // Chamfer — 선택된 엣지 1개에 모따기 적용. Fillet과 동일 파라미터
-      // (거리)지만 세그먼트 없이 평면 bevel.
-      case 'tool-chamfer': toolManager.executeAction('chamfer-edge'); break;
+      // Fillet / Chamfer — these two activate their tools, matching the labels
+      // ("필렛 도구 · 엣지+반지름 · 반복", "꼭짓점 챔퍼"). Both used to run the
+      // one-shot edge op instead, so 꼭짓점 챔퍼 answered a vertex request with
+      // "챔퍼할 엣지 1개를 먼저 선택하세요" and, given an edge, performed the same
+      // edge chamfer as the row below it. ChamferTool is the only path to the
+      // valence-3 vertex cut (ADR-207/024 P10) and had no surface but the
+      // palette. The one-shot 엣지 필렛 / 엣지 챔퍼 rows are untouched.
+      case 'tool-fillet': setActiveTool('fillet'); break;
+      case 'tool-chamfer': setActiveTool('chamfer'); break;
       // ADR-226 — 분해(Explode) = ungroup 동의어. 'explode' tool 미구현(phantom)이라
       // 작동하는 ungroup 으로 재배선 (분해 live). ungroup 은 단축키/메뉴 현행 유지.
       case 'tool-explode': toolManager.executeAction('ungroup'); break;

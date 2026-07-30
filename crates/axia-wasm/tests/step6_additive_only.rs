@@ -76,6 +76,14 @@ fn wasm_export_baseline_unchanged() {
 fn lib_src() -> &'static str { include_str!("../src/lib.rs") }
 fn json_helpers_src() -> &'static str { include_str!("../src/step6_json.rs") }
 
+/// The engine source that actually emits the outcome labels
+/// (`SurfaceAttachOutcome::label()`). Cross-crate on purpose: the labels are a
+/// contract between axia-geo and the JSON this crate hands to TS, and the
+/// enumeration in the test below is the only place the full set is written
+/// down. If this path ever moves, the `include_str!` fails to compile — which
+/// is the right failure, not a silently vacuous check.
+fn geo_mesh_src() -> &'static str { include_str!("../../axia-geo/src/mesh.rs") }
+
 // ── Test 2 — Edge curve JSON emits world coords (R7) ─────────────────
 #[test]
 fn get_edge_curve_json_emits_world_coords() {
@@ -210,14 +218,19 @@ fn attach_validated_json_includes_schema_version() {
             "surface_attach_outcome_json missing required key: {}", key);
     }
 
-    // All 6 outcome labels present in helper.
+    // All 6 outcome labels present. This loop used to be `let _ = label;` — it
+    // enumerated the discriminated union and asserted nothing, so any variant
+    // could be renamed or dropped with the test still green, and this is the
+    // only place the six-label set is written down.
+    let outcome_src = geo_mesh_src();
     for label in [
         "Attached", "BoundaryDriftExceedsTol", "UnsupportedSurfaceKind",
         "NoOuterLoop", "InactiveFace", "DegenerateSurfaceInput",
     ] {
-        // Each label appears as match arm + outcome.label() output.
-        // We check the SurfaceAttachOutcome usage propagates labels.
-        let _ = label;  // labels are emitted via outcome.label() — verified at runtime
+        assert!(
+            outcome_src.contains(&format!("\"{label}\"")),
+            "ADR-062 Amendment 1: outcome label {label} is no longer emitted by label()"
+        );
     }
 
     // Variant-specific fields present.
@@ -296,17 +309,43 @@ fn fillet_edge_dispatch_json_includes_path_and_skip_reason() {
 // Source-scan invariants (cargo test cannot drive js-sys marshalling).
 // ════════════════════════════════════════════════════════════════════════
 
-/// Exact source body of `create_solid_extrude_tapered`, bounded by the next fn
-/// (`create_solid_loft`) so negative asserts don't bleed into sibling methods.
+/// Exact source body of `create_solid_extrude_tapered`, bounded by the **next
+/// `pub fn`** so asserts cannot be satisfied by a sibling.
+///
+/// This used to end at `create_solid_loft`, which is four functions later:
+/// `create_solid_extrude_cone` and `create_solid_extrude_bidirectional` sat
+/// inside the slice. Deleting the tapered export's `CommandResult::SolidCreated`
+/// arm still passed, because the cone function supplied that literal — and this
+/// is the test LOCKED #92 names as ADR-259's D5 guard. Same for
+/// `CommandResult::Error`, and for three of the five signature checks in the
+/// sibling test.
 fn adr259_tapered_body() -> &'static str {
     let l = lib_src();
     let start = l
         .find("pub fn create_solid_extrude_tapered")
         .expect("ADR-259 β-2: create_solid_extrude_tapered must be wired");
-    let rel = l[start..]
-        .find("pub fn create_solid_loft")
-        .expect("create_solid_loft must follow the tapered fn");
-    &l[start..start + rel]
+    // Skip past this fn's own declaration before looking for the next one.
+    let after_decl = start + "pub fn create_solid_extrude_tapered".len();
+    let rel = l[after_decl..]
+        .find("\n    pub fn ")
+        .expect("a following pub fn must bound the tapered body");
+    let body = &l[start..after_decl + rel];
+    // The bound itself is the thing that was wrong, so assert it here rather
+    // than trusting the search string. Every negative assert in the ADR-259
+    // guards rests on this slice holding exactly one function.
+    for neighbour in [
+        "create_solid_extrude_cone",
+        "create_solid_extrude_bidirectional",
+        "create_solid_loft",
+        "create_solid_revolve",
+    ] {
+        assert!(
+            !body.contains(&format!("pub fn {neighbour}")),
+            "adr259_tapered_body leaked into {neighbour} — its asserts can be \
+             satisfied by a sibling, which is exactly the defect this bound fixes"
+        );
+    }
+    body
 }
 
 /// β-2 #1 — tapered export added, legacy `create_solid_extrude` unchanged

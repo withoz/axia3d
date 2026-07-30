@@ -1,6 +1,6 @@
 # ADR-013 — Memory Budget & Bounded Collections
 
-**Status**: Proposed
+**Status**: Accepted — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-04-27
 **Axis**: 메모리 (성능에도 직접 영향 — GC 압박이 프레임 끊김의 주요 원인)
 **Related**: ADR-012 (Latency Budget), 기존 메모리 누수 방지 정책

@@ -162,18 +162,45 @@ describe('ADR-300/301 — keystroke ownership', () => {
     const bare = bareTools();
     const shift = shiftTools();
     const views = viewKeys();
-    const mainClaims = claims(MAIN);
+    // Both files, not just main.ts. Widening the hint regex above surfaced
+    // `flip-faces prints Shift+N, which nothing binds` — but Shift+N *is*
+    // bound, at KeyboardShortcuts.ts:119. The hint was honest and the guard was
+    // looking in one of the two places that bind keys.
+    const mainClaims = new Set([...claims(MAIN), ...claims(SHORTCUTS)]);
 
     const wrong: string[] = [];
     let hintCount = 0;
-    const re = /data-action="([^"]+)"[^<]*<span class="mk">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
+    // Three hint classes, not one. `mk` is the menu bar; `tdi-key` is a toolbar
+    // dropdown row and `ctx-key` a context-menu row, and both were invisible
+    // here — which is how the Pie dropdown went on printing `I` (the XIA
+    // Inspector) after the identical menu-bar hint was removed by the very
+    // commit that added this guard. Dropdown rows key off `data-tool`, so match
+    // either attribute and normalise to the `tool-x` form the check expects.
+    // The gap must be lazy and unbounded in tag count — a dropdown row puts an
+    // icon span (with nested svg) and a label span between the attribute and
+    // the key — but must stop at the next `data-action`/`data-tool`, so a row
+    // WITHOUT a hint cannot steal the next row's. A tighter gap silently
+    // matched nothing for those rows, which is how the Pie hint survived being
+    // "covered".
+    // The row boundary is ANY `data-` attribute, not just action/tool: a
+    // context row keyed `data-snap="tempTrack"` carries its own `K` hint, and a
+    // narrower stop paired that hint with the `view-3d` row five lines above
+    // it — a false accusation, which is as bad as a missed one.
+    // `data-snap` joins the alternation because the snap-override submenu had
+    // eighteen of these chips and not one of them was reachable: E armed Erase,
+    // T jumped to Top view. They were invisible here for a structural reason —
+    // the anchor only knew action/tool — and the row-boundary stop added later
+    // guaranteed no earlier anchor could reach forward into them either.
+    const re =
+      /data-(action|tool|snap)="([^"]+)"(?:(?!data-[a-z-]+=)[\s\S])*?<span class="(?:mk|tdi-key|ctx-key)">([A-Za-z]|Shift\+[A-Za-z])<\/span>/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(HTML)) !== null) {
       hintCount++;
-      const action = m[1];
-      const key = m[2].startsWith('Shift+')
-        ? `Shift+${m[2].slice(6).toUpperCase()}`
-        : m[2].toUpperCase();
+      const action = m[1] === 'tool' ? `tool-${m[2]}` : m[2];
+      const raw = m[3];
+      const key = raw.startsWith('Shift+')
+        ? `Shift+${raw.slice(6).toUpperCase()}`
+        : raw.toUpperCase();
 
       if (action.startsWith('tool-')) {
         const tool = action.slice('tool-'.length);
@@ -196,8 +223,29 @@ describe('ADR-300/301 — keystroke ownership', () => {
       }
     }
 
-    expect(hintCount, 'the menu-hint regex matched nothing — check index.html markup')
-      .toBeGreaterThan(15);
+    // A floor that tracks what the regex actually reaches, not a token
+    // "matched something". The old floor was 15 while the old regex matched 26
+    // — so the regex could have silently narrowed by ten and still passed, and
+    // narrowing is exactly the failure this guard has already had once (it saw
+    // `class="mk"` only, which is how the Pie dropdown kept printing `I`).
+    // Measured after widening to mk + tdi-key + ctx-key: 39.
+    expect(hintCount, 'the menu-hint regex reaches fewer hints than it used to — did it narrow?')
+      .toBeGreaterThanOrEqual(39);
     expect(wrong, `menu hints that lie: ${wrong.join('; ')}`).toEqual([]);
+  });
+
+  it('the snap-override submenu advertises no keys, because none of them work', () => {
+    // The check above would now catch a hint here, but only once someone adds
+    // one back. This says the rows are clean today, so the removal cannot be
+    // quietly undone by a merge. Nothing sets a one-shot snap override from the
+    // keyboard: setOverride has exactly two callers and both are clicks.
+    const sub = HTML.slice(HTML.indexOf('<div id="snap-submenu"'), HTML.indexOf('data-snap="settings"'));
+    expect(sub.length, 'the snap submenu markup moved — this slice found nothing').toBeGreaterThan(500);
+    const chips = [...sub.matchAll(/<span class="ctx-key">([^<]*)<\/span>/g)].map((m) => m[1]);
+    expect(chips, `snap rows are advertising keys again: ${chips.join(', ')}`).toEqual([]);
+    expect(
+      /setOverride/.test(read('src/ui/KeyboardShortcuts.ts')),
+      'a keyboard path to setOverride appeared — then the rows may advertise keys again',
+    ).toBe(false);
   });
 });

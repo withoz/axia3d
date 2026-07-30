@@ -1,6 +1,6 @@
 # ADR-012 — Latency Budget (지연 예산 시스템)
 
-**Status**: Proposed — 핵심 ADR (프레임 끊김 직접 대응)
+**Status**: Accepted — 핵심 ADR (프레임 끊김 직접 대응) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-04-27
 **Axis**: 성능 (UX/메모리에도 직접 영향)
 **Related**: ADR-001 (레이어 분리), 기존 Delta Buffer / BVH / Spatial Hash

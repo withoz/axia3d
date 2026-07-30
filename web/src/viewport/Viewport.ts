@@ -104,6 +104,12 @@ export class Viewport {
   private _showFaceOrientation = false;
   private _faceOpacity = 1.0;
   private _edgeVisible = true;
+  /** Stored, reported by `getStyleSettings()`, and read by no renderer — there
+   *  is no silhouette pass. Kept as the entry point for whoever adds one; the
+   *  Style panel's checkbox is disabled meanwhile so it stops implying the
+   *  feature exists. Drawing from it would need an extra LineSegments2 built
+   *  when true, and `setEdgeStyle` would have to trigger a rebuild (today it
+   *  only mutates state). */
   private _profileEdge = true;
   /** Edge line width in CSS pixels (world-space, respects DPR). Controls the
    *  `LineMaterial.linewidth` used by LineSegments2 — unlike LineBasicMaterial,
@@ -1356,6 +1362,11 @@ export class Viewport {
       polygonOffsetFactor: -6,
       polygonOffsetUnits: -6,
     });
+    // `_meshEdgeMaterials` holds four kinds of material — plain edges,
+    // centerlines, and the two warning overlays — and `setEdgeStyle` must
+    // restyle only the first. `dashed` cannot tell them apart: the free-edge
+    // overlay is dashed like a centerline, and the non-manifold overlay is not.
+    mat.userData.axiaEdgeRole = 'mesh-edge';
     return mat;
   }
 
@@ -1377,6 +1388,7 @@ export class Viewport {
       transparent: true,
       opacity: 0.75,
     });
+    mat.userData.axiaEdgeRole = 'centerline';
     this._meshEdgeMaterials.push(mat);  // reuse resize pool
     return mat;
   }
@@ -2484,13 +2496,28 @@ export class Viewport {
     this.scene.background = tex;
   }
 
+  /** Is this child a shaded face, as opposed to an edge line?
+   *
+   *  `LineSegments2` extends `THREE.Mesh` (and `Line2` extends `LineSegments2`),
+   *  so a bare `instanceof Mesh` test over `meshGroup.children` catches every
+   *  edge line too — and `LineMaterial` leaves `side` at its default
+   *  `FrontSide`, so the front-face branch matched them. Measured in the running
+   *  app before this guard: picking a face colour turned the edges that colour
+   *  as well (`#0a0a14` → `#ff0000`), which also silently repaints the
+   *  non-manifold warning overlay, since that is a `LineSegments2` in the same
+   *  group. Face styling asks this; edge styling goes through the material pool.
+   */
+  private static _isFaceMesh(o: THREE.Object3D): o is THREE.Mesh {
+    return o instanceof THREE.Mesh && !(o instanceof LineSegments2);
+  }
+
   /** 면 색상 변경 */
   setFaceColors(frontHex?: number, backHex?: number) {
     if (frontHex !== undefined) this._frontColor = frontHex;
     if (backHex !== undefined) this._backColor = backHex;
     // 현재 meshGroup의 재질을 업데이트
     for (const child of this.meshGroup.children) {
-      if (child instanceof THREE.Mesh) {
+      if (Viewport._isFaceMesh(child)) {
         const mat = child.material as THREE.MeshStandardMaterial;
         if (mat.side === THREE.FrontSide) {
           mat.color.setHex(this._frontColor);
@@ -2505,7 +2532,7 @@ export class Viewport {
   setFaceOpacity(opacity: number) {
     this._faceOpacity = opacity;
     for (const child of this.meshGroup.children) {
-      if (child instanceof THREE.Mesh) {
+      if (Viewport._isFaceMesh(child)) {
         const mat = child.material as THREE.MeshStandardMaterial;
         mat.transparent = opacity < 1.0;
         mat.opacity = opacity;
@@ -2519,9 +2546,11 @@ export class Viewport {
     if (opts.color !== undefined) this._edgeColor = opts.color;
     if (opts.visible !== undefined) this._edgeVisible = opts.visible;
     if (opts.profileEdge !== undefined) this._profileEdge = opts.profileEdge;
-    // width: WebGL LineBasicMaterial은 1px 고정이라 내부 상태만 저장 (미래
-    // 대비). 실제 적용하려면 Line2 기반으로 교체 필요 — 지금은 의도적으로
-    // 단순화해 1px solid 채택.
+    // The old note here said width could only be stored because
+    // LineBasicMaterial is stuck at 1px "until we move to Line2". That move
+    // happened — mesh edges are LineSegments2 with a LineMaterial, whose
+    // linewidth is live-settable — but nobody came back to apply it, so the
+    // slider moved its own number and nothing else.
     if (opts.width !== undefined) this._edgeWidth = Math.max(0.5, Math.min(10, opts.width));
 
     for (const child of this.meshGroup.children) {
@@ -2529,15 +2558,23 @@ export class Viewport {
         child.visible = this._edgeVisible;
         (child.material as THREE.LineBasicMaterial).color.setHex(this._edgeColor);
       } else if (child instanceof LineSegments2) {
-        // Centerline은 여전히 Line2 기반 (dashed 필요).
+        // Colour and width live on the pooled material, restyled below; here we
+        // only own visibility, which is per-object.
         child.visible = this._edgeVisible;
       }
     }
-    // Centerline material 색상 동기화 (필요 시 개별 API로 분리 가능).
+    // The pool exists for exactly this (see the field's own comment) but the
+    // loop had no body, so colour and width only appeared on the next mesh
+    // rebuild — the values are read in `_makeMeshEdgeMaterial`. Restyle by role:
+    // overlays keep the colours that ARE their warning, and the centerline keeps
+    // its deliberate grey-blue while still tracking width at its 0.7 ratio.
     for (const mat of this._meshEdgeMaterials) {
-      if (mat.dashed) {
-        // 중심선은 기본 grey-blue 유지 — edge color 따라가지 않음.
-        continue;
+      const role = mat.userData.axiaEdgeRole;
+      if (role === 'mesh-edge') {
+        mat.color.setHex(this._edgeColor);
+        mat.linewidth = Math.max(1, this._edgeWidth);
+      } else if (role === 'centerline') {
+        mat.linewidth = Math.max(1, this._edgeWidth * 0.7);
       }
     }
   }
@@ -2644,6 +2681,9 @@ export class Viewport {
         depthTest: false,   // always visible, even behind other geometry
         depthWrite: false,
       });
+      // Never restyled by the edge picker — this colour and weight ARE the
+      // warning. It is in the pool only for the resize sweep.
+      this._nonManifoldOverlayMat.userData.axiaEdgeRole = 'overlay';
       this._meshEdgeMaterials.push(this._nonManifoldOverlayMat);
     }
 
@@ -2703,6 +2743,9 @@ export class Viewport {
         depthTest: true,
         depthWrite: true,
       });
+      // Same reasoning as the non-manifold overlay: its thin dashed look is the
+      // signal ("this is a line, not a face boundary"), not a style default.
+      this._freeEdgeOverlayMat.userData.axiaEdgeRole = 'overlay';
       this._meshEdgeMaterials.push(this._freeEdgeOverlayMat);
     }
 

@@ -57,6 +57,14 @@ export interface AssetLibraryPanelCallbacks {
     channel: import('../viewport/LayeredMaterialBinding').LayeredChannelName,
     info: import('../materials/MaterialLibrary').TextureInfo,
   ) => boolean;
+  /**
+   * ADR-098 — Is the User tier switched on? The setting exists
+   * ("User 라이브러리 활성화 (실험)", opt-in, default OFF) and persisted from
+   * the day it was added, but nothing read it: the panel listed all three
+   * tiers unconditionally, so the box changed nothing on screen. Omitting the
+   * callback keeps the old always-on behaviour for callers that never opted in.
+   */
+  userTierEnabled?: () => boolean;
 }
 
 const TIER_LABEL: Record<MaterialTier, string> = {
@@ -137,7 +145,13 @@ export class AssetLibraryPanel {
    * Re-fetch all 3 tiers from bridge and re-render. Idempotent.
    */
   refresh(): void {
-    const tiers: MaterialTier[] = ['System', 'Project', 'User'];
+    // The User tier is opt-in (ADR-098). No callback → on, as before.
+    const userOn = this.callbacks.userTierEnabled?.() ?? true;
+    const tiers: MaterialTier[] = userOn
+      ? ['System', 'Project', 'User']
+      : ['System', 'Project'];
+    const addUserBtn = this.panelEl.querySelector<HTMLElement>('.al-btn-add-user');
+    if (addUserBtn) addUserBtn.style.display = userOn ? '' : 'none';
     this.listEl.innerHTML = '';
 
     for (const tier of tiers) {

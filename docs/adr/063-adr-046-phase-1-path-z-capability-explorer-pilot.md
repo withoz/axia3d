@@ -1,6 +1,6 @@
 # ADR-063 — ADR-046 Phase 1 Path Z: Capability Explorer Pilot
 
-**Status**: Draft (Path Z 사용자 결정 2026-05-04, Step 1 sign-off 대기)
+**Status**: Accepted (Path Z 사용자 결정 2026-05-04, Step 1 sign-off 대기) — Status corrected 2026-07-29: the catalog said Accepted and the body did not, and the code shipped (audit evidence in the commit).
 **Date**: 2026-05-04
 **Anchor**: ADR-046 P31 (Product Identity Lock) + Phase 1 4-PR roadmap
 **Parent**: ADR-046 §Phase 1 (PR-3 = Capability Explorer)

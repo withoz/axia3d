@@ -19,6 +19,8 @@ import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { ConstraintCommands } from './ConstraintCommands';
 import { debugLog, debugWarn } from '../utils/debug';
 import { Toast } from '../ui/Toast';
+// Not from '../ui/MenuBar' — MenuBar imports this file, so that would be a cycle.
+import { markActionUnavailable } from '../ui/actionAvailability';
 import { getMergeTolerance, getRespectMaterial, groupFacesByMaterial } from './MergeSettings';
 import { extractEdgeChain } from './EdgeChain';
 import { getMaterialLibrary } from '../materials/MaterialLibrary';
@@ -233,7 +235,7 @@ export class ToolManager {
   //  - `_planeLock` = null → ADR-164 sticky fallback 자연 활성
   //
   //  Reset hooks (L-166-2 cross-tool 유지 + 명시 release only):
-  //  - Ctrl+Shift+P 단축키 (β-3 scope)
+  //  - Home 단축키 (β-3 scope)
   //  - notifyViewModeChange (view 변경 = 사용자 의도 변경 명시 신호)
   //  - enterSketch / exitSketch (sketch lock-in 우선)
   //  - cancelCurrentTool (Esc — 사용자 의도 변경 명시 신호)
@@ -721,8 +723,8 @@ export class ToolManager {
     'solidify': '열린 쉘을 닫힌 솔리드로 변환 (Solidify)',
     'mesh-repair': '메시 정리 (퇴화면/와인딩/고립 정점)',
     'resynthesize-faces': '경계 도구 (Boundary) — 닫힌 line cycle 명시 면 합성 (ADR-139)',
-    'sketch-start-xz': '스케치 시작 — XZ 바닥 평면',
-    'sketch-start-xy': '스케치 시작 — XY 정면 평면',
+    'sketch-start-xz': '스케치 시작 — XZ 정면 평면',
+    'sketch-start-xy': '스케치 시작 — XY 바닥 평면',
     'sketch-start-yz': '스케치 시작 — YZ 측면 평면',
     'sketch-start-face': '스케치 시작 — 선택 면',
     'sketch-start-auto': '스케치 시작 — 자동 평면 감지',
@@ -1373,23 +1375,27 @@ export class ToolManager {
         );
       }
     } else if (action === 'sketch-start-xz') {
-      // XZ 바닥 — Y=0, 평면도 기본. up = -Z so "북쪽"이 위.
+      // XZ 정면(입면도) — Y=0 wall.
+      // NOTE: up is -Z, chosen back when this plane was mislabelled a floor
+      // ("북쪽이 위"). For an elevation the natural up is +Z, so drawing runs
+      // upside-down here. Left as-is: flipping it changes drawing orientation,
+      // which is a behaviour change and not part of renaming the plane.
       this.enterSketch({
-        label: 'XZ 바닥',
+        label: 'XZ 정면',
         origin: new THREE.Vector3(0, 0, 0),
         normal: new THREE.Vector3(0, 1, 0),
         up: new THREE.Vector3(0, 0, -1),
       });
-      Toast.info(t('✏️ 스케치 시작 — XZ 바닥 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
+      Toast.info(t('✏️ 스케치 시작 — XZ 정면 (Y=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-xy') {
-      // XY 정면 — Z=0, 입면도.
+      // XY 바닥(평면도) — Z=0 ground.
       this.enterSketch({
-        label: 'XY 정면',
+        label: 'XY 바닥',
         origin: new THREE.Vector3(0, 0, 0),
         normal: new THREE.Vector3(0, 0, 1),
         up: new THREE.Vector3(0, 1, 0),
       });
-      Toast.info(t('✏️ 스케치 시작 — XY 정면 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
+      Toast.info(t('✏️ 스케치 시작 — XY 바닥 (Z=0). 모든 드로잉이 이 평면에 고정됩니다.'), 4000);
     } else if (action === 'sketch-start-yz') {
       // YZ 측면 — X=0.
       this.enterSketch({
@@ -2122,17 +2128,41 @@ export class ToolManager {
         debugLog('[Action] ungroup =>', result);
       }
     } else if (action === 'make-component') {
-      // 선택된 그룹을 컴포넌트로 변환
+      // 선택된 그룹을 컴포넌트로 변환.
+      //
+      // Every path here used to end in debugLog, which is a no-op unless
+      // window.__AXIA_DEBUG is set — so success, "nothing selected" and "not a
+      // group" were equally silent, and the empty-selection case had no branch
+      // at all. The five sibling group rows all toast. The toasts live in this
+      // branch rather than in the context menu because all four surfaces —
+      // menubar, toolbar dropdown, right-click and the palette — funnel through
+      // dispatchAction, so one place covers them.
+      //
+      // The bail-outs use markActionUnavailable, which toasts AND tells the
+      // dispatcher the action did not happen; otherwise the Capability Explorer
+      // records `result:'ok'` for a no-op, which is the ADR-299 defect.
+      //
+      // No syncMesh: make_component touches scene.groups only, never geometry.
+      // The Outliner is the surface that changes (▣ → ◆), so it is refreshed.
       const selected = this.selection.getSelectedFaces();
-      if (selected.length > 0) {
+      if (selected.length === 0) {
+        markActionUnavailable(t('그룹 안의 면을 먼저 선택하세요'));
+      } else {
         const groupId = this.selection.getGroupId(selected[0]);
-        if (groupId !== undefined) {
+        if (groupId === undefined) {
+          markActionUnavailable(t('선택한 면은 그룹에 속해 있지 않습니다'));
+        } else {
           const defId = this.bridge.makeComponent(groupId, `Component-${groupId}`);
           if (defId > 0) {
             debugLog(`[Action] make-component: Group-${groupId} → Component def ${defId}`);
+            Toast.success(t('컴포넌트로 변환했습니다'), 2500);
+            const panel = (window as unknown as { __axia_componentPanel?: { refresh: () => void } })
+              .__axia_componentPanel;
+            panel?.refresh();
+          } else {
+            const err = this.bridge.lastError();
+            markActionUnavailable(err || t('컴포넌트 변환에 실패했습니다'));
           }
-        } else {
-          debugLog('[Action] make-component — 먼저 그룹을 선택하세요');
         }
       }
     } else if (action === 'bool-union' || action === 'bool-subtract' || action === 'bool-intersect') {
@@ -2647,13 +2677,14 @@ export class ToolManager {
 
   /** Phase 4 — Auto-detect best sketch plane.
    *
-   *  Priority:
-   *    1. If exactly 1 face is selected → use that face's plane.
-   *    2. Else if camera direction is dominantly aligned with a world axis →
-   *       use the perpendicular world plane (looking down → XZ floor;
-   *       looking front → XY wall; looking sideways → YZ wall).
-   *    3. Else → fall back to last-used plane from localStorage.
-   *    4. Else → XZ floor (Y=0).
+   *    1. Exactly one face selected → that face's plane.
+   *    2. Otherwise the camera's dominant axis picks the perpendicular world
+   *       plane, under Z-up:
+   *         looking down/up   (±Z) → XY ground (Z=0)
+   *         looking front/back (±Y) → XZ wall  (Y=0)
+   *         looking sideways   (±X) → YZ wall  (X=0)
+   *       One of the three always wins — there is no localStorage fallback and
+   *       no final default, though this comment used to describe both.
    */
   startSketchAuto(): void {
     const sel = this.selection.getSelectedFaces();
@@ -2842,7 +2873,7 @@ export class ToolManager {
    *   - view mode change (via `notifyViewModeChange`)
    *   - Esc cancel (via `cancelCurrentTool`)
    *   - 명시 user trigger:
-   *     * Ctrl+Shift+P 단축키 (β-3 scope)
+   *     * Home 단축키 (β-3 scope)
    *     * ContextMenu "🔓 평면 잠금 해제" (β-3 scope)
    *
    * **setTool() 는 호출 안 함** (cross-tool 유지가 본 ADR 핵심 가치).
@@ -2856,7 +2887,7 @@ export class ToolManager {
   }
 
   /**
-   * ADR-270 §amendment — explicit user reset of the drawing plane (Ctrl+Shift+P
+   * ADR-270 §amendment — explicit user reset of the drawing plane (Home
    * / 우클릭 "평면 잠금 해제"). Clears BOTH the strong lock AND the sticky
    * last-drawn plane, so empty space reverts to the view-mode default (ground
    * z=0 in 3d/top). Answers "입체면에 그리다가 z=0 에 그리려면?" — after drawing
@@ -2873,7 +2904,7 @@ export class ToolManager {
   }
 
   /** True if a drawing plane is pinned away from the view default — a lock OR
-   *  a sticky last-drawn plane. Drives the Ctrl+Shift+P / context-menu "reset"
+   *  a sticky last-drawn plane. Drives the Home / context-menu "reset"
    *  affordance so it also fires when only the sticky (not a hard lock) pins
    *  the plane. */
   hasPinnedPlane(): boolean {
@@ -3686,7 +3717,7 @@ export class ToolManager {
     // auto-unlocks and falls through to the face-hit logic — the user's
     // explicit "draw on this other face" intent (LOCKED #67 amendment,
     // 사용자 시연 2026-05-29 "입체면에 라인 생성"). Same-plane hits and empty
-    // space keep the lock. Explicit unlock (Ctrl+Shift+P / view change /
+    // space keep the lock. Explicit unlock (Home / view change /
     // sketch / Esc) also changes the plane.
     if (this._planeLock) {
       const lockHit = this.viewport.pick(e.clientX, e.clientY);
@@ -4498,7 +4529,7 @@ export class ToolManager {
       // previous ADR-182 physical unlock on each new draw's first click is
       // removed; getDrawPlane applies the lock from the first click, and only
       // a genuinely different-plane face hit (cos|dot| < 0.9999) auto-unlocks.
-      // Explicit release stays via Ctrl+Shift+P / view change / sketch / Esc.
+      // Explicit release stays via Home / view change / sketch / Esc.
       const rawPt = this.get3DPoint(e);
       const tool = this.tools.get(this._currentTool);
       if (tool?.onMouseDown) {

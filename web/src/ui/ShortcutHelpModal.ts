@@ -55,7 +55,10 @@ const SECTIONS: ShortcutSection[] = [
       { key: 'Ctrl+Y', description: 'Redo (다시 실행)' },
       { key: 'Ctrl+C', description: '복사 (선택된 면)' },
       { key: 'Ctrl+X', description: '잘라내기 (복사 + 삭제)' },
-      { key: 'Ctrl+V', description: '붙여넣기 (offset 500,0,500mm)' },
+      // Not an offset paste. The copy is created on top of the original and
+      // handed to the cursor for placement (ADR-208); the 0.1mm in the code only
+      // clears the vertex dedup. "500,0,500mm" appeared nowhere but this row.
+      { key: 'Ctrl+V', description: '붙여넣기 (커서에 부착 → 클릭으로 배치)' },
       { key: 'Ctrl+D', description: '복제 (즉시 duplicate)' },
       { key: 'Ctrl+A', description: 'Select All (전체 선택)' },
       { key: 'Ctrl+S', description: '프로젝트 저장' },
@@ -120,8 +123,12 @@ const SECTIONS: ShortcutSection[] = [
   {
     title: '스케치 / 선택',
     rows: [
-      { key: 'Alt+엣지 클릭', description: '폴리라인 체인 자동 선택 (Loop Select)' },
-      { key: '메뉴 → ✏️', description: 'Sketch 모드 시작 (XZ 바닥 / XY 정면 / YZ 측면 / 선택 면)' },
+      // Alt+left-click reaches no tool at all — the canvas mousedown returns on
+      // `e.altKey` before dispatching — so this row asked users to arm Erase and
+      // click again. Chain selection is a triple-click on an edge with no
+      // adjacent faces (SelectTool.ts:169-196, 400ms window).
+      { key: '엣지 3회 클릭', description: '폴리라인 체인 선택 (인접 면 없는 엣지)' },
+      { key: '메뉴 → ✏️', description: 'Sketch 모드 시작 (XZ 정면 / XY 바닥 / YZ 측면 / 선택 면)' },
       { key: '메뉴 → 스케치 종료', description: '닫힌 프로필 자동 감지 → 높이 prompt → Extrude/Cut' },
       { key: '🎨 Quick Color', description: '우클릭 → 색상 지정 (선택 면에 즉석 커스텀 material)' },
     ],
@@ -136,9 +143,11 @@ const SECTIONS: ShortcutSection[] = [
  * a table, and it is the same shape batch 4 needs for the catalogs, which
  * cannot import t() at all.
  *
- * `key` is never translated: 'Ctrl+Z' is a key, not a word. The one exception
- * is the two Korean keys ('Alt+엣지 클릭'), which describe a gesture rather
- * than name a key.
+ * `key` is never translated: 'Ctrl+Z' is a key, not a word. The exceptions are
+ * the Korean ones — '엣지 3회 클릭', '메뉴 → ✏️', '메뉴 → 스케치 종료' — which
+ * describe a gesture or a menu route rather than naming a key. (The earlier
+ * note here said "the two Korean keys"; there were three, and one of them named
+ * a gesture that did not work.)
  */
 function buildModalHtml(): string {
   const columns = SECTIONS.map(sec => `

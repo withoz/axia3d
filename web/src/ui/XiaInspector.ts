@@ -126,8 +126,21 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     const propsEl = document.getElementById('xi-material-props');
     const badgeEl = document.getElementById('xi-phys-badge');
     const assignBtn = document.getElementById('xi-assign-btn');
+    // The summary row's 무게 box had no writer at all — only two `.closest()`
+    // lookups that show or hide its container — so it sat at its markup literal
+    // of 0 while 면적 and 부피 beside it filled in. Worse once a material was
+    // assigned: 질량 below showed the real figure while this still read 0 kg, so
+    // the panel stated two masses at once. It is written here rather than in the
+    // selection branch because every path that can change the answer comes
+    // through this function — dropdown change, material removal, the assign
+    // button, and reselection — whereas the selection branch would go stale the
+    // moment someone swapped material without reselecting.
+    const weightSummaryEl = document.getElementById('xi-weight');
 
     if (!materialId || materialId === '') {
+      // No material, so no mass. '-' rather than 0, matching 밀도 / 열전도율 /
+      // 질량 below, which all ship with '-' for exactly this state.
+      if (weightSummaryEl) weightSummaryEl.textContent = '-';
       // ADR-050 P-6 — 형태 (Shape) 상태: 재질 없음, form layer
       // (ADR-049 §4 Q3 — 사용자 facing 에서 재질 없는 단계엔 'XIA' 안 노출)
       if (hintEl) hintEl.style.display = '';
@@ -138,7 +151,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     }
 
     const mat = matLib.get(materialId);
-    if (!mat) return;
+    if (!mat) {
+      if (weightSummaryEl) weightSummaryEl.textContent = '-';
+      return;
+    }
 
     // ADR-050 P-6 — XIA (특성) 상태: 재질 있음, property layer
     // (ADR-049 §4 Q3 — 부재 정체성, primary material + face-level override)
@@ -165,6 +181,15 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     if (physics) {
       if (massEl) massEl.textContent = formatNum(physics.mass, 1);
       if (weightNEl) weightNEl.textContent = formatNum(physics.weight, 1);
+      // The summary box is labelled 무게 but carries kg, so what belongs in it is
+      // the mass — the same figure as 질량. Redundant, but true; the gravitational
+      // reading with its own unit is 무게(중력) in N below. Renaming the box would
+      // mean editing the markup and its en.ts key together, which is a separate
+      // decision from stopping it printing 0.
+      if (weightSummaryEl) weightSummaryEl.textContent = formatNum(physics.mass, 1);
+    } else if (weightSummaryEl) {
+      // No volume yet (a sheet or a bare line), so mass is not defined.
+      weightSummaryEl.textContent = '-';
     }
   };
 

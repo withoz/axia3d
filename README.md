@@ -38,20 +38,22 @@
 
 ### 개발 모드
 
+이 저장소는 **npm workspace 루트** 입니다. install 은 항상 루트에서 —
+`cd web && npm install` 은 CONTRIBUTING §2 가 금지합니다(루트 단일
+`package-lock.json`).
+
 ```bash
-cd web
-npm install
+npm install          # 루트에서 1회
+npm run build:wasm   # Rust → wasm (최초 또는 엔진 변경 후)
 npm run dev
 ```
 
-브라우저에서 `http://localhost:5173` 열기
+브라우저에서 `http://localhost:3000` 열기 (`web/vite.config.ts` 의 port).
 
 ### 프로덕션 빌드
 
 ```bash
-cd web
-npm install
-npm run build
+npm run build:all    # wasm + tsc + vite
 ```
 
 `dist/` 폴더에 빌드 결과물 생성

@@ -1895,6 +1895,24 @@ impl Scene {
         //    consumption per round-trip; re-promote will re-record).
         self.xia_to_original_shape.remove(&xia_id);
 
+        // 10. The element kind comes back with it (ADR-311 L-311-8, in the
+        //     direction promote already handled).
+        //
+        //     Without this, removing a material — a first-class documented flow
+        //     (LOCKED #26 Phase 2 / ADR-091: Inspector 재질 "없음" → 자동 강등)
+        //     — silently reclassified the member. A slab set through the
+        //     Inspector lands only in `xia_element_kind`, so after demotion the
+        //     export's Shape branch missed and fell to `Wall`: the slab wrote
+        //     itself out as `IFCWALL`, and a door lost four attributes with it.
+        //     Exactly the loss ADR-311 measured going the other way.
+        //
+        //     The stale `xia_element_kind` entry goes too — the Xia is gone, and
+        //     leaving it would resurrect the old kind on a later promote that
+        //     happens to reuse the id.
+        if let Some(kind) = self.xia_element_kind.remove(&xia_id) {
+            self.shape_element_kind.insert(shape_id, kind);
+        }
+
         Ok(DemoteOk { shape_id, original_id_restored })
     }
 
@@ -6577,6 +6595,22 @@ impl Scene {
         self.transactions.set_before_snapshot(self.scene_snapshot());
 
         let class = axia_geo::EdgeClass::from_raw(class_raw);
+        // Does the edge exist? This has to come FIRST. The Centerline branch
+        // below calls `get_faces_sharing_edge`, which indexes storage directly
+        // and PANICS on a missing id — and a panic here does not merely fail
+        // the call, it poisons the `&mut self` borrow so every later call on
+        // the engine throws "recursive use of an object detected". The user's
+        // session is then unrecoverable: no draw, no undo, no save, while the
+        // UI shows an ordinary failure toast.
+        //
+        // The asymmetry is what hid it: class 0 (Geometry) skips the branch and
+        // reaches the `get_mut` below, which returns a clean error. Only
+        // Centerline — the class the `convert-to-centerline` action passes —
+        // took the panicking path.
+        if !self.mesh.edges.contains(edge_id) {
+            self.transactions.cancel();
+            return CommandResult::Error(format!("set_edge_class: edge {:?} not found", edge_id));
+        }
         // Reject demoting a Geometry edge that bounds an active face —
         // centerlines must not participate in face topology, so demotion
         // would orphan the face. User should delete/reshape first.
@@ -24939,5 +24973,74 @@ mod tests {
             scene.mesh.verify_face_invariants().is_valid(),
             "windowed wall stays manifold"
         );
+    }
+}
+
+/// A missing id must not be able to kill the engine.
+///
+/// Found by an audit that fuzzed all 397 wasm exports with nonexistent ids and
+/// checked, after each call, whether the engine object was still usable.
+#[cfg(test)]
+mod audit_missing_id_tests {
+    use super::*;
+
+    /// ADR-311 L-311-8, the direction promote already handled.
+    ///
+    /// Removing a material demotes a Xia to a Shape (LOCKED #26 Phase 2). The
+    /// kind used to stay behind, so a slab classified in the Inspector exported
+    /// itself as IFCWALL afterwards.
+    #[test]
+    fn demote_carries_the_element_kind_back_to_the_shape() {
+        let mut scene = Scene::new();
+        let faces = scene
+            .mesh
+            .create_box(glam::DVec3::ZERO, 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0))
+            .unwrap();
+        let sid = scene.create_shape("M".into(), faces.clone());
+        // Slab, not Wall — Wall is the default the bug fell back to, so a test
+        // using it could not tell "carried" from "lost".
+        scene.shape_element_kind.insert(sid, "slab".to_string());
+        let xid = scene
+            .promote_shape_to_xia(sid, axia_geo::MaterialId::new(4))
+            .expect("a closed box promotes")
+            .xia_id;
+        assert_eq!(scene.xia_element_kind.get(&xid).map(String::as_str), Some("slab"));
+
+        // What removing the material in the Inspector does: revert to the form
+        // sentinel, which is the gate demotion opens on (ADR-091 D-A=a).
+        scene.xias.get_mut(&xid).unwrap().material = FORM_MATERIAL;
+        let out = scene.demote_xia_to_shape(xid).expect("demote");
+        assert_eq!(
+            scene.shape_element_kind.get(&out.shape_id).map(String::as_str),
+            Some("slab"),
+            "the kind must come back with the member"
+        );
+        assert!(
+            !scene.xia_element_kind.contains_key(&xid),
+            "and the dead Xia's entry must not linger to resurrect later"
+        );
+    }
+
+    #[test]
+    fn set_edge_class_on_a_missing_edge_errors_rather_than_panicking() {
+        let mut scene = Scene::new();
+        let ghost = axia_geo::EdgeId::new(999_999);
+
+        // Class 1 = Centerline. This is the branch `convert-to-centerline`
+        // takes, and it used to index storage directly and panic — which
+        // poisons the &mut self borrow, so every later call on the engine
+        // throws "recursive use of an object detected". Session unrecoverable.
+        let r = scene.execute(Command::SetEdgeClass { edge_id: ghost, class_raw: 1 });
+        assert!(matches!(r, CommandResult::Error(_)), "must be a clean error, got {r:?}");
+
+        // Class 0 = Geometry took a different path and was already graceful.
+        // Kept as the control: it proves the test is not passing merely because
+        // both classes fail somewhere.
+        let r0 = scene.execute(Command::SetEdgeClass { edge_id: ghost, class_raw: 0 });
+        assert!(matches!(r0, CommandResult::Error(_)), "got {r0:?}");
+
+        // The engine still works — the half the panic actually destroyed.
+        assert_eq!(scene.mesh.face_count(), 0);
+        assert!(scene.scene_snapshot().len() > 0, "the scene is still serializable");
     }
 }

@@ -1741,10 +1741,11 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 4px;
       color: rgba(255, 255, 255, 0.6);
-      cursor: pointer;
+      /* No cursor:pointer and no :hover — see the markup comment. These display
+         the assigned material's rating; they do not set it. */
+      cursor: default;
       transition: all 0.15s;
     }
-    .xi-fire-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
     .xi-fire-btn.active {
       background: #e53935;
       border-color: #e53935;
@@ -2093,8 +2094,8 @@
             <div class="menu-dropdown">
               <div class="menu-action" data-action="sketch-start-auto">✨ 스케치 시작 · 자동 평면 감지<span class="mk">⇧S</span></div>
               <div class="menu-sep"></div>
-              <div class="menu-action" data-action="sketch-start-xz">✏️ 스케치 시작 · XZ 바닥 (평면도)</div>
-              <div class="menu-action" data-action="sketch-start-xy">✏️ 스케치 시작 · XY 정면 (입면도)</div>
+              <div class="menu-action" data-action="sketch-start-xz">✏️ 스케치 시작 · XZ 정면 (입면도)</div>
+              <div class="menu-action" data-action="sketch-start-xy">✏️ 스케치 시작 · XY 바닥 (평면도)</div>
               <div class="menu-action" data-action="sketch-start-yz">✏️ 스케치 시작 · YZ 측면</div>
               <div class="menu-action" data-action="sketch-start-face">✏️ 스케치 시작 · 선택 면</div>
               <div class="menu-sep"></div>
@@ -2292,7 +2293,7 @@
             <div class="tool-dropdown-item" data-tool="pie">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M12 12 L12 3 A 9 9 0 0 1 20.5 15 Z"/></svg></span>
               <span class="tdi-label">부채꼴 (Pie · Sector)</span>
-              <span class="tdi-key">I</span>
+              <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-item" data-tool="hole">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><circle cx="12" cy="12" r="4"/></svg></span>
@@ -2533,7 +2534,7 @@
 
         <!-- Sketch Mode 드롭다운 -->
         <div class="tool-dropdown" data-group="sketch-family">
-          <button class="tool-btn" data-action="sketch-start-xz" title="스케치 시작 · XZ 바닥 (평면도)">
+          <button class="tool-btn" data-action="sketch-start-xz" title="스케치 시작 · XZ 정면 (입면도)">
             <svg viewBox="0 0 24 24"><path d="M3 18 L13 14 L21 18 L11 22 Z" stroke-dasharray="2 2"/><path d="M6 14 L14 6 L17 9 L9 17 L6 17 Z" class="filled"/><path d="M14 6 L16 4 L19 7 L17 9"/></svg>
           </button>
           <button class="tool-dropdown-trigger" data-for="sketch-family" title="스케치 옵션">
@@ -2543,12 +2544,12 @@
             <div class="tool-dropdown-header">SKETCH PLANE</div>
             <div class="tool-dropdown-item active" data-action="sketch-start-xz">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M3 18 L21 18" stroke-dasharray="2 2"/><rect x="6" y="10" width="12" height="8" rx="0.5"/></svg></span>
-              <span class="tdi-label">✏️ XZ 바닥 (평면도)</span>
+              <span class="tdi-label">✏️ XZ 정면 (입면도)</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-item" data-action="sketch-start-xy">
               <span class="tdi-icon"><svg viewBox="0 0 24 24"><path d="M3 21 L3 3" stroke-dasharray="2 2"/><rect x="6" y="6" width="12" height="12" rx="0.5"/></svg></span>
-              <span class="tdi-label">✏️ XY 정면 (입면도)</span>
+              <span class="tdi-label">✏️ XY 바닥 (평면도)</span>
               <span class="tdi-key"></span>
             </div>
             <div class="tool-dropdown-item" data-action="sketch-start-yz">
@@ -2839,29 +2840,38 @@
 
     <!-- 스냅 재지정 서브메뉴 (AutoCAD/ZWCAD 스타일) -->
     <div id="snap-submenu" class="snap-sub">
-      <div class="ctx-item snap-ov" data-snap="tempTrack"><span class="snap-icon si-plus">+</span>임시 추적점<span class="ctx-key">K</span></div>
-      <div class="ctx-item snap-ov" data-snap="from"><span class="snap-icon si-dot">&#9679;</span>시작점<span class="ctx-key">F</span></div>
-      <div class="ctx-item snap-ov" data-snap="mid2p"><span class="snap-icon si-tri">&#9650;</span>2점 사이의 중간<span class="ctx-key">W</span></div>
+      <!-- No key hints here. Every one of the 18 that used to sit in these rows
+           named a letter bound to something else: E armed Erase, M armed Move,
+           T jumped to Top view, K took the inference lock. Following the 끝점
+           row meant arming Erase with the menu still open, so the next click
+           deleted geometry. Nothing sets a one-shot snap override from the
+           keyboard — setOverride has exactly two callers, both clicks — and the
+           app has no menu-mnemonic handler at all, so parenthesising the letters
+           would only have made the lie quieter. Adding real hints means binding
+           them first, against a window listener that K already intercepts. -->
+      <div class="ctx-item snap-ov" data-snap="tempTrack"><span class="snap-icon si-plus">+</span>임시 추적점</div>
+      <div class="ctx-item snap-ov" data-snap="from"><span class="snap-icon si-dot">&#9679;</span>시작점</div>
+      <div class="ctx-item snap-ov" data-snap="mid2p"><span class="snap-icon si-tri">&#9650;</span>2점 사이의 중간</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="endpoint"><span class="snap-icon si-sq">&#9632;</span>끝점<span class="ctx-key">E</span></div>
-      <div class="ctx-item snap-ov" data-snap="midpoint"><span class="snap-icon si-tri">&#9650;</span>중간점<span class="ctx-key">M</span></div>
-      <div class="ctx-item snap-ov" data-snap="intersection"><span class="snap-icon si-x">&times;</span>교차점<span class="ctx-key">I</span></div>
-      <div class="ctx-item snap-ov" data-snap="apparent"><span class="snap-icon si-x">&times;</span>가상 교차점<span class="ctx-key">A</span></div>
-      <div class="ctx-item snap-ov" data-snap="extension"><span class="snap-icon si-ext">&#8230;</span>연장선<span class="ctx-key">X</span></div>
+      <div class="ctx-item snap-ov" data-snap="endpoint"><span class="snap-icon si-sq">&#9632;</span>끝점</div>
+      <div class="ctx-item snap-ov" data-snap="midpoint"><span class="snap-icon si-tri">&#9650;</span>중간점</div>
+      <div class="ctx-item snap-ov" data-snap="intersection"><span class="snap-icon si-x">&times;</span>교차점</div>
+      <div class="ctx-item snap-ov" data-snap="apparent"><span class="snap-icon si-x">&times;</span>가상 교차점</div>
+      <div class="ctx-item snap-ov" data-snap="extension"><span class="snap-icon si-ext">&#8230;</span>연장선</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="center"><span class="snap-icon si-cir">&#9675;</span>중심점<span class="ctx-key">C</span></div>
-      <div class="ctx-item snap-ov" data-snap="geometric"><span class="snap-icon si-sq-o">&#9633;</span>기하학적 중심<span class="ctx-key">G</span></div>
-      <div class="ctx-item snap-ov" data-snap="quadrant"><span class="snap-icon si-dia">&#9671;</span>사분점<span class="ctx-key">Q</span></div>
-      <div class="ctx-item snap-ov" data-snap="tangent"><span class="snap-icon si-cir">&#9675;</span>접점<span class="ctx-key">T</span></div>
+      <div class="ctx-item snap-ov" data-snap="center"><span class="snap-icon si-cir">&#9675;</span>중심점</div>
+      <div class="ctx-item snap-ov" data-snap="geometric"><span class="snap-icon si-sq-o">&#9633;</span>기하학적 중심</div>
+      <div class="ctx-item snap-ov" data-snap="quadrant"><span class="snap-icon si-dia">&#9671;</span>사분점</div>
+      <div class="ctx-item snap-ov" data-snap="tangent"><span class="snap-icon si-cir">&#9675;</span>접점</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="perpendicular"><span class="snap-icon si-perp">&#8869;</span>수직점<span class="ctx-key">P</span></div>
-      <div class="ctx-item snap-ov" data-snap="parallel"><span class="snap-icon si-para">//</span>평행<span class="ctx-key">L</span></div>
+      <div class="ctx-item snap-ov" data-snap="perpendicular"><span class="snap-icon si-perp">&#8869;</span>수직점</div>
+      <div class="ctx-item snap-ov" data-snap="parallel"><span class="snap-icon si-para">//</span>평행</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="node"><span class="snap-icon si-dot">&#9679;</span>노드<span class="ctx-key">D</span></div>
-      <div class="ctx-item snap-ov" data-snap="insertion"><span class="snap-icon si-plus">&#8862;</span>삽입<span class="ctx-key">S</span></div>
-      <div class="ctx-item snap-ov" data-snap="nearest"><span class="snap-icon si-x">&times;</span>근처점<span class="ctx-key">R</span></div>
+      <div class="ctx-item snap-ov" data-snap="node"><span class="snap-icon si-dot">&#9679;</span>노드</div>
+      <div class="ctx-item snap-ov" data-snap="insertion"><span class="snap-icon si-plus">&#8862;</span>삽입</div>
+      <div class="ctx-item snap-ov" data-snap="nearest"><span class="snap-icon si-x">&times;</span>근처점</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item snap-ov" data-snap="none">없음<span class="ctx-key">N</span></div>
+      <div class="ctx-item snap-ov" data-snap="none">없음</div>
       <div class="ctx-item snap-ov" data-snap="settings">객체 스냅 설정(O)...</div>
     </div>
 
@@ -3091,10 +3101,21 @@
 
                 <div class="xi-prop-row">
                   <span class="xi-prop-label">화재 등급</span>
+                  <!-- Read-outs, not controls. These were <button>s with a hover
+                       state and one filled red, so they read as a 3-way toggle
+                       with a current selection — but nothing listened, and the
+                       only code touching them paints `.active` from the assigned
+                       material. Clicking 준불연 was the most convincing failure:
+                       no built-in material carries 'semi', so it never lights up
+                       even when it is repainted. Editing fire rating belonged to
+                       MaterialPropertiesPanel, which ADR-045 D2 removed and whose
+                       return needs a new ADR — so the honest fix is to stop
+                       looking clickable, matching 밀도/열전도율 above (readonly
+                       inputs) and 질량/무게 below (plain spans). -->
                   <div class="xi-fire-btns">
-                    <button class="xi-fire-btn" data-fire="incombustible">불연</button>
-                    <button class="xi-fire-btn" data-fire="semi">준불연</button>
-                    <button class="xi-fire-btn" data-fire="retardant">난연</button>
+                    <span class="xi-fire-btn" data-fire="incombustible">불연</span>
+                    <span class="xi-fire-btn" data-fire="semi">준불연</span>
+                    <span class="xi-fire-btn" data-fire="retardant">난연</span>
                   </div>
                 </div>
 
@@ -3228,8 +3249,8 @@
             엣지 표시
           </label>
           <label class="sty-toggle">
-            <input type="checkbox" id="sty-edge-profile" checked>
-            프로필 엣지 (외곽 강조)
+            <input type="checkbox" id="sty-edge-profile" disabled>
+            프로필 엣지 (외곽 강조) — 준비중
           </label>
         </div>
 
@@ -3266,7 +3287,15 @@
         <!-- 마스터 토글 -->
         <div class="osnap-toggles">
           <label><input type="checkbox" id="osnap-master" checked> 객체 스냅 켜기 (F3)(O)</label>
-          <label><input type="checkbox" id="osnap-tracking"> 객체 스냅 추적 켜기 (F11)(K)</label>
+          <!-- "객체 스냅 추적 켜기 (F11)(K)" removed: object snap tracking does not
+               exist. `trackPoints` is pushed to and cleared, never read; nothing
+               emits a tempTrack candidate; `addTrackPoint` has no production
+               caller. The checkbox had no listener either, so it toggled and did
+               nothing. Same reason the tempTrack mode box below was already
+               dropped — this was the master switch for that same feature, left
+               behind. F11 was bound to nothing and K is the inference lock, which
+               even raises its own toast, so pressing it read as tracking engaging.
+               Re-introducing the row means implementing tracking first. -->
         </div>
 
         <div class="osnap-section-label">객체 스냅 모드</div>
@@ -3309,7 +3338,17 @@
         <button class="osnap-btn" id="osnap-clear-all">모두 지우기</button>
         <div style="flex:1"></div>
         <button class="osnap-btn primary" id="osnap-ok">확인</button>
-        <button class="osnap-btn" id="osnap-cancel">취소</button>
+        <!-- 닫기, not 취소. Every checkbox writes straight through to the live
+             SnapManager on `change` ("Apply settings immediately (CAD style)"),
+             and this button only removes two CSS classes — there is no captured
+             prior state to restore. Pressing 모두 지우기 then 취소 left every
+             snap mode off. The one control that genuinely does revert is the
+             marker-size slider, which commits only inside applySnapSettings, so
+             확인 is kept as its commit point. Restoring on cancel instead would
+             have to contend with Alt+letter toggles and DrawLineTool's own
+             save/restore, both of which write the same modes while this is open.
+             '취소' stays out of en.ts: that key is shared with other dialogs. -->
+        <button class="osnap-btn" id="osnap-cancel">닫기</button>
       </div>
     </div>
   </div>

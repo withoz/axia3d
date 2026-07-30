@@ -5,7 +5,7 @@
  * Flow:
  *   click P0, P1, P2 → lock the plane through them as the active drawing plane
  *   (ADR-166 strong lock). Subsequent draws project onto it (across tools)
- *   until you unlock (Ctrl+Shift+P) or change view.
+ *   until you unlock (Home) or change view.
  *   Escape → cancel
  *
  * The three clicks snap to existing geometry (vertices / edges / faces) or
@@ -16,7 +16,8 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { Toast } from '../ui/Toast';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
+
 import { t } from '../i18n';
 
 const MIN_SEP_MM = 0.5;

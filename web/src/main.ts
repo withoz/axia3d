@@ -381,18 +381,20 @@ async function main() {
   // ADR-098 S-ε — Asset Library Panel registration.
   //   Lazy-imports panel + Settings flag. Host (e.g. menu / status bar)
   //   can call window.__axia.get('assetLibraryPanel')() to toggle.
-  //   Panel itself renders all 3 tiers; the Settings flag governs
-  //   whether the User tier section is interactive (future host-side
-  //   filtering — MVP shows all sections).
+  //   The Settings flag governs whether the User tier appears at all. That
+  //   host-side filtering was left as "future" for a long time, so the panel
+  //   rendered all 3 tiers no matter what the box said; it is wired below.
   const assetLibraryPanel = async () => {
-    const [{ AssetLibraryPanel }, { getAssetLibraryUserTierMode }] =
-      await Promise.all([
-        import('./ui/AssetLibraryPanel'),
-        import('./tools/AssetLibraryUserTierSettings'),
-      ]);
+    const [
+      { AssetLibraryPanel },
+      { getAssetLibraryUserTierMode, onAssetLibraryUserTierModeChange },
+    ] = await Promise.all([
+      import('./ui/AssetLibraryPanel'),
+      import('./tools/AssetLibraryUserTierSettings'),
+    ]);
     if (!bridge.isReady()) return null;
     // Single-instance: cache on container key after first creation.
-    const existing = container.tryGet<{ panel: unknown; userTierEnabled: boolean }>(
+    const existing = container.tryGet<{ panel: unknown }>(
       '__assetLibraryPanelInstance' as never,
     );
     if (existing) return existing;
@@ -406,11 +408,22 @@ async function main() {
       hasLayeredMaterial: (id) => bridge.hasLayeredMaterial(id),
       onLayeredChannelUpload: (id, channel, info) =>
         bridge.setLayeredChannel(id, channel, info),
+      // ADR-098 — read the opt-in setting the panel used to ignore. Read on
+      // every refresh, not captured, so the panel always reflects the current
+      // value rather than whatever it was at construction.
+      userTierEnabled: () => getAssetLibraryUserTierMode(),
     });
-    const instance = {
-      panel,
-      get userTierEnabled() { return getAssetLibraryUserTierMode(); },
-    };
+    // The settings module has had a listener registry all along. Without it the
+    // fix would only land on the next open, which is a poor answer to "I ticked
+    // the box and nothing happened" — the complaint this whole change is about.
+    onAssetLibraryUserTierModeChange(() => {
+      if (panel.isVisible()) panel.refresh();
+    });
+    // The instance used to carry a `userTierEnabled` getter that nothing read.
+    // It was the only thing making the setting look consumed, which is how the
+    // panel went on showing the User tier regardless. The flag now reaches the
+    // panel as a callback above; the getter is gone so it cannot mislead again.
+    const instance = { panel };
     return instance;
   };
   container.register('assetLibraryPanel', assetLibraryPanel);
