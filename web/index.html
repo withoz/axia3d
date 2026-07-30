@@ -3338,7 +3338,17 @@
         <button class="osnap-btn" id="osnap-clear-all">모두 지우기</button>
         <div style="flex:1"></div>
         <button class="osnap-btn primary" id="osnap-ok">확인</button>
-        <button class="osnap-btn" id="osnap-cancel">취소</button>
+        <!-- 닫기, not 취소. Every checkbox writes straight through to the live
+             SnapManager on `change` ("Apply settings immediately (CAD style)"),
+             and this button only removes two CSS classes — there is no captured
+             prior state to restore. Pressing 모두 지우기 then 취소 left every
+             snap mode off. The one control that genuinely does revert is the
+             marker-size slider, which commits only inside applySnapSettings, so
+             확인 is kept as its commit point. Restoring on cancel instead would
+             have to contend with Alt+letter toggles and DrawLineTool's own
+             save/restore, both of which write the same modes while this is open.
+             '취소' stays out of en.ts: that key is shared with other dialogs. -->
+        <button class="osnap-btn" id="osnap-cancel">닫기</button>
       </div>
     </div>
   </div>

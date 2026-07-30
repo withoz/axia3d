@@ -1705,7 +1705,7 @@ export const EN: Record<string, string> = {
   '활성/비활성': 'Enable/disable',
   '작업 기록 (Parametric)': 'Operation history (parametric)',
   '기록 전체 삭제': 'Clear the whole history',
-  '파라미터 기반 작업만 기록됩니다. 항목을 클릭하면 같은 연산을 새 값으로 재실행합니다. (예: 필렛 반경만 변경해 재적용)': 'Only parameter-driven operations are recorded. Click an entry to re-run the same operation with new values — say, the same fillet at a different radius.',
+  '파라미터 기반 작업만 기록됩니다. "재실행…" 버튼을 누르면 같은 연산을 새 값으로 현재 선택에 적용합니다. (예: 필렛 반경만 변경해 재적용)': 'Only parameter-driven operations are recorded. The "Re-run…" button applies the same operation to the current selection with new values — say, the same fillet at a different radius.',
   '기록된 작업이 없습니다.': 'Nothing recorded yet.',
   '작업 기록을 모두 삭제하시겠습니까?': 'Clear the whole operation history?',
   '같은 연산을 새 값으로 재실행': 'Re-run this operation with new values',

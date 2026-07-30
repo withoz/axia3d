@@ -43,6 +43,16 @@ export class HistoryPanel {
   private visible = false;
   private unsubscribe: (() => void) | null = null;
 
+  /**
+   * The hint below used to say to click an entry. Only `.hp-rerun` carries a
+   * listener; the row has none and never had one, but it does have a :hover
+   * background, so it invited the click and then did nothing.
+   *
+   * The row is deliberately left inert rather than wired up. A re-run applies
+   * to the CURRENT selection rather than the original target, prompts for a
+   * value, and clears the selection on success — not something a stray click
+   * while scanning the list should reach, when the button is right there.
+   */
   constructor(container: HTMLElement, callbacks: HistoryPanelCallbacks) {
     this.container = container;
     this.callbacks = callbacks;
@@ -58,7 +68,7 @@ export class HistoryPanel {
         </div>
       </div>
       <div class="hp-hint">
-        ${t('파라미터 기반 작업만 기록됩니다. 항목을 클릭하면 같은 연산을 새 값으로 재실행합니다. (예: 필렛 반경만 변경해 재적용)')}
+        ${t('파라미터 기반 작업만 기록됩니다. "재실행…" 버튼을 누르면 같은 연산을 새 값으로 현재 선택에 적용합니다. (예: 필렛 반경만 변경해 재적용)')}
       </div>
       <div class="hp-list"></div>
       <div class="hp-empty">${t('기록된 작업이 없습니다.')}</div>

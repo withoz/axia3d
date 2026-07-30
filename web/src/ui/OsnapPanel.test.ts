@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { initOsnapPanel, OsnapPanelDeps } from './OsnapPanel';
 
 // Mock debug
@@ -127,8 +129,8 @@ describe('OsnapPanel', () => {
     });
   });
 
-  describe('Cancel button', () => {
-    it('closes panel without applying', () => {
+  describe('the 닫기 button', () => {
+    it('closes the panel and does not re-apply', () => {
       const api = initOsnapPanel(deps);
       api.openOsnapPanel();
 
@@ -140,6 +142,40 @@ describe('OsnapPanel', () => {
       const panel = document.getElementById('osnap-panel')!;
       expect(panel.classList.contains('visible')).toBe(false);
       expect(deps.updateOsnapUI).not.toHaveBeenCalled();
+    });
+
+    it('does NOT undo changes already made — which is why it says 닫기', () => {
+      // This was called "closes panel without applying" and asserted only that
+      // updateOsnapUI went uncalled. That passes whether or not a revert exists,
+      // so it held nothing: the button said 취소 and reverted nothing, and the
+      // suite agreed with both halves at once. The mode checkboxes write
+      // straight through on `change`, so the honest contract is that closing
+      // keeps them — and the label now says so.
+      const api = initOsnapPanel(deps);
+      api.openOsnapPanel();
+
+      const endpoint = document.querySelector<HTMLInputElement>('input[data-mode="endpoint"]')!;
+      endpoint.checked = false;
+      endpoint.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(deps.snap.setMode).toHaveBeenCalledWith('endpoint', false);
+
+      (deps.snap.setMode as any).mockClear();
+      document.getElementById('osnap-cancel')!.click();
+
+      expect(
+        deps.snap.setMode,
+        'closing restored a mode — if reverting is wanted, the label must go back to 취소',
+      ).not.toHaveBeenCalled();
+    });
+
+    it('and index.html labels it accordingly', () => {
+      // Read the shipped markup, not the fixture above — that one is a
+      // hand-written stub whose button has always said "Cancel", so asserting
+      // its text would only be asserting the stub.
+      const html = readFileSync(resolve(__dirname, '../..', 'index.html'), 'utf8');
+      const btn = /<button[^>]*id="osnap-cancel"[^>]*>([^<]*)<\/button>/.exec(html)?.[1];
+      expect(btn, 'the #osnap-cancel button vanished from index.html').toBeTruthy();
+      expect(btn, 'the button says 취소 again, but nothing is cancelled').toBe('닫기');
     });
   });
 
