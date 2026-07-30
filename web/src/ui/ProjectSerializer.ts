@@ -9,7 +9,7 @@ import { WasmBridge } from '../bridge/WasmBridge';
 import { Viewport } from '../viewport/Viewport';
 import { ToolManager } from '../tools/ToolManagerRefactored';
 import { UnitSystem } from '../units/UnitSystem';
-import { debugLog } from '../utils/debug';
+import { debugLog } from '../utils/debug';
 import { t } from '../i18n';
 
 export interface ProjectSerializerDeps {
@@ -206,6 +206,24 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
             toolManager.syncMesh();
             // ADR-078 P-3 — pull group tags AFTER syncMesh (face IDs stable).
             pullGroupTagsFromBridge();
+            // Groups themselves, which are not the same thing as Boolean group
+            // tags above. The snapshot restores them into the engine, but the
+            // local map was never repopulated, so a reopened project had groups
+            // the UI could not see: getGroupId returned undefined and
+            // "컴포넌트로 변환" answered "그룹에 속해 있지 않습니다" for a face
+            // that was in one. syncGroupsFromWasm exists for this and had no
+            // callers anywhere.
+            // Optional access on both sides: the whole open handler sits inside
+            // one try/catch, so a bridge or selection without these would abort
+            // the load and skip units, camera and styles — turning a missing
+            // group restore into "파일을 불러오는데 실패했습니다".
+            const engineGroups = bridge.getAllGroups?.() ?? [];
+            if (engineGroups.length > 0) {
+              toolManager.selection.syncGroupsFromWasm?.(
+                engineGroups.map((g) => ({ id: g.id, faceIds: g.faceIds })),
+              );
+              debugLog(`[Open] ${engineGroups.length} group(s) restored`);
+            }
             debugLog('[Open] Mesh restored from snapshot');
           } else {
             console.error('[Open] importSnapshot failed');

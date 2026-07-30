@@ -253,6 +253,51 @@ describe('SelectionManager', () => {
     expect(sm.hasGroup(3)).toBe(true);
   });
 
+  // ── Group id authority ──
+  //
+  // The local counter and the engine's `next_group_id` both start at 1 and both
+  // advance by one, so they agreed as long as every group was made through both
+  // sides together. Nothing enforced that. A single local-only group put them
+  // one apart for the rest of the session, and from then on every id handed to
+  // the engine named a group it did not have — component conversion failed
+  // permanently with no recovery short of a reload. The engine issues the id
+  // now; the local side follows.
+
+  it('takes the engine id rather than minting a second one', () => {
+    sm.handleClick(1, false, false);
+    sm.handleClick(2, true, false);
+    expect(sm.groupSelected(7)).toBe(7);
+    expect(sm.getGroupId(1), 'the face points at a group the engine does not have').toBe(7);
+  });
+
+  it('a local-only group does not push the next engine group out of step', () => {
+    // The exact drift: one group made locally with no engine counterpart, then
+    // a real one. The second must still carry the engine's number.
+    sm.handleClick(1, false, false);
+    sm.handleClick(2, true, false);
+    sm.groupSelected();                    // local-only — engine knows nothing
+
+    sm.clearSelection();
+    sm.handleClick(3, false, false);
+    sm.handleClick(4, true, false);
+    expect(sm.groupSelected(1), 'the local counter overrode the engine id').toBe(1);
+    expect(sm.getGroupId(3)).toBe(1);
+  });
+
+  it('and a later local-only group cannot collide with an engine id', () => {
+    // The counter has to move past whatever the engine issued, or the next
+    // local group reuses a number the engine already owns.
+    sm.handleClick(1, false, false);
+    sm.handleClick(2, true, false);
+    sm.groupSelected(9);
+
+    sm.clearSelection();
+    sm.handleClick(3, false, false);
+    sm.handleClick(4, true, false);
+    const localGid = sm.groupSelected();
+    expect(localGid, 'a local group reused an id the engine already has').toBeGreaterThan(9);
+  });
+
   it('groupSelected returns null with < 2 faces', () => {
     sm.handleClick(1, false, false);
     expect(sm.groupSelected()).toBeNull();

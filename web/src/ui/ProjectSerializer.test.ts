@@ -15,6 +15,8 @@ function mockDeps(): ProjectSerializerDeps {
         faceMap: new Uint32Array([1]),
       }),
       getEdgeLines: vi.fn().mockReturnValue(new Float32Array([0, 0, 0, 1, 0, 0])),
+      // Groups restored on open — distinct from the Boolean group tags below.
+      getAllGroups: vi.fn().mockReturnValue([]),
       // ADR-078 P-2 — Boolean group tag bridge methods.
       setBooleanGroupTag: vi.fn(),
       getBooleanGroupAFaces: vi.fn().mockReturnValue([]),
@@ -38,6 +40,7 @@ function mockDeps(): ProjectSerializerDeps {
         getGroupA: vi.fn().mockReturnValue([]),
         getGroupB: vi.fn().mockReturnValue([]),
         restoreGroupTags: vi.fn(),
+        syncGroupsFromWasm: vi.fn(),
       },
     } as any,
     units: {
@@ -259,5 +262,80 @@ describe('ProjectSerializer', () => {
       const restoreOrder = ((deps.toolManager as any).selection.restoreGroupTags as any).mock.invocationCallOrder[0];
       expect(syncOrder).toBeLessThan(restoreOrder);
     });
+
+    // Groups, which are not Boolean group tags. The snapshot restores them into
+    // the engine; the local map was never repopulated, so a reopened project had
+    // groups the UI could not see — getGroupId returned undefined and
+    // "컴포넌트로 변환" said the face was in no group when it was in one.
+    // syncGroupsFromWasm exists for this and had no callers anywhere.
+    it('openProject restores the engine groups into SelectionManager', async () => {
+      (deps.bridge.getAllGroups as any).mockReturnValue([
+        { id: 1, name: 'Group', faceCount: 2, faceIds: [3, 4], parent: null, children: [] },
+        { id: 5, name: 'Group', faceCount: 1, faceIds: [9], parent: null, children: [] },
+      ]);
+
+      await openFixtureProject(deps);
+
+      const sync = (deps.toolManager as any).selection.syncGroupsFromWasm;
+      expect(sync, 'a reopened project left its groups invisible to the UI').toHaveBeenCalledTimes(1);
+      expect(sync).toHaveBeenCalledWith([
+        { id: 1, faceIds: [3, 4] },
+        { id: 5, faceIds: [9] },
+      ]);
+      // After syncMesh, like the tag pull — face ids are only stable then.
+      const syncMeshOrder = (deps.toolManager.syncMesh as any).mock.invocationCallOrder[0];
+      expect(sync.mock.invocationCallOrder[0]).toBeGreaterThan(syncMeshOrder);
+    });
+
+    it('a bridge with no getAllGroups still loads the rest of the project', async () => {
+      // The whole open handler is inside one try/catch, so an unguarded call
+      // here would abort the load and skip units, camera and styles — a missing
+      // group restore turning into "파일을 불러오는데 실패했습니다". The
+      // assertions above would not have noticed: they all run earlier.
+      delete (deps.bridge as any).getAllGroups;
+      const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+      await openFixtureProject(deps);
+
+      expect(alertSpy, 'the load aborted').not.toHaveBeenCalled();
+      expect(deps.units.unit, 'units never got restored — the handler bailed early').toBe('mm');
+      alertSpy.mockRestore();
+    });
   });
 });
+
+/**
+ * Drives openProject through the file-input dance the tests above spell out,
+ * with a minimal .xia payload. Kept here rather than duplicated so the two
+ * group tests read as what they assert.
+ */
+async function openFixtureProject(deps: ProjectSerializerDeps): Promise<void> {
+  const api = initProjectSerializer(deps);
+  const projectJson = JSON.stringify({
+    format: 'xia',
+    version: '1.0.0',
+    mesh: 'AQID',
+    units: { unit: 'mm', precision: 4 },
+  });
+  let capturedOnChange: (() => Promise<void>) | null = null;
+  const fakeInput: any = {
+    type: '', accept: '', style: { display: '' },
+    files: [{ text: () => Promise.resolve(projectJson) }],
+    click: vi.fn(),
+    addEventListener: (event: string, cb: any) => {
+      if (event === 'change') capturedOnChange = cb;
+    },
+    removeEventListener: vi.fn(),
+    parentNode: { removeChild: vi.fn() },
+  };
+  const docCreate = document.createElement as any;
+  docCreate.mockImplementation((tag: string) => {
+    if (tag === 'input') return fakeInput;
+    if (tag === 'a') return { href: '', download: '', click: vi.fn() };
+    return undefined;
+  });
+  vi.spyOn(document.body, 'appendChild').mockImplementation((el: any) => el);
+  api.openProject();
+  if (!capturedOnChange) throw new Error('openProject never registered a change handler');
+  await (capturedOnChange as () => Promise<void>)();
+}

@@ -848,8 +848,22 @@ export class SelectionManager {
   // 그룹 기능
   // ════════════════════════════════════════════════
 
-  /** 현재 선택된 면들을 그룹으로 묶기 */
-  groupSelected(): number | null {
+  /**
+   * 현재 선택된 면들을 그룹으로 묶기.
+   *
+   * Pass the engine's group id when there is one. Without it this allocates
+   * from a local counter, and the two only agreed by coincidence: both start at
+   * 1 and both advance by one, so as long as every group was created through
+   * both sides in lockstep the numbers matched. Nothing enforced that. One
+   * local-only group — the WASM-unsupported fallback in GroupTool, or a direct
+   * call — put the counters one apart for the rest of the session, after which
+   * every id handed to the engine named a group it did not have. Component
+   * conversion failed permanently, with no way back short of a reload.
+   *
+   * @param engineGroupId The id the engine allocated, when the caller made an
+   *   engine group. Omit for a local-only group.
+   */
+  groupSelected(engineGroupId?: number): number | null {
     if (this.selected.size < 2) return null; // 2개 이상 면 필요
 
     // 기존 그룹에 속한 면들은 먼저 해제
@@ -864,8 +878,11 @@ export class SelectionManager {
       }
     }
 
-    // 새 그룹 생성
-    const gid = this.nextGroupId++;
+    // 새 그룹 생성 — the engine's id when it gave one, otherwise the next local.
+    const gid = engineGroupId ?? this.nextGroupId;
+    // Keep the counter past anything the engine has issued, so a later
+    // local-only group cannot be handed an id the engine already owns.
+    this.nextGroupId = Math.max(this.nextGroupId, gid + 1);
     const faces = new Set(this.selected);
     this.groups.set(gid, faces);
     for (const fid of faces) {

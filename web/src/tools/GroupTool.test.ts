@@ -72,6 +72,38 @@ describe('GroupTool', () => {
     });
   });
 
+  describe('group id authority (engine, not the local counter)', () => {
+    it('hands the engine id to SelectionManager', () => {
+      // The return of bridge.createGroup used to be discarded here, so the
+      // local side allocated a second id. They matched only by coincidence.
+      const spy = vi.spyOn(ctx.selection, 'groupSelected');
+      vi.mocked(ctx.bridge.createGroup).mockReturnValue(4);
+      ctx.selection.handleClick(1, false, false);
+      ctx.selection.handleClick(2, true, false);
+      ctx.selection.handleClick(3, true, false);
+
+      const gid = tool.createGroupFromSelection();
+
+      expect(gid).toBe(4);
+      expect(spy, 'the local side was left to invent its own id').toHaveBeenCalledWith(4);
+      // Not asserting getGroupId here: `ctx.selection` is a hand-written stub
+      // whose getGroupId always returns 1, so that check would be about the
+      // stub. What the real objects do is pinned in SelectionManager.test.ts.
+    });
+
+    it('falls back to a local id only when the engine made no group', () => {
+      const spy = vi.spyOn(ctx.selection, 'groupSelected');
+      vi.mocked(ctx.bridge.createGroup).mockReturnValue(0);
+      ctx.selection.handleClick(1, false, false);
+      ctx.selection.handleClick(2, true, false);
+
+      const gid = tool.createGroupFromSelection();
+
+      expect(gid, 'a local-only group is right here — there is no engine group').toBeTypeOf('number');
+      expect(spy, 'the fallback must let the local side choose').toHaveBeenCalledWith();
+    });
+  });
+
   describe('createGroupFromSelection', () => {
     it('creates group via WASM bridge', () => {
       const result = tool.createGroupFromSelection();

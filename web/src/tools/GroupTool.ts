@@ -131,8 +131,11 @@ export class GroupTool implements ITool {
     // WASM 백엔드에 그룹 생성 요청
     const groupId = this.ctx.bridge.createGroup(`Group`, selected);
     if (groupId > 0) {
-      // 로컬 SelectionManager도 동기화
-      this.ctx.selection.groupSelected();
+      // 로컬 SelectionManager도 동기화 — with the engine's id, not a second one
+      // of its own. The return value used to be discarded, so the two sides
+      // numbered groups independently and matched only while nothing ever
+      // created a group on one side alone.
+      this.ctx.selection.groupSelected(groupId);
       Toast.success(t('Group-{groupId} 생성 ({selected}개 면)', { groupId, selected: selected.length }));
       debugLog(`[GroupTool] Group-${groupId} created with faces:`, selected);
       return groupId;
