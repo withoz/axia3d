@@ -22796,9 +22796,30 @@ mod tests {
     /// (`is_sheet_face`, normal, surface all match), or scene state left by a
     /// prior draw. Each was measured and ruled out.
     ///
-    /// What is left is how the half-edges are wired and ordered around the
-    /// shared edge — the one thing that can differ between a face grown from
-    /// lines and a face added in one call. That is where to look next.
+    /// MECHANISM (measured 2026-08-03, no longer a suspicion). The cycle finder
+    /// that closes a region collects only half-edges with NO face
+    /// (`h.is_active() && h.face().is_null()`, mesh.rs ~5549/5563). Counting the
+    /// half-edges on a ground edge:
+    ///
+    ///   drawn rectangle, no extrude   2 per edge  (1 face + 1 spare)
+    ///   …then extruded                4 per edge  (2 faces + 2 SPARE)
+    ///   `create_box`                  2 per edge  (2 faces + 0 spare)
+    ///
+    /// So the extrude leaves a spare pair on every profile-boundary edge — it
+    /// adds a new pair for the wall instead of taking the one already free. Those
+    /// leftovers are what the later overlap draw walks along to close the region
+    /// outside the box. `create_box` allocates exactly what it needs, so the
+    /// finder sees nothing to walk and no face is made.
+    ///
+    /// The working case therefore works BY ACCIDENT, off an inefficiency in the
+    /// extrude path — not by design. Which also says what the fix is not: making
+    /// one-shot faces leave litter too. `find_halfedge` already has a Pass 2 that
+    /// creates a half-edge pair when none is free (mesh.rs ~9522), and
+    /// `add_face_with_holes` reaches it, so ATTACHING the third face is solved.
+    /// What is missing is that the finder refuses to route through an edge whose
+    /// slots are full, even when the third face is the T-junction this engine now
+    /// permits. That is a change to the cycle finder — the one place where a
+    /// wrong edit corrupts geometry silently — so it wants its own measured pass.
     ///
     /// Recorded as the behaviour that HOLDS today rather than `#[ignore]`d, so
     /// the next reader starts from here instead of rediscovering it.
