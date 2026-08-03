@@ -242,6 +242,19 @@ export interface ITool {
    */
   readonly wantsSnap?: boolean;
 
+  /**
+   * Whether a right-click means something to this tool other than "cancel".
+   * Default: `false` — ToolManager cancels the in-progress operation, which is
+   * what the context-menu handler has always claimed to do.
+   *
+   * It used to forward a synthetic right-button mousedown and hope the tool
+   * recognised it. Only DrawLine did (a right-click ends a polyline rather than
+   * discarding it). The rest never looked at `e.button`, so a right-click while
+   * drawing was read as the closing click and COMMITTED the shape — the
+   * opposite of backing out. Set this true only if the tool reads `e.button`.
+   */
+  readonly handlesRightClick?: boolean;
+
   /** Called when tool becomes active (setTool was called) */
   onActivate?(): void;
 
