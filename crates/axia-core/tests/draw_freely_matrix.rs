@@ -110,6 +110,17 @@ impl Place {
     }
 }
 
+fn draw_why(s: &mut Scene, origin: DVec3, n: DVec3, u: DVec3, v: DVec3, p: Place, circle: bool) -> String {
+    let ((du, dv), half) = p.geom();
+    let c = origin + u * du + v * dv;
+    let r = if circle {
+        s.execute(Command::DrawCircleAsShape { center: c, normal: n, radius: half, segments: 24 })
+    } else {
+        s.execute(Command::DrawRectAsShape { center: c, normal: n, up: v, width: half * 2.0, height: half * 2.0 })
+    };
+    match r { CommandResult::Error(e) => e, _ => "(수락)".into() }
+}
+
 fn draw(s: &mut Scene, origin: DVec3, n: DVec3, u: DVec3, v: DVec3, p: Place, circle: bool) -> bool {
     let ((du, dv), half) = p.geom();
     let c = origin + u * du + v * dv;
@@ -178,4 +189,115 @@ fn requirement_2_shapes_on_one_face_are_separated_by_their_boundaries() {
     }
     println!("\n  실패 {}건", fails.len());
     for f in &fails { println!("    ✗ {f}"); }
+}
+
+/// Why does each failing cell fail? One blocker or several?
+#[test]
+fn why_do_the_extending_draws_fail() {
+    println!("
+확장 그리기가 막히는 이유
+");
+    let mut reasons: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for host in [Host::BoxTopDrawn, Host::BoxTopPrim, Host::BoxSidePrim] {
+        for place in [Place::Crossing, Place::Straddling] {
+            for (shape, circle) in [("사각형", false), ("원", true)] {
+                let mut s = prod();
+                let (o, n, u, v) = host.build(&mut s);
+                let why = draw_why(&mut s, o, n, u, v, place, circle);
+                let key = why.chars().take(28).collect::<String>();
+                reasons.entry(key).or_default()
+                    .push(format!("{} / {} / {}", host.name(), place.name(), shape));
+            }
+        }
+    }
+    for (why, cases) in &reasons {
+        println!("  [{}건] {}", cases.len(), why);
+        for c in cases { println!("        {c}"); }
+    }
+    println!("
+  서로 다른 원인: {}", reasons.len());
+}
+
+/// What does the engine actually build for an extending draw, if the guard is
+/// not there to roll it back? The guard reports an overlap; this shows what
+/// overlaps what.
+#[test]
+fn what_does_an_extending_draw_produce() {
+    println!("
+확장 그리기가 실제로 만드는 것 (가드 무관, 겹치는 면 쌍을 열거)
+");
+    for host in [Host::BoxTopPrim, Host::BoxSidePrim] {
+        let mut s = prod();
+        let (o, n, u, v) = host.build(&mut s);
+        // draw the four sides as LINES — the line path is not guarded, so the
+        // result survives and can be inspected.
+        let ((du, dv), half) = Place::Crossing.geom();
+        let c = o + u * du + v * dv;
+        let corners = [
+            c - u * half - v * half, c + u * half - v * half,
+            c + u * half + v * half, c - u * half + v * half,
+        ];
+        let before = faces(&s);
+        for i in 0..4 {
+            s.execute(Command::DrawLine {
+                start: corners[i], end: corners[(i + 1) % 4], surface_normal: Some(n),
+            });
+        }
+        let si = s.mesh.detect_self_intersections();
+        println!("  {:<18} 면 {}→{}  겹침쌍 {}  nm {}",
+            host.name(), before, faces(&s), si.count(),
+            s.mesh.collect_non_manifold_edges().len());
+        for (a, b) in si.intersecting_pairs.iter().take(4) {
+            let dsc = |f: axia_geo::FaceId| {
+                s.mesh.collect_loop_verts(s.mesh.faces[f].outer().start).map(|vs| {
+                    let ps: Vec<_> = vs.iter().filter_map(|x| s.mesh.vertex_pos(*x).ok()).collect();
+                    format!("{}각 ({:.0},{:.0},{:.0})…", ps.len(), ps[0].x, ps[0].y, ps[0].z)
+                }).unwrap_or_default()
+            };
+            println!("        겹침: {:?} {}  ↔  {:?} {}", a, dsc(*a), b, dsc(*b));
+        }
+    }
+}
+
+/// The line path builds it correctly. What does the RECT TOOL build for the same
+/// thing? `Command::DrawRect` is the unguarded legacy entry into the same tool
+/// code, so the result survives to be looked at.
+#[test]
+fn what_does_the_rect_tool_build() {
+    println!("
+도형 도구가 만드는 것 (가드 없는 진입점)
+");
+    for host in [Host::BoxTopPrim, Host::BoxSidePrim] {
+        let mut s = prod();
+        let (o, n, u, v) = host.build(&mut s);
+        let ((du, dv), half) = Place::Crossing.geom();
+        let before = faces(&s);
+        s.execute(Command::DrawRect {
+            center: o + u * du + v * dv, normal: n, up: v,
+            width: half * 2.0, height: half * 2.0,
+        });
+        let si = s.mesh.detect_self_intersections();
+        println!("  {:<18} 면 {}→{}  겹침쌍 {}  nm {}",
+            host.name(), before, faces(&s), si.count(),
+            s.mesh.collect_non_manifold_edges().len());
+        for fid in s.mesh.faces.iter().filter(|(_,x)|x.is_active()).map(|(i,_)|i).collect::<Vec<_>>() {
+            if let Ok(vs) = s.mesh.collect_loop_verts(s.mesh.faces[fid].outer().start) {
+                let ps: Vec<_> = vs.iter().filter_map(|x| s.mesh.vertex_pos(*x).ok()).collect();
+                if ps.iter().all(|p| (p - o).dot(n).abs() < 1e-6) {
+                    let pts: Vec<String> = ps.iter()
+                        .map(|p| format!("({:.0},{:.0},{:.0})", p.x, p.y, p.z)).collect();
+                    println!("        면 {:?}: {}", fid, pts.join(" "));
+                }
+            }
+        }
+        for (a, b) in si.intersecting_pairs.iter().take(3) {
+            let dsc = |f: axia_geo::FaceId| {
+                s.mesh.collect_loop_verts(s.mesh.faces[f].outer().start).map(|vs| {
+                    let ps: Vec<_> = vs.iter().filter_map(|x| s.mesh.vertex_pos(*x).ok()).collect();
+                    format!("{}각", ps.len())
+                }).unwrap_or_default()
+            };
+            println!("        겹침: {:?} {}  ↔  {:?} {}", a, dsc(*a), b, dsc(*b));
+        }
+    }
 }
