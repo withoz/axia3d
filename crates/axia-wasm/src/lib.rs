@@ -6665,15 +6665,38 @@ impl AxiaEngine {
 
     /// Return the outer-loop vertex IDs of a face in walk order.
     /// Empty vec on error (face missing, degenerate, etc.).
+    /// Every vertex of a face — the outer boundary AND each hole loop.
+    ///
+    /// This walked only `outer()`, so a ring face reported its outer boundary
+    /// and silently omitted the hole's vertices. Its callers use it to build the
+    /// vertex set for a transform: bend / twist / taper collect from it
+    /// (`ToolManagerRefactored.ts:1089`) and the selection bbox is measured from
+    /// it (`:2519`). So bending a face with a hole moved the outer boundary and
+    /// left the hole behind — a deformation that pulls the shape through its own
+    /// hole — while the toast reported a vertex count that excluded it. The same
+    /// call is reachable over MCP.
+    ///
+    /// Duplicates are possible in principle (a pinch vertex shared by outer and
+    /// inner, ADR-022 P9), and are left in: callers put these into a `Set`
+    /// (`ToolManagerRefactored.ts:1087`), and de-duplicating here would hide
+    /// that topology from anyone who wants to see it.
     #[wasm_bindgen(js_name = "getFaceVertices")]
     pub fn get_face_vertices(&self, face_id_raw: u32) -> Vec<u32> {
         let fid = FaceId::new(face_id_raw);
         if !self.scene.mesh.faces.contains(fid) { return vec![]; }
-        let start = self.scene.mesh.faces[fid].outer().start;
-        match self.scene.mesh.collect_loop_verts(start) {
+        let face = &self.scene.mesh.faces[fid];
+        let mut out: Vec<u32> = match self.scene.mesh.collect_loop_verts(face.outer().start) {
             Ok(verts) => verts.into_iter().map(|v| v.raw()).collect(),
-            Err(_) => vec![],
+            Err(_) => return vec![],
+        };
+        for inner in face.inners() {
+            // A malformed hole loop must not cost the caller the outer boundary
+            // it would otherwise have got — skip it and keep going.
+            if let Ok(verts) = self.scene.mesh.collect_loop_verts(inner.start) {
+                out.extend(verts.into_iter().map(|v| v.raw()));
+            }
         }
+        out
     }
 
     /// Bend a vertex set around `bend_axis` with angle ramping from 0

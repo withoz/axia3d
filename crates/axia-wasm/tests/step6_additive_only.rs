@@ -2119,3 +2119,51 @@ fn adr203_import_ifc_uses_kernel_native_curve_when_present() {
         "and still keep the polygon path for everything else"
     );
 }
+
+// ── getFaceVertices covers hole loops ────────────────────────────────
+//
+// It walked only `outer()`, so a ring face reported its outer boundary and
+// silently omitted the hole's vertices. Callers build a transform's vertex set
+// from it — bend / twist / taper collect at ToolManagerRefactored.ts:1089, the
+// selection bbox is measured at :2519 — so bending a face with a hole moved the
+// outer boundary and left the hole behind, while the toast counted only what it
+// had moved. Reachable over MCP too.
+//
+// Asserted at source level because this crate's methods cannot be called from
+// `cargo test`: the wasm-bindgen marshalling layer panics (see the header). The
+// behaviour itself is verified against the built WASM in the browser.
+#[test]
+fn get_face_vertices_includes_inner_loops() {
+    let s = lib_src();
+    let start = s
+        .find("pub fn get_face_vertices")
+        .expect("get_face_vertices is gone — did it get renamed?");
+    // The body runs to the next `#[wasm_bindgen` attribute.
+    let end = s[start..]
+        .find("#[wasm_bindgen")
+        .map(|o| start + o)
+        .unwrap_or(s.len());
+    let body = &s[start..end];
+
+    assert!(
+        body.contains(".inners()"),
+        "get_face_vertices does not walk the hole loops — a ring face will \
+         report only its outer boundary, and bend/twist/taper will leave the \
+         hole behind"
+    );
+    assert!(
+        body.contains("collect_loop_verts(face.outer().start)"),
+        "get_face_vertices no longer collects the outer boundary"
+    );
+    assert!(
+        body.matches("collect_loop_verts").count() >= 2,
+        "get_face_vertices collects only one loop — outer and inner are both needed"
+    );
+    // A bad hole loop must not cost the caller the outer boundary: the inner
+    // walk uses `if let Ok(..)`, it does not `return` on Err.
+    let inner_at = body.find(".inners()").unwrap();
+    assert!(
+        body[inner_at..].contains("if let Ok("),
+        "a malformed hole loop should be skipped, not abandon the whole result"
+    );
+}
