@@ -3032,6 +3032,31 @@
                 </div>
               </div>
 
+              <!-- 선 부재의 단면. 선 하나를 고르면 나타난다. -->
+              <div class="xi-section-row" id="xi-section-row" style="display:none">
+                <div class="xi-section-head" style="margin-top:8px">
+                  <span class="xi-section-title">단면</span>
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                  <select id="xi-section-kind" style="flex:0 0 auto">
+                    <option value="none">없음</option>
+                    <option value="rectangular">사각형</option>
+                    <option value="circular">원형</option>
+                  </select>
+                  <span id="xi-section-rect" style="display:none;gap:4px;align-items:center">
+                    <input id="xi-section-w" type="number" min="0" step="1" style="width:64px" />
+                    <span>×</span>
+                    <input id="xi-section-h" type="number" min="0" step="1" style="width:64px" />
+                    <span class="xi-dim-unit">mm</span>
+                  </span>
+                  <span id="xi-section-circ" style="display:none;gap:4px;align-items:center">
+                    <span>&#8960;</span>
+                    <input id="xi-section-d" type="number" min="0" step="1" style="width:64px" />
+                    <span class="xi-dim-unit">mm</span>
+                  </span>
+                </div>
+              </div>
+
               <div class="xi-computed-grid">
                 <div class="xi-computed-box">
                   <div class="xi-computed-label">면적</div>

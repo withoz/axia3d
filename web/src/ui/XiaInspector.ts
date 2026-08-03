@@ -358,6 +358,86 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
   });
 
   // ── 엣지 선택용: 총 길이 계산 (edgeLines + edgeMap 조합) ──
+  // ── 선의 단면 ────────────────────────────────────────────────────────
+  // A line has length and nothing else; give it a section and it becomes a
+  // member, with a volume and a weight. The control appears only for a single
+  // selected line — with several, which line's section would it be?
+  type SectionInfo = { area: number; width?: number; height?: number; radius?: number };
+
+  const sectionEls = () => ({
+    row: document.getElementById('xi-section-row') as HTMLElement | null,
+    kind: document.getElementById('xi-section-kind') as HTMLSelectElement | null,
+    rect: document.getElementById('xi-section-rect') as HTMLElement | null,
+    circ: document.getElementById('xi-section-circ') as HTMLElement | null,
+    w: document.getElementById('xi-section-w') as HTMLInputElement | null,
+    h: document.getElementById('xi-section-h') as HTMLInputElement | null,
+    d: document.getElementById('xi-section-d') as HTMLInputElement | null,
+  });
+
+  const hideSectionControl = (): void => {
+    const el = sectionEls();
+    if (el.row) el.row.style.display = 'none';
+  };
+
+  /** Show the control for this line and return what it currently carries. */
+  const showSectionControl = (edgeId: number): SectionInfo | null => {
+    const el = sectionEls();
+    if (!el.row || !el.kind) return null;
+    el.row.style.display = '';
+    el.row.dataset.edgeId = String(edgeId);
+
+    const p = bridge.getEdgeProfile?.(edgeId) ?? null;
+    const kind = p?.kind === 'rectangular' || p?.kind === 'circular' ? p.kind : 'none';
+    el.kind.value = kind;
+    if (el.rect) el.rect.style.display = kind === 'rectangular' ? 'inline-flex' : 'none';
+    if (el.circ) el.circ.style.display = kind === 'circular' ? 'inline-flex' : 'none';
+    if (kind === 'rectangular') {
+      if (el.w) el.w.value = String(p?.width ?? '');
+      if (el.h) el.h.value = String(p?.height ?? '');
+    } else if (kind === 'circular') {
+      if (el.d) el.d.value = String((p?.radius ?? 0) * 2);
+    }
+    // An outline arriving from a file has no editable dimensions here, but it
+    // still has an area, and the panel should say so rather than show zero.
+    return p ? { area: p.area, width: p.width, height: p.height, radius: p.radius } : null;
+  };
+
+  /** Read the control and give the line what it says. */
+  const applySectionFromControl = (): void => {
+    const el = sectionEls();
+    const edgeId = Number(el.row?.dataset.edgeId ?? NaN);
+    if (!Number.isFinite(edgeId) || !el.kind) return;
+    const kind = el.kind.value;
+    if (el.rect) el.rect.style.display = kind === 'rectangular' ? 'inline-flex' : 'none';
+    if (el.circ) el.circ.style.display = kind === 'circular' ? 'inline-flex' : 'none';
+
+    let ok = false;
+    if (kind === 'none') {
+      bridge.clearEdgeProfile?.(edgeId);
+      ok = true;
+    } else if (kind === 'rectangular') {
+      const w = Number(el.w?.value ?? 0);
+      const h = Number(el.h?.value ?? 0);
+      ok = w > 0 && h > 0 && (bridge.setEdgeProfile?.(edgeId, { kind: 'rectangular', width: w, height: h }) ?? false);
+    } else if (kind === 'circular') {
+      const d = Number(el.d?.value ?? 0);
+      ok = d > 0 && (bridge.setEdgeProfile?.(edgeId, { kind: 'circular', radius: d / 2 }) ?? false);
+    }
+    if (!ok && kind !== 'none') {
+      // Half-typed dimensions are the normal state while typing, so this only
+      // speaks up when the engine refused something complete.
+      const why = bridge.lastError?.();
+      if (why) Toast.warning(why, 2000);
+      return;
+    }
+    // Redraw the panel so length × section shows up as a volume.
+    updateInspector(toolManager.selection.getSelectedFaces());
+  };
+
+  for (const id of ['xi-section-kind', 'xi-section-w', 'xi-section-h', 'xi-section-d']) {
+    document.getElementById(id)?.addEventListener('change', applySectionFromControl);
+  }
+
   const computeEdgesTotalLength = (edgeIds: number[]): number => {
     const lines = bridge.getEdgeLines();
     const map = bridge.getEdgeMap();
@@ -482,32 +562,46 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
       if (subEl) subEl.textContent = t('{n}개 선분', { n: edgeIds.length });
       if (shapeEl) shapeEl.textContent = t('□ 선');
 
-      // 치수: 길이만 의미 있음 (L = 총 길이, W/H = 0)
+      // 치수: 길이는 언제나, 나머지는 단면이 있어야 의미가 생긴다.
       const totalLen = computeEdgesTotalLength(edgeIds);
       const lengthEl = document.getElementById('xi-length');
       const widthEl = document.getElementById('xi-width');
       const heightEl = document.getElementById('xi-height');
       const areaEl = document.getElementById('xi-area');
       if (lengthEl) lengthEl.textContent = formatNum(totalLen);
-      if (widthEl) widthEl.textContent = '0';
-      if (heightEl) heightEl.textContent = '0';
-      if (areaEl) areaEl.textContent = '0';
 
-      // 부피/무게 박스 숨김
+      // 선 하나를 고르면 단면을 줄 수 있다. 여러 개면 어느 선의 단면인지
+      // 모호하므로 감춘다.
+      const section = edgeIds.length === 1 ? showSectionControl(edgeIds[0]) : (hideSectionControl(), null);
+      const sectionArea = section?.area ?? 0;
+
+      if (widthEl) widthEl.textContent = section?.width != null ? formatNum(section.width) : '0';
+      if (heightEl) {
+        heightEl.textContent =
+          section?.height != null ? formatNum(section.height)
+          : section?.radius != null ? formatNum(section.radius * 2) : '0';
+      }
+      // 면적 칸은 m² 단위 — 단면은 mm²이므로 환산. 기둥 단면은 0.09 m² 같은
+      // 작은 값이라 정수로 반올림하면 통째로 0이 된다.
+      if (areaEl) areaEl.textContent = sectionArea > 0 ? formatNum(sectionArea / 1e6, 3) : '0';
+
+      // 단면이 있으면 길이 × 단면이 진짜 부피다.
       const volBox = document.getElementById('xi-volume')?.closest('.xi-computed-box') as HTMLElement | null;
       const weightBox = document.getElementById('xi-weight')?.closest('.xi-computed-box') as HTMLElement | null;
-      if (volBox) volBox.style.display = 'none';
-      if (weightBox) weightBox.style.display = 'none';
+      const hasSection = sectionArea > 0;
+      if (volBox) volBox.style.display = hasSection ? '' : 'none';
+      if (weightBox) weightBox.style.display = hasSection ? '' : 'none';
 
-      // 물리 속성 섹션은 Edge에서 비활성화 (dim)
       const physSection = document.getElementById('xi-physical-section');
       if (physSection) {
         physSection.style.display = '';
-        physSection.style.opacity = '0.35';
-        physSection.style.pointerEvents = 'none';
+        physSection.style.opacity = hasSection ? '' : '0.35';
+        physSection.style.pointerEvents = hasSection ? '' : 'none';
       }
 
-      currentVolumeMM3 = 0;
+      currentVolumeMM3 = hasSection ? totalLen * sectionArea : 0;
+      const volEl = document.getElementById('xi-volume');
+      if (volEl && hasSection) volEl.textContent = formatNum(currentVolumeMM3 / 1e9, 3);
 
       // 이름: "선분 N개"처럼 자동 표시 (수동 편집 안 된 경우)
       const nameEl = document.getElementById('xi-name') as HTMLInputElement | null;

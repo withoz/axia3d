@@ -70,6 +70,8 @@ export const EN: Record<string, string> = {
   '모두 지우기': 'Clear All',
   '취소': 'Cancel',
   '확인': 'OK',
+  '단면': 'Section',
+  '원형': 'Round',
   '없음': 'None',
   '복제': 'Duplicate',
   '복제 (Copy · 2-click)': 'Duplicate (Copy · 2-click)',
