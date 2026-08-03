@@ -13,6 +13,14 @@ import { pickingRouter } from '../core/PickingRouter';
  * `EdgeId | FaceId` 둘 다 number 라 컴파일 타임 구분이 안 됨 → kind
  * discriminator 강제. switch case exhaustive check 가능.
  */
+/**
+ * How near an edge the cursor must be for the edge to win over the face behind
+ * it. One constant because hover and click must answer the same question: the
+ * hover exists to predict the click. They were 5 and 18, so a ribbon along every
+ * edge tinted the face and then selected the edge.
+ */
+const EDGE_PREFER_PX = 18;
+
 export type HoverTarget =
   | { kind: 'edge'; id: number }
   | { kind: 'face'; id: number }
@@ -133,7 +141,7 @@ export class SelectTool implements ITool {
       kind: 'edgeOrFace',
       x: e.clientX, y: e.clientY,
       viewport: this.ctx.viewport,
-      preferEdgeWithinPx: 18,
+      preferEdgeWithinPx: EDGE_PREFER_PX,
     });
     // 기존 코드 호환을 위해 pickEdgeOrFace 형식의 객체로 정규화.
     const picked = r ? { type: r.kind, hit: r.hit } : null;
@@ -373,7 +381,12 @@ export class SelectTool implements ITool {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const picked = this.ctx.viewport.pickEdgeOrFace?.(x, y);
+    // 18px, matching the click that this hover is supposed to predict
+    // (onMouseDown routes with preferEdgeWithinPx: 18, and ToolManager's own
+    // hover pass uses 18). This took the 5px default, so in the band between
+    // the two the hover tinted the FACE while the click selected the EDGE —
+    // wrong over a ~13px ribbon along every edge in the model.
+    const picked = this.ctx.viewport.pickEdgeOrFace?.(x, y, EDGE_PREFER_PX);
     if (!picked) return null;
 
     if (picked.type === 'edge'
