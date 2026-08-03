@@ -11,6 +11,37 @@
 //!
 //! Read the output as: does the draw survive, and does the host face end up cut
 //! where the drawn boundary crosses it.
+//!
+//! WHY THE LAST TWO FAIL (measured 2026-08-03, both on a vertical side face).
+//!
+//! 요구1's remaining case and 요구2's are one cause, and it is not where the
+//! error message points. Drawing a rectangle straddling the box's east wall is
+//! refused with "도형이 기존 면과 같은 자리를 덮습니다", and the repair that
+//! should have resolved that overlap bails with "coplanar clipping requires
+//! convex faces".
+//!
+//! But the face it calls non-convex is not the drawn rectangle — it is this:
+//!
+//! ```text
+//! (200,260,110) (200,140,110) (200,140,100) (200,0,100)
+//! (200,0,0)     (200,140,0)   (200,140,-10) (200,260,-10)
+//! ```
+//!
+//! The drawn rectangle (y 140..260, z −10..110) MERGED with the wall region
+//! (y 0..140, z 0..100) into one L-shaped face — while the wall pieces it now
+//! covers are still there as separate faces. The coplanar re-derive emitted a
+//! face overlapping faces it did not replace. The overlap is real; the repair
+//! cannot take it because clipping is convex-only (ADR-101 B-1, and LOCKED #41
+//! already names general non-convex clipping as a separate ADR).
+//!
+//! So there are two ways out and they are different sizes: have the re-derive
+//! replace what it covers, or bring in general polygon clipping
+//! (Weiler–Atherton / Vatti). Neither is a small change, and picking one is not
+//! a decision to make inside a test file.
+//!
+//! The top face does not do this — the same straddling rectangle is accepted
+//! there (6 faces → 7). Whatever the re-derive does differently on a vertical
+//! face is where a fix would start looking.
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use axia_geo::{CreateSolidMode, FaceId};
 use glam::DVec3;
