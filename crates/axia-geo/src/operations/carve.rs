@@ -1595,7 +1595,8 @@ impl Mesh {
             return None;
         }
         let centroid = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
-        let my_area = self.face_area(face);
+        // Container search — outer extent, not material left over.
+        let my_area = self.face_outer_area(face);
         let mut best: Option<(FaceId, f64)> = None;
         for (hid, h) in self.faces.iter() {
             if hid == face || !h.is_active() {
@@ -1605,7 +1606,7 @@ impl Mesh {
             if hn.dot(n).abs() < 0.999 {
                 continue; // not coplanar (parallel) with `face`
             }
-            let h_area = self.face_area(hid);
+            let h_area = self.face_outer_area(hid);
             if h_area <= my_area + 1e-6 {
                 continue; // only a strictly LARGER container counts
             }

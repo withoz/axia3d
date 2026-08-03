@@ -12380,7 +12380,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -12720,7 +12722,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -12972,7 +12976,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -13313,6 +13319,58 @@ impl Mesh {
     /// Cross-link: ADR-104 family (Path B primitives), ADR-031 Phase D
     /// (AnalyticSurface infra), ADR-121 (Finding #1 closure).
     pub fn face_area(&self, face_id: FaceId) -> f64 {
+        let outer = self.face_outer_area(face_id);
+        if outer <= 0.0 {
+            return outer;
+        }
+        let Some(f) = self.faces.get(face_id).filter(|f| f.is_active()) else {
+            return 0.0;
+        };
+        // On a CURVED surface an inner loop need not be a hole at all: a Path B
+        // cylinder side is one face whose two loops are the two RIMS of the tube
+        // (ADR-094), and its area already comes from the surface formula, not
+        // from the boundary. Deducting the top rim there took 2πrh down to
+        // 2πrh − πr² — measured. The two cases cannot be told apart from the
+        // loops alone, so only a planar face deducts, and a window carved in a
+        // curved wall still over-reports (unchanged, and now written down).
+        use crate::surfaces::AnalyticSurface as S;
+        if matches!(
+            f.surface(),
+            Some(
+                S::Cylinder { .. }
+                    | S::Sphere { .. }
+                    | S::Cone { .. }
+                    | S::Torus { .. }
+                    | S::BezierPatch { .. }
+                    | S::BSplineSurface { .. }
+                    | S::NURBSSurface { .. }
+            )
+        ) {
+            return outer;
+        }
+        let holes: f64 = f
+            .inners()
+            .iter()
+            .filter(|lr| !lr.start.is_null())
+            .map(|lr| self.loop_enclosed_area(lr.start))
+            .sum();
+        (outer - holes).max(0.0)
+    }
+
+    /// The area the OUTER boundary encloses, with holes NOT deducted.
+    ///
+    /// This is the one to ask for when the question is "how big is this region",
+    /// not "how much material is here": which coplanar face contains a point,
+    /// which of two containers is the inner one, whether a boundary is
+    /// degenerate. Measured — every such caller in the engine wants this, and
+    /// only the two user-facing measures (`faceArea`, a XIA's 표면적) want the
+    /// area with holes taken out.
+    ///
+    /// Deducting there too would be quietly wrong in both directions: a ring
+    /// with a wide hole would sort as SMALLER than a face it contains, breaking
+    /// innermost-parent, and a thin frame would fall under the degeneracy
+    /// threshold and be deleted as a zero-area face.
+    pub fn face_outer_area(&self, face_id: FaceId) -> f64 {
         let f = match self.faces.get(face_id) {
             Some(f) if f.is_active() => f,
             _ => return 0.0,
@@ -13370,28 +13428,46 @@ impl Mesh {
         if self.collect_loop_verts(outer_start).ok()?.len() != 1 {
             return None;
         }
-        let edge_id = self.hes[outer_start].edge();
-        let edge = self.edges.get(edge_id)?;
+        let a = self.loop_enclosed_area(outer_start);
+        (a > 0.0).then_some(a)
+    }
+
+    /// The area ONE loop encloses — polygon or closed curve, outer or hole.
+    ///
+    /// A closed curve is one self-loop half-edge (ADR-089 Phase 2), so a loop
+    /// cannot be measured by reading its vertices alone. Circle is exact (πr²);
+    /// the free-form kinds are sampled and shoelaced.
+    ///
+    /// Sampled at a fixed 0.1 mm rather than the render's camera-dependent
+    /// tolerance: a measurement must not change because someone zoomed out.
+    pub fn loop_enclosed_area(&self, start: crate::HeId) -> f64 {
+        if let Ok(verts) = self.collect_loop_verts(start) {
+            if verts.len() >= 3 {
+                return self.newell_raw(&verts).map(|n| n.length() * 0.5).unwrap_or(0.0);
+            }
+        }
         use crate::curves::AnalyticCurve;
         const AREA_CHORD_TOL: f64 = 0.1;
-        let pts: Vec<DVec3> = match edge.curve().cloned()? {
+        let Some(he) = self.hes.get(start) else { return 0.0 };
+        let Some(edge) = self.edges.get(he.edge()) else { return 0.0 };
+        let pts: Vec<DVec3> = match edge.curve().cloned() {
             // Exact disk area for a Circle (Path B cylinder/cone/sphere bases).
-            AnalyticCurve::Circle { radius, .. } => {
-                return Some(std::f64::consts::PI * radius * radius);
+            Some(AnalyticCurve::Circle { radius, .. }) => {
+                return std::f64::consts::PI * radius * radius
             }
-            AnalyticCurve::Bezier { control_pts } => {
-                crate::curves::bezier::tessellate(&control_pts, AREA_CHORD_TOL).ok()?
+            Some(AnalyticCurve::Bezier { control_pts }) => {
+                crate::curves::bezier::tessellate(&control_pts, AREA_CHORD_TOL).unwrap_or_default()
             }
-            AnalyticCurve::BSpline { control_pts, knots, degree } => {
+            Some(AnalyticCurve::BSpline { control_pts, knots, degree }) => {
                 crate::curves::bspline::tessellate(
                     &control_pts,
                     &knots,
                     degree as usize,
                     AREA_CHORD_TOL,
                 )
-                .ok()?
+                .unwrap_or_default()
             }
-            AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
+            Some(AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
                 crate::curves::nurbs::tessellate(
                     &control_pts,
                     &weights,
@@ -13399,10 +13475,10 @@ impl Mesh {
                     degree as usize,
                     AREA_CHORD_TOL,
                 )
-                .ok()?
+                .unwrap_or_default()
             }
-            // Arc / Line self-loop → not a closed disk; defer to surface analytic.
-            _ => return None,
+            // Arc / Line self-loop → not a closed region.
+            _ => return 0.0,
         };
         // Drop the closing duplicate point, then Newell/shoelace.
         let unique: &[DVec3] = if pts.len() >= 4
@@ -13413,14 +13489,14 @@ impl Mesh {
             &pts[..]
         };
         if unique.len() < 3 {
-            return None;
+            return 0.0;
         }
         let p0 = unique[0];
         let mut area_vec = DVec3::ZERO;
         for i in 1..unique.len() - 1 {
             area_vec += (unique[i] - p0).cross(unique[i + 1] - p0);
         }
-        Some(area_vec.length() * 0.5)
+        area_vec.length() * 0.5
     }
 
     /// ADR-121 β — Compute analytic area from `AnalyticSurface` variant
@@ -13594,7 +13670,9 @@ impl Mesh {
         let mut to_remove: Vec<FaceId> = Vec::new();
         for (fid, face) in self.faces.iter() {
             if !face.is_active() { continue; }
-            let area = self.face_area(fid);
+            // A degenerate face is one whose BOUNDARY collapsed; a thin frame
+            // with a wide hole is small in material and perfectly good geometry.
+            let area = self.face_outer_area(fid);
             if area < tol {
                 to_remove.push(fid);
             }
@@ -13647,7 +13725,7 @@ impl Mesh {
             .iter()
             .filter(|(_, f)| f.is_active())
             .map(|(fid, _)| fid)
-            .filter(|&fid| self.face_area(fid) < area_tol)
+            .filter(|&fid| self.face_outer_area(fid) < area_tol)
             .collect();
         if walls.is_empty() {
             return Ok(0);
@@ -13670,7 +13748,7 @@ impl Mesh {
         let nondegen: Vec<FaceId> = self
             .faces
             .iter()
-            .filter(|(fid, f)| f.is_active() && self.face_area(*fid) >= area_tol)
+            .filter(|(fid, f)| f.is_active() && self.face_outer_area(*fid) >= area_tol)
             .map(|(fid, _)| fid)
             .collect();
         let mut incidence: HashMap<VertId, u32> = HashMap::new();

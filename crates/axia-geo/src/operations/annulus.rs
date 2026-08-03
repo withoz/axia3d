@@ -443,7 +443,9 @@ fn face_containment_size(mesh: &Mesh, fid: FaceId) -> f64 {
     if let Some(c) = extract_circle(mesh, fid) {
         std::f64::consts::PI * c.radius * c.radius
     } else {
-        mesh.face_area(fid)
+        // Ordering by how much a face ENCLOSES, so holes are not deducted —
+        // a ring must still sort above what sits inside it.
+        mesh.face_outer_area(fid)
     }
 }
 
