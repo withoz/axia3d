@@ -431,16 +431,21 @@ fn a_shape_that_clears_the_host_on_both_sides_draws_too() {
     assert!(on_box(top, DVec3::Z, DVec3::Y, 120.0, 220.0), "clearing it");
 }
 
-/// Drawing a shape AROUND a smaller one: fine on a sheet, refused on a solid.
+/// Drawing a shape AROUND a smaller one, on a sheet and on a solid alike.
 ///
-/// Found while checking whether the loop-walk fix needed its narrowing gate. It
-/// does not belong to that fix — measured with the check gated, ungated, and
-/// absent, the answer is the same each time, so this is older than any of it.
+/// The result is a chain — the host keeps one hole for the new shape, the new
+/// shape becomes a ring holding the small one, and the small one is untouched.
+/// Getting merely "accepted" is not the test: a solid ring that lay ON TOP of
+/// the small face would also be accepted by a guard that only counted edges.
 ///
-/// Recorded rather than chased: the grid draws shapes ON a host, never around
-/// one, so nothing else here would have noticed.
+/// It used to be refused on a solid, and the reason is worth keeping. A sheet
+/// never showed it because the arrangement rebuilds the whole coplanar region
+/// and derives the chain fresh; on a solid the arrangement is deliberately
+/// skipped (re-deriving there dangles the solid's own loop), so the small face's
+/// hole stayed with the cap and the new ring could not take it — its twins
+/// already bore a face. `detach_hole_for_closer_parent` hands it over.
 #[test]
-fn a_shape_drawn_around_a_smaller_one_is_refused_on_a_solid() {
+fn a_shape_drawn_around_a_smaller_one_nests_on_a_solid_too() {
     // On a sheet it is a ring with a hole, which is what it should be.
     let mut sheet = prod();
     sheet.execute(Command::DrawRectAsShape {
@@ -451,7 +456,7 @@ fn a_shape_drawn_around_a_smaller_one_is_refused_on_a_solid() {
     });
     assert!(!matches!(r, CommandResult::Error(_)), "a sheet takes it: {r:?}");
 
-    // On a solid's top face, the same draw is refused.
+    // And on a solid's top face.
     let mut solid = prod();
     let f = solid
         .mesh
@@ -467,9 +472,70 @@ fn a_shape_drawn_around_a_smaller_one_is_refused_on_a_solid() {
         center: DVec3::new(100.0, 100.0, 100.0), normal: DVec3::Z, up: DVec3::Y,
         width: 140.0, height: 140.0,
     });
-    assert!(
-        matches!(r, CommandResult::Error(_)),
-        "today it is refused — when that changes, say so here"
+    assert!(!matches!(r, CommandResult::Error(_)), "a solid takes it too: {r:?}");
+    assert_eq!(faces(&solid), before + 1, "one new region");
+
+    // The chain, by the width of each face's outer loop and of its hole.
+    let width_of = |start: axia_geo::HeId| -> f64 {
+        let vs = solid.mesh.collect_loop_verts(start).unwrap();
+        let xs: Vec<f64> = vs.iter().filter_map(|v| solid.mesh.vertex_pos(*v).ok())
+            .map(|p| p.x).collect();
+        xs.iter().cloned().fold(f64::MIN, f64::max) - xs.iter().cloned().fold(f64::MAX, f64::min)
+    };
+    let mut chain: Vec<(f64, Vec<f64>)> = solid
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .filter(|(fid, _)| {
+            solid.mesh.collect_loop_verts(solid.mesh.faces[*fid].outer().start)
+                .map(|vs| vs.iter().filter_map(|v| solid.mesh.vertex_pos(*v).ok())
+                    .all(|p| (p.z - 100.0).abs() < 1e-6))
+                .unwrap_or(false)
+        })
+        .map(|(fid, f)| {
+            (width_of(f.outer().start),
+             f.inners().iter().map(|lr| width_of(lr.start)).collect())
+        })
+        .collect();
+    chain.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    assert_eq!(
+        chain,
+        vec![
+            (60.0, vec![]),        // the small one, whole
+            (140.0, vec![60.0]),   // the new shape, a ring around it
+            (200.0, vec![140.0]),  // the cap, holding only the new shape
+        ],
+        "each face holds exactly the one below it: {chain:?}"
     );
-    assert_eq!(faces(&solid), before, "and the solid is left alone");
+    assert!(clean(&solid), "nothing covers anything else");
+    assert!(solid.mesh.verify_face_invariants().violations.is_empty());
+    assert!(solid.mesh.verify_outward_normals().is_closed_solid, "the solid stays closed");
+}
+
+/// The same, drawn with circles — a different boundary kind through the same
+/// hand-over. A circle's rim is one self-loop half-edge, and its split reparents
+/// the twin WITHOUT checking that it is free, so a circle had to be taken back
+/// before the split rather than after it refused.
+#[test]
+fn a_circle_drawn_around_a_smaller_circle_nests_on_a_solid() {
+    let mut solid = prod();
+    let f = solid
+        .mesh
+        .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, FORM_MATERIAL)
+        .unwrap();
+    solid.create_xia_with_faces("b".into(), DVec3::ZERO, f);
+    let small = solid.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(100.0, 100.0, 100.0), normal: DVec3::Z, radius: 30.0,
+    });
+    assert!(!matches!(small, CommandResult::Error(_)), "{small:?}");
+    let before = faces(&solid);
+    let around = solid.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(100.0, 100.0, 100.0), normal: DVec3::Z, radius: 70.0,
+    });
+    assert!(!matches!(around, CommandResult::Error(_)), "drawn around: {around:?}");
+    assert_eq!(faces(&solid), before + 1, "one new region");
+    assert!(clean(&solid), "nothing covers anything else");
+    assert!(solid.mesh.verify_face_invariants().violations.is_empty());
+    assert!(solid.mesh.verify_outward_normals().is_closed_solid, "the solid stays closed");
 }

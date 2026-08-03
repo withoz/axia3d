@@ -517,33 +517,117 @@ fn reject_non_nestable(
     Ok(())
 }
 
-/// ADR-279 β — is this circle face ALREADY a "disk" whose rim is a hole of some
-/// container (i.e., a ring+disk relationship already exists)?
+/// Which face currently owns this one's boundary as a HOLE, if any?
 ///
-/// A ring+disk split reparents the circle's twin half-edge to the container as an
-/// INNER (hole) loop. On a scoped re-derive (drawing a 2nd concentric circle), the
-/// outer container + its existing circle hole are preserved untouched, so this
-/// circle's twin already points at an active container as a non-outer loop.
-/// Re-assigning it would add a DUPLICATE hole → the rim edge gets a 3rd
-/// face-bearing HE → non-manifold. So a circle already-a-hole is skipped as an
-/// inner candidate (it may still serve as a CONTAINER for a smaller circle).
+/// A ring+disk split reparents the inner's twin half-edges to its container as
+/// an INNER (hole) loop, so an inner that already has a parent is recognised by
+/// its twins bearing that face as a non-outer loop. Re-assigning such an inner
+/// somewhere else without first taking it back would leave its rim edges with a
+/// 3rd face-bearing HE — non-manifold (ADR-279 β, the "곡선 annulus 한계").
 ///
-/// A fresh / standalone circle's twin has a null face → returns false.
-fn circle_already_hole(mesh: &Mesh, fid: FaceId) -> bool {
-    let Some(face) = mesh.faces.get(fid) else { return false };
-    let he1 = face.outer().start;
-    if he1.is_null() || !mesh.hes.contains(he1) {
-        return false;
+/// Generalises the circle form (one self-loop twin) to a polygon's N twins; a
+/// fresh / standalone face's twins have a null face -> `None`.
+fn current_hole_parent(mesh: &Mesh, fid: FaceId) -> Option<FaceId> {
+    let face = mesh.faces.get(fid)?;
+    if !face.is_active() {
+        return None;
     }
-    let he2 = mesh.hes[he1].next_rad();
-    if he2 == he1 || !mesh.hes.contains(he2) {
-        return false;
+    let hes = mesh.collect_loop_hes(face.outer().start).ok()?;
+    if hes.is_empty() {
+        return None;
     }
-    let tf = mesh.hes[he2].face();
-    !tf.is_null()
-        && tf != fid
-        && mesh.faces.get(tf).map_or(false, |f| f.is_active())
-        && !mesh.hes[he2].is_outer()
+    let mut parent: Option<FaceId> = None;
+    for &he in &hes {
+        let twin = mesh.hes[he].next_rad();
+        if twin == he || !mesh.hes.contains(twin) || mesh.hes[twin].is_outer() {
+            return None;
+        }
+        let tf = mesh.hes[twin].face();
+        if tf.is_null() || tf == fid || !mesh.faces.get(tf).map_or(false, |f| f.is_active()) {
+            return None;
+        }
+        match parent {
+            None => parent = Some(tf),
+            // A boundary whose twins bear different faces is not one hole.
+            Some(p) if p == tf => {}
+            Some(_) => return None,
+        }
+    }
+    parent
+}
+
+/// What was taken back, so it can be put back if the move then fails.
+struct DetachedHole {
+    parent: FaceId,
+    index: usize,
+    loop_ref: LoopRef,
+    /// (half-edge, the face it bore, whether it was an outer loop)
+    hes: Vec<(crate::HeId, FaceId, bool)>,
+}
+
+/// Take a hole back from its current owner so a face that has since appeared
+/// BETWEEN them can have it.
+///
+/// Drawing a shape around a smaller one leaves a chain — cap contains the new
+/// ring contains the small face — but the small face's hole still belongs to the
+/// cap, and the reparent onto the ring is refused because its twins already bear
+/// a face. On a sheet this never shows: the arrangement rebuilds the whole
+/// coplanar region and derives the chain fresh. On a solid the arrangement is
+/// deliberately skipped (a re-derive dangles the solid's own loop), so the hole
+/// has to be handed over here instead.
+///
+/// Only ever hands a hole INWARD: the new parent must be strictly smaller than
+/// the current one, which for two coplanar faces that both contain the inner
+/// means it lies between them.
+fn detach_hole_for_closer_parent(
+    mesh: &mut Mesh,
+    inner: FaceId,
+    new_parent: FaceId,
+) -> Option<DetachedHole> {
+    let cur = current_hole_parent(mesh, inner)?;
+    if cur == new_parent || cur == inner {
+        return None;
+    }
+    if !strictly_larger(face_containment_size(mesh, cur), face_containment_size(mesh, new_parent))
+    {
+        return None;
+    }
+    let start = mesh.faces.get(inner)?.outer().start;
+    let hes = mesh.collect_loop_hes(start).ok()?;
+    let twins: Vec<crate::HeId> = hes.iter().map(|&h| mesh.hes[h].next_rad()).collect();
+    // Which of the parent's inner loops is this?
+    let index = mesh
+        .faces
+        .get(cur)?
+        .inners()
+        .iter()
+        .position(|lr| twins.contains(&lr.start))?;
+    let loop_ref = mesh.faces[cur].inners()[index];
+    let saved: Vec<(crate::HeId, FaceId, bool)> = twins
+        .iter()
+        .map(|&t| (t, mesh.hes[t].face(), mesh.hes[t].is_outer()))
+        .collect();
+
+    mesh.faces[cur].inners_mut().remove(index);
+    mesh.faces[cur].bump_boundary_version_after_inners_mut();
+    for &t in &twins {
+        mesh.hes[t].set_face(FaceId::NULL);
+    }
+    Some(DetachedHole { parent: cur, index, loop_ref, hes: saved })
+}
+
+/// Put a taken-back hole exactly where it was.
+fn reattach_hole(mesh: &mut Mesh, d: DetachedHole) {
+    for (he, face, outer) in d.hes {
+        mesh.hes[he].set_face(face);
+        mesh.hes[he].set_outer(outer);
+    }
+    if mesh.faces.contains(d.parent) {
+        let inners = mesh.faces[d.parent].inners_mut();
+        let at = d.index.min(inners.len());
+        inners.insert(at, d.loop_ref);
+        mesh.faces[d.parent].bump_boundary_version_after_inners_mut();
+    }
 }
 
 /// ADR-279 β — assign every circle hole to its **innermost** parent ONLY.
@@ -584,12 +668,21 @@ pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize
         if extract_circle(mesh, inner).is_none() {
             continue;
         }
-        // Skip a circle that is ALREADY a disk whose rim is a container's hole
-        // (ring+disk already formed on a prior draw / preserved by the scoped
-        // re-derive) — re-assigning it duplicates the hole → non-manifold. It can
-        // still act as a CONTAINER for a smaller circle below.
-        if circle_already_hole(mesh, inner) {
-            continue;
+        // A circle that is ALREADY a disk whose rim is a container's hole
+        // (ring+disk formed on a prior draw / preserved by the scoped re-derive)
+        // stays where it is — re-assigning it duplicates the hole → non-manifold.
+        // The one exception is a face that has since appeared BETWEEN it and that
+        // container (a bigger circle drawn AROUND it on a solid top): then the
+        // hole moves inward, taken back below. It can still act as a CONTAINER
+        // for a smaller circle either way.
+        if let Some(cur) = current_hole_parent(mesh, inner) {
+            let cur_size = face_containment_size(mesh, cur);
+            let interposed = sized[(i + 1)..]
+                .iter()
+                .any(|&(f, sz)| f != cur && strictly_larger(cur_size, sz));
+            if !interposed {
+                continue;
+            }
         }
         // First (smallest ascending) larger face that contains `inner` = its
         // innermost parent. Assign the circle hole there ONLY, then break.
@@ -601,12 +694,31 @@ pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize
             if !mesh.faces.get(outer).map_or(false, |x| x.is_active()) {
                 continue;
             }
-            let assigned = if extract_circle(mesh, outer).is_some() {
-                // both circles — split_face_by_inner_circle validates containment.
-                split_face_by_inner_circle(mesh, outer, inner).is_ok()
-            } else {
-                // polygon outer + circle inner — generic validates point-in-poly.
-                split_face_by_inner_circle_generic(mesh, outer, inner).is_ok()
+            let try_split = |m: &mut Mesh| {
+                if extract_circle(m, outer).is_some() {
+                    // both circles — split_face_by_inner_circle validates containment.
+                    split_face_by_inner_circle(m, outer, inner).is_ok()
+                } else {
+                    // polygon outer + circle inner — generic validates point-in-poly.
+                    split_face_by_inner_circle_generic(m, outer, inner).is_ok()
+                }
+            };
+            // The circle splits reparent the twin without checking that it is
+            // free, so an already-parented circle has to be taken back FIRST or
+            // the hole would be duplicated.
+            let assigned = match current_hole_parent(mesh, inner) {
+                None => try_split(mesh),
+                Some(_) => match detach_hole_for_closer_parent(mesh, inner, outer) {
+                    None => false,
+                    Some(d) => {
+                        if try_split(mesh) {
+                            true
+                        } else {
+                            reattach_hole(mesh, d);
+                            false
+                        }
+                    }
+                },
             };
             if assigned {
                 processed.insert(inner);
@@ -666,7 +778,22 @@ pub fn assign_polygon_holes(mesh: &mut Mesh, faces: &[FaceId]) -> usize {
             if !mesh.faces.get(outer).map_or(false, |x| x.is_active()) {
                 continue;
             }
-            if split_face_by_inner_polygon(mesh, outer, inner).is_ok() {
+            // A polygon whose twins already bear a face is refused outright by
+            // the split, so if a face has appeared between it and its current
+            // owner, take the hole back and hand it over.
+            let assigned = split_face_by_inner_polygon(mesh, outer, inner).is_ok()
+                || match detach_hole_for_closer_parent(mesh, inner, outer) {
+                    None => false,
+                    Some(d) => {
+                        if split_face_by_inner_polygon(mesh, outer, inner).is_ok() {
+                            true
+                        } else {
+                            reattach_hole(mesh, d);
+                            false
+                        }
+                    }
+                };
+            if assigned {
                 processed.insert(inner);
                 count += 1;
                 break; // innermost container — do NOT assign to grandparents.
