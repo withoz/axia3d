@@ -22767,28 +22767,38 @@ mod tests {
     /// the shape minus the overlap, the overlap, and the face minus the overlap —
     /// and the result is accepted because none of the three overlap each other.
     ///
-    /// It does NOT yet work when the solid came from the Box primitive, and the
-    /// difference is narrower than it looks. Drawing the rectangle as its four
-    /// lines and watching each one: both fixtures are identical through line 2,
-    /// and the z=0 DCEL is the same in both — nine edges, same positions, same
-    /// face counts, only the EdgeIds differ. They diverge on the closing line,
-    /// in face synthesis: the drawn solid gets a face for the region outside the
-    /// box, the primitive gets none at all (so `DrawRectAsShape`, which has its
-    /// own fast path, ends up with the rectangle whole and lying over the
-    /// overlap, and the guard rolls it back).
+    /// It does NOT work for most solids, and the dividing line is not the one it
+    /// first looked like. Measured across every primitive and several drawn
+    /// profiles, the ONLY case that succeeds is a solid whose ground face was
+    /// built by LINE SYNTHESIS — which today means exactly one thing, a drawn
+    /// rectangle, because `exec_draw_rect` lays down four lines and lets the
+    /// closing one synthesise the face. Every profile built in one shot with
+    /// `mesh.add_face` is refused: the Box, Cylinder and Cone primitives, a drawn
+    /// polygon, a drawn circle. (Sphere and Torus are accepted only because they
+    /// have no flat face on the ground for the rectangle to overlap — they are
+    /// not immune, the case does not arise.)
     ///
-    /// That region needs the box's own boundary as part of its outline, and
+    /// So it is not primitive-versus-drawn. Drawing the rectangle as its four
+    /// lines and watching each: the fixtures are identical through line 2, and
+    /// the z=0 DCEL matches exactly — nine edges, same positions, same face
+    /// counts, only the EdgeIds differ. They diverge on the closing line, in
+    /// face synthesis: the synthesised-face solid gets a face for the region
+    /// outside the box, the other gets none at all. (`DrawRectAsShape` has its
+    /// own fast path, which is why there the rectangle ends up whole and lying
+    /// over the overlap, and the guard rolls it back.)
+    ///
+    /// That region needs the solid's own boundary as part of its outline, and
     /// those edges already carry two faces — accepting it means a third, the
     /// T-junction this engine now allows. Something makes the synthesiser
     /// willing in one case and not the other, and it is NOT: HARD flags,
     /// ownership layer (Shape vs XIA), crossing detection (`edges_near` and
     /// `find_line_crossings` return identical results), cap classification
     /// (`is_sheet_face`, normal, surface all match), or scene state left by a
-    /// prior draw. Each of those was measured and ruled out.
+    /// prior draw. Each was measured and ruled out.
     ///
-    /// What is left is the half-edge radial ordering around the shared edge —
-    /// the one thing that can differ between a box built by extruding a profile
-    /// and one built by `create_box`. That is where to look next.
+    /// What is left is how the half-edges are wired and ordered around the
+    /// shared edge — the one thing that can differ between a face grown from
+    /// lines and a face added in one call. That is where to look next.
     ///
     /// Recorded as the behaviour that HOLDS today rather than `#[ignore]`d, so
     /// the next reader starts from here instead of rediscovering it.
@@ -22822,11 +22832,12 @@ mod tests {
         assert_eq!(ground, 3, "shape-minus-overlap, overlap, face-minus-overlap");
     }
 
-    /// The other half of the pair above: the same draw over a Box PRIMITIVE is
-    /// still refused. Recorded so a fix shows up here as a failure rather than
-    /// going unnoticed — and so nobody reads the test above as covering both.
+    /// The other half of the pair: the same draw over a solid whose ground face
+    /// was added in one call — here the Box primitive — is still refused.
+    /// Recorded so a fix shows up as a failure rather than going unnoticed, and
+    /// so nobody reads the test above as covering both.
     #[test]
-    fn the_same_draw_over_a_primitive_box_is_still_refused() {
+    fn the_same_draw_over_a_one_shot_face_is_still_refused() {
         let mut scene = prod_scene();
         let faces = scene
             .mesh
