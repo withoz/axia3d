@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
 import { t } from '../i18n';
 
 const HOVER_COLOR = 0x3498db;
@@ -49,27 +49,40 @@ export class SplitTool implements ITool {
     this.splitPoint = null;
   }
 
+  /** Drop the highlight and the marker together. Every bail-out below has to go
+   *  through this: the ones that just `return`ed left the previous edge lit and
+   *  its split marker drawn under a cursor that had moved somewhere else. */
+  private bailHover(): void {
+    this.clearHover();
+    this.clearMarker();
+    this.hoverEdgeId = null;
+    this.splitPoint = null;
+  }
+
   onMouseMove(e: MouseEvent, snapPoint: THREE.Vector3 | null): void {
     const picked = this.ctx.viewport.pickEdgeOrFace(e.clientX, e.clientY);
 
     if (!picked || picked.type !== 'edge' || picked.hit.index == null || !this.ctx.edgeMap) {
-      this.clearHover();
-      this.clearMarker();
-      this.hoverEdgeId = null;
-      this.splitPoint = null;
+      this.bailHover();
       return;
     }
 
-    const segIdx = picked.hit.index;
+    // `hit.index` is the segment's FIRST VERTEX; `edgeMap` is keyed by segment.
+    // This read the raw index, so it looked up edgeMap at twice the right slot —
+    // highlighting and splitting a different edge than the one under the cursor,
+    // and running off the end of the map over the far half of the wireframe.
+    // Every other edge consumer halves it: edgePick.ts:26, EraseTool.ts:301/352,
+    // SelectTool.ts:143, ToolManagerRefactored.ts:4618.
+    const segIdx = Math.floor(picked.hit.index / 2);
     const edgeId = this.ctx.edgeMap[segIdx];
-    if (edgeId === undefined) return;
+    if (edgeId === undefined) { this.bailHover(); return; }
 
     // 엣지 엔드포인트 조회
     const eps = this.ctx.bridge.getEdgeEndpoints(edgeId);
-    if (eps.length !== 2) return;
+    if (eps.length !== 2) { this.bailHover(); return; }
     const p0arr = this.ctx.bridge.getVertexPos(eps[0]);
     const p1arr = this.ctx.bridge.getVertexPos(eps[1]);
-    if (!p0arr || !p1arr) return;
+    if (!p0arr || !p1arr) { this.bailHover(); return; }
     const p0 = new THREE.Vector3(p0arr[0], p0arr[1], p0arr[2]);
     const p1 = new THREE.Vector3(p1arr[0], p1arr[1], p1arr[2]);
 

@@ -1370,7 +1370,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   // Format panels (3)
   {
     id: 'format-osnap',
-    label: 'OSNAP',
+    label: 'OSNAP 패널',
     description: 'Open object snap settings panel.',
     tier: 0,
     surfaces: ['menu'],
@@ -1584,8 +1584,11 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   // OSNAP / snap state (continued — sorted alphabetically)
   {
     id: 'osnap',
-    label: 'OSNAP 패널',
-    description: 'Open OSNAP (object snap) configuration panel.',
+    label: '객체 스냅 켜기/끄기',
+    // Dispatches to the status bar's F3 button — the object-snap MASTER
+    // switch. It was described as opening the panel, so invoking it turned
+    // every snap off instead. The panel is `format-osnap`.
+    description: 'Toggle object snap on or off (the F3 master switch).',
     tier: 0,
     surfaces: ['menu'],
     aliases: {},

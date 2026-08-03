@@ -852,6 +852,7 @@ export const EN: Record<string, string> = {
   '엣지 스냅': 'Edge snap',
   '스냅 오버라이드': 'Snap override',
   'OSNAP 패널': 'OSNAP panel',
+  '객체 스냅 켜기/끄기': 'Object snap on/off',
 
   // ── measure / dimensions ──
   '측정': 'Measure',

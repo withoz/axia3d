@@ -75,6 +75,10 @@ export enum LineDrawEvent {
 
 export class DrawLineTool implements ITool {
   readonly name = 'line';
+  /** A right-click ends the polyline here rather than discarding it, so this
+   *  tool takes the event instead of being cancelled by ToolManager (ITool).
+   *  It is the only tool that reads `e.button` — see onMouseDown. */
+  readonly handlesRightClick = true;
 
   private ctx: ToolContext;
   private state: LineDrawState = LineDrawState.Idle;

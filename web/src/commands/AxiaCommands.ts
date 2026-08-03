@@ -285,7 +285,11 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('section-off', 'view', '단면 OFF', 'Off',   undefined, false, deps));
 
   // ── Snap ────────────────────────────────────────────────────────
-  cmds.push(action('osnap',          'snap', 'OSNAP 패널',         'OSNAP',  undefined, false, deps));
+  // `osnap` dispatches to the STATUS BAR's F3 button (there is no menubar
+  // element with that id), which flips the object-snap master switch. It was
+  // labelled 'OSNAP 패널', so picking it from the palette turned every snap
+  // OFF instead of opening anything. The panel is `format-osnap`, below.
+  cmds.push(action('osnap',          'snap', '객체 스냅 켜기/끄기',  'OSNAP',  'F3', false, deps));
   // snap-override is NOT here: it is a `ctx-submenu-trigger` whose handler is
   // `case 'snap-override': return; // hover로 처리, 클릭 무시`, and its actual
   // choices are `data-snap` items, not data-action. The palette offering it
@@ -344,7 +348,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   // ── Format / Settings ──────────────────────────────────────────
   cmds.push(action('format-units', 'view', '단위',         'Units',  undefined, false, deps));
   cmds.push(action('format-style', 'view', '스타일',       'Style',  undefined, false, deps));
-  cmds.push(action('format-osnap', 'view', 'OSNAP',       'OSNAP',  undefined, false, deps));
+  cmds.push(action('format-osnap', 'view', 'OSNAP 패널',   'OSNAP',  undefined, false, deps));
 
   // ── Help ────────────────────────────────────────────────────────
   cmds.push(action('help',            'help', '도움말',         'Help',  'F1',  false, deps));

@@ -4534,7 +4534,8 @@ export class ToolManager {
       if (hit && hit.faceIndex != null) {
         const fid = this.getFaceId(hit.faceIndex);
         if (fid >= 0) {
-          // 그룹 더블클릭 → 편집 모드 진입
+          // 그룹 더블클릭 → 편집 모드 진입. This is the only thing this
+          // handler is for: SelectTool has no group-edit path.
           const groupId = this.selection.getGroupId(fid);
           if (groupId !== undefined) {
             const groupTool = this.tools.get('group') as GroupTool;
@@ -4543,8 +4544,14 @@ export class ToolManager {
               return;
             }
           }
-          // 일반 더블클릭 → face + edge 선택
-          this.selection.selectFaceWithEdges(fid);
+          // Face selection is deliberately NOT done here. SelectTool.onMouseDown
+          // already counts the two presses and calls selectFaceWithEdges with
+          // the user's modifiers (SelectTool.ts:272). This handler used to call
+          // it again with none — and since dblclick fires last, its defaults
+          // (shift/ctrl/alt all false) won: a shift+double-click meant to ADD a
+          // face wiped the whole accumulated selection instead. It also picked
+          // face-only while SelectTool prefers an edge within 18px, so the same
+          // gesture resolved to two different targets.
         }
       }
     });
@@ -4555,10 +4562,18 @@ export class ToolManager {
       if (this.isToolBusy()) {
         e.preventDefault();
         const tool = this.tools.get(this._currentTool);
-        // Create a synthetic right-click MouseEvent for the tool
-        if (tool?.onMouseDown) {
+        if (tool?.handlesRightClick && tool.onMouseDown) {
+          // The tool means something specific by it — DrawLine ends a polyline
+          // rather than discarding it. Hand it the event.
           const synth = new MouseEvent('mousedown', { button: 2, clientX: e.clientX, clientY: e.clientY });
           tool.onMouseDown(synth, null);
+        } else {
+          // Everything else gets what this handler has always promised. The
+          // synthetic mousedown used to go to every tool, and the ones that
+          // never read `e.button` — Rect, Circle, Arc, Polygon, Ellipse,
+          // Bezier, Freehand — took it as the closing click and COMMITTED the
+          // shape. Right-clicking to back out of a rectangle drew one.
+          this.cancelCurrentTool();
         }
       }
     });
