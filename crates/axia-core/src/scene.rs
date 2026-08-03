@@ -3889,6 +3889,95 @@ impl Scene {
         ok
     }
 
+    /// Divide faces that pass through faces on other planes.
+    ///
+    /// Coplanar overlap is handled by the re-derive; this is the other half.
+    /// Two faces meeting at an angle intersect along a line, and until they are
+    /// split along it they are simply interpenetrating — the shape drawn across
+    /// them looks whole but divides nothing.
+    ///
+    /// Only pairs that actually cross are touched, and only when their planes
+    /// genuinely differ: faces sharing a plane belong to the re-derive, and
+    /// running this on them would fight it. When nothing crosses, this does
+    /// nothing at all, so the cost is one intersection scan.
+    ///
+    /// And only pairs involving what was just drawn. Two solids may sit inside
+    /// each other quite legitimately; a draw somewhere else in the scene has no
+    /// business carving them up.
+    fn split_faces_crossing_other_planes(
+        &mut self,
+        before: &std::collections::HashSet<FaceId>,
+    ) -> anyhow::Result<usize> {
+        use axia_geo::surfaces::AnalyticSurface as S;
+        let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        // A curved primitive's faces are not auto-intersect targets (ADR-197):
+        // a drawn shape must not be carved by a sphere's silhouette.
+        let planar = |m: &axia_geo::Mesh, f: FaceId| {
+            m.faces.get(f).map_or(false, |x| {
+                x.is_active()
+                    && !matches!(
+                        x.surface(),
+                        Some(S::Sphere { .. })
+                            | Some(S::Cylinder { .. })
+                            | Some(S::Cone { .. })
+                            | Some(S::Torus { .. })
+                            | Some(S::BezierPatch { .. })
+                            | Some(S::BSplineSurface { .. })
+                            | Some(S::NURBSSurface { .. })
+                    )
+            })
+        };
+        // Only ONE side of each pair goes in. `intersect_faces_with_model`
+        // splits what it is given against everything else, so putting both
+        // halves in leaves it nothing to cut against and it does nothing at all.
+        //
+        // Splitting a pair can expose another — a face cut in two now crosses
+        // something its whole self did not reach — so this repeats until the
+        // scan comes back clean. The bound is there because a pass that stops
+        // making progress must not spin: if it cannot finish, it leaves the rest
+        // for the guard to judge rather than looping.
+        // Only ONE side of each pair goes in. `intersect_faces_with_model`
+        // cuts what it is given against everything else, so putting both halves
+        // in leaves it nothing to cut against and it does nothing at all.
+        //
+        // One pass. Cutting a face can expose crossings its whole self did not
+        // reach, and chasing those turned out to make things worse rather than
+        // better — on a tilted plane the follow-up rounds damaged the mesh and
+        // the whole draw got rolled back. So this divides what it can see now
+        // and leaves the rest visible rather than half-repaired.
+        let mut crossing: Vec<FaceId> = Vec::new();
+        for (fa, fb) in pairs {
+            let (new_a, new_b) = (!before.contains(&fa), !before.contains(&fb));
+            if !new_a && !new_b {
+                continue; // both were already here — not this draw's doing
+            }
+            if !planar(&self.mesh, fa) || !planar(&self.mesh, fb) {
+                continue;
+            }
+            let na = self.mesh.faces[fa].normal().normalize_or_zero();
+            let nb = self.mesh.faces[fb].normal().normalize_or_zero();
+            if na.dot(nb).abs() >= 0.999 {
+                continue; // same plane — the re-derive owns this pair
+            }
+            // Cut the new face; the model side gets divided by the same call.
+            let cut = if new_a { fa } else { fb };
+            let other = if cut == fa { fb } else { fa };
+            if !crossing.contains(&cut) && !crossing.contains(&other) {
+                crossing.push(cut);
+            }
+        }
+        if crossing.is_empty() {
+            return Ok(0);
+        }
+        let out = self
+            .mesh
+            .intersect_faces_with_model(&crossing, FORM_MATERIAL)?;
+        Ok(out.len())
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 
@@ -3932,7 +4021,25 @@ impl Scene {
         // intersect/annulus 대신 boundary kernel re-derive (rebuild_coplanar_faces).
         // flag OFF (default) = 아래 legacy 경로 보존 (245+ 회귀 무영향).
         if self.face_rederive_on_draw {
-            return self.rederive_coplanar_on_draw(face_ids);
+            // Which faces existed before this draw. The re-derive rebuilds the
+            // region it touches, handing out fresh ids, so the ids we were
+            // called with are stale by the time it returns — "new since we
+            // started" is the only handle that survives it.
+            let before: std::collections::HashSet<FaceId> = self
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(i, _)| i)
+                .collect();
+            let coplanar = self.rederive_coplanar_on_draw(face_ids)?;
+            // The re-derive divides faces that share a plane. A face that meets
+            // another one at an ANGLE is a different problem and used to be
+            // skipped entirely — the two simply passed through each other,
+            // which is what a user sees as "면 교차시 분할이 안 된다". Split
+            // those along the line where they meet.
+            let crossing = self.split_faces_crossing_other_planes(&before)?;
+            return Ok(coplanar + crossing);
         }
 
         // 원본 face 의 XIA 매핑 보존 (분할 후 승계용)
