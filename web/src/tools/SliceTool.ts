@@ -21,7 +21,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext } from './ITool';
 import { debugLog } from '../utils/debug';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
 import { t } from '../i18n';
 
 type Phase = 'idle' | 'awaiting_p2' | 'awaiting_p3';
@@ -76,33 +76,45 @@ export class SliceTool implements ITool {
       this.phase = 'idle';
       return;
     }
-    // Volume = all faces of the XIA owning the first selected face.
+    // Volume = every face of the object owning the selected face. A solid the
+    // user drew stays form-layer (a Shape) until it is given a material, so
+    // asking only for a XIA refused exactly the solids people build by hand.
     const bridge = this.ctx.bridge;
-    const xiaIds = new Set<number>();
+    const owners = new Set<string>();
+    let faceIds: number[] = [];
+    let label = '';
     for (const fid of selected) {
       const xid = bridge.engine?.get_xia_for_face?.(fid);
-      if (xid !== undefined && xid >= 0) xiaIds.add(xid);
+      if (xid !== undefined && xid >= 0) {
+        owners.add(`xia:${xid}`);
+        faceIds = Array.from(bridge.engine?.getXiaFaceIds?.(xid) ?? []);
+        label = `XIA ${xid}`;
+        continue;
+      }
+      const sid = bridge.getShapeForFace?.(fid);
+      if (sid !== undefined && sid >= 0) {
+        owners.add(`shape:${sid}`);
+        faceIds = bridge.getShapeFaceIds?.(sid) ?? [];
+        label = `Shape ${sid}`;
+      }
     }
-    if (xiaIds.size === 0) {
-      Toast.error(t('Slice: 선택된 면에 소속 볼륨(XIA)이 없습니다'));
+    if (owners.size === 0) {
+      Toast.error(t('Slice: 선택된 면에 소속 볼륨이 없습니다'));
       this.phase = 'idle';
       return;
     }
-    if (xiaIds.size > 1) {
+    if (owners.size > 1) {
       Toast.warning(t('Slice: 한 번에 하나의 볼륨만 자를 수 있습니다 — 단일 솔리드의 면을 선택하세요'), 5000);
       this.phase = 'idle';
       return;
     }
-    const xiaId = [...xiaIds][0];
-    // Fetch the XIA's face_ids via bridge.
-    const xiaFaces = bridge.engine?.getXiaFaceIds?.(xiaId);
-    if (!xiaFaces || xiaFaces.length === 0) {
-      Toast.error(t('Slice: XIA {xiaId}에 면이 없습니다', { xiaId }));
+    if (faceIds.length === 0) {
+      Toast.error(t('Slice: {label}에 면이 없습니다', { label }));
       this.phase = 'idle';
       return;
     }
-    this.volumeFaceIds = Array.from(xiaFaces);
-    debugLog(`[SliceTool] target volume: XIA ${xiaId}, ${this.volumeFaceIds.length} faces`);
+    this.volumeFaceIds = faceIds;
+    debugLog(`[SliceTool] target volume: ${label}, ${this.volumeFaceIds.length} faces`);
     Toast.info(
       t('Slice [{mode}]: 평면 3점 클릭 — 또는 한 점 클릭 후 H=수평 절단.\n', { mode: t(CUT_MODE_KO[this.cutMode]) }) +
       t('M=모드 전환 (쪼개기/트림), Esc 취소'),
@@ -239,15 +251,16 @@ export class SliceTool implements ITool {
     // polygonal slice below. Non-horizontal planes stay polygonal (MVP).
     if (Math.abs(normal.z) > 0.999 && typeof bridge.engine?.cutCurvedByZPlane === 'function') {
       const cjson = bridge.engine.cutCurvedByZPlane(fids, origin.z, this.cutMode);
-      let cres: { ok: boolean; routed?: boolean; resultFaces?: number[]; newXia?: number; error?: string };
+      let cres: { ok: boolean; routed?: boolean; resultFaces?: number[]; newXia?: number; newShape?: number; error?: string };
       try { cres = JSON.parse(cjson); } catch { cres = { ok: false, error: 'parse' }; }
       if (cres.ok && cres.routed) {
         bridge.markDirty();
         this.ctx.syncMesh();
         const n = cres.resultFaces?.length ?? 0;
         // ADR-197 #Track3 — slice splits into 2 volumes; the lower half gets a new XIA.
-        const xiaNote = (this.cutMode === 'slice' && typeof cres.newXia === 'number' && cres.newXia >= 0)
-          ? t(' — 아래쪽 새 볼륨 (XIA {newXia})', { newXia: cres.newXia })
+        const newId = cres.newXia ?? cres.newShape;
+        const xiaNote = (this.cutMode === 'slice' && typeof newId === 'number' && newId >= 0)
+          ? t(' — 아래쪽 새 볼륨 (#{id})', { id: newId })
           : '';
         const msg = this.cutMode === 'slice'
           ? t('곡면 쪼개기 완료 — 2개 볼륨, 곡면 보존{xiaNote} (면 {n}개)', { xiaNote, n })
@@ -351,7 +364,9 @@ export class SliceTool implements ITool {
       origin.x, origin.y, origin.z,
       normal.x, normal.y, normal.z,
     );
-    let result: { ok: boolean; newXia?: number; error?: string };
+    // A drawn solid stays form-layer until it gets a material (ADR-050), so the
+    // engine reports its new half under `newShape`; a primitive reports `newXia`.
+    let result: { ok: boolean; newXia?: number; newShape?: number; error?: string };
     try {
       result = JSON.parse(json);
     } catch {
@@ -368,7 +383,12 @@ export class SliceTool implements ITool {
       this.cleanup();
       return;
     }
-    Toast.success(t('Slice 완료 — 위쪽은 원본 볼륨에 유지, 아래쪽은 새 볼륨 (XIA {newXia})', { newXia: result.newXia ?? '?' }), 3000);
+    Toast.success(
+      t('Slice 완료 — 위쪽은 원본 볼륨에 유지, 아래쪽은 새 볼륨 (#{id})', {
+        id: result.newXia ?? result.newShape ?? '?',
+      }),
+      3000,
+    );
     bridge.markDirty();
     this.ctx.syncMesh();
     this.cleanup();

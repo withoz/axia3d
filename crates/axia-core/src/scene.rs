@@ -544,6 +544,34 @@ impl std::fmt::Display for ReferenceCreateError {
 
 impl std::error::Error for ReferenceCreateError {}
 
+/// Which citizen owns a solid — form-layer [`crate::Shape`] or property-layer
+/// [`crate::xia::Xia`].
+///
+/// The plane cuts used to demand a XIA, which meant they worked on primitives
+/// and refused everything the user had drawn: since ADR-050 P-5e-α a drawn
+/// shape stays form-layer until it is given a material, so "rectangle, pull it
+/// up, slice it" failed on the last step while the same cut on a primitive box
+/// went through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolidOwner {
+    Xia(crate::xia::XiaId),
+    Shape(crate::ShapeId),
+}
+
+impl SolidOwner {
+    /// Raw id, for bridge/JSON reporting.
+    pub fn raw(self) -> u32 {
+        match self {
+            SolidOwner::Xia(x) => x,
+            SolidOwner::Shape(s) => s.raw(),
+        }
+    }
+    /// True when the owner is a property-layer XIA.
+    pub fn is_xia(self) -> bool {
+        matches!(self, SolidOwner::Xia(_))
+    }
+}
+
 impl Scene {
     pub fn new() -> Self {
         Self {
@@ -1977,6 +2005,70 @@ impl Scene {
 
     /// ADR-079 W-1 — Rebuild reverse index from all Shapes
     /// (after snapshot restore). Mirrors `rebuild_face_to_xia_index`.
+    /// Who owns a solid: see [`SolidOwner`].
+    ///
+    /// The plane-cut operations used to demand a XIA, which meant they worked on
+    /// primitives and refused everything the user had drawn — since ADR-050
+    /// P-5e-α a drawn shape stays form-layer until it gets a material, so
+    /// "rectangle, pull it up, slice it" failed on the last step while the same
+    /// cut on a primitive box succeeded.
+    fn solid_owner_of(
+        &self,
+        face_ids: &[axia_geo::FaceId],
+        op: &str,
+    ) -> anyhow::Result<SolidOwner> {
+        let mut owner: Option<SolidOwner> = None;
+        for &fid in face_ids {
+            let this = match (self.face_to_xia.get(&fid), self.face_to_shape.get(&fid)) {
+                (Some(&x), _) => SolidOwner::Xia(x),
+                (None, Some(&s)) => SolidOwner::Shape(s),
+                (None, None) => {
+                    anyhow::bail!("{op}: face {fid:?} belongs to no shape or XIA")
+                }
+            };
+            match owner {
+                None => owner = Some(this),
+                Some(prev) if prev == this => {}
+                Some(_) => anyhow::bail!(
+                    "{op}: input faces span more than one object — \
+                     select the faces of a single volume"
+                ),
+            }
+        }
+        owner.ok_or_else(|| anyhow::anyhow!("{op}: cannot determine the owning object"))
+    }
+
+    /// Point an owner at exactly this face set (both the owner's list and the
+    /// reverse index), leaving the other layer's mapping untouched.
+    fn reassign_owner_faces(&mut self, owner: SolidOwner, faces: &[axia_geo::FaceId]) {
+        match owner {
+            SolidOwner::Xia(x) => {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.face_ids = faces.to_vec();
+                }
+                for &f in faces {
+                    self.face_to_xia.insert(f, x);
+                }
+            }
+            SolidOwner::Shape(s) => {
+                if let Some(shape) = self.shapes.get_mut(&s) {
+                    shape.face_ids = faces.to_vec();
+                }
+                for &f in faces {
+                    self.face_to_shape.insert(f, s);
+                }
+            }
+        }
+    }
+
+    fn owner_name(&self, owner: SolidOwner) -> String {
+        match owner {
+            SolidOwner::Xia(x) => self.xias.get(&x).map(|v| v.name.clone()),
+            SolidOwner::Shape(s) => self.shapes.get(&s).map(|v| v.name.clone()),
+        }
+        .unwrap_or_else(|| "Volume".to_string())
+    }
+
     fn rebuild_face_to_shape_index(&mut self) {
         self.face_to_shape.clear();
         for (shape_id, shape) in &self.shapes {
@@ -2001,26 +2093,12 @@ impl Scene {
         &mut self,
         face_ids: &[axia_geo::FaceId],
         plane: axia_geo::operations::slice::SlicePlane,
-    ) -> anyhow::Result<crate::xia::XiaId> {
+    ) -> anyhow::Result<SolidOwner> {
         if face_ids.is_empty() {
             anyhow::bail!("slice_volume_by_plane: empty face set");
         }
 
-        // Determine the source XIA — must be unique across the input set.
-        let mut source_xia: Option<crate::xia::XiaId> = None;
-        for &fid in face_ids {
-            match (source_xia, self.face_to_xia.get(&fid).copied()) {
-                (None, Some(x)) => source_xia = Some(x),
-                (Some(prev), Some(x)) if prev == x => {}
-                (Some(_), Some(_)) => anyhow::bail!(
-                    "slice_volume_by_plane: input faces span multiple XIAs — \
-                    select faces from a single volume only"),
-                (_, None) => anyhow::bail!(
-                    "slice_volume_by_plane: face {:?} has no owning XIA", fid),
-            }
-        }
-        let source_xia = source_xia
-            .ok_or_else(|| anyhow::anyhow!("slice_volume_by_plane: cannot determine source XIA"))?;
+        let owner = self.solid_owner_of(face_ids, "slice_volume_by_plane")?;
 
         self.transactions.begin();
         self.transactions.set_before_snapshot(self.scene_snapshot());
@@ -2042,18 +2120,14 @@ impl Scene {
         //    face_ids entirely from the above set.
         for &fid in face_ids {
             self.face_to_xia.remove(&fid);
+            self.face_to_shape.remove(&fid);
         }
-        // Above half — assigned to the source XIA.
+        // Above half — stays with the original owner.
         let above_all: Vec<axia_geo::FaceId> = result.above_walls.iter()
             .chain(result.cap_above.iter())
             .copied()
             .collect();
-        if let Some(xia) = self.xias.get_mut(&source_xia) {
-            xia.face_ids = above_all.clone();
-        }
-        for &f in &above_all {
-            self.face_to_xia.insert(f, source_xia);
-        }
+        self.reassign_owner_faces(owner, &above_all);
 
         // Below half — new XIA.
         let below_all: Vec<axia_geo::FaceId> = result.below_walls.iter()
@@ -2076,11 +2150,24 @@ impl Scene {
         }
         if count > 0 { centroid /= count as f64; }
 
-        let original_name = self.xias.get(&source_xia)
-            .map(|x| x.name.clone())
-            .unwrap_or_else(|| "Volume".to_string());
-        let below_name = format!("{}_below", original_name);
-        let new_xia = self.create_xia_with_faces(below_name, centroid, below_all);
+        let below_name = format!("{}_below", self.owner_name(owner));
+        // The new half joins the same layer as the original: slicing a drawn
+        // shape must not silently promote half of it into a property-layer XIA.
+        let new_owner = match owner {
+            SolidOwner::Xia(_) => {
+                SolidOwner::Xia(self.create_xia_with_faces(below_name, centroid, below_all))
+            }
+            SolidOwner::Shape(_) => {
+                let sid = self.create_shape(below_name, below_all.clone());
+                if let Some(sh) = self.shapes.get_mut(&sid) {
+                    sh.position = centroid;
+                }
+                for &f in &below_all {
+                    self.face_to_shape.insert(f, sid);
+                }
+                SolidOwner::Shape(sid)
+            }
+        };
 
         // Inherit material assignment for new faces (default already set).
         // Future: copy any per-face material attributes from source if needed.
@@ -2088,7 +2175,7 @@ impl Scene {
         self.transactions.set_after_snapshot(self.scene_snapshot());
         self.transactions.commit();
 
-        Ok(new_xia)
+        Ok(new_owner)
     }
 
     /// ADR-241 (Phase 1 C5) — polygonal TRIM: plane-cut a volume and KEEP only
@@ -2104,21 +2191,7 @@ impl Scene {
         if face_ids.is_empty() {
             anyhow::bail!("trim_volume_by_plane: empty face set");
         }
-        // Determine the source XIA — must be unique across the input set.
-        let mut source_xia: Option<crate::xia::XiaId> = None;
-        for &fid in face_ids {
-            match (source_xia, self.face_to_xia.get(&fid).copied()) {
-                (None, Some(x)) => source_xia = Some(x),
-                (Some(prev), Some(x)) if prev == x => {}
-                (Some(_), Some(_)) => anyhow::bail!(
-                    "trim_volume_by_plane: input faces span multiple XIAs — \
-                    select faces from a single volume only"),
-                (_, None) => anyhow::bail!(
-                    "trim_volume_by_plane: face {:?} has no owning XIA", fid),
-            }
-        }
-        let source_xia = source_xia
-            .ok_or_else(|| anyhow::anyhow!("trim_volume_by_plane: cannot determine source XIA"))?;
+        let owner = self.solid_owner_of(face_ids, "trim_volume_by_plane")?;
 
         let before = self.scene_snapshot();
         self.transactions.begin();
@@ -2140,13 +2213,9 @@ impl Scene {
         // half (the discarded half's faces were removed by the mesh op).
         for &fid in face_ids {
             self.face_to_xia.remove(&fid);
+            self.face_to_shape.remove(&fid);
         }
-        if let Some(xia) = self.xias.get_mut(&source_xia) {
-            xia.face_ids = kept.clone();
-        }
-        for &f in &kept {
-            self.face_to_xia.insert(f, source_xia);
-        }
+        self.reassign_owner_faces(owner, &kept);
 
         self.transactions.set_after_snapshot(self.scene_snapshot());
         self.transactions.commit();
@@ -4072,7 +4141,7 @@ impl Scene {
         }
         let nm_after = self.mesh.collect_non_manifold_edges().len();
         let si_after = self.solid_overlap_count();
-        let mut reject = |scene: &mut Self, msg: &str| -> CommandResult {
+        let reject = |scene: &mut Self, msg: &str| -> CommandResult {
             scene.restore_scene_snapshot(&before_snapshot);
             scene.transactions.discard_last_undo();
             CommandResult::Error(msg.to_string())
@@ -22659,6 +22728,59 @@ mod tests {
             scene.mesh.detect_self_intersections().count(),
             si_before,
             "the refused draw must leave no overlap behind"
+        );
+    }
+
+    /// Plane cuts used to demand a property-layer XIA, so they worked on a
+    /// primitive box and refused a solid the user had drawn — even though the
+    /// default for a drawn shape is to stay form-layer until it is given a
+    /// material. Both must cut.
+    #[test]
+    fn plane_cuts_accept_a_drawn_solid_not_only_a_primitive() {
+        use axia_geo::operations::slice::SlicePlane;
+        let plane = || SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap();
+
+        // form-layer: drawn rectangle pulled up
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let faces: Vec<axia_geo::FaceId> =
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        assert!(
+            faces.iter().all(|f| scene.face_to_xia.get(f).is_none()),
+            "fixture must be form-layer (no XIA) or this proves nothing"
+        );
+        scene
+            .trim_volume_by_plane(&faces, plane(), true)
+            .expect("a drawn solid must be trimmable");
+
+        // property-layer: primitive box owned by a XIA — unchanged behaviour
+        let mut scene = prod_scene();
+        let f = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        scene.create_xia_with_faces("box".into(), DVec3::ZERO, f.clone());
+        scene.trim_volume_by_plane(&f, plane(), true).expect("a primitive must stay trimmable");
+    }
+
+    /// Slicing a drawn solid must leave BOTH halves form-layer — the cut must not
+    /// quietly promote half of it into a property-layer XIA.
+    #[test]
+    fn slicing_a_drawn_solid_keeps_both_halves_in_the_same_layer() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let faces: Vec<axia_geo::FaceId> =
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        let owner = scene
+            .slice_volume_by_plane(&faces, SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap())
+            .expect("a drawn solid must be sliceable");
+        assert!(!owner.is_xia(), "the new half of a drawn solid must be a Shape, got {owner:?}");
+        assert!(
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).all(|(i, _)| {
+                scene.face_to_shape.contains_key(&i) || scene.face_to_xia.contains_key(&i)
+            }),
+            "every face must still have an owner after the slice"
         );
     }
 

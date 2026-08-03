@@ -10469,7 +10469,7 @@ impl AxiaEngine {
             .damage_count();
         let integrity_snapshot = self.scene.scene_snapshot();
         match self.scene.slice_volume_by_plane(&fids, plane) {
-            Ok(new_xia) => {
+            Ok(new_owner) => {
                 if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "slice", false)
                 {
                     return format!(
@@ -10480,9 +10480,15 @@ impl AxiaEngine {
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let total = self.scene.mesh.face_count();
+                // `newXia` stays for compatibility; a drawn (form-layer)
+                // solid reports its half under `newShape` instead, so the UI can
+                // name it correctly rather than calling a Shape a XIA.
+                let id_field = if new_owner.is_xia() { "newXia" } else { "newShape" };
                 format!(
-                    r#"{{"ok":true,"newXia":{},"totalFaces":{}}}"#,
-                    new_xia, total
+                    r#"{{"ok":true,"{}":{},"totalFaces":{}}}"#,
+                    id_field,
+                    new_owner.raw(),
+                    total
                 )
             }
             Err(e) => {
