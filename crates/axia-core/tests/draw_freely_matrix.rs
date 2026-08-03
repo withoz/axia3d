@@ -39,9 +39,23 @@
 //! (Weiler–Atherton / Vatti). Neither is a small change, and picking one is not
 //! a decision to make inside a test file.
 //!
-//! The top face does not do this — the same straddling rectangle is accepted
-//! there (6 faces → 7). Whatever the re-derive does differently on a vertical
-//! face is where a fix would start looking.
+//! CORRECTION, measured right after: there is no vertical-face difference. The
+//! trigger is the shape overhanging the host on BOTH opposite sides, and the top
+//! face refuses it just the same.
+//!
+//! ```text
+//!   side wall, 100 tall    120 × 120 → refused     120 × 100 → accepted
+//!   top face, 200 × 200    120 × 120 → accepted    120 × 220 → refused
+//! ```
+//!
+//! The grid only meets it on the side face because that wall is 100 tall while
+//! the straddle size is 120 — the shape clears it above and below. Where the
+//! shape merely straddles, the re-derive is fine.
+//!
+//! So "whatever the re-derive does differently on a vertical face" was the wrong
+//! reading, and with it the idea that this is the solid-wall protection showing
+//! through: that protection does not care which way a face points, and neither
+//! does this. It is the spanning case the arrangement mishandles.
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use axia_geo::{CreateSolidMode, FaceId};
 use glam::DVec3;
@@ -369,4 +383,36 @@ fn what_does_the_rect_tool_build() {
             println!("        겹침: {:?} {}  ↔  {:?} {}", a, dsc(*a), b, dsc(*b));
         }
     }
+}
+
+/// What actually refuses a draw: the shape clearing the host on BOTH sides.
+///
+/// Pinned because the first reading of this was wrong. It looked like a
+/// vertical-face problem — the grid's one failure is on a side wall — but the
+/// wall is simply shorter than the shape. Give the top face a shape that clears
+/// IT on both sides and it refuses in exactly the same way.
+#[test]
+fn a_shape_that_clears_the_host_on_both_sides_is_refused() {
+    fn on_box(centre: DVec3, n: DVec3, up: DVec3, w: f64, h: f64) -> bool {
+        let mut s = prod();
+        let f = s
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, FORM_MATERIAL)
+            .unwrap();
+        s.create_xia_with_faces("b".into(), DVec3::ZERO, f);
+        !matches!(
+            s.execute(Command::DrawRectAsShape { center: centre, normal: n, up, width: w, height: h }),
+            CommandResult::Error(_)
+        )
+    }
+    // The east wall is 200 (y) × 100 (z). A 120-tall shape clears it.
+    let wall = DVec3::new(200.0, 200.0, 50.0);
+    assert!(!on_box(wall, DVec3::X, DVec3::Z, 120.0, 120.0), "120 clears the 100 wall");
+    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 100.0), "100 reaches its edges, no more");
+    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 60.0), "60 sits within it");
+
+    // The top face is 200 × 200, and refuses just the same once cleared.
+    let top = DVec3::new(200.0, 100.0, 100.0);
+    assert!(on_box(top, DVec3::Z, DVec3::Y, 120.0, 120.0), "120 does not clear 200");
+    assert!(!on_box(top, DVec3::Z, DVec3::Y, 120.0, 220.0), "220 does — same refusal");
 }
