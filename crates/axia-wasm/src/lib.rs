@@ -10460,23 +10460,20 @@ impl AxiaEngine {
         debug_log!("[RUST] sliceVolumeByPlane: {} faces, plane n=({},{},{})",
             fids.len(), normal_x, normal_y, normal_z);
 
-        // ADR-267 γ — Scene 메서드가 txn 을 내부 commit → 게이트 op 후 실행,
-        // 실패 시 discard_last_undo (manual_txn=false).
-        let integrity_before = self
-            .scene
-            .mesh
-            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
-            .damage_count();
-        let integrity_snapshot = self.scene.scene_snapshot();
+        // The generic crack gate cannot judge a slice, and used to refuse every
+        // one of them: cutting a solid in two deliberately leaves both halves
+        // resting against each other, so every segment of the cut boundary
+        // exists twice — one edge per half. A box cut in half reported eight
+        // such edges while both halves were watertight with clean invariants,
+        // so the gate rejected its own correct result and slice was unusable.
+        //
+        // The postcondition that does hold — each half closed, invariants no
+        // worse — is checked inside `Scene::slice_volume_by_plane`, where the
+        // two halves are known and can be told apart. That is stricter than
+        // this gate in the way that matters: it verifies both halves are
+        // watertight, which an OpenMesh-scope damage count never looked at.
         match self.scene.slice_volume_by_plane(&fids, plane) {
             Ok(new_owner) => {
-                if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "slice", false)
-                {
-                    return format!(
-                        r#"{{"ok":false,"error":"{}"}}"#,
-                        self.last_error.replace('"', "'").replace('\n', " ")
-                    );
-                }
                 self.mark_topology_changed();
                 self.invalidate_cache();
                 let total = self.scene.mesh.face_count();

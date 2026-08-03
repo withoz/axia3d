@@ -2099,19 +2099,51 @@ impl Scene {
         }
 
         let owner = self.solid_owner_of(face_ids, "slice_volume_by_plane")?;
+        let violations_before = self.mesh.verify_face_invariants().violations.len();
 
         self.transactions.begin();
-        self.transactions.set_before_snapshot(self.scene_snapshot());
+        let pre_slice = self.scene_snapshot();
+        self.transactions.set_before_snapshot(pre_slice.clone());
 
         // Run the geometric slice.
         let mat = FORM_MATERIAL;
         let result = match self.mesh.slice_volume_by_plane(face_ids, plane, mat) {
             Ok(r) => r,
             Err(e) => {
+                // The cut mutates incrementally before a late bail, and cancel()
+                // drops the recording rather than the mutation — measured, a
+                // refused slice of an open sheet still left the mesh cut from 1
+                // face to 2. Trim already restored here; slice did not.
+                self.restore_scene_snapshot(&pre_slice);
                 self.transactions.cancel();
                 return Err(e);
             }
         };
+
+        // Check the postcondition here, where both halves are known.
+        //
+        // A slice cannot be judged by counting coincident edges over the whole
+        // mesh: it deliberately leaves two solids resting against each other, so
+        // every segment of the cut boundary exists twice, once per half. That is
+        // the result, not damage — measured on a box cut in two, eight such
+        // edges appear while both halves are watertight with clean invariants.
+        // What actually has to hold is that each half came out a closed solid.
+        let above_check: Vec<axia_geo::FaceId> =
+            result.above_walls.iter().chain(result.cap_above.iter()).copied().collect();
+        let below_check: Vec<axia_geo::FaceId> =
+            result.below_walls.iter().chain(result.cap_below.iter()).copied().collect();
+        let open_above = self.mesh.face_set_manifold_info(&above_check).boundary_edge_count;
+        let open_below = self.mesh.face_set_manifold_info(&below_check).boundary_edge_count;
+        let violations_after = self.mesh.verify_face_invariants().violations.len();
+        if open_above > 0 || open_below > 0 || violations_after > violations_before {
+            self.restore_scene_snapshot(&pre_slice);
+            self.transactions.cancel();
+            anyhow::bail!(
+                "slice_volume_by_plane: the cut did not close — \
+                 {open_above} open edge(s) above, {open_below} below, \
+                 {violations_after} invariant violation(s)"
+            );
+        }
 
         // ── XIA management ──────────────────────────────────────────────
         // 1. Strip original XIA's face_ids of the consumed input faces.
@@ -22729,6 +22761,74 @@ mod tests {
             si_before,
             "the refused draw must leave no overlap behind"
         );
+    }
+
+    /// A slice leaves two solids resting against each other, so every segment of
+    /// the cut boundary exists twice — one edge per half. The mesh-wide crack
+    /// count therefore reads eight on a box cut in two, and the integrity gate
+    /// that consumed it refused every slice the engine ever made. What has to
+    /// hold instead is that each half came out closed.
+    #[test]
+    fn a_slice_produces_two_closed_halves() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        let faces = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        let src = scene.create_xia_with_faces("box".into(), DVec3::ZERO, faces.clone());
+        let owner = scene
+            .slice_volume_by_plane(&faces, SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap())
+            .expect("a clean cut through a box must succeed");
+
+        let above = scene.xias.get(&src).map(|x| x.face_ids.clone()).unwrap_or_default();
+        let below = match owner {
+            SolidOwner::Xia(x) => scene.xias.get(&x).map(|v| v.face_ids.clone()).unwrap_or_default(),
+            SolidOwner::Shape(_) => panic!("a XIA-owned box must slice into XIAs"),
+        };
+        assert_eq!(above.len(), 6, "the upper half must be a 6-face box");
+        assert_eq!(below.len(), 6, "the lower half must be a 6-face box");
+        assert_eq!(
+            scene.mesh.face_set_manifold_info(&above).boundary_edge_count, 0,
+            "the upper half must be watertight"
+        );
+        assert_eq!(
+            scene.mesh.face_set_manifold_info(&below).boundary_edge_count, 0,
+            "the lower half must be watertight"
+        );
+        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), 0);
+        // And the thing that used to sink it is still present and still fine:
+        // the shared cut boundary reads as coincident edges.
+        assert!(
+            scene.mesh.collect_non_manifold_edges_geometric().len() >= 4,
+            "the shared cut boundary is expected — if this ever reads zero the              test no longer covers the case the gate got wrong"
+        );
+    }
+
+    /// A refused slice must leave nothing behind. The cut mutates incrementally
+    /// before a late bail, and `cancel()` drops the recording rather than the
+    /// mutation — measured, refusing to slice an open sheet still left it cut
+    /// from one face into two.
+    #[test]
+    fn a_refused_slice_leaves_the_mesh_untouched() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        let a = scene.mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let b = scene.mesh.add_vertex(DVec3::new(200.0, 0.0, 0.0));
+        let c = scene.mesh.add_vertex(DVec3::new(200.0, 200.0, 0.0));
+        let d = scene.mesh.add_vertex(DVec3::new(0.0, 200.0, 0.0));
+        let f = scene.mesh.add_face(&[a, b, c, d], crate::FORM_MATERIAL).unwrap();
+        scene.create_xia_with_faces("sheet".into(), DVec3::ZERO, vec![f]);
+        let before = scene.scene_snapshot();
+        let n = active_faces(&scene);
+
+        let r = scene.slice_volume_by_plane(
+            &[f],
+            SlicePlane::new(DVec3::new(100.0, 0.0, 0.0), DVec3::X).unwrap(),
+        );
+        assert!(r.is_err(), "an open sheet cannot slice into two closed halves");
+        assert_eq!(active_faces(&scene), n, "the refused slice cut the mesh anyway");
+        assert_eq!(scene.scene_snapshot(), before, "the refused slice must restore byte-for-byte");
     }
 
     /// Plane cuts used to demand a property-layer XIA, so they worked on a

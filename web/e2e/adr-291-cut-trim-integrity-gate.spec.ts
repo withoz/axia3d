@@ -1,7 +1,7 @@
 /**
  * ADR-291 — plane-cut integrity gate consistency (trim / curved knives).
  *
- * `slice_volume_by_plane` has carried the ADR-267 integrity gate (crack /
+ * `slice_volume_by_plane` carried the ADR-267 integrity gate (crack /
  * invariant / open-boundary, baseline-relative). Its plane-cut siblings —
  * `trim_volume_by_plane` and the Path B curved knives `cut_curved_by_z_plane`
  * / `trim_curved_by_plane` — shared slice's core but shipped UNGATED. ADR-291
@@ -9,6 +9,14 @@
  * slice keep-both reports is inter-half touching at the cut plane, not
  * corruption of a resulting solid — trim keep-one is SI-clean; see
  * phase3_gate_sim adr291_*).
+ *
+ * 2026-08-03 — slice itself no longer uses that gate. It counts coincident
+ * edges mesh-wide, and a slice leaves two solids resting against each other, so
+ * every segment of the cut boundary exists twice — one edge per half. Measured
+ * on a box cut in two: eight such edges while both halves were watertight with
+ * clean invariants, so the gate refused every slice the engine made. Slice now
+ * checks its own postcondition (each half closed) inside Scene. trim and the
+ * curved knives keep the gate — they keep one half, so no duplicate boundary.
  *
  * This spec proves, through the real WASM engine, that the gate is WIRED and
  * TRANSPARENT on normal cuts — a clean trim / curved cut still succeeds and

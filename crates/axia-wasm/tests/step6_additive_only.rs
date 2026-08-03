@@ -1624,11 +1624,12 @@ fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
     // γ (4) + γ-2 (punch_rect/polygon, drill_rect/polygon, door, split = 6) = 10
     // + ADR-291 (trim, cut curved, trim curved = 3) = 13
     // + curved sketch-split (4 circle + 4 polyline + 1 open seam = 9) = 22 call
-    // sites + 1 def. Guards against a cut op silently losing its gate.
+    // sites + 1 def. `slice` is deliberately NOT among them — see below.
+    // Guards against a cut op silently losing its gate.
     assert!(
         l.matches("integrity_gate_passed(").count() >= 22,
         "ADR-267 γ/γ-2 + ADR-291 + curved sketch-split: gate helper must be \
-         called by ≥22 ops (punch/drill/carve/slice/door/split/trim/curved/sketch)"
+         called by ≥22 ops (punch/drill/carve/door/split/trim/curved/sketch)"
     );
     // The curved sketch-split path had NO gate: measured, a circle landing
     // exactly on an existing pocket's rim left 55 invariant violations and
@@ -1658,6 +1659,49 @@ fn adr267_gamma_verify_volume_integrity_endpoint_wired() {
             "ADR-291: plane-cut op must call integrity_gate_passed(.., {label})"
         );
     }
+
+    // …and `slice` is the one plane cut that must NOT use it. The generic gate
+    // counts coincident edges over the whole mesh, and a slice deliberately
+    // leaves two solids resting against each other, so every segment of the cut
+    // boundary exists twice — one edge per half. Measured on a box cut in two:
+    // eight such edges while both halves were watertight with clean invariants.
+    // The gate therefore rejected every single slice and the op was unusable.
+    assert!(
+        !l.contains(r#""slice", false"#) && !l.contains(r#""slice", true"#),
+        "slice must not use the generic crack gate — it rejects slice's own \
+         correct result. Its postcondition (both halves closed) lives in \
+         Scene::slice_volume_by_plane."
+    );
+    // Which means that postcondition has to actually be there, or the op ends
+    // up with no check at all.
+    let scene_src = include_str!("../../axia-core/src/scene.rs");
+    let slice_fn = scene_src
+        .split("pub fn slice_volume_by_plane")
+        .nth(1)
+        .expect("Scene::slice_volume_by_plane not found");
+    let body = &slice_fn[..slice_fn.len().min(6000)];
+    assert!(
+        body.contains("face_set_manifold_info") && body.contains("boundary_edge_count"),
+        "Scene::slice_volume_by_plane must verify each half came out closed"
+    );
+    assert!(
+        body.contains("verify_face_invariants"),
+        "Scene::slice_volume_by_plane must verify invariants did not get worse"
+    );
+    // Pin the condition itself, not just the helper names — measuring the
+    // postcondition and then ignoring it would otherwise pass.
+    assert!(
+        body.contains("open_above > 0 || open_below > 0 || violations_after > violations_before"),
+        "Scene::slice_volume_by_plane must ACT on the postcondition it measures"
+    );
+    // Both failure paths have to roll back: the mesh op bailing late, and the
+    // postcondition failing. The first one was missing — measured, a refused
+    // slice of an open sheet still left it cut from one face into two.
+    assert!(
+        body.matches("restore_scene_snapshot").count() >= 2,
+        "Scene::slice_volume_by_plane must roll the mesh back on BOTH failure \
+         paths — the mesh op bailing and the postcondition failing"
+    );
 }
 
 // ── ADR-080 V-β-α-bridge — `offset_edge_on_host` JSON contract ──────
