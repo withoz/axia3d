@@ -22767,14 +22767,31 @@ mod tests {
     /// the shape minus the overlap, the overlap, and the face minus the overlap —
     /// and the result is accepted because none of the three overlap each other.
     ///
-    /// It does NOT yet work when the solid came from the Box primitive. Measured
-    /// with identical geometry, normals, sheet classification, surface
-    /// attachment and XIA ownership: the drawn solid's case splits the new shape
-    /// during the draw, the primitive's leaves it whole, so the shape ends up
-    /// lying on top of the overlap and the guard rolls the draw back. Safe, but
-    /// refused. The `#[ignore]`-free way to record that is to assert the
-    /// behaviour that HOLDS today, so this test tells the next reader exactly
-    /// where the two paths diverge instead of leaving them to rediscover it.
+    /// It does NOT yet work when the solid came from the Box primitive, and the
+    /// difference is narrower than it looks. Drawing the rectangle as its four
+    /// lines and watching each one: both fixtures are identical through line 2,
+    /// and the z=0 DCEL is the same in both — nine edges, same positions, same
+    /// face counts, only the EdgeIds differ. They diverge on the closing line,
+    /// in face synthesis: the drawn solid gets a face for the region outside the
+    /// box, the primitive gets none at all (so `DrawRectAsShape`, which has its
+    /// own fast path, ends up with the rectangle whole and lying over the
+    /// overlap, and the guard rolls it back).
+    ///
+    /// That region needs the box's own boundary as part of its outline, and
+    /// those edges already carry two faces — accepting it means a third, the
+    /// T-junction this engine now allows. Something makes the synthesiser
+    /// willing in one case and not the other, and it is NOT: HARD flags,
+    /// ownership layer (Shape vs XIA), crossing detection (`edges_near` and
+    /// `find_line_crossings` return identical results), cap classification
+    /// (`is_sheet_face`, normal, surface all match), or scene state left by a
+    /// prior draw. Each of those was measured and ruled out.
+    ///
+    /// What is left is the half-edge radial ordering around the shared edge —
+    /// the one thing that can differ between a box built by extruding a profile
+    /// and one built by `create_box`. That is where to look next.
+    ///
+    /// Recorded as the behaviour that HOLDS today rather than `#[ignore]`d, so
+    /// the next reader starts from here instead of rediscovering it.
     #[test]
     fn a_shape_overlapping_a_drawn_solid_splits_three_ways() {
         let mut scene = prod_scene();
