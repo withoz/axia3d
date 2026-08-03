@@ -853,6 +853,37 @@ impl AxiaEngine {
         }
     }
 
+    /// 면을 따라 그리기 — draw a line that follows the solid across a shared
+    /// edge instead of cutting through it. Returns ShapeId.raw() as f64, or
+    /// -1.0 with the reason in last_error (no silent fall back to a chord).
+    #[wasm_bindgen(js_name = "drawLineAlongSurface")]
+    pub fn draw_line_along_surface(
+        &mut self,
+        x0: f64, y0: f64, z0: f64,
+        x1: f64, y1: f64, z1: f64,
+    ) -> f64 {
+        let cmd = Command::DrawLineAlongSurface {
+            start: DVec3::new(x0, y0, z0),
+            end: DVec3::new(x1, y1, z1),
+        };
+        match self.scene.execute(cmd) {
+            axia_core::commands::CommandResult::ShapeCreated(shape_id) => {
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                shape_id as f64
+            }
+            axia_core::commands::CommandResult::Error(e) => {
+                self.set_error(e);
+                self.invalidate_cache();
+                -1.0
+            }
+            _ => {
+                self.invalidate_cache();
+                -1.0
+            }
+        }
+    }
+
     /// ADR-219 — Draw a standalone construction Point as a form-layer Shape.
     /// Adds + pins a single isolated vertex (survives cleanup). Returns
     /// ShapeId.raw() as f64 on success, -1.0 on error.

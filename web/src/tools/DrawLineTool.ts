@@ -90,6 +90,10 @@ export class DrawLineTool implements ITool {
   // Face Split — track which face is being drawn on
   private startFaceId: number = -1;
   private endFaceId: number = -1;
+  /** 면을 따라 그리기 — the second click's point as it landed on the solid,
+   *  before projection onto the first click's plane. Null when that click was
+   *  not on a face. */
+  private endSurfacePoint: THREE.Vector3 | null = null;
   /** 현재 마우스 커서가 올라간 face ID (mousemove 갱신). -1 = 허공. */
   private hoverFaceId: number = -1;
 
@@ -195,6 +199,13 @@ export class DrawLineTool implements ITool {
       if (pickedFaceId >= 0) {
         debugLog(`[FaceSplit] 2nd click on face ${pickedFaceId} (start was ${this.startFaceId})`);
       }
+      // 면을 따라 그리기 — keep the point the user actually clicked ON the
+      // solid. The point the state machine receives has been projected onto
+      // the drawing plane established by the first click, so on a second face
+      // it no longer sits on that face. commitLine needs the unprojected one
+      // to ask the engine for a route along the surface.
+      const surfaceHit = this.ctx.viewport.pick(e.clientX, e.clientY);
+      this.endSurfacePoint = surfaceHit?.point ? surfaceHit.point.clone() : null;
     }
 
     // Check loop close first (higher priority than regular snap)
@@ -394,6 +405,7 @@ export class DrawLineTool implements ITool {
         this.drawingPlane = null;
         this.startFaceId = -1;
         this.endFaceId = -1;
+        this.endSurfacePoint = null;
         this.hoverFaceId = -1;
         this.removeLinePreview();
         this.removeStartDot();
@@ -429,6 +441,7 @@ export class DrawLineTool implements ITool {
           this.drawingPlane = null;
           this.startFaceId = -1;
           this.endFaceId = -1;
+        this.endSurfacePoint = null;
           this.hoverFaceId = -1;
           this.ctx.clearAxisGuide();
           this.ctx.dimLabel.clear();
@@ -454,6 +467,55 @@ export class DrawLineTool implements ITool {
    * This is the ONLY place where the engine is called.
    * Returns true if a face was auto-created (closed loop detected or face split).
    */
+  /**
+   * 면을 따라 그리기 — draw the route that stays on the solid.
+   *
+   * Only when the two clicks landed on two different faces. The end point used
+   * is the one picked on the solid, not the one projected onto the first
+   * click's plane, because that projection is exactly what put the line inside
+   * the solid.
+   *
+   * Returns true when the engine drew the path. When it cannot follow — the
+   * faces do not touch, or the route would cross a third one — it says which,
+   * and drawing falls through to the ordinary single-plane line so nothing the
+   * user could already do stops working.
+   */
+  private tryCommitAlongSurface(): boolean {
+    if (!this.startPoint || !this.endSurfacePoint) return false;
+    if (this.startFaceId < 0 || this.endFaceId < 0) return false;
+    if (this.startFaceId === this.endFaceId) return false;
+    const bridge = this.ctx.bridge as unknown as {
+      drawLineAlongSurface?: (
+        x0: number, y0: number, z0: number,
+        x1: number, y1: number, z1: number,
+      ) => number;
+      lastError?: () => string;
+    };
+    if (typeof bridge.drawLineAlongSurface !== 'function') return false;
+
+    const facesBefore = this.ctx.bridge.faceCount();
+    const shapeId = bridge.drawLineAlongSurface(
+      this.startPoint.x, this.startPoint.y, this.startPoint.z,
+      this.endSurfacePoint.x, this.endSurfacePoint.y, this.endSurfacePoint.z,
+    );
+    if (shapeId < 0) {
+      const why = bridge.lastError?.() ?? '';
+      debugLog(`[면따라] refused: ${why}`);
+      if (why) Toast.info(why, 2200);
+      return false;
+    }
+
+    const facesAfter = this.ctx.bridge.faceCount();
+    debugLog(`[면따라] drawn along the surface (faces ${facesBefore}→${facesAfter})`);
+    if (facesAfter > facesBefore) {
+      Toast.info(t('면을 따라 그려 면이 나뉘었습니다'), 1800);
+    } else {
+      Toast.info(t('면을 따라 그렸습니다'), 1500);
+    }
+    this.ctx.syncMesh();
+    return true;
+  }
+
   private commitLine(): boolean {
     if (!this.startPoint || !this.previewEnd) return false;
 
@@ -479,6 +541,13 @@ export class DrawLineTool implements ITool {
       // Fall through to regular drawLine path — WASM's closed-loop detection
       // will auto-create the face when applicable.
     }
+
+    // ─── 면을 따라 그리기 ───
+    // The second click landed on a different face of the solid. Drawn on one
+    // plane the line would be a chord through the interior, touching neither
+    // face; along the surface it bends at the shared edge and cuts both. Loop
+    // closing still wins — that is an explicit request to finish a boundary.
+    if (!isLoopClose && this.tryCommitAlongSurface()) return true;
 
     // ─── Continuous polyline on faces (사용자 결재 2026-06-05) ───
     // All segments take the kernel-aware drawLineAsShape path below. Faces are
@@ -779,6 +848,7 @@ export class DrawLineTool implements ITool {
       // Carry over endFaceId as next startFaceId (continuous drawing on same face)
       this.startFaceId = this.endFaceId;
       this.endFaceId = -1;
+      this.endSurfacePoint = null;
       this.removeLinePreview();
       this.ctx.clearAxisGuide();
       this.ctx.dimLabel.clear();

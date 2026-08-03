@@ -1000,6 +1000,8 @@ export const EN: Record<string, string> = {
     'Closing the loop (this makes a new boundary, it does not split a face)',
   '루프 닫힘 — 면 생성됨': 'Loop closed — face created',
   '면 분할됨 — 계속 그리기 (Esc 종료)': 'Face split — keep drawing (Esc to finish)',
+  '면을 따라 그려 면이 나뉘었습니다': 'Drawn along the surface — the faces are divided',
+  '면을 따라 그렸습니다': 'Drawn along the surface',
   '루프 닫힘 — 면 생성 실패 (비평면 또는 자체교차)':
     'Loop closed, but no face — it is not flat, or it crosses itself',
   '곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.':

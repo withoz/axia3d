@@ -1075,6 +1075,36 @@ export class WasmBridge {
   }
 
   /**
+   * 면을 따라 그리기 — a line that follows the solid across a shared edge.
+   *
+   * `drawLineAsShape` puts the whole line on one plane, so two points on two
+   * faces are joined by a chord through the interior and neither face is cut.
+   * This asks the engine for the route that stays on the skin and draws each
+   * leg in its own face, so the line bends at the edge and divides what it
+   * runs over.
+   *
+   * No cardinal snap here: the endpoints are surface points the user picked,
+   * and rounding them to an axis would move them off the faces they belong to.
+   * Returns ShapeId on success, -1 with the reason in `getLastError()`.
+   */
+  drawLineAlongSurface(
+    x0: number, y0: number, z0: number,
+    x1: number, y1: number, z1: number,
+  ): number {
+    if (!this.engine) return -1;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).drawLineAlongSurface;
+    if (!fn) return -1;
+    this.markDirty();
+    try {
+      return fn.call(this.engine, x0, y0, z0, x1, y1, z1);
+    } catch (e) {
+      console.error('[WasmBridge] drawLineAlongSurface failed:', e);
+      return -1;
+    }
+  }
+
+  /**
    * ADR-219 — Draw a standalone construction Point as a Form-citizen Shape.
    * The point's vertex is pinned in the engine so it survives every cleanup
    * pass. Returns ShapeId.raw() on success, -1 on error / missing endpoint.

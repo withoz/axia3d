@@ -239,6 +239,29 @@ describe('WasmBridge', () => {
       expect(typeof result).toBe('number');
     });
 
+    it('drawLineAlongSurface() forwards the picked points unchanged', () => {
+      // The endpoints are points on the solid. drawLineAsShape snaps near-zero
+      // coordinates to a cardinal plane, which would move a surface point off
+      // the face it belongs to — so this path must not.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      const spy = vi.fn().mockReturnValue(3);
+      eng.drawLineAlongSurface = spy;
+      const r = bridge.drawLineAlongSurface(1.0, 1e-7, 2.0, 5.0, 3e-8, 7.0);
+      expect(r).toBe(3);
+      expect(spy).toHaveBeenCalledWith(1.0, 1e-7, 2.0, 5.0, 3e-8, 7.0);
+      delete eng.drawLineAlongSurface;
+    });
+
+    it('drawLineAlongSurface() returns -1 when the engine has no such export', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      delete eng.drawLineAlongSurface;
+      expect(bridge.drawLineAlongSurface(0, 0, 0, 1, 0, 0)).toBe(-1);
+    });
+
     it('drawLine() marks buffers dirty', () => {
       bridge.getMeshBuffers(); // clear dirty flag
       bridge.drawLineAsShape(0, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -1794,6 +1817,11 @@ describe('WasmBridge', () => {
     it('drawLineAsShape returns -1 when not ready', () => {
       const uninitBridge = new WasmBridge();
       expect(uninitBridge.drawLineAsShape(0, 0, 0, 1, 0, 0, 0, 0, 1)).toBe(-1);
+    });
+
+    it('drawLineAlongSurface returns -1 when not ready', () => {
+      const uninitBridge = new WasmBridge();
+      expect(uninitBridge.drawLineAlongSurface(0, 0, 0, 1, 0, 0)).toBe(-1);
     });
 
     it('createSolidExtrude returns false when not ready', () => {
