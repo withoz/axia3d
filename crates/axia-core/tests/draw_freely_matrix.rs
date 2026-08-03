@@ -48,10 +48,25 @@
 //!   together: refused every time.
 //! - *The crossing split added 2026-08-03.* Disabled, still refused.
 //!
-//! So it is in the base draw path — `exec_draw_rect_as_shape` and the imprint
-//! guard — and not in any of the machinery layered on top. That is where the
-//! next reading should start, and it should be a reading taken from
-//! instrumentation rather than from the shape of the code.
+//! **Found it, by backtrace on face creation** — which is where this should have
+//! started rather than after four guesses. The 8-vertex face is built by
+//! `exec_draw_line`, inside `exec_draw_rect` (a rectangle is four lines), and
+//! the cause is the loop walk's dead-end fallback added the same morning
+//! (`0b3e7b7`): with nowhere free to go it steps onto a used-up edge, and the
+//! only ways on there are the SOLID's own boundary. So the walk goes around the
+//! wall and closes a loop spanning the drawn rectangle and the wall together.
+//!
+//! **But it cannot simply be removed.** Taking it out makes this grid pass 24
+//! of 24 — and regresses what it was written for: a shape drawn beside a solid
+//! stops closing the region next to it (`overlap_walk_sim::causation_by_removal`
+//! goes 3 → 2). That test caught the removal, which is the only reason this note
+//! does not claim the fallback was unnecessary.
+//!
+//! So it is a real trade, and the way out is narrower than either side of it:
+//! the walk may step past a dead end, but a loop that comes back enclosing an
+//! existing coplanar face is the wrong loop and should be rejected. That check
+//! belongs after the walk, where the loop can be measured against the faces
+//! already there — not inside it, where only the next step is visible.
 
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use axia_geo::{CreateSolidMode, FaceId};
