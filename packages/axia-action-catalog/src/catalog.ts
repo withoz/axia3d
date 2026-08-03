@@ -1217,7 +1217,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   // Snap state toggles (5)
   {
     id: 'axis',
-    label: '축 스냅',
+    label: '축 표시',
     description: 'Toggle axis snap inference state.',
     tier: 0,
     surfaces: ['menu'],
@@ -1247,7 +1247,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'edge',
-    label: '엣지 스냅',
+    label: '엣지 표시',
     description: 'Toggle edge snap inference state.',
     tier: 0,
     surfaces: ['menu'],
@@ -1400,7 +1400,7 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
   },
   {
     id: 'grid',
-    label: '그리드 스냅',
+    label: '그리드 표시',
     description: 'Toggle grid snap inference state.',
     tier: 0,
     surfaces: ['menu'],
