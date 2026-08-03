@@ -6477,8 +6477,8 @@ impl Scene {
             let mut seg_faces: usize = 0;
             let mut excluded_edges: Vec<EdgeId> = Vec::new();
             loop {
-                let loop_verts = match self.mesh.detect_free_edge_loop_excluding(
-                    v_a, v_b, new_edge_id, &excluded_edges,
+                let loop_verts = match self.mesh.detect_free_edge_loop_excluding_on_plane(
+                    v_a, v_b, new_edge_id, &excluded_edges, surface_normal,
                 ) {
                     Some(v) => v,
                     None => break,

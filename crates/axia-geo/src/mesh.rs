@@ -10784,7 +10784,28 @@ impl Mesh {
         new_edge_id: EdgeId,
         excluded: &[EdgeId],
     ) -> Option<Vec<VertId>> {
-        if let Some(verts) = self.detect_loop_by_chain_walk_excluding(v0, v1, new_edge_id, excluded) {
+        self.detect_free_edge_loop_excluding_on_plane(v0, v1, new_edge_id, excluded, None)
+    }
+
+    /// As [`Self::detect_free_edge_loop_excluding`], but told which plane the
+    /// loop is meant to lie in.
+    ///
+    /// The chain walk needs that to get past a dead end. Where the only ways on
+    /// are a solid's own boundary — every half-edge slot taken — it has to pick
+    /// one, and picking means measuring a turn, which means knowing the plane and
+    /// its sense. Without a normal it declines exactly as it always did, so a
+    /// caller that has no plane in mind loses nothing.
+    pub fn detect_free_edge_loop_excluding_on_plane(
+        &self,
+        v0: VertId,
+        v1: VertId,
+        new_edge_id: EdgeId,
+        excluded: &[EdgeId],
+        plane_normal: Option<DVec3>,
+    ) -> Option<Vec<VertId>> {
+        if let Some(verts) =
+            self.detect_loop_by_chain_walk_excluding(v0, v1, new_edge_id, excluded, plane_normal)
+        {
             return Some(verts);
         }
         self.detect_loop_by_bfs_excluding(v0, v1, new_edge_id, excluded)
@@ -10796,24 +10817,68 @@ impl Mesh {
         v1: VertId,
         new_edge_id: EdgeId,
         excluded: &[EdgeId],
+        plane_normal: Option<DVec3>,
     ) -> Option<Vec<VertId>> {
         let mut path = vec![v0, v1];
         let mut prev_v = v0;
         let mut curr_v = v1;
+        // Set once the walk has stepped onto a used-up edge. Only from then on
+        // does it resolve forks by turning; before that a fork still ends the
+        // walk, so the caller's retry-with-exclusions search — which is how the
+        // working cases find their loop — behaves exactly as it always has.
+        let mut past_dead_end = false;
         for _ in 0..10000 {
             let mut neighbors = Vec::new();
+            // Ways on whose half-edge slots are already full. Held back, because
+            // stepping onto one means a third face on that edge; only consulted
+            // when there is nothing else, so every walk that used to get
+            // somewhere still takes exactly the route it always took.
+            let mut taken: Vec<VertId> = Vec::new();
             for (&key, &edge_id) in &self.vert_to_edge {
                 if edge_id == new_edge_id { continue; }
                 if excluded.contains(&edge_id) { continue; }
                 if key.v_small != curr_v && key.v_large != curr_v { continue; }
                 if !self.edges[edge_id].is_active() { continue; }
-                if !self.edge_has_free_he(edge_id) { continue; }
                 // ADR-089 A-ζ-2: skip self-loop edges (key.v_small == key.v_large).
                 // Self-loop = closed analytic curve = already complete cycle by
                 // itself; not part of polygon-edge chain walking.
                 if key.v_small == key.v_large { continue; }
                 let other = if key.v_small == curr_v { key.v_large } else { key.v_small };
-                if other != prev_v { neighbors.push(other); }
+                if other == prev_v { continue; }
+                if self.edge_has_free_he(edge_id) {
+                    neighbors.push(other);
+                } else {
+                    taken.push(other);
+                }
+            }
+            // Dead end. Measured: this is how a shape drawn beside a solid fails
+            // — not at a fork, but with nowhere to go, because the only ways on
+            // are the solid's own boundary and every slot there is spoken for.
+            // A third face on such an edge is the T-junction the engine now
+            // allows, so try them rather than stopping.
+            if neighbors.is_empty() && !taken.is_empty() {
+                let pick = plane_normal.and_then(|n| {
+                    if taken.len() == 1 {
+                        Some(taken[0])
+                    } else {
+                        self.leftmost_turn(prev_v, curr_v, &taken, n)
+                    }
+                });
+                match pick {
+                    // Routing over used-up edges can circle; the free walk
+                    // cannot, so this guard belongs here and only here.
+                    Some(v) if v == v0 || !path.contains(&v) => {
+                        past_dead_end = true;
+                        neighbors.push(v);
+                    }
+                    _ => return None,
+                }
+            }
+            if neighbors.len() > 1 && past_dead_end {
+                match plane_normal.and_then(|n| self.leftmost_turn(prev_v, curr_v, &neighbors, n)) {
+                    Some(v) => neighbors = vec![v],
+                    None => return None,
+                }
             }
             if neighbors.len() == 1 {
                 let next_v = neighbors[0];
@@ -10829,6 +10894,45 @@ impl Mesh {
             }
         }
         None
+    }
+
+    /// Of several ways on from `curr`, the leftmost turn — the smallest positive
+    /// CCW angle measured from the reverse of the incoming direction, which is
+    /// the rule and the sense `operations::planar_walk` already uses.
+    ///
+    /// The plane comes from the step itself: `prev→curr` with whichever candidate
+    /// lies furthest off that line, so the basis is the best-conditioned one to
+    /// hand. `None` when every way on is collinear and there is no plane to turn
+    /// in — the caller then declines, as it did before there was a choice.
+    fn leftmost_turn(&self, prev: VertId, curr: VertId, cands: &[VertId], normal: DVec3) -> Option<VertId> {
+        let p_prev = self.vertex_pos(prev).ok()?;
+        let p_curr = self.vertex_pos(curr).ok()?;
+        let incoming = p_curr - p_prev;
+        if incoming.length_squared() < 1e-18 {
+            return None;
+        }
+        let in_dir = incoming.normalize();
+        let (u, v) = (in_dir, normal.cross(in_dir));
+        let from = (-1.0f64, 0.0f64); // reverse of incoming, in that basis
+
+        let mut best: Option<(VertId, f64)> = None;
+        for &c in cands {
+            let Ok(p) = self.vertex_pos(c) else { continue };
+            let d = p - p_curr;
+            let to = (d.dot(u), d.dot(v));
+            if to.0.abs() < 1e-15 && to.1.abs() < 1e-15 { continue; }
+            let mut angle = (from.0 * to.1 - from.1 * to.0)
+                .atan2(to.0 * from.0 + to.1 * from.1);
+            if angle < 0.0 { angle += std::f64::consts::TAU; }
+            match best {
+                None => best = Some((c, angle)),
+                // Largest CCW angle from the reverse of incoming = the LEFTmost
+                // turn, which traces the loop counter-clockwise about `normal`.
+                Some((_, a)) if angle > a => best = Some((c, angle)),
+                _ => {}
+            }
+        }
+        best.map(|(c, _)| c)
     }
 
     fn detect_loop_by_bfs_excluding(

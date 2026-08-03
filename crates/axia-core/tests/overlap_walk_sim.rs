@@ -243,11 +243,16 @@ fn causation_by_removal() {
 
     // The point of the whole exercise: taking the spares away turns the box that
     // works into the box that does not. Correlation would leave B at 3.
+    // Since the walk learned to step past a dead end, none of the three depends
+    // on spare slots any more: all close the outer region. Keeping the trio is
+    // still worth it — it is the measurement that showed the spare was what
+    // decided it, and it now guards the fix from both sides.
+    assert_eq!(b_ground, c_ground, "the two must stay in step");
     assert_eq!(
-        b_ground, c_ground,
-        "stripping the spares must reproduce the one-shot box exactly —          if this ever differs, the spare slot is no longer what decides it"
+        b_ground, 3,
+        "the outer region must close with no spare to lean on — this is the fix"
     );
-    assert_eq!(b_ground, 2, "and that means the outer region does not close");
+    assert_eq!(a_ground, 3, "and the case that always worked must be untouched");
 }
 
 /// The removal must not be the thing that broke it — check the mesh is still
@@ -275,16 +280,19 @@ fn the_walk_only_proceeds_when_there_is_one_way_on() {
     )
     .expect("mesh.rs");
     let at = src.find("fn detect_loop_by_chain_walk_excluding").expect("walk not found");
-    let body = &src[at..at + 2500];
+    let body = &src[at..(at + 6000).min(src.len())];
     // The walk collects neighbours in two places; both carry the gate, and
     // dropping either one changes what the candidate set can contain.
-    assert_eq!(
-        body.matches("if !self.edge_has_free_he(edge_id) { continue; }").count(),
-        2,
-        "a free-half-edge gate is gone — re-run the simulation, its conclusion          assumed the gate is what keeps the candidate set down to one"
+    assert!(
+        body.contains("if self.edge_has_free_he(edge_id) {"),
+        "the walk no longer separates free ways on from used-up ones, which is          what lets it prefer the free ones and fall back only at a dead end"
     );
     assert!(
-        body.contains("if neighbors.len() == 1 {"),
-        "the walk no longer requires exactly one continuation — a choosing rule          may now exist, which is what the overlap fix was waiting for"
+        body.contains("past_dead_end"),
+        "the walk lost its dead-end fallback — a shape drawn beside a one-shot          solid will stop closing the region beside it"
+    );
+    assert!(
+        body.contains("self.leftmost_turn(prev_v, curr_v, &taken, n)"),
+        "the dead-end fallback no longer chooses by turning"
     );
 }
