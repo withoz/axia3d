@@ -1747,6 +1747,64 @@ mod tests {
             "ADR-145 β-1+: annulus topology must preserve manifold invariants; \
              got {:?}", report.violations);
     }
+
+    /// A hole moves INWARD to a face that has appeared between it and its owner,
+    /// and refuses to move outward.
+    ///
+    /// Both directions, because only one of them is reachable through the two
+    /// assignment passes today: the polygon pass never gets to ask (its
+    /// `polygon_inside` already excludes a container whose hole holds the inner)
+    /// and the circle pass is stopped by its own interposed check. So the outward
+    /// refusal is measured HERE, on the function that owes it, rather than
+    /// asserted by a caller that cannot reach it.
+    #[test]
+    fn a_hole_moves_inward_and_refuses_to_move_outward() {
+        let mut mesh = Mesh::new();
+        let big = build_rect_face(&mut mesh, DVec3::ZERO, 100.0);
+        let mid = build_rect_face(&mut mesh, DVec3::ZERO, 70.0);
+        let small = build_rect_face(&mut mesh, DVec3::ZERO, 30.0);
+
+        // The chain as it is first built: `big` takes both, because nothing looks
+        // again at `small` once `mid` arrives — which is the whole defect.
+        super::split_face_by_inner_polygon(&mut mesh, big, small).expect("small -> big");
+        super::split_face_by_inner_polygon(&mut mesh, big, mid).expect("mid -> big");
+        assert_eq!(mesh.faces[big].inners().len(), 2, "big holds both");
+        assert_eq!(mesh.faces[mid].inners().len(), 0, "mid holds nothing yet");
+
+        // Inward: `mid` sits between, so it may take `small`.
+        super::detach_hole_for_closer_parent(&mut mesh, small, mid)
+            .expect("mid is between big and small");
+        super::split_face_by_inner_polygon(&mut mesh, mid, small).expect("small -> mid");
+        assert_eq!(mesh.faces[big].inners().len(), 1, "big keeps only mid");
+        assert_eq!(mesh.faces[mid].inners().len(), 1, "mid now holds small");
+
+        // Outward: `big` is larger than `small`'s owner, so it may NOT take it back.
+        assert!(
+            super::detach_hole_for_closer_parent(&mut mesh, small, big).is_none(),
+            "a hole is never handed outward"
+        );
+        assert_eq!(mesh.faces[mid].inners().len(), 1, "and nothing was disturbed");
+        assert_eq!(mesh.faces[big].inners().len(), 1);
+    }
+
+    /// A hand-over that then fails puts the hole back exactly where it was.
+    #[test]
+    fn a_hole_that_cannot_be_handed_over_is_put_back() {
+        let mut mesh = Mesh::new();
+        let big = build_rect_face(&mut mesh, DVec3::ZERO, 100.0);
+        let mid = build_rect_face(&mut mesh, DVec3::ZERO, 70.0);
+        let small = build_rect_face(&mut mesh, DVec3::ZERO, 30.0);
+        super::split_face_by_inner_polygon(&mut mesh, big, small).unwrap();
+        super::split_face_by_inner_polygon(&mut mesh, big, mid).unwrap();
+        let before: Vec<_> = mesh.faces[big].inners().iter().map(|lr| lr.start).collect();
+
+        let taken = super::detach_hole_for_closer_parent(&mut mesh, small, mid).unwrap();
+        assert_eq!(mesh.faces[big].inners().len(), 1, "taken back");
+        super::reattach_hole(&mut mesh, taken);
+        let after: Vec<_> = mesh.faces[big].inners().iter().map(|lr| lr.start).collect();
+        assert_eq!(after, before, "put back, in the same order");
+        assert_eq!(super::current_hole_parent(&mesh, small), Some(big), "and bearing its owner");
+    }
 }
 
 
