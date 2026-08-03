@@ -4586,7 +4586,13 @@ export class ToolManager {
     // commit stay eliminated (the old getSnappedPoint() terminal-override call
     // is NOT re-added). Snap is never the terminal transform.
     canvas.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 || e.altKey) return;
+      if (e.button !== 0) return;
+      // Alt reaches only the tools that mean something by it. SelectionManager
+      // has implemented "Alt removes from the selection" since it was written,
+      // but this listener dropped every alt-click, so those branches — and
+      // alt-drag-select, which starts in the same handler — were dead. Tools
+      // that ignore altKey keep behaving exactly as they did.
+      if (e.altKey && !this.tools.get(this._currentTool)?.handlesAltClick) return;
       // ADR-188 (Supersedes ADR-182 new-draw-start unlock, 사용자 결재
       // 2026-06-02 "처음 도형을 그리기 시작할때 같은 평면으로 그리도록") —
       // The plane lock now PERSISTS across draws so every shape lands on the
