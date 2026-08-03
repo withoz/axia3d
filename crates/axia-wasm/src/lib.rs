@@ -5740,8 +5740,11 @@ impl AxiaEngine {
                 sh.name = name.clone();
             }
         }
-        if let Some(tag) = axia_ifc::IfcElementKind::from_tag(&el.ifc_type) {
-            self.scene.shape_element_kind.insert(sid, tag.tag().to_string());
+        // The canonical stored value is the short key, not the raw tag — the
+        // Inspector's picker reads this string directly, and "IFCCOLUMN" leaves
+        // it blank on a member that is correctly classified (L-311-9).
+        if let Some(kind) = axia_ifc::IfcElementKind::from_tag(&el.ifc_type) {
+            self.scene.shape_element_kind.insert(sid, kind.key().to_string());
         }
         Some(sid)
     }
@@ -6068,7 +6071,10 @@ impl AxiaEngine {
             // its quantities all gone, replaced by twelve faces.
             if let Some(lm) = &el.line {
                 if self.import_line_member(el, lm).is_some() {
-                    element_faces.push((ei, Vec::new()));
+                    // Not recorded here: `import_line_member` already made the
+                    // Shape that owns the line, and the loop below makes one per
+                    // recorded element. Recording it too gave the member two —
+                    // its own, and an empty second one.
                     continue;
                 }
                 // Could not be rebuilt as a line — fall through and import the
@@ -16005,6 +16011,8 @@ mod line_member_roundtrip_tests {
         let b = back.scene.mesh.vertex_pos(e.v_large()).unwrap();
         assert!(((b - a).length() - 3000.0).abs() < 1e-6, "3 m: {a:?}→{b:?}");
 
+        // One member, not two — its own Shape and no empty second one.
+        assert_eq!(back.scene.shapes.len(), 1, "one Shape for one member");
         // And it is still a column.
         let sid = *back.scene.shapes.keys().next().unwrap();
         assert_eq!(back.scene.shape_element_kind.get(&sid).map(|s| s.as_str()), Some("column"));
