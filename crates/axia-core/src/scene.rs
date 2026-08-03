@@ -22763,6 +22763,73 @@ mod tests {
         );
     }
 
+    /// Drawing a shape that overlaps a solid's coplanar face splits three ways —
+    /// the shape minus the overlap, the overlap, and the face minus the overlap —
+    /// and the result is accepted because none of the three overlap each other.
+    ///
+    /// It does NOT yet work when the solid came from the Box primitive. Measured
+    /// with identical geometry, normals, sheet classification, surface
+    /// attachment and XIA ownership: the drawn solid's case splits the new shape
+    /// during the draw, the primitive's leaves it whole, so the shape ends up
+    /// lying on top of the overlap and the guard rolls the draw back. Safe, but
+    /// refused. The `#[ignore]`-free way to record that is to assert the
+    /// behaviour that HOLDS today, so this test tells the next reader exactly
+    /// where the two paths diverge instead of leaving them to rediscover it.
+    #[test]
+    fn a_shape_overlapping_a_drawn_solid_splits_three_ways() {
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "the overlapping draw must be accepted");
+        assert_eq!(
+            scene.mesh.detect_self_intersections().count(), 0,
+            "the three regions must not overlap each other"
+        );
+        // Exactly three faces sit on the ground plane afterwards.
+        let ground = scene
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(i, _)| i)
+            .filter(|&i| {
+                scene.mesh.collect_loop_verts(scene.mesh.faces[i].outer().start).map_or(false, |vs| {
+                    !vs.is_empty()
+                        && vs.iter().all(|v| scene.mesh.vertex_pos(*v).unwrap().z.abs() < 1e-6)
+                })
+            })
+            .count();
+        assert_eq!(ground, 3, "shape-minus-overlap, overlap, face-minus-overlap");
+    }
+
+    /// The other half of the pair above: the same draw over a Box PRIMITIVE is
+    /// still refused. Recorded so a fix shows up here as a failure rather than
+    /// going unnoticed — and so nobody reads the test above as covering both.
+    #[test]
+    fn the_same_draw_over_a_primitive_box_is_still_refused() {
+        let mut scene = prod_scene();
+        let faces = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        scene.create_xia_with_faces("box".into(), DVec3::ZERO, faces.clone());
+        let n = active_faces(&scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(
+            matches!(r, CommandResult::Error(_)),
+            "if this now succeeds the primitive path was fixed — delete this test              and fold the case into a_shape_overlapping_a_drawn_solid_splits_three_ways"
+        );
+        // Refused safely: nothing left behind, nothing overlapping.
+        assert_eq!(active_faces(&scene), n);
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
+    }
+
     /// A slice leaves two solids resting against each other, so every segment of
     /// the cut boundary exists twice — one edge per half. The mesh-wide crack
     /// count therefore reads eight on a box cut in two, and the integrity gate
