@@ -278,6 +278,53 @@ pub fn coplanar_intersection_segments(
         }
     }
 
+    // A shape drawn PAST the edge of the face it overlaps meets it differently
+    // from two shapes that merely cross: their boundaries run together for a
+    // stretch and then part. Every point along that shared run reads as a
+    // crossing, so the corner where the run begins gets counted alongside the
+    // two places the boundaries actually part — three, where the difference walk
+    // wants two, and the whole thing declines.
+    //
+    // A crossing is a real switch only if the boundaries part there. At a point
+    // where BOTH neighbouring stretches of the overlap still lie on BOTH
+    // outlines, nothing switches; it is a point on the shared run. Drop those.
+    //
+    // Only consulted when there are more than two, so every pair that already
+    // resolved keeps its exact behaviour.
+    if crossings.len() > 2 {
+        let lens_2d: Vec<(f64, f64)> =
+            lens_polygon.iter().map(|p| plane.project(*p)).collect();
+        let on_outline = |pt: (f64, f64), poly: &[(f64, f64)]| -> bool {
+            (0..poly.len()).any(|i| {
+                point_on_segment_2d(pt, poly[i], poly[(i + 1) % poly.len()], VERTEX_ON_EDGE_EPS_2D).is_some()
+            })
+        };
+        let n = lens_2d.len();
+        let tangential = |c: &CoplanarCrossing| -> bool {
+            let cp = plane.project(c.point);
+            // the overlap corner this crossing sits on
+            let Some(i) = (0..n).find(|&i| {
+                (lens_2d[i].0 - cp.0).abs() < VERTEX_ON_EDGE_EPS_2D
+                    && (lens_2d[i].1 - cp.1).abs() < VERTEX_ON_EDGE_EPS_2D
+            }) else {
+                return false;
+            };
+            // midpoints of the two overlap edges meeting there
+            let prev = lens_2d[(i + n - 1) % n];
+            let next = lens_2d[(i + 1) % n];
+            let mids = [
+                ((cp.0 + prev.0) * 0.5, (cp.1 + prev.1) * 0.5),
+                ((cp.0 + next.0) * 0.5, (cp.1 + next.1) * 0.5),
+            ];
+            mids.iter().all(|m| on_outline(*m, &a_2d) && on_outline(*m, &b_2d))
+        };
+        let kept: Vec<CoplanarCrossing> =
+            crossings.iter().filter(|c| !tangential(c)).cloned().collect();
+        if kept.len() == 2 {
+            crossings = kept;
+        }
+    }
+
     Ok(CoplanarIntersection { plane, lens_polygon, crossings })
 }
 
