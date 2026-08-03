@@ -3975,7 +3975,139 @@ impl Scene {
         let out = self
             .mesh
             .intersect_faces_with_model(&crossing, FORM_MATERIAL)?;
-        Ok(out.len())
+
+        // 사용자: "선은 별개의 객체로 존재하도록 합니다."
+        //
+        // The line where the two faces meet is already in the mesh — the split
+        // put it there, or it was the standing face's own foot. What it did not
+        // have was an identity: it belonged to the faces on either side and to
+        // nothing of its own, so there was nothing to select, name or move. Give
+        // it one.
+        let named = self.name_the_contact_lines(&before)?;
+        Ok(out.len() + named)
+    }
+
+    /// Give the line where two faces meet an identity of its own.
+    ///
+    /// It stays exactly where it is and keeps bounding whatever it bounded —
+    /// this adds a form-layer Shape that owns the edge, so the line is a thing
+    /// in the model rather than a side effect of two faces happening to cross.
+    ///
+    /// An edge already owned by a line Shape is left alone, so drawing over the
+    /// same crossing twice does not pile up duplicates.
+    fn name_the_contact_lines(
+        &mut self,
+        before: &std::collections::HashSet<FaceId>,
+    ) -> anyhow::Result<usize> {
+        // Every pair where the planes differ and at least one side is new since
+        // this draw. Looking at what still overlaps would miss the cases the
+        // split resolved completely — which are exactly the ones with the
+        // cleanest line to name. A solid's own adjacent faces are all old, so
+        // they are not swept up.
+        let live: Vec<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(i, _)| i)
+            .collect();
+        let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
+        for (i, &fa) in live.iter().enumerate() {
+            for &fb in &live[i + 1..] {
+                if before.contains(&fa) && before.contains(&fb) {
+                    continue;
+                }
+                pairs.push((fa, fb));
+            }
+        }
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        // Edges that already answer to a line Shape.
+        let mut spoken_for: std::collections::HashSet<axia_geo::EdgeId> = self
+            .shapes
+            .values()
+            .filter_map(|sh| sh.standalone_edge_id)
+            .chain(self.xias.values().filter_map(|x| x.standalone_edge_id))
+            .collect();
+
+        let mut named = 0usize;
+        for (fa, fb) in pairs {
+            let (Some(a), Some(b)) = (self.mesh.faces.get(fa), self.mesh.faces.get(fb)) else {
+                continue;
+            };
+            if !a.is_active() || !b.is_active() {
+                continue;
+            }
+            let na = a.normal().normalize_or_zero();
+            let nb = b.normal().normalize_or_zero();
+            if na.dot(nb).abs() >= 0.999 {
+                continue; // same plane — the re-derive's business, not a crossing
+            }
+            // Edges shared by the two faces are exactly the line they meet on.
+            let ea = self.mesh.face_outer_edges(fa).unwrap_or_default();
+            let eb = self.mesh.face_outer_edges(fb).unwrap_or_default();
+            let mut shared: Vec<axia_geo::EdgeId> =
+                ea.into_iter().filter(|e| eb.contains(e)).collect();
+            // …and when only one of them was divided, the line is that one's own
+            // boundary edge lying in the other's plane. Either side may be the
+            // divided one, so look both ways.
+            if shared.is_empty() {
+                shared = self.contact_edges_lying_in_plane(fa, fb);
+                if shared.is_empty() {
+                    shared = self.contact_edges_lying_in_plane(fb, fa);
+                }
+            }
+            for eid in shared {
+                if spoken_for.contains(&eid) {
+                    continue;
+                }
+                let sid = self.create_shape(format!("교차선 {}", eid.raw()), Vec::new());
+                if let Some(sh) = self.shapes.get_mut(&sid) {
+                    sh.standalone_edge_id = Some(eid);
+                }
+                spoken_for.insert(eid);
+                named += 1;
+            }
+        }
+        Ok(named)
+    }
+
+    /// Edges of `owner` that lie in `other`'s plane — where one face was divided
+    /// and the other could not be, this is the line between them.
+    fn contact_edges_lying_in_plane(
+        &self,
+        owner: FaceId,
+        other: FaceId,
+    ) -> Vec<axia_geo::EdgeId> {
+        let Some(of) = self.mesh.faces.get(other) else { return Vec::new() };
+        let n = of.normal().normalize_or_zero();
+        let origin = match self
+            .mesh
+            .collect_loop_verts(of.outer().start)
+            .ok()
+            .and_then(|v| v.first().copied())
+            .and_then(|v| self.mesh.verts.get(v).map(|x| x.pos()))
+        {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let on_plane = |p: DVec3| (p - origin).dot(n).abs() < 1e-6;
+        self.mesh
+            .face_outer_edges(owner)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&e| {
+                let Some(ed) = self.mesh.edges.get(e) else { return false };
+                let (Some(a), Some(b)) = (
+                    self.mesh.verts.get(ed.v_small()).map(|x| x.pos()),
+                    self.mesh.verts.get(ed.v_large()).map(|x| x.pos()),
+                ) else {
+                    return false;
+                };
+                on_plane(a) && on_plane(b)
+            })
+            .collect()
     }
 
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {

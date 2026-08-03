@@ -130,3 +130,135 @@ fn a_sheet_through_a_sphere_splits_the_same_as_it_always_did() {
     assert!(!matches!(r, CommandResult::Error(_)), "{r:?}");
     assert_eq!(faces(&poly), p_before + 2, "the same two pieces");
 }
+
+/// 사용자 (2026-08-03): `교차분할이 제대로 되려면 면을 넘는 선도 존재해야 되는것인가?`
+/// — yes, and it does. A face is only divided by a line that reaches its
+/// boundary at both ends; where the contact stops inside a face, that face
+/// stays whole. Either way the LINE itself exists, spanning exactly where the
+/// two faces meet, so the contact is on the model rather than only in the
+/// picture.
+#[test]
+fn the_line_where_two_faces_meet_exists_as_an_edge() {
+    /// Edges lying on the line through `origin` in direction `dir`.
+    fn on_line(s: &Scene, origin: DVec3, dir: DVec3) -> Vec<(DVec3, DVec3)> {
+        let mut out: Vec<(DVec3, DVec3)> = s
+            .mesh
+            .edges
+            .iter()
+            .filter(|(_, e)| e.is_active())
+            .filter_map(|(_, e)| {
+                let a = s.mesh.verts.get(e.v_small())?.pos();
+                let b = s.mesh.verts.get(e.v_large())?.pos();
+                let off = |p: DVec3| (p - origin).cross(dir).length();
+                (off(a) < 1e-6 && off(b) < 1e-6).then_some((a, b))
+            })
+            .collect();
+        out.sort_by(|x, y| x.0.x.partial_cmp(&y.0.x).unwrap());
+        out
+    }
+
+    // Passing through: the vertical rect is cut in two, and the line it was cut
+    // along is there, spanning its full 300 mm width.
+    let mut through = prod();
+    rect(&mut through, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut through, DVec3::ZERO, DVec3::Y, DVec3::Z, 300.0, 300.0);
+    let e = on_line(&through, DVec3::ZERO, DVec3::X);
+    assert_eq!(e.len(), 1, "one meeting line: {e:?}");
+    assert!((e[0].0.x + 150.0).abs() < 1e-6 && (e[0].1.x - 150.0).abs() < 1e-6, "{e:?}");
+
+    // Standing on it: nothing is divided at all, and the line is still there.
+    let mut standing = prod();
+    rect(&mut standing, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut standing, DVec3::new(0.0, 0.0, 150.0), DVec3::Y, DVec3::Z, 300.0, 300.0);
+    let e = on_line(&standing, DVec3::ZERO, DVec3::X);
+    assert_eq!(e.len(), 1, "the foot of the standing face: {e:?}");
+
+    // Two sheets: one line each, exactly where that sheet reaches, and nothing
+    // in the gap between them.
+    let mut two = prod();
+    rect(&mut two, DVec3::new(-80.0, 0.0, 0.0), DVec3::Z, DVec3::Y, 100.0, 100.0);
+    rect(&mut two, DVec3::new(80.0, 0.0, 0.0), DVec3::Z, DVec3::Y, 100.0, 100.0);
+    rect(&mut two, DVec3::ZERO, DVec3::Y, DVec3::Z, 500.0, 400.0);
+    let e = on_line(&two, DVec3::ZERO, DVec3::X);
+    assert_eq!(e.len(), 2, "one line per sheet, not one long one: {e:?}");
+    assert!((e[0].0.x + 130.0).abs() < 1e-6 && (e[0].1.x + 30.0).abs() < 1e-6, "{e:?}");
+    assert!((e[1].0.x - 30.0).abs() < 1e-6 && (e[1].1.x - 130.0).abs() < 1e-6, "{e:?}");
+}
+
+/// What the leftover overlap actually is. A face standing ON another touches it
+/// along a line and penetrates nothing, yet it is still counted — so the number
+/// is a contact report, not damage. Pinned so a later change to the detector is
+/// a deliberate one.
+#[test]
+fn a_face_merely_standing_on_another_is_still_counted_as_overlap() {
+    let mut clear = prod();
+    rect(&mut clear, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut clear, DVec3::new(0.0, 0.0, 250.0), DVec3::Y, DVec3::Z, 300.0, 300.0);
+    assert_eq!(clear.mesh.detect_self_intersections().count(), 0, "not touching");
+
+    let mut standing = prod();
+    rect(&mut standing, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut standing, DVec3::new(0.0, 0.0, 150.0), DVec3::Y, DVec3::Z, 300.0, 300.0);
+    assert_eq!(
+        standing.mesh.detect_self_intersections().count(), 1,
+        "touching along its foot — no interior is crossed, but it counts"
+    );
+    assert!(standing.mesh.verify_face_invariants().is_valid());
+}
+
+/// 사용자 (2026-08-03): `선은 별개의 객체로 존재하도록 합니다.`
+///
+/// The line where two faces meet was in the mesh but belonged to nobody: it was
+/// a side effect of two faces happening to cross, with nothing to select or
+/// name. Now it gets a form-layer Shape of its own. It does not move and it
+/// keeps bounding whatever it bounded — what changes is that it is a thing in
+/// the model.
+#[test]
+fn the_line_where_two_faces_meet_is_its_own_object() {
+    let lines = |s: &Scene| -> Vec<String> {
+        s.shapes
+            .values()
+            .filter(|sh| sh.standalone_edge_id.is_some())
+            .map(|sh| sh.name.clone())
+            .collect()
+    };
+
+    // Fully divided by each other.
+    let mut equal = prod();
+    rect(&mut equal, DVec3::ZERO, DVec3::Z, DVec3::Y, 200.0, 200.0);
+    rect(&mut equal, DVec3::ZERO, DVec3::X, DVec3::Z, 200.0, 200.0);
+    assert_eq!(lines(&equal).len(), 1, "one line, once: {:?}", lines(&equal));
+
+    // Only one of them divided — the line is still one object.
+    let mut through = prod();
+    rect(&mut through, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut through, DVec3::ZERO, DVec3::Y, DVec3::Z, 300.0, 300.0);
+    assert_eq!(lines(&through).len(), 1, "{:?}", lines(&through));
+
+    // Nothing divided at all — a face standing on another still meets it.
+    let mut standing = prod();
+    rect(&mut standing, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut standing, DVec3::new(0.0, 0.0, 150.0), DVec3::Y, DVec3::Z, 300.0, 300.0);
+    assert_eq!(lines(&standing).len(), 1, "{:?}", lines(&standing));
+
+    // Not touching — nothing to name.
+    let mut clear = prod();
+    rect(&mut clear, DVec3::ZERO, DVec3::Z, DVec3::Y, 1000.0, 1000.0);
+    rect(&mut clear, DVec3::new(0.0, 0.0, 250.0), DVec3::Y, DVec3::Z, 300.0, 300.0);
+    assert!(lines(&clear).is_empty(), "{:?}", lines(&clear));
+}
+
+/// Drawing over the same crossing again must not pile up duplicates of the same
+/// line.
+#[test]
+fn a_contact_line_is_named_once() {
+    let mut s = prod();
+    rect(&mut s, DVec3::ZERO, DVec3::Z, DVec3::Y, 200.0, 200.0);
+    rect(&mut s, DVec3::ZERO, DVec3::X, DVec3::Z, 200.0, 200.0);
+    let first = s.shapes.values().filter(|sh| sh.standalone_edge_id.is_some()).count();
+    // Draw the same crossing rect again.
+    rect(&mut s, DVec3::ZERO, DVec3::X, DVec3::Z, 200.0, 200.0);
+    let again = s.shapes.values().filter(|sh| sh.standalone_edge_id.is_some()).count();
+    assert_eq!(first, 1);
+    assert_eq!(again, first, "the same line must not be named twice");
+}
