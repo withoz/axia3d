@@ -252,7 +252,7 @@ fn requirement_1_draw_on_any_face_at_any_coordinate() {
     // corner rests on the walls below it, the overlap counter says so, and
     // nothing is wrong. All six draw and land (면 6→7). What is left is one
     // genuine refusal.
-    assert_eq!(fails.len(), 1, "24 cases, 1 still failing: {fails:?}");
+    assert_eq!(fails.len(), 0, "every case must draw and stay separated: {fails:?}");
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn requirement_2_shapes_on_one_face_are_separated_by_their_boundaries() {
     }
     println!("\n  실패 {}건", fails.len());
     for f in &fails { println!("    ✗ {f}"); }
-    assert_eq!(fails.len(), 1,
-        "two rectangles overlapping on one face must become three regions. Only the vertical side face still fails: {fails:?}");
+    assert_eq!(fails.len(), 0,
+        "two rectangles overlapping on one face become three regions, on every host: {fails:?}");
 }
 
 /// Why does each failing cell fail? One blocker or several?
@@ -397,14 +397,16 @@ fn what_does_the_rect_tool_build() {
     }
 }
 
-/// What actually refuses a draw: the shape clearing the host on BOTH sides.
+/// A shape that clears the host on both sides draws like any other now.
 ///
-/// Pinned because the first reading of this was wrong. It looked like a
-/// vertical-face problem — the grid's one failure is on a side wall — but the
-/// wall is simply shorter than the shape. Give the top face a shape that clears
-/// IT on both sides and it refuses in exactly the same way.
+/// It was the last refusal, and it was mine: the loop walk's dead-end fallback
+/// let the walk step onto the SOLID's own boundary when it had nowhere free to
+/// go, and close a loop around the wall as well as the shape. Kept in both
+/// directions because the fix is narrow — a loop that stepped past a dead end
+/// and came back around an existing face is thrown away — and a wider or
+/// narrower version would show up here.
 #[test]
-fn a_shape_that_clears_the_host_on_both_sides_is_refused() {
+fn a_shape_that_clears_the_host_on_both_sides_draws_too() {
     fn on_box(centre: DVec3, n: DVec3, up: DVec3, w: f64, h: f64) -> bool {
         let mut s = prod();
         let f = s
@@ -417,14 +419,57 @@ fn a_shape_that_clears_the_host_on_both_sides_is_refused() {
             CommandResult::Error(_)
         )
     }
-    // The east wall is 200 (y) × 100 (z). A 120-tall shape clears it.
+    // The east wall is 200 (y) × 100 (z). A 120-tall shape clears it entirely.
     let wall = DVec3::new(200.0, 200.0, 50.0);
-    assert!(!on_box(wall, DVec3::X, DVec3::Z, 120.0, 120.0), "120 clears the 100 wall");
-    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 100.0), "100 reaches its edges, no more");
-    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 60.0), "60 sits within it");
+    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 120.0), "clears the wall");
+    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 100.0), "exactly its height");
+    assert!(on_box(wall, DVec3::X, DVec3::Z, 120.0, 60.0), "sits within it");
 
-    // The top face is 200 × 200, and refuses just the same once cleared.
+    // The top face is 200 × 200 and behaves the same at every size.
     let top = DVec3::new(200.0, 100.0, 100.0);
-    assert!(on_box(top, DVec3::Z, DVec3::Y, 120.0, 120.0), "120 does not clear 200");
-    assert!(!on_box(top, DVec3::Z, DVec3::Y, 120.0, 220.0), "220 does — same refusal");
+    assert!(on_box(top, DVec3::Z, DVec3::Y, 120.0, 120.0), "straddling");
+    assert!(on_box(top, DVec3::Z, DVec3::Y, 120.0, 220.0), "clearing it");
+}
+
+/// Drawing a shape AROUND a smaller one: fine on a sheet, refused on a solid.
+///
+/// Found while checking whether the loop-walk fix needed its narrowing gate. It
+/// does not belong to that fix — measured with the check gated, ungated, and
+/// absent, the answer is the same each time, so this is older than any of it.
+///
+/// Recorded rather than chased: the grid draws shapes ON a host, never around
+/// one, so nothing else here would have noticed.
+#[test]
+fn a_shape_drawn_around_a_smaller_one_is_refused_on_a_solid() {
+    // On a sheet it is a ring with a hole, which is what it should be.
+    let mut sheet = prod();
+    sheet.execute(Command::DrawRectAsShape {
+        center: DVec3::ZERO, normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+    });
+    let r = sheet.execute(Command::DrawRectAsShape {
+        center: DVec3::ZERO, normal: DVec3::Z, up: DVec3::Y, width: 400.0, height: 400.0,
+    });
+    assert!(!matches!(r, CommandResult::Error(_)), "a sheet takes it: {r:?}");
+
+    // On a solid's top face, the same draw is refused.
+    let mut solid = prod();
+    let f = solid
+        .mesh
+        .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, FORM_MATERIAL)
+        .unwrap();
+    solid.create_xia_with_faces("b".into(), DVec3::ZERO, f);
+    solid.execute(Command::DrawRectAsShape {
+        center: DVec3::new(100.0, 100.0, 100.0), normal: DVec3::Z, up: DVec3::Y,
+        width: 60.0, height: 60.0,
+    });
+    let before = faces(&solid);
+    let r = solid.execute(Command::DrawRectAsShape {
+        center: DVec3::new(100.0, 100.0, 100.0), normal: DVec3::Z, up: DVec3::Y,
+        width: 140.0, height: 140.0,
+    });
+    assert!(
+        matches!(r, CommandResult::Error(_)),
+        "today it is refused — when that changes, say so here"
+    );
+    assert_eq!(faces(&solid), before, "and the solid is left alone");
 }
