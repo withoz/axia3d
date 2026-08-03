@@ -188,3 +188,66 @@ fn a_line_member_carries_everything_the_exporter_needs() {
     assert!((b - a).length() > 0.0, "a member of no length is not a member");
     assert_eq!(s.edge_profile(edge_id).and_then(|p| p.area()), Some(90_000.0));
 }
+
+/// A column that a beam runs through is still a 300×300 column — in both
+/// halves. Crossing a line replaces it with its pieces under new ids, and until
+/// the section learned to follow them it stayed on the dead edge and the member
+/// quietly lost its thickness.
+#[test]
+fn crossing_a_line_leaves_its_section_on_both_halves() {
+    let mut s = prod();
+    let (_, eid) = line(&mut s, DVec3::ZERO, DVec3::new(1000.0, 0.0, 0.0));
+    s.set_edge_profile(eid, Some(Profile::Rectangular { width: 300.0, height: 300.0 })).unwrap();
+
+    // A line straight through its middle.
+    s.execute(Command::DrawLineAsShape {
+        start: DVec3::new(500.0, -500.0, 0.0),
+        end: DVec3::new(500.0, 500.0, 0.0),
+        surface_normal: None,
+    });
+
+    assert!(
+        !s.mesh.edges.get(eid).map(|e| e.is_active()).unwrap_or(false),
+        "the crossed line is replaced by its pieces"
+    );
+    // Both halves, and nothing else.
+    let with_section: Vec<_> = s
+        .mesh
+        .edges
+        .iter()
+        .filter(|(_, e)| e.is_active())
+        .filter(|(id, _)| s.edge_profile(*id).is_some())
+        .filter_map(|(id, e)| {
+            let a = s.mesh.vertex_pos(e.v_small()).ok()?;
+            let b = s.mesh.vertex_pos(e.v_large()).ok()?;
+            Some((a, b))
+        })
+        .collect();
+    assert_eq!(with_section.len(), 2, "both halves carry it: {with_section:?}");
+    for (a, b) in &with_section {
+        assert!(a.y.abs() < 1e-6 && b.y.abs() < 1e-6, "the halves run along the original: {a:?}→{b:?}");
+    }
+    // The crossing line itself was given nothing.
+    let total = s.edge_profile.len();
+    assert_eq!(total, 2, "only the two halves, not the line that crossed them");
+}
+
+/// Edge ids are handed out again once their edge is gone. A section that only
+/// knew its id followed the id onto whatever line came next — measured, in the
+/// running app, on a line the user had never touched.
+#[test]
+fn a_reused_edge_id_does_not_inherit_someone_elses_section() {
+    let mut s = prod();
+    let (_, eid) = line(&mut s, DVec3::ZERO, DVec3::new(1000.0, 0.0, 0.0));
+    s.set_edge_profile(eid, Some(Profile::Circular { radius: 50.0 })).unwrap();
+
+    // Wipe the scene the way the app does, then draw somewhere else entirely.
+    s.mesh = axia_geo::Mesh::new();
+    s.shapes.clear();
+    let (_, fresh) = line(&mut s, DVec3::new(0.0, 500.0, 0.0), DVec3::new(1000.0, 500.0, 0.0));
+    assert_eq!(fresh.raw(), eid.raw(), "the fixture needs the id to come back around");
+    assert_eq!(
+        s.edge_profile(fresh), None,
+        "a line nobody gave a section to has none"
+    );
+}

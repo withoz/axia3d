@@ -423,7 +423,7 @@ pub struct Scene {
     /// citizenships point at the same edge. A `BTreeMap` because snapshots
     /// must come out byte-identical for the same scene (LOCKED #37 L1), keyed
     /// by the edge's raw id since `EdgeId` does not order.
-    pub edge_profile: std::collections::BTreeMap<u32, crate::profile::Profile>,
+    pub edge_profile: std::collections::BTreeMap<u32, crate::profile::EdgeSection>,
 
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
@@ -1097,7 +1097,7 @@ impl Scene {
             let plen = read_len(data, &mut offset);
             if plen > 0 && offset + plen <= data.len() {
                 match bincode::deserialize::<
-                    std::collections::BTreeMap<u32, crate::profile::Profile>,
+                    std::collections::BTreeMap<u32, crate::profile::EdgeSection>,
                 >(&data[offset..offset + plen])
                 {
                     Ok(m) => {
@@ -1387,15 +1387,91 @@ impl Scene {
                 if p.area().is_none() {
                     return Err("단면이 면적을 갖지 않습니다");
                 }
-                self.edge_profile.insert(edge.raw(), p);
+                // Record where it was given, so it can recognise its own pieces
+                // later and refuse to follow a reused id onto another line.
+                let (from, to) = match self.mesh.edges.get(edge).filter(|e| e.is_active()) {
+                    Some(e) => match (
+                        self.mesh.vertex_pos(e.v_small()),
+                        self.mesh.vertex_pos(e.v_large()),
+                    ) {
+                        (Ok(a), Ok(b)) => (a, b),
+                        _ => return Err("선의 끝점을 읽을 수 없습니다"),
+                    },
+                    None => return Err("그런 선이 없습니다"),
+                };
+                self.edge_profile
+                    .insert(edge.raw(), crate::profile::EdgeSection { profile: p, from, to });
                 Ok(())
+            }
+        }
+    }
+
+    /// Keep sections attached to the lines they were given to.
+    ///
+    /// An edge does not survive being crossed: it is deactivated and its pieces
+    /// take its place under new ids. Left alone, the section would sit on the
+    /// dead edge — so the column that a beam runs through would quietly lose its
+    /// thickness — and the freed id would later hand that section to whatever
+    /// line came next.
+    ///
+    /// So a section on a dead edge is passed to the live edges that lie along
+    /// it, which are exactly its pieces, and dropped if there are none. Nothing
+    /// is invented: a piece of a 300×300 column is 300×300.
+    fn reconcile_edge_profiles(&mut self) {
+        if self.edge_profile.is_empty() {
+            return;
+        }
+        let ends = |m: &axia_geo::Mesh, raw: u32| -> Option<(glam::DVec3, glam::DVec3)> {
+            let e = m.edges.get(axia_geo::EdgeId::new(raw)).filter(|e| e.is_active())?;
+            Some((m.vertex_pos(e.v_small()).ok()?, m.vertex_pos(e.v_large()).ok()?))
+        };
+        // An entry is still its own when the edge under that id is alive AND
+        // lies along the stretch the section was given for. Alive but somewhere
+        // else means the id was handed out again — a different line entirely.
+        let stale: Vec<u32> = self
+            .edge_profile
+            .iter()
+            .filter(|(&raw, sec)| match ends(&self.mesh, raw) {
+                Some((a, b)) => !sec.covers(a, b),
+                None => true,
+            })
+            .map(|(&raw, _)| raw)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for raw in stale {
+            let Some(sec) = self.edge_profile.remove(&raw) else { continue };
+            // Its pieces: the live edges lying along the stretch it was given
+            // for. A crossed column keeps its thickness on both halves.
+            let heirs: Vec<u32> = self
+                .mesh
+                .edges
+                .iter()
+                .filter(|(_, e)| e.is_active())
+                .filter_map(|(id, e)| {
+                    let a = self.mesh.vertex_pos(e.v_small()).ok()?;
+                    let b = self.mesh.vertex_pos(e.v_large()).ok()?;
+                    sec.covers(a, b).then(|| id.raw())
+                })
+                .collect();
+            for h in heirs {
+                let (a, b) = match ends(&self.mesh, h) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                self.edge_profile.entry(h).or_insert_with(|| crate::profile::EdgeSection {
+                    profile: sec.profile.clone(),
+                    from: a,
+                    to: b,
+                });
             }
         }
     }
 
     /// The cross-section this line carries, if it has been given one.
     pub fn edge_profile(&self, edge: axia_geo::EdgeId) -> Option<&crate::profile::Profile> {
-        self.edge_profile.get(&edge.raw())
+        self.edge_profile.get(&edge.raw()).map(|s| &s.profile)
     }
 
     pub fn create_shape(&mut self, name: String, face_ids: Vec<FaceId>) -> crate::ShapeId {
@@ -1785,7 +1861,7 @@ impl Scene {
         // `promote_shape_to_xia`). Side-effect free.
         let section = standalone
             .and_then(|e| self.edge_profile.get(&e.raw()))
-            .and_then(|p| p.area());
+            .and_then(|s| s.profile.area());
         let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → assign material in-place.
@@ -1837,7 +1913,7 @@ impl Scene {
         // Shared validation kernel — same 4 conditions as Phase 1.A.
         let section = standalone
             .and_then(|e| self.edge_profile.get(&e.raw()))
-            .and_then(|p| p.area());
+            .and_then(|s| s.profile.area());
         let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → create the Xia.
@@ -4656,6 +4732,16 @@ impl Scene {
         if !self.transactions.is_recording() {
             self.mesh.clear_face_aabb_cache();
         }
+        let result = self.execute_inner(cmd);
+        // Sections are keyed by edge, and edges do not live forever: a line that
+        // gets crossed is replaced by its pieces, and the id it held is handed
+        // out again later. Settle up after every command so a section follows
+        // the line it was given to and never lands on a stranger.
+        self.reconcile_edge_profiles();
+        result
+    }
+
+    fn execute_inner(&mut self, cmd: Command) -> CommandResult {
         match cmd {
             // ADR-087 K-ζ — Legacy DrawLine / DrawRect / DrawCircle /
             // PushPull 은 internal-only (Test 회귀 자산 보존용). User-facing

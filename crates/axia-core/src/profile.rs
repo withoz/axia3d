@@ -73,6 +73,39 @@ impl Profile {
     }
 }
 
+/// A section together with the stretch of line it was given for.
+///
+/// The span is what makes the section belong to a LINE rather than to an edge
+/// id. Ids are handed out again after their edge dies, so a section that only
+/// knew its id would attach itself to whatever line came next — measured, and
+/// it did. Knowing where it was given, it can tell its own pieces (which lie
+/// along that stretch) from a stranger that merely inherited the number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeSection {
+    pub profile: Profile,
+    pub from: glam::DVec3,
+    pub to: glam::DVec3,
+}
+
+impl EdgeSection {
+    /// Does this stretch of line lie within the one the section was given for?
+    /// Both ends on the line, and between its ends.
+    pub fn covers(&self, a: glam::DVec3, b: glam::DVec3) -> bool {
+        let span = self.to - self.from;
+        let len = span.length();
+        if len < 1e-9 {
+            return false;
+        }
+        let dir = span / len;
+        let on = |p: glam::DVec3| {
+            let rel = p - self.from;
+            let t = rel.dot(dir);
+            (rel - dir * t).length() < 1e-6 && t > -1e-6 && t < len + 1e-6
+        };
+        on(a) && on(b)
+    }
+}
+
 /// Whole numbers read as whole numbers; anything else keeps three decimals.
 fn trim(x: f64) -> String {
     if (x - x.round()).abs() < 1e-9 {
