@@ -2978,8 +2978,7 @@ mod tests {
             material_name: None,
             material_style: None,
             kind: crate::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Ball").unwrap();
         let g = import_ifc_geometry(&s).unwrap();
         let hemis = &g.elements[0].faces;
@@ -3009,8 +3008,7 @@ mod tests {
             material_name: None,
             material_style: None,
             kind: crate::IfcElementKind::Wall,
-            face_ids: vec![f],
-        }];
+            face_ids: vec![f], line: None }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Ring").unwrap();
         let g = import_ifc_geometry(&s).unwrap();
         let ring = &g.elements[0].faces;
@@ -3244,8 +3242,7 @@ END-ISO-10303-21;
                 name: "Spline".into(),
                 material_name: None, material_style: None,
                 kind: crate::IfcElementKind::Wall,
-                face_ids: vec![f],
-            }],
+                face_ids: vec![f], line: None }],
             0.001,
             "Spline",
         )
@@ -3427,7 +3424,7 @@ END-ISO-10303-21;
             .unwrap();
         let ifc = emit_ifc_model(
             &mesh,
-            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: faces }],
+            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: faces, line: None }],
             0.001,
             "House",
         )

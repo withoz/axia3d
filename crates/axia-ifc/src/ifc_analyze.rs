@@ -185,8 +185,7 @@ mod tests {
                 kind: crate::IfcElementKind::Wall,
                 name: "Wall A".into(),
                 material_name: Some("Concrete".into()), material_style: None,
-                face_ids: faces,
-            }],
+                face_ids: faces, line: None }],
             0.001,
             "House",
         )

@@ -430,6 +430,105 @@ pub fn try_extruded_area_solid(
     Some(emit_swept(w, profile, origin3d, prism.axis, xdir3d, prism.depth, scale))
 }
 
+/// The cross-section a line member is thick with, as the exporter sees it.
+///
+/// Mirrors `axia_core::profile::Profile` without depending on it — this crate
+/// writes IFC and knows nothing about the scene.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SectionProfile {
+    Rectangular { width: f64, height: f64 },
+    Circular { radius: f64 },
+    /// A closed outline in the section's own plane, points not repeated. This is
+    /// where the parametric structural shapes (I, T, U, L, C, Z) arrive, already
+    /// flattened by the reader that produced them.
+    Polygon(Vec<(f64, f64)>),
+}
+
+/// A member that is a line with a section: a column, a beam, a brace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineMember {
+    pub start: DVec3,
+    pub end: DVec3,
+    pub profile: SectionProfile,
+}
+
+/// Sweep a line member's section along its own length.
+///
+/// The section sits at the start, square to the line, and is extruded to the
+/// far end — which is what a column or a beam is. Returns `None` for a line of
+/// no length or a section of no area, because either would write a solid that
+/// encloses nothing.
+///
+/// The section's local X is chosen, not given: a line says which way it runs but
+/// not which way its section is turned. World +Z projected square to the line is
+/// used where that is possible, so an upright column's section keeps its width
+/// horizontal; for a vertical line, +X. A member that needs its section rotated
+/// about its own axis needs that rotation stated, and that is not something this
+/// engine records yet.
+pub fn emit_line_member(
+    w: &mut StepWriter,
+    member: &LineMember,
+    scale: f64,
+) -> Option<EntityRef> {
+    let span = member.end - member.start;
+    let depth = span.length();
+    if depth < 1e-9 {
+        return None;
+    }
+    let axis = span / depth;
+    // Square to the axis, preferring "up" so a column's section stays level.
+    let up = if axis.z.abs() > 0.999 { DVec3::X } else { DVec3::Z };
+    let ref_dir = (up - axis * up.dot(axis)).normalize_or_zero();
+    if ref_dir.length() < 0.5 {
+        return None;
+    }
+
+    let pos2d = identity_placement_2d(w);
+    let profile = match &member.profile {
+        SectionProfile::Rectangular { width, height } => {
+            if !(*width > 0.0 && *height > 0.0) {
+                return None;
+            }
+            w.add(
+                "IFCRECTANGLEPROFILEDEF",
+                vec![
+                    StepValue::Enum("AREA".into()),
+                    StepValue::Unset,
+                    StepValue::Ref(pos2d),
+                    StepValue::Real(width * scale),
+                    StepValue::Real(height * scale),
+                ],
+            )
+        }
+        SectionProfile::Circular { radius } => {
+            if !(*radius > 0.0) {
+                return None;
+            }
+            w.add(
+                "IFCCIRCLEPROFILEDEF",
+                vec![
+                    StepValue::Enum("AREA".into()),
+                    StepValue::Unset,
+                    StepValue::Ref(pos2d),
+                    StepValue::Real(radius * scale),
+                ],
+            )
+        }
+        SectionProfile::Polygon(points) => {
+            if points.len() < 3 {
+                return None;
+            }
+            // Forced CCW, as IFC expects an outer boundary to be.
+            let mut p2 = points.clone();
+            if signed_area(&p2) < 0.0 {
+                p2.reverse();
+            }
+            emit_arbitrary_2d(w, &p2, scale)
+        }
+    };
+    Some(emit_swept(w, profile, member.start, axis, ref_dir, depth, scale))
+}
+
 /// Place a classified profile and sweep it: `IfcAxis2Placement3D(origin, axis,
 /// ref_dir)` + a local `+Z` `ExtrudedDirection` + the depth.
 fn emit_swept(
@@ -671,6 +770,11 @@ fn emit_arbitrary(
     u: DVec3,
     scale: f64,
 ) -> (EntityRef, DVec3, DVec3) {
+    (emit_arbitrary_2d(w, p2, scale), cen, u)
+}
+
+/// The outline itself, as an `IfcArbitraryClosedProfileDef`.
+fn emit_arbitrary_2d(w: &mut StepWriter, p2: &[(f64, f64)], scale: f64) -> EntityRef {
     let mut refs: Vec<StepValue> =
         p2.iter().map(|&(x, y)| StepValue::Ref(pt2d(w, x * scale, y * scale))).collect();
     // Closed polyline repeats its first point.
@@ -678,11 +782,10 @@ fn emit_arbitrary(
         refs.push(StepValue::Ref(first));
     }
     let poly = w.add("IFCPOLYLINE", vec![StepValue::List(refs)]);
-    let profile = w.add(
+    w.add(
         "IFCARBITRARYCLOSEDPROFILEDEF",
         vec![StepValue::Enum("AREA".into()), StepValue::Unset, StepValue::Ref(poly)],
-    );
-    (profile, cen, u)
+    )
 }
 
 #[cfg(test)]

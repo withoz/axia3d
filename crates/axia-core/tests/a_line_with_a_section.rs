@@ -163,3 +163,28 @@ fn a_contact_line_can_be_given_a_section_too() {
         other => panic!("expected Linear, got {other:?}"),
     }
 }
+
+/// The member reaches the file. Before this it did not: the exporter skipped any
+/// element with no faces, so a column that was a line simply was not there.
+///
+/// The engine test can only reach as far as the scene; the emitted STEP is
+/// checked at the wasm layer where the exporter lives (see `ifc_line_member`).
+/// What this pins is that the scene hands over everything that layer needs: a
+/// line member whose edge is alive, whose endpoints are readable, and whose
+/// section has an area.
+#[test]
+fn a_line_member_carries_everything_the_exporter_needs() {
+    let mut s = prod();
+    let (sid, eid) = line(&mut s, DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 0.0, 3000.0));
+    s.set_edge_profile(eid, Some(Profile::Rectangular { width: 300.0, height: 300.0 })).unwrap();
+    s.promote_shape_to_xia(sid, MaterialId::new(7)).unwrap();
+
+    let xia = s.xias.values().next().expect("the member");
+    let edge_id = xia.standalone_edge_id.expect("a line member owns its edge");
+    let edge = s.mesh.edges.get(edge_id).expect("the edge is alive");
+    assert!(edge.is_active());
+    let a = s.mesh.vertex_pos(edge.v_small()).expect("start");
+    let b = s.mesh.vertex_pos(edge.v_large()).expect("end");
+    assert!((b - a).length() > 0.0, "a member of no length is not a member");
+    assert_eq!(s.edge_profile(edge_id).and_then(|p| p.area()), Some(90_000.0));
+}

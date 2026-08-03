@@ -5711,6 +5711,31 @@ impl AxiaEngine {
         }
     }
 
+    /// A member that is a line with a section, ready for the exporter.
+    ///
+    /// `None` when the entity owns no standalone edge, when that edge is gone,
+    /// or when no section was ever given — a line with no thickness is a line,
+    /// and a line is not a member.
+    fn ifc_line_member(
+        &self,
+        standalone: Option<axia_geo::EdgeId>,
+    ) -> Option<axia_ifc::ifc_extrude::LineMember> {
+        use axia_core::profile::Profile;
+        use axia_ifc::ifc_extrude::{LineMember, SectionProfile};
+        let eid = standalone?;
+        let edge = self.scene.mesh.edges.get(eid).filter(|e| e.is_active())?;
+        let start = self.scene.mesh.vertex_pos(edge.v_small()).ok()?;
+        let end = self.scene.mesh.vertex_pos(edge.v_large()).ok()?;
+        let profile = match self.scene.edge_profile(eid)? {
+            Profile::Rectangular { width, height } => {
+                SectionProfile::Rectangular { width: *width, height: *height }
+            }
+            Profile::Circular { radius } => SectionProfile::Circular { radius: *radius },
+            Profile::Polygon { points } => SectionProfile::Polygon(points.clone()),
+        };
+        Some(LineMember { start, end, profile })
+    }
+
     #[wasm_bindgen(js_name = "exportIfcModel")]
     pub fn export_ifc_model(&self, name: String) -> String {
         use std::collections::HashSet;
@@ -5729,7 +5754,10 @@ impl AxiaEngine {
             let xia = &scene.xias[&xid];
             let faces: Vec<axia_geo::FaceId> =
                 xia.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
-            if faces.is_empty() {
+            // A member made of a line owns no faces. It used to be dropped here
+            // and never reached the file at all.
+            let line = self.ifc_line_member(xia.standalone_edge_id);
+            if faces.is_empty() && line.is_none() {
                 continue;
             }
             // Material name + §38 colour from the element's face material (what the
@@ -5746,7 +5774,7 @@ impl AxiaEngine {
                 material_style,
                 kind,
                 face_ids: faces,
-            });
+                line });
         }
         // Shapes (sorted by id) → named wall, no material.
         let mut shape_ids: Vec<_> = scene.shapes.keys().copied().collect();
@@ -5755,7 +5783,8 @@ impl AxiaEngine {
             let shape = &scene.shapes[&sid];
             let faces: Vec<axia_geo::FaceId> =
                 shape.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
-            if faces.is_empty() {
+            let line = self.ifc_line_member(shape.standalone_edge_id);
+            if faces.is_empty() && line.is_none() {
                 continue;
             }
             // A Shape is form-layer (no primary material) but its faces may carry
@@ -5772,7 +5801,7 @@ impl AxiaEngine {
                 material_style,
                 kind,
                 face_ids: faces,
-            });
+                line });
         }
         // Leftover active faces (unowned) → one "Model" wall.
         let leftover: Vec<axia_geo::FaceId> = scene
@@ -5790,6 +5819,7 @@ impl AxiaEngine {
                 material_style,
                 kind: axia_ifc::IfcElementKind::default(),
                 face_ids: leftover,
+                line: None,
             });
         }
 
@@ -15197,6 +15227,7 @@ mod adr310_parity_tests {
             material_style: None,
             kind: axia_ifc::IfcElementKind::Wall,
             face_ids,
+            line: None,
         }];
         let s = axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap();
         (mesh, s)
@@ -15333,8 +15364,7 @@ mod adr311_member_tests {
             material_name: material.map(|s| s.to_string()),
             material_style: None,
             kind: axia_ifc::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
     }
 
@@ -15454,8 +15484,7 @@ mod adr311_material_tests {
             material_name: material.map(|s| s.to_string()),
             material_style: None,
             kind: axia_ifc::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
     }
 
@@ -15567,8 +15596,7 @@ mod adr311_style_tests {
                 textures: Vec::new(),
             }),
             kind: axia_ifc::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
     }
 
@@ -15620,8 +15648,7 @@ mod adr311_style_tests {
             material_name: Some("Unstyled".into()),
             material_style: None,
             kind: axia_ifc::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         let ifc = axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
         assert_eq!(ifc.matches("=IFCSTYLEDITEM(").count(), 0, "no style emitted");
 
@@ -15652,8 +15679,7 @@ mod adr311_kind_tests {
             material_name: material.map(|s| s.to_string()),
             material_style: None,
             kind,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
     }
 
@@ -15721,8 +15747,7 @@ mod adr311_style_warning_tests {
                 textures: Vec::new(),
             }),
             kind: axia_ifc::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap()
     }
 
@@ -15748,5 +15773,88 @@ mod adr311_style_warning_tests {
         let g = axia_ifc::ifc_geometry::import_ifc_geometry(&styled_ifc()).unwrap();
         assert!(g.elements[0].style.is_some(), "read fine");
         assert!(g.warnings.is_empty(), "a style we read is not a drop: {:?}", g.warnings);
+    }
+}
+
+#[cfg(test)]
+mod line_member_export_tests {
+    use super::*;
+    use axia_core::profile::Profile;
+
+    /// A column that is a line with a section reaches the IFC file as a swept
+    /// solid. It used to reach it as nothing at all: the exporter skipped any
+    /// element without faces, so the member was silently absent.
+    #[test]
+    fn a_line_member_exports_as_a_swept_section() {
+        let mut e = AxiaEngine::new();
+        // A 3 m upright line.
+        let sid = e.draw_line_as_shape(0.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0, 0.0);
+        assert!(sid >= 0.0, "the line drew");
+        let eid = e
+            .scene
+            .shapes
+            .values()
+            .find_map(|sh| sh.standalone_edge_id)
+            .expect("the line owns an edge");
+        e.scene
+            .set_edge_profile(eid, Some(Profile::Rectangular { width: 300.0, height: 300.0 }))
+            .expect("a 300×300 column");
+
+        let step = e.export_ifc_model("Col".into());
+        assert!(
+            step.contains("IFCRECTANGLEPROFILEDEF"),
+            "the section must be in the file:\n{step}"
+        );
+        assert!(step.contains("IFCEXTRUDEDAREASOLID"), "swept along its length");
+        // 300 mm → 0.3 m, and the sweep is the line's own 3 m.
+        assert!(step.contains(",0.3,0.3);"), "300×300 in metres:\n{step}");
+        assert!(step.contains(",3.);"), "swept 3 m:\n{step}");
+    }
+
+    /// The same member once it has been given a material and become a property
+    /// citizen. Both branches of the exporter carry line members, and a mutation
+    /// that disabled only one of them slipped past the first test — so both are
+    /// walked.
+    #[test]
+    fn a_promoted_line_member_exports_too() {
+        let mut e = AxiaEngine::new();
+        e.draw_line_as_shape(0.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0, 0.0);
+        let (sid, eid) = e
+            .scene
+            .shapes
+            .iter()
+            .find_map(|(id, sh)| sh.standalone_edge_id.map(|e| (*id, e)))
+            .expect("the line");
+        e.scene
+            .set_edge_profile(eid, Some(Profile::Circular { radius: 100.0 }))
+            .expect("a round column");
+        e.scene
+            .promote_shape_to_xia(sid, axia_geo::MaterialId::new(7))
+            .expect("a member");
+        assert_eq!(e.scene.xias.len(), 1, "it became a member");
+        // Promotion leaves the Shape behind (both citizenships name the same
+        // edge), and the exporter reaches the Shape first. Drop it so the Xia
+        // branch is the one under test — without this the two branches cannot be
+        // told apart, which is how a mutation that disabled the Xia one slipped
+        // through.
+        e.scene.shapes.remove(&sid);
+
+        let step = e.export_ifc_model("Col".into());
+        assert!(step.contains("IFCCIRCLEPROFILEDEF"), "the round section:
+{step}");
+        assert!(step.contains("IFCEXTRUDEDAREASOLID"), "swept:
+{step}");
+        assert!(step.contains(",0.1);"), "radius 100 mm → 0.1 m:
+{step}");
+    }
+
+    /// Without a section it is a line, not a member, and nothing is written for
+    /// it — an empty body would be worse than an absence.
+    #[test]
+    fn a_line_without_a_section_is_not_exported_as_a_member() {
+        let mut e = AxiaEngine::new();
+        e.draw_line_as_shape(0.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0, 0.0);
+        let step = e.export_ifc_model("Col".into());
+        assert!(!step.contains("IFCRECTANGLEPROFILEDEF"), "nothing to sweep:\n{step}");
     }
 }

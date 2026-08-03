@@ -120,6 +120,12 @@ pub struct IfcElement {
     /// every member used to be, so an unassigned model exports unchanged.
     pub kind: crate::IfcElementKind,
     pub face_ids: Vec<FaceId>,
+    /// A member that is a line with a cross-section — a column, a beam, a
+    /// brace. Such a member owns no faces, so without this it would have no
+    /// body at all and used to be dropped from the file entirely.
+    ///
+    /// `None` for everything made of faces, which is everything else.
+    pub line: Option<crate::ifc_extrude::LineMember>,
 }
 
 /// `OverallHeight` / `OverallWidth` for an opening element, from the faces it
@@ -277,7 +283,12 @@ pub fn emit_ifc_model_with_openings(
         // exports as a parametric IfcExtrudedAreaSolid (rectangle/trapezium/
         // arbitrary profile) instead of a brep. Openings still take the brep path
         // below (the mesh is no longer a clean prism), and a non-prism returns None.
-        let swept = if boxes.is_empty() {
+        // A line member IS its swept section — there are no faces to fall back
+        // on, so this comes first and an unusable section leaves the element
+        // without a body rather than quietly turning into something else.
+        let swept = if let Some(lm) = &el.line {
+            crate::ifc_extrude::emit_line_member(&mut w, lm, scale).map(|s| (s, "SweptSolid"))
+        } else if boxes.is_empty() {
             crate::ifc_extrude::try_extruded_area_solid(&mut w, mesh, &allowed, scale)
                 .map(|s| (s, "SweptSolid"))
         } else {
@@ -630,8 +641,8 @@ mod tests {
         // them through.
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "Front Door".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Door, face_ids: a },
-            IfcElement { name: "Plain Wall".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "Front Door".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Door, face_ids: a , line: None},
+            IfcElement { name: "Plain Wall".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b , line: None},
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
 
@@ -651,6 +662,7 @@ mod tests {
             .unwrap();
         let elements = vec![IfcElement {
             name: "Wall".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: wall,
+            line: None,
         }];
         // A 1 m (X) × 1.2 m (Z) box, punched through the 0.2 m depth (Y), ordered
         // like emit_box: bottom four then top four.
@@ -691,8 +703,8 @@ mod tests {
             rgb: (1.0, 0.0, 0.0), transparency: 0.0, roughness: 0.5, metalness: 0.0, textures: vec![],
         });
         let elements = vec![
-            IfcElement { name: "A".into(), material_name: Some("Brick".into()), material_style: red.clone(), kind: crate::IfcElementKind::Wall, face_ids: a },
-            IfcElement { name: "B".into(), material_name: Some("Brick".into()), material_style: red, kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "A".into(), material_name: Some("Brick".into()), material_style: red.clone(), kind: crate::IfcElementKind::Wall, face_ids: a , line: None},
+            IfcElement { name: "B".into(), material_name: Some("Brick".into()), material_style: red, kind: crate::IfcElementKind::Wall, face_ids: b , line: None},
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Styled").unwrap();
         assert_eq!(s.matches("=IFCSTYLEDITEM(").count(), 2, "one styled item per element/brep");
@@ -713,8 +725,7 @@ mod tests {
                 rgb: (0.2, 0.4, 0.8), transparency: 0.5, roughness: 0.1, metalness: 0.9, textures: vec![],
             }),
             kind: crate::IfcElementKind::Wall,
-            face_ids: mesh.create_box(DVec3::new(-3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
-        }];
+            face_ids: mesh.create_box(DVec3::new(-3000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(), line: None }];
         let g = emit_ifc_model(&mesh, &glass, 0.001, "Glass").unwrap();
         let gr = rendering_line(&g);
         assert!(gr.contains("(#") && gr.contains(",0.5,$,$,$,$,$,IFCSPECULARROUGHNESS(0.1),"), "transparency + roughness: {}", gr);
@@ -736,8 +747,7 @@ mod tests {
                 ],
             }),
             kind: crate::IfcElementKind::Wall,
-            face_ids: mesh.create_box(DVec3::new(6000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
-        }];
+            face_ids: mesh.create_box(DVec3::new(6000.0, 0.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(), line: None }];
         let t = emit_ifc_model(&mesh, &tex, 0.001, "Textured").unwrap();
         assert_eq!(t.matches("=IFCSURFACESTYLEWITHTEXTURES(").count(), 1, "one with-textures for all maps");
         assert_eq!(t.matches("=IFCIMAGETEXTURE(").count(), 3, "one image texture per channel");
@@ -758,6 +768,7 @@ mod tests {
         let plain = vec![IfcElement {
             name: "P".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall,
             face_ids: mesh.create_box(DVec3::new(0.0, 3000.0, 0.0), 1000.0, 1000.0, 1000.0, axia_geo::MaterialId::new(0)).unwrap(),
+            line: None,
         }];
         let p = emit_ifc_model(&mesh, &plain, 0.001, "Plain").unwrap();
         assert_eq!(p.matches("=IFCSTYLEDITEM(").count(), 0, "no style → no styled item");
@@ -775,6 +786,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Wall".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
         assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 1, "one swept solid");
@@ -814,6 +826,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Column".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Column, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Cyl").unwrap();
         assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 1, "one swept solid");
@@ -877,6 +890,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Tube".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Column, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Tube").unwrap();
         assert_eq!(
@@ -936,6 +950,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Spire".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Roof, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Cone").unwrap();
         assert_eq!(s.matches("=IFCREVOLVEDAREASOLID(").count(), 1, "cone → revolution: {}", s);
@@ -992,6 +1007,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "sphere".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "sphere").unwrap();
         assert!(s.contains("IFCSPHERICALSURFACE"), "export must carry its surface");
@@ -1027,6 +1043,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "torus".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: vec![f],
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "torus").unwrap();
         assert!(s.contains("IFCTOROIDALSURFACE"), "export must carry its surface");
@@ -1066,6 +1083,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "half".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: vec![faces[0]],
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "half").unwrap();
         assert!(s.contains("IFCSPHERICALSURFACE"), "still exported as a sphere");
@@ -1111,6 +1129,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Box".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Box").unwrap();
         let g = crate::ifc_geometry::import_ifc_geometry(&s).unwrap();
@@ -1143,6 +1162,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Frustum".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Column, face_ids: res.all_solid_faces.clone(),
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Frustum").unwrap();
         assert_eq!(s.matches("=IFCREVOLVEDAREASOLID(").count(), 1, "frustum → revolution: {}", s);
@@ -1175,6 +1195,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Cone".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Column, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Cone").unwrap();
         assert_eq!(s.matches("=IFCCIRCLEPROFILEDEF(").count(), 0, "a cone is not a circle sweep");
@@ -1191,6 +1212,7 @@ mod tests {
         let elements = vec![IfcElement {
             name: "Ball".into(), material_name: None, material_style: None,
             kind: crate::IfcElementKind::Wall, face_ids: faces,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Ball").unwrap();
         assert_eq!(s.matches("=IFCEXTRUDEDAREASOLID(").count(), 0, "a sphere is not a prism");
@@ -1217,6 +1239,7 @@ mod tests {
             material_name: None, material_style: None,
             kind: crate::IfcElementKind::Window,
             face_ids: f,
+            line: None,
         }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
 
@@ -1231,8 +1254,8 @@ mod tests {
     fn two_elements_two_walls_two_materials() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a },
-            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a , line: None},
+            IfcElement { name: "Wall B".into(), material_name: Some("Steel".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b , line: None},
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "House").unwrap();
         assert!(s.contains("FILE_SCHEMA(('IFC4X3'));"));
@@ -1259,8 +1282,8 @@ mod tests {
     fn shared_material_deduplicated() {
         let (mesh, a, b) = two_box_mesh();
         let elements = vec![
-            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a },
-            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+            IfcElement { name: "A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a , line: None},
+            IfcElement { name: "B".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b , line: None},
         ];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap();
         // one IfcMaterial (deduped), two associations (one per wall)
@@ -1271,7 +1294,7 @@ mod tests {
     #[test]
     fn element_without_material_has_no_association() {
         let (mesh, a, _b) = two_box_mesh();
-        let elements = vec![IfcElement { name: "Form".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a }];
+        let elements = vec![IfcElement { name: "Form".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a , line: None}];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "F").unwrap();
         assert_eq!(s.matches("=IFCWALL(").count(), 1);
         assert_eq!(s.matches("=IFCMATERIAL(").count(), 0);
@@ -1284,8 +1307,8 @@ mod tests {
         let build = || {
             let (mesh, a, b) = two_box_mesh();
             let elements = vec![
-                IfcElement { name: "A".into(), material_name: Some("C".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a },
-                IfcElement { name: "B".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+                IfcElement { name: "A".into(), material_name: Some("C".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a , line: None},
+                IfcElement { name: "B".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b , line: None},
             ];
             emit_ifc_model(&mesh, &elements, 0.001, "M").unwrap()
         };
