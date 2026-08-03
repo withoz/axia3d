@@ -1105,6 +1105,69 @@ export class WasmBridge {
   }
 
   /**
+   * Give a line a cross-section — what it is thick with.
+   *
+   * A line has length and nothing else; a member is a line with a section, and
+   * that is what turns a length into a volume. Returns false when the section
+   * measures nothing, with the reason in `lastError()`.
+   */
+  setEdgeProfile(
+    edgeId: number,
+    profile:
+      | { kind: 'rectangular'; width: number; height: number }
+      | { kind: 'circular'; radius: number }
+      | { kind: 'polygon'; points: [number, number][] },
+  ): boolean {
+    if (!this.engine) return false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).setEdgeProfile;
+    if (!fn) return false;
+    this.markDirty();
+    const [kind, a, b, pts] =
+      profile.kind === 'rectangular' ? [0, profile.width, profile.height, []] :
+      profile.kind === 'circular' ? [1, profile.radius, 0, []] :
+      [2, 0, 0, profile.points.flat()];
+    try {
+      return fn.call(this.engine, edgeId, kind, a, b, Float64Array.from(pts as number[]));
+    } catch (e) {
+      console.error('[WasmBridge] setEdgeProfile failed:', e);
+      return false;
+    }
+  }
+
+  /** Take a line's cross-section away. True if it had one. */
+  clearEdgeProfile(edgeId: number): boolean {
+    if (!this.engine) return false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).clearEdgeProfile;
+    if (!fn) return false;
+    this.markDirty();
+    try {
+      return fn.call(this.engine, edgeId);
+    } catch {
+      return false;
+    }
+  }
+
+  /** What a line is thick with, or null when it carries nothing. */
+  getEdgeProfile(edgeId: number): {
+    kind: string; area: number; describe: string;
+    width?: number; height?: number; radius?: number; points?: [number, number][];
+  } | null {
+    if (!this.engine) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).getEdgeProfile;
+    if (!fn) return null;
+    try {
+      const json = fn.call(this.engine, edgeId) as string;
+      return json && json !== 'null' ? JSON.parse(json) : null;
+    } catch (e) {
+      console.error('[WasmBridge] getEdgeProfile failed:', e);
+      return null;
+    }
+  }
+
+  /**
    * ADR-219 — Draw a standalone construction Point as a Form-citizen Shape.
    * The point's vertex is pinned in the engine so it survives every cleanup
    * pass. Returns ShapeId.raw() on success, -1 on error / missing endpoint.

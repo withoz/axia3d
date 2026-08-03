@@ -32,9 +32,11 @@ pub enum XiaKind {
     /// 3D closed solid with positive enclosed volume.
     Volumetric { volume: f64 },
     /// 1D linear element (standalone edge) with positive length.
-    /// `cross_section_area` is currently always 1.0 — Phase 2 will derive
-    /// it from material profile metadata.
-    Linear { length: f64, cross_section_area: f64 },
+    ///
+    /// `cross_section_area` is `None` when the line carries no profile. It used
+    /// to be 1.0, which made every quantity that touched it quietly wrong; an
+    /// absence that says so can be handled, a fake number cannot.
+    Linear { length: f64, cross_section_area: Option<f64> },
 }
 
 /// Ordered failure modes for promotion APIs. Order matches §2.2
@@ -199,6 +201,7 @@ pub fn validate_promotion(
     face_ids: &[FaceId],
     standalone: Option<EdgeId>,
     material: MaterialId,
+    cross_section_area: Option<f64>,
 ) -> Result<XiaKind, PromoteError> {
     // Condition 0 (precondition): geometry must exist.
     if face_ids.is_empty() && standalone.is_none() {
@@ -225,12 +228,16 @@ pub fn validate_promotion(
             .vertex_pos(edge.v_large())
             .map_err(|_| PromoteError::ZeroDimension)?;
         let length = (pb - pa).length();
-        // Phase 2 will derive cross_section from material profile;
-        // current MVP uses 1.0 as a sentinel — only `length > 0` is
-        // strictly enforced here.
-        let cross_section_area = 1.0;
         if length <= 0.0 {
             return Err(PromoteError::ZeroDimension);
+        }
+        // A section that was given but measures nothing is a stated mistake,
+        // not a missing answer — refuse it. No section at all is fine: the
+        // member is real, its quantity is simply not known yet.
+        if let Some(a) = cross_section_area {
+            if a <= 0.0 {
+                return Err(PromoteError::ZeroDimension);
+            }
         }
         XiaKind::Linear { length, cross_section_area }
     } else {

@@ -884,6 +884,72 @@ impl AxiaEngine {
         }
     }
 
+    /// Give a line a cross-section — what it is thick with.
+    ///
+    /// `kind`: 0 rectangular (a=width, b=height), 1 circular (a=radius),
+    /// 2 polygon (`pts` = x,y,x,y,… in the section's own plane).
+    /// Returns true when it was set. A section that measures nothing is
+    /// refused, with the reason in last_error.
+    #[wasm_bindgen(js_name = "setEdgeProfile")]
+    pub fn set_edge_profile(&mut self, edge_id: u32, kind: u32, a: f64, b: f64, pts: Vec<f64>) -> bool {
+        use axia_core::profile::Profile;
+        let profile = match kind {
+            0 => Profile::Rectangular { width: a, height: b },
+            1 => Profile::Circular { radius: a },
+            2 => Profile::Polygon {
+                points: pts.chunks_exact(2).map(|c| (c[0], c[1])).collect(),
+            },
+            _ => {
+                self.set_error("알 수 없는 단면 종류".to_string());
+                return false;
+            }
+        };
+        match self.scene.set_edge_profile(axia_geo::EdgeId::new(edge_id), Some(profile)) {
+            Ok(()) => true,
+            Err(e) => {
+                self.set_error(e.to_string());
+                false
+            }
+        }
+    }
+
+    /// Take a line's cross-section away. True if it had one.
+    #[wasm_bindgen(js_name = "clearEdgeProfile")]
+    pub fn clear_edge_profile(&mut self, edge_id: u32) -> bool {
+        let eid = axia_geo::EdgeId::new(edge_id);
+        let had = self.scene.edge_profile(eid).is_some();
+        let _ = self.scene.set_edge_profile(eid, None);
+        had
+    }
+
+    /// What a line is thick with, as JSON — `null` when it carries nothing.
+    /// `{ "kind": "rectangular"|"circular"|"polygon", "area": f64,
+    ///    "describe": string, … }`
+    #[wasm_bindgen(js_name = "getEdgeProfile")]
+    pub fn get_edge_profile(&self, edge_id: u32) -> String {
+        use axia_core::profile::Profile;
+        let Some(p) = self.scene.edge_profile(axia_geo::EdgeId::new(edge_id)) else {
+            return "null".to_string();
+        };
+        let area = p.area().unwrap_or(0.0);
+        let describe = p.describe();
+        match p {
+            Profile::Rectangular { width, height } => format!(
+                "{{\"kind\":\"rectangular\",\"width\":{width},\"height\":{height},\"area\":{area},\"describe\":\"{describe}\"}}"
+            ),
+            Profile::Circular { radius } => format!(
+                "{{\"kind\":\"circular\",\"radius\":{radius},\"area\":{area},\"describe\":\"{describe}\"}}"
+            ),
+            Profile::Polygon { points } => {
+                let pts: Vec<String> = points.iter().map(|(x, y)| format!("[{x},{y}]")).collect();
+                format!(
+                    "{{\"kind\":\"polygon\",\"points\":[{}],\"area\":{area},\"describe\":\"{describe}\"}}",
+                    pts.join(",")
+                )
+            }
+        }
+    }
+
     /// ADR-219 — Draw a standalone construction Point as a form-layer Shape.
     /// Adds + pins a single isolated vertex (survives cleanup). Returns
     /// ShapeId.raw() as f64 on success, -1.0 on error.

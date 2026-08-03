@@ -415,6 +415,15 @@ pub struct Scene {
     /// resolved by containment at export time. Persisted via additive snapshot
     /// section 12; legacy snapshots restore this empty.
     pub openings: Vec<RectOpening>,
+    /// What each line is thick with — the cross-section a standalone edge
+    /// carries (`Profile`).
+    ///
+    /// Keyed by the EDGE, not by the Shape or the Xia, so it survives
+    /// promotion and demotion without anyone carrying it across: both
+    /// citizenships point at the same edge. A `BTreeMap` because snapshots
+    /// must come out byte-identical for the same scene (LOCKED #37 L1), keyed
+    /// by the edge's raw id since `EdgeId` does not order.
+    pub edge_profile: std::collections::BTreeMap<u32, crate::profile::Profile>,
 
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
@@ -575,6 +584,7 @@ impl SolidOwner {
 impl Scene {
     pub fn new() -> Self {
         Self {
+            edge_profile: std::collections::BTreeMap::new(),
             mesh: Mesh::new(),
             xias: HashMap::new(),
             face_to_xia: HashMap::new(),
@@ -765,6 +775,12 @@ impl Scene {
         let openings_data = bincode::serialize(&self.openings).unwrap_or_default();
         buf.extend_from_slice(&(openings_data.len() as u64).to_le_bytes());
         buf.extend_from_slice(&openings_data);
+        // Cross-sections — section 13 (additive). What each line is thick with.
+        // Legacy snapshots truncate before this → restore reads none, and every
+        // line is simply a line again.
+        let profiles_data = bincode::serialize(&self.edge_profile).unwrap_or_default();
+        buf.extend_from_slice(&(profiles_data.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&profiles_data);
         buf
     }
 
@@ -1072,6 +1088,35 @@ impl Scene {
         if !openings_section_present {
             self.openings.clear();
         }
+
+        // 13. Cross-sections — what each line is thick with.
+        //     Additive: a legacy snapshot truncates before this and every line
+        //     goes back to being just a line.
+        let mut profiles_section_present = false;
+        if offset + 8 <= data.len() {
+            let plen = read_len(data, &mut offset);
+            if plen > 0 && offset + plen <= data.len() {
+                match bincode::deserialize::<
+                    std::collections::BTreeMap<u32, crate::profile::Profile>,
+                >(&data[offset..offset + plen])
+                {
+                    Ok(m) => {
+                        self.edge_profile = m;
+                        profiles_section_present = true;
+                    }
+                    Err(e) => eprintln!(
+                        "[Scene] section 13 edge_profile deserialize failed: {e} (plen={plen}).                          Lines restore without their sections."
+                    ),
+                }
+                offset += plen;
+            } else if plen == 0 {
+                self.edge_profile.clear();
+                profiles_section_present = true;
+            }
+        }
+        if !profiles_section_present {
+            self.edge_profile.clear();
+        }
         let _ = offset;
 
         // 9. 역인덱스 재구축 (face_ids가 이제 직렬화되므로)
@@ -1322,6 +1367,37 @@ impl Scene {
     ///
     /// `face_ids` may be empty — a line-only Shape with `standalone_edge_id`
     /// set later is valid (mirrors `Xia` line-tool behavior).
+    /// Give a line a cross-section, or take it away with `None`.
+    ///
+    /// The section rides on the edge, so it stays with the line through
+    /// promotion to a member and demotion back to a form. A section that
+    /// measures nothing is refused here rather than at promotion, where the
+    /// failure would be a long way from the mistake.
+    pub fn set_edge_profile(
+        &mut self,
+        edge: axia_geo::EdgeId,
+        profile: Option<crate::profile::Profile>,
+    ) -> Result<(), &'static str> {
+        match profile {
+            None => {
+                self.edge_profile.remove(&edge.raw());
+                Ok(())
+            }
+            Some(p) => {
+                if p.area().is_none() {
+                    return Err("단면이 면적을 갖지 않습니다");
+                }
+                self.edge_profile.insert(edge.raw(), p);
+                Ok(())
+            }
+        }
+    }
+
+    /// The cross-section this line carries, if it has been given one.
+    pub fn edge_profile(&self, edge: axia_geo::EdgeId) -> Option<&crate::profile::Profile> {
+        self.edge_profile.get(&edge.raw())
+    }
+
     pub fn create_shape(&mut self, name: String, face_ids: Vec<FaceId>) -> crate::ShapeId {
         let id = crate::ShapeId::new(self.next_shape_id);
         self.next_shape_id = self.next_shape_id.saturating_add(1);
@@ -1707,7 +1783,10 @@ impl Scene {
 
         // ADR-050 P-2 — shared validation kernel (DRY with
         // `promote_shape_to_xia`). Side-effect free.
-        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material)?;
+        let section = standalone
+            .and_then(|e| self.edge_profile.get(&e.raw()))
+            .and_then(|p| p.area());
+        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → assign material in-place.
         if let Some(xia_mut) = self.xias.get_mut(&xia_id) {
@@ -1756,7 +1835,10 @@ impl Scene {
         let surface_normal = shape.surface_normal;
 
         // Shared validation kernel — same 4 conditions as Phase 1.A.
-        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material)?;
+        let section = standalone
+            .and_then(|e| self.edge_profile.get(&e.raw()))
+            .and_then(|p| p.area());
+        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → create the Xia.
         let xia_id = self.next_xia_id;
@@ -19006,7 +19088,9 @@ mod tests {
         match ok.kind {
             crate::promote::XiaKind::Linear { length, cross_section_area } => {
                 assert!((length - 5.0).abs() < 1e-6, "length should be 5, got {}", length);
-                assert_eq!(cross_section_area, 1.0, "MVP sentinel cross-section");
+                // No section was given, so there is none to report. This used
+                // to answer 1.0, which read like a measurement and was not one.
+                assert_eq!(cross_section_area, None, "a line with no profile has no area");
             }
             other => panic!("expected Linear, got {:?}", other),
         }
@@ -19453,7 +19537,7 @@ mod tests {
         match ok.kind {
             crate::promote::XiaKind::Linear { length, cross_section_area } => {
                 assert!((length - 2.0).abs() < 1e-9, "edge length = 2, got {length}");
-                assert!(cross_section_area > 0.0);
+                assert_eq!(cross_section_area, None, "no profile was set on this edge");
             }
             other => panic!("expected Linear, got {other:?}"),
         }
@@ -21989,19 +22073,26 @@ mod tests {
         let bytes = scene.export_versioned_snapshot().expect("export");
 
         // Every additive section lands AFTER sub-section 7d, so simulating a
-        // legacy V2 file means stripping all of them: 11 (element kinds,
-        // ADR-203 δ), 10 (point verts, ADR-219), 9 (material library,
-        // ADR-098 S-γ), 8 (references + next id, ADR-095 Phase 3-ε), then 7d
-        // itself. A new section must be added here too, or the truncation
-        // stops landing on a section boundary and the test starts passing for
-        // the wrong reason.
+        // legacy V2 file means stripping all of them: 13 (cross-sections),
+        // 12 (openings, ADR-203), 11 (element kinds, ADR-203 δ), 10 (point
+        // verts, ADR-219), 9 (material library, ADR-098 S-γ), 8 (references +
+        // next id, ADR-095 Phase 3-ε), then 7d itself. A new section must be
+        // added here too, or the truncation stops landing on a section
+        // boundary and the test starts passing for the wrong reason — which is
+        // exactly what happened: section 12 was never added here, so this cut
+        // in the middle of it and only appeared to hold until section 13
+        // arrived and pushed the landing point far enough to notice.
         let refs_data = bincode::serialize(&scene.references).unwrap();
         let xia_orig_data = bincode::serialize(&scene.xia_to_original_shape).unwrap();
         let ml_data = bincode::serialize(&scene.material_library).unwrap();
         let point_verts_data = bincode::serialize(&scene.shape_to_standalone_vertex).unwrap();
         let element_kind_data =
             bincode::serialize(&(&scene.xia_element_kind, &scene.shape_element_kind)).unwrap();
-        let strip_len = (8 + element_kind_data.len())
+        let openings_data = bincode::serialize(&scene.openings).unwrap();
+        let profiles_data = bincode::serialize(&scene.edge_profile).unwrap();
+        let strip_len = (8 + profiles_data.len())
+            + (8 + openings_data.len())
+            + (8 + element_kind_data.len())
             + (8 + point_verts_data.len())
             + (8 + ml_data.len())
             + (8 + refs_data.len() + 8)

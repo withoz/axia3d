@@ -20,6 +20,7 @@ pub mod material;
 pub mod constraint;
 pub mod orphan_recovery;
 pub mod promote;
+pub mod profile;
 pub mod boolean_group;
 
 pub use xia::{Xia, XiaState};
