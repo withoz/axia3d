@@ -296,3 +296,78 @@ fn the_walk_only_proceeds_when_there_is_one_way_on() {
         "the dead-end fallback no longer chooses by turning"
     );
 }
+
+/// The two solids are the same solid.
+///
+/// Asked directly: is the spare half-edge structure or leftover? Take all eight
+/// away and the box is unchanged — same faces, same invariants, same manifold
+/// count. It is leftover: the extrude allocates a fresh pair for the wall
+/// instead of taking the one the profile face already left free.
+///
+/// Which settles how to make the two kinds of box agree. Not by teaching
+/// `create_box` to litter — by having the extrude stop. The catch is the order:
+/// today the DrawRect TOOL path only works on the extruded box BECAUSE of the
+/// litter, so removing it first would lose the one case that works. The tool
+/// path has to stand on its own first.
+///
+/// That gives the remaining work a finish line: **when stripping the spares
+/// stops changing what the tool does, the accident is gone.** This test is that
+/// finish line, and it fails the day it is crossed.
+#[test]
+fn the_spare_is_leftover_and_the_tool_still_leans_on_it() {
+    // 1. Structure or leftover?
+    let mut scene = prod();
+    extruded_box(&mut scene);
+    let before = (
+        faces(&scene),
+        scene.mesh.verify_face_invariants().violations.len(),
+        scene.mesh.collect_non_manifold_edges().len(),
+    );
+    let stripped = strip_spares(&mut scene);
+    assert!(stripped > 0, "the extruded box is supposed to carry spares");
+    assert_eq!(
+        (
+            faces(&scene),
+            scene.mesh.verify_face_invariants().violations.len(),
+            scene.mesh.collect_non_manifold_edges().len(),
+        ),
+        before,
+        "removing the spares changed the solid — then they are structure, not          leftover, and the plan to have the extrude stop making them is wrong"
+    );
+
+    // 2. Does the working tool case lean on it?
+    let draw_rect = |s: &mut Scene| {
+        !matches!(
+            s.execute(Command::DrawRectAsShape {
+                center: DVec3::new(200.0, 200.0, 0.0),
+                normal: DVec3::Z,
+                up: DVec3::Y,
+                width: 200.0,
+                height: 200.0,
+            }),
+            CommandResult::Error(_)
+        )
+    };
+
+    let mut with_spares = prod();
+    extruded_box(&mut with_spares);
+    assert!(draw_rect(&mut with_spares), "the extruded box is the case that works today");
+
+    let mut without = prod();
+    extruded_box(&mut without);
+    strip_spares(&mut without);
+    let ok_without = draw_rect(&mut without);
+
+    let mut one_shot = prod();
+    one_shot_box(&mut one_shot);
+    let ok_one_shot = draw_rect(&mut one_shot);
+
+    assert_eq!(
+        ok_without, ok_one_shot,
+        "with the spares gone the two boxes must be indistinguishable to the tool"
+    );
+    assert!(
+        !ok_without,
+        "THE TOOL PATH NO LONGER NEEDS THE LEFTOVER — the remaining half of the          overlap fix is done. Delete this assertion, and have the extrude stop          allocating the spare pair so there is one kind of solid."
+    );
+}
