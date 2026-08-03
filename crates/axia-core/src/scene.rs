@@ -4012,11 +4012,49 @@ impl Scene {
     /// (`restore_scene_snapshot` + `discard_last_undo`) — a rejected op leaves
     /// no dangling undo/redo entry. detection metric = the SAME measurement the
     /// orange overlay uses, so reject fires exactly when the orange would.
+    /// How many face pairs overlap where at least one of them belongs to a
+    /// solid. Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
+    fn solid_overlap_count(&self) -> usize {
+        self.mesh
+            .detect_self_intersections()
+            .intersecting_pairs
+            .iter()
+            .filter(|(a, b)| !self.mesh.is_sheet_face(*a) || !self.mesh.is_sheet_face(*b))
+            .count()
+    }
+
     fn guard_imprint<F>(&mut self, draw: F) -> CommandResult
     where
         F: FnOnce(&mut Self) -> CommandResult,
     {
         let nm_before = self.mesh.collect_non_manifold_edges().len();
+        // Counting non-manifold edges alone was wrong in BOTH directions.
+        //
+        // Too strict: a sheet drawn across a solid's footprint necessarily puts
+        // the solid's wall, its cap and the sheet on one shared edge — three
+        // faces, no two of which occupy the same space. That is a T-junction,
+        // not damage; SketchUp makes exactly this, and rolling it back is why
+        // "draw a rectangle on the ground overlapping a box" was impossible.
+        //
+        // Too lax: a shape that merely straddles a face's boundary adds NO
+        // non-manifold edge, so it sailed through while leaving its face lying
+        // on top of the one it overlapped — two faces in the same place, which
+        // is real corruption (z-fighting, wrong volumes, wrong export).
+        //
+        // So ask the question we actually mean — did the draw make geometry
+        // overlap? — and let a mere T-junction through. The scan costs about
+        // what the rollback snapshot below already costs (measured 7.8ms vs
+        // 4.7ms on an 888-face scene), and it must be a before/after comparison:
+        // two solids may legitimately interpenetrate before the draw, and
+        // demanding a clean result outright would lock the user out of drawing
+        // at all in that scene.
+        //
+        // Scoped to overlaps that involve a SOLID face, which is what this guard
+        // exists to protect. Sheet-on-sheet overlap is the arrangement's business
+        // and has its own switches — with `freeform_overlap_on_draw` off, two
+        // overlapping blobs are deliberately left as they are, and that is not
+        // this guard's call to override.
+        let si_before = self.solid_overlap_count();
         // ADR-282 — reject ONLY genuine corruption (a NEW non-manifold edge, i.e.
         // an edge that ends up bearing ≥3 faces). The former ADR-280
         // `opened_solid` check (reject if a closed solid merely OPENS) was
@@ -4032,15 +4070,32 @@ impl Scene {
         if matches!(result, CommandResult::Error(_)) {
             return result;
         }
-        if self.mesh.collect_non_manifold_edges().len() > nm_before {
-            // The draw introduced a non-manifold edge (≥3 faces) — genuine
-            // corruption. Roll back + reject (surfaced as a Toast by the bridge
-            // via surfaceDrawReject). A mere open (deformation) is NOT rejected.
-            self.restore_scene_snapshot(&before_snapshot);
-            self.transactions.discard_last_undo();
-            return CommandResult::Error(
-                "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
+        let nm_after = self.mesh.collect_non_manifold_edges().len();
+        let si_after = self.solid_overlap_count();
+        let mut reject = |scene: &mut Self, msg: &str| -> CommandResult {
+            scene.restore_scene_snapshot(&before_snapshot);
+            scene.transactions.discard_last_undo();
+            CommandResult::Error(msg.to_string())
+        };
+        if si_after > si_before {
+            // Two faces now occupy the same space. Always damage.
+            return reject(
+                self,
+                "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요",
             );
+        }
+        if nm_after > nm_before {
+            // No new overlap, so this is a shared edge. Accept it only when it
+            // is the ONLY thing the invariant checker objects to — each
+            // non-manifold edge yields exactly one violation, so an equal count
+            // means nothing else (winding, degenerate, broken loop) went wrong.
+            let violations = self.mesh.verify_face_invariants().violations.len();
+            if violations != nm_after {
+                return reject(
+                    self,
+                    "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요",
+                );
+            }
         }
         result
     }
@@ -22580,6 +22635,146 @@ mod tests {
     /// 3 sub-faces (rect_a_only / lens / rect_b_only) per ADR-101 P7.
     /// Regression lock: the "선만 그려, 케이크는 알아서 나뉜다" auto-split
     /// behavior that ADR-176 enables by default.
+    #[test]
+    /// A shape that straddles a solid face's boundary adds no non-manifold edge,
+    /// so the old edge-counting guard waved it through — and it landed on top of
+    /// the face it overlapped, two faces in the same place. Reject it, and leave
+    /// the mesh exactly as it was.
+    #[test]
+    fn draw_overlapping_a_solid_face_is_rejected_and_rolled_back() {
+        let mut scene = prod_scene();
+        let solid = box_from_ground_rect(&mut scene);
+        assert_eq!(solid, 6, "expected a 6-face box, got {solid}");
+        let si_before = scene.mesh.detect_self_intersections().count();
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 100.0, 100.0),
+            normal: DVec3::Z,
+            up: DVec3::Y,
+            width: 120.0,
+            height: 120.0,
+        });
+        assert!(matches!(r, CommandResult::Error(_)), "a shape lying on the top face must be refused");
+        assert_eq!(active_faces(&scene), solid, "the refused draw must leave no faces behind");
+        assert_eq!(
+            scene.mesh.detect_self_intersections().count(),
+            si_before,
+            "the refused draw must leave no overlap behind"
+        );
+    }
+
+    /// The case the whole guard was blocking: draw a rectangle on the ground, pull
+    /// it up into a box, then draw another rectangle on the ground that overlaps
+    /// its footprint. The result necessarily shares an edge between the box wall,
+    /// the box cap and the new sheet — three faces on one edge — but no two of
+    /// them occupy the same space, so it is a T-junction and must be allowed.
+    /// SketchUp makes exactly this.
+    #[test]
+    fn a_sheet_may_meet_a_solid_along_a_shared_edge() {
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(
+            !matches!(r, CommandResult::Error(_)),
+            "a sheet abutting a solid must be allowed, got {r:?}"
+        );
+        assert!(active_faces(&scene) > n, "the draw must actually add geometry");
+        let nm = scene.mesh.collect_non_manifold_edges().len();
+        assert!(nm > 0, "this fixture is meant to produce a T-junction, got nm={nm}");
+        // Allowed only because the shared edges are the ONLY thing wrong: nothing
+        // overlaps, and the invariant checker objects to nothing else.
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
+        assert_eq!(
+            scene.mesh.verify_face_invariants().violations.len(),
+            nm,
+            "a T-junction is allowed only when the shared edges are the sole complaint"
+        );
+    }
+
+    /// …and the refusal must be about overlap, not about drawing near a solid:
+    /// these three must still work.
+    #[test]
+    fn draws_that_do_not_overlap_a_solid_still_work() {
+        // clear of the solid
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(500.0, 500.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "a disjoint draw must be allowed");
+        assert_eq!(active_faces(&scene), n + 1);
+
+        // wholly inside the top face
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 100.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "a contained draw must be allowed");
+        assert_eq!(active_faces(&scene), n + 1);
+
+        // sheet over sheet still splits three ways
+        let mut scene = prod_scene();
+        scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)));
+        assert_eq!(active_faces(&scene), 3, "two overlapping sheets still make three faces");
+    }
+
+    /// The overlap test compares before with after on purpose. Two solids may sit
+    /// inside each other quite legitimately — demanding a clean result outright
+    /// would lock the user out of drawing anything at all in such a scene.
+    #[test]
+    fn a_scene_that_already_self_intersects_can_still_be_drawn_in() {
+        let mut scene = prod_scene();
+        let _ = scene.mesh.create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        let _ = scene.mesh.create_box(DVec3::new(150.0, 150.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        let si = scene.mesh.detect_self_intersections().count();
+        assert!(si > 0, "fixture must already self-intersect, got {si}");
+        let n = active_faces(&scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(900.0, 900.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "an unrelated draw must not be blocked");
+        assert_eq!(active_faces(&scene), n + 1);
+    }
+
+    fn prod_scene() -> Scene {
+        let mut s = Scene::new();
+        s.auto_intersect_on_draw = true;
+        s.auto_face_synthesis_on_draw = true;
+        s.face_rederive_on_draw = true;
+        s.freeform_overlap_on_draw = true;
+        s
+    }
+    fn active_faces(s: &Scene) -> usize {
+        s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count()
+    }
+    /// ground rect [0,200]^2 extruded up: a box occupying z in [0,100].
+    fn box_from_ground_rect(s: &mut Scene) -> usize {
+        s.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        let f = s.mesh.faces.iter().filter(|(_, x)| x.is_active()).map(|(i, _)| i).next().unwrap();
+        s.execute(Command::CreateSolid {
+            face_id: f,
+            mode: axia_geo::CreateSolidMode::Extrude { distance: 100.0 },
+        });
+        active_faces(s)
+    }
+
     #[test]
     fn adr176_two_rects_as_shape_partial_overlap_auto_split() {
         let mut scene = Scene::new();
