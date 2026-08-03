@@ -160,6 +160,11 @@ fn requirement_1_draw_on_any_face_at_any_coordinate() {
     }
     println!("\n  실패 {}건", fails.len());
     for f in &fails { println!("    ✗ {f}"); }
+    // Today's count, pinned. Fewer means the engine moved toward the
+    // requirement -- lower it and name the cases that started passing. What
+    // is left is the circle tool wherever it crosses an edge, plus a
+    // rectangle straddling a vertical side face.
+    assert_eq!(fails.len(), 7, "24 cases, 7 still failing: {fails:?}");
 }
 
 #[test]
@@ -189,6 +194,8 @@ fn requirement_2_shapes_on_one_face_are_separated_by_their_boundaries() {
     }
     println!("\n  실패 {}건", fails.len());
     for f in &fails { println!("    ✗ {f}"); }
+    assert_eq!(fails.len(), 1,
+        "two rectangles overlapping on one face must become three regions. Only the vertical side face still fails: {fails:?}");
 }
 
 /// Why does each failing cell fail? One blocker or several?

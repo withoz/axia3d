@@ -5,7 +5,11 @@
 //! `halfedge_litter_audit`). Run the same operations on both and see which
 //! notice.
 //!
-//! Measured: of eight, seven behave identically — push, pull-in, through-drill,
+//! Measured 2026-08-03: all eight behave identically. Of the eight, seven always
+//! did; the last — drawing a shape that overlaps the solid's coplanar face —
+//! joined them when that draw learned to resolve past a face's edge.
+//!
+//! Originally measured: of eight, seven behave identically — push, pull-in, through-drill,
 //! face punch, plane trim, plane slice, and drawing inside the top face all
 //! produce the same faces, the same manifold count, the same everything. Exactly
 //! ONE differs: drawing a shape that overlaps the solid's coplanar face.
@@ -90,8 +94,11 @@ fn blast_radius() {
         if !same { differ.push(name); }
         println!("{:<20} 돌출:{:<28} 도구:{:<28} {}", name, ra, rb, if same{"같음"}else{"★다름"});
     }
-    assert_eq!(
-        differ, vec!["겹쳐 그리기"],
-        "exactly one operation should still depend on how the solid was built.          More means the dependence spread; none means the overlap fix landed —          either way say so here rather than letting it pass quietly"
+    // 2026-08-03 — none. The overlapping draw resolves the same way on both, so
+    // nothing here depends on how the solid was built any more. Any entry
+    // reappearing means a build path started mattering again.
+    assert!(
+        differ.is_empty(),
+        "these operations must not care how the solid was built: {differ:?}"
     );
 }

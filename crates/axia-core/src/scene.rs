@@ -2069,6 +2069,126 @@ impl Scene {
         .unwrap_or_else(|| "Volume".to_string())
     }
 
+    /// A shape drawn PAST the edge of a face it overlaps ends up covering the
+    /// shared part twice: the synthesis builds the whole shape, and the part
+    /// inside the existing face is already that face's. Replace the larger face
+    /// with the larger minus the smaller, so the overlap belongs to one face.
+    ///
+    /// Uses ADR-101's own pieces — `coplanar_intersection_segments` for the
+    /// switch points and `polygon_difference_walking` for the shape. Nothing new
+    /// geometrically; see `tests/tool_overlap_repair_sim.rs` for the measurement
+    /// that says these two suffice, and for the two routes that do not work.
+    ///
+    /// Runs only where two faces actually overlap, so a draw that resolved
+    /// cleanly never reaches it.
+    fn subtract_double_covered_faces(&mut self) -> usize {
+        use axia_geo::operations::coplanar as cop;
+        let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
+        if pairs.is_empty() {
+            return 0;
+        }
+        let mut repaired = 0usize;
+        for (fa, fb) in pairs {
+            let alive = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
+                m.faces.get(f).map_or(false, |x| x.is_active())
+            };
+            if !alive(&self.mesh, fa) || !alive(&self.mesh, fb) {
+                continue; // an earlier repair already consumed it
+            }
+            // Coplanar only — a fold between faces at an angle is a different
+            // problem and must not be "repaired" by subtraction.
+            let (na, nb) = (self.mesh.faces[fa].normal(), self.mesh.faces[fb].normal());
+            if na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() < 0.999 {
+                continue;
+            }
+            let vcount = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
+                m.collect_loop_verts(m.faces[f].outer().start).map(|v| v.len()).unwrap_or(0)
+            };
+            // The difference has to be taken from the bigger one; asking the
+            // smaller to give up a region it does not contain fails outright.
+            let (big, small) = if vcount(&self.mesh, fa) >= vcount(&self.mesh, fb) {
+                (fa, fb)
+            } else {
+                (fb, fa)
+            };
+            let Ok(ci) = cop::coplanar_intersection_segments(&self.mesh, big, small) else {
+                continue;
+            };
+            if ci.crossings.len() != 2 {
+                continue;
+            }
+            let Ok(base_v) = self.mesh.collect_loop_verts(self.mesh.faces[big].outer().start)
+            else {
+                continue;
+            };
+            let base2d: Vec<(f64, f64)> = base_v
+                .iter()
+                .filter_map(|v| self.mesh.vertex_pos(*v).ok())
+                .map(|p| ci.plane.project(p))
+                .collect();
+            if base2d.len() != base_v.len() {
+                continue;
+            }
+            let lens2d: Vec<(f64, f64)> =
+                ci.lens_polygon.iter().map(|p| ci.plane.project(*p)).collect();
+            let cr: Vec<(usize, f64, (f64, f64))> = ci
+                .crossings
+                .iter()
+                .map(|c| (c.face_a_edge, c.face_a_t, ci.plane.project(c.point)))
+                .collect();
+            let Ok(poly2d) = cop::polygon_difference_walking(&base2d, &lens2d, &cr) else {
+                continue;
+            };
+            if poly2d.len() < 3 {
+                continue;
+            }
+            // Rebuild. Every corner is a vertex that already exists — the
+            // original ones plus the two switch points — so `add_vertex` dedups
+            // onto them rather than making new ones.
+            let material = self.mesh.faces[big].material();
+            let surface = self.mesh.faces[big].surface().cloned();
+            let owner_xia = self.face_to_xia.get(&big).copied();
+            let owner_shape = self.face_to_shape.get(&big).copied();
+            let vids: Vec<axia_geo::VertId> = poly2d
+                .iter()
+                .map(|&(x, y)| self.mesh.add_vertex(ci.plane.lift(x, y)))
+                .collect();
+            if self.mesh.remove_face(big).is_err() {
+                continue;
+            }
+            match self.mesh.add_face_with_holes(&vids, &[], material) {
+                Ok(new_fid) => {
+                    if let Some(su) = surface {
+                        self.mesh.set_face_surface(new_fid, Some(su));
+                    }
+                    self.face_to_xia.remove(&big);
+                    self.face_to_shape.remove(&big);
+                    if let Some(x) = owner_xia {
+                        self.face_to_xia.insert(new_fid, x);
+                        if let Some(xia) = self.xias.get_mut(&x) {
+                            xia.face_ids.retain(|&f| f != big);
+                            xia.face_ids.push(new_fid);
+                        }
+                    }
+                    if let Some(sh) = owner_shape {
+                        self.face_to_shape.insert(new_fid, sh);
+                        if let Some(shape) = self.shapes.get_mut(&sh) {
+                            shape.face_ids.retain(|&f| f != big);
+                            shape.face_ids.push(new_fid);
+                        }
+                    }
+                    repaired += 1;
+                }
+                Err(_) => {
+                    // Could not rebuild — the face is gone and putting it back is
+                    // not possible here, so let the caller's rollback handle it.
+                    return repaired;
+                }
+            }
+        }
+        repaired
+    }
+
     fn rebuild_face_to_shape_index(&mut self) {
         self.face_to_shape.clear();
         for (shape_id, shape) in &self.shapes {
@@ -4171,6 +4291,11 @@ impl Scene {
         if matches!(result, CommandResult::Error(_)) {
             return result;
         }
+        // A shape drawn past the edge of a face it overlaps leaves the shared
+        // part covered twice. That is repairable and the repair is the point of
+        // the draw, so do it before judging rather than rolling the draw back
+        // for a state the engine can fix.
+        self.subtract_double_covered_faces();
         let nm_after = self.mesh.collect_non_manifold_edges().len();
         let si_after = self.solid_overlap_count();
         let reject = |scene: &mut Self, msg: &str| -> CommandResult {
@@ -22737,12 +22862,15 @@ mod tests {
     /// Regression lock: the "선만 그려, 케이크는 알아서 나뉜다" auto-split
     /// behavior that ADR-176 enables by default.
     #[test]
-    /// A shape that straddles a solid face's boundary adds no non-manifold edge,
-    /// so the old edge-counting guard waved it through — and it landed on top of
-    /// the face it overlapped, two faces in the same place. Reject it, and leave
-    /// the mesh exactly as it was.
+    /// A shape that straddles a solid face's boundary used to land ON TOP of the
+    /// face it overlapped — two faces in the same place — so the guard refused it.
+    ///
+    /// It resolves now: the part beyond the edge becomes its own sheet, the part
+    /// over the face belongs to the face. What this pins is that the accepted
+    /// result is clean, since accepting a corrupt one would be worse than the
+    /// refusal it replaced.
     #[test]
-    fn draw_overlapping_a_solid_face_is_rejected_and_rolled_back() {
+    fn draw_straddling_a_solid_face_resolves_cleanly() {
         let mut scene = prod_scene();
         let solid = box_from_ground_rect(&mut scene);
         assert_eq!(solid, 6, "expected a 6-face box, got {solid}");
@@ -22754,12 +22882,12 @@ mod tests {
             width: 120.0,
             height: 120.0,
         });
-        assert!(matches!(r, CommandResult::Error(_)), "a shape lying on the top face must be refused");
-        assert_eq!(active_faces(&scene), solid, "the refused draw must leave no faces behind");
+        assert!(!matches!(r, CommandResult::Error(_)), "a straddling shape must be accepted now");
+        assert!(active_faces(&scene) > solid, "and must add the part beyond the edge");
         assert_eq!(
             scene.mesh.detect_self_intersections().count(),
             si_before,
-            "the refused draw must leave no overlap behind"
+            "with nothing lying on top of anything — that was the whole objection"
         );
     }
 
@@ -22854,11 +22982,14 @@ mod tests {
     }
 
     /// The other half of the pair: the same draw over a solid whose ground face
-    /// was added in one call — here the Box primitive — is still refused.
-    /// Recorded so a fix shows up as a failure rather than going unnoticed, and
-    /// so nobody reads the test above as covering both.
+    /// was added in one call — the Box primitive. It was refused while the drawn
+    /// solid's was accepted, which is what made "how the solid was built" look
+    /// like the dividing line.
+    ///
+    /// Both resolve now, and identically. What this pins is exactly that: the two
+    /// must not drift apart again.
     #[test]
-    fn the_same_draw_over_a_one_shot_face_is_still_refused() {
+    fn the_same_draw_over_a_one_shot_face_now_resolves_too() {
         let mut scene = prod_scene();
         let faces = scene
             .mesh
@@ -22871,12 +23002,12 @@ mod tests {
             normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
         });
         assert!(
-            matches!(r, CommandResult::Error(_)),
-            "if this now succeeds the primitive path was fixed — delete this test              and fold the case into a_shape_overlapping_a_drawn_solid_splits_three_ways"
+            !matches!(r, CommandResult::Error(_)),
+            "a one-shot solid must take the draw exactly as a drawn one does"
         );
-        // Refused safely: nothing left behind, nothing overlapping.
-        assert_eq!(active_faces(&scene), n);
-        assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
+        assert!(active_faces(&scene) > n, "and must add geometry");
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0,
+            "with nothing double-covered");
     }
 
     /// A slice leaves two solids resting against each other, so every segment of
@@ -23273,11 +23404,21 @@ mod tests {
         scene
     }
 
-    /// ADR-258 β-1 — a coplanar rect that PARTIALLY OVERLAPS a solid face
-    /// (crosses the box-top boundary) introduces a non-manifold edge → the
-    /// guard rolls back + rejects. The mesh is left exactly as the clean box.
+    /// ADR-258 β-1 held that a coplanar rectangle crossing a solid face's
+    /// boundary must be rejected — fail-closed, because the engine could not
+    /// resolve it and left a non-manifold edge behind.
+    ///
+    /// SUPERSEDED 2026-08-03 by explicit instruction: "입체면 밖으로 확장해서
+    /// 그리는 기능도 구현해야 합니다" — a shape must be drawable past a face's
+    /// edge. The engine can resolve it now: the part over the face splits it, the
+    /// part beyond becomes a sheet meeting the solid along a shared edge.
+    ///
+    /// So the assertion is inverted, and what it guards is the RESULT — that the
+    /// draw lands cleanly. Rejection is no longer the correct outcome, but a
+    /// corrupt acceptance would be worse than the old refusal, which is why every
+    /// property ADR-258 cared about is still checked here.
     #[test]
-    fn adr258_partial_overlap_imprint_rejected() {
+    fn adr258_partial_overlap_imprint_now_resolves() {
         let mut scene = adr258_solid_box();
         assert_eq!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 6, "clean box");
         assert!(scene.mesh.verify_face_invariants().is_valid());
@@ -23288,15 +23429,19 @@ mod tests {
             center: DVec3::new(20.0, 20.0, 100.0), normal: DVec3::Z, up: DVec3::Y,
             width: 100.0, height: 100.0,
         });
-        assert!(matches!(result, CommandResult::Error(_)),
-            "cross-boundary imprint must be rejected");
-        // mesh restored to the clean box — no non-manifold left behind.
-        assert_eq!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 6,
-            "restored to 6-face box after reject");
-        assert!(scene.mesh.collect_non_manifold_edges().is_empty(),
-            "no non-manifold after reject");
-        assert!(scene.mesh.verify_face_invariants().is_valid(),
-            "manifold valid after reject");
+        assert!(!matches!(result, CommandResult::Error(_)),
+            "a shape drawn past the face's edge must be accepted now");
+        assert!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count() > 6,
+            "and must actually add geometry");
+        // The one thing that must never come back: two faces in the same place.
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0,
+            "the part over the face belongs to one face, not two");
+        // The shared edge carries three faces — wall, cap, new sheet. That is the
+        // T-junction this engine permits, and it must be the ONLY complaint.
+        let nm = scene.mesh.collect_non_manifold_edges().len();
+        assert!(nm > 0, "a sheet meeting a solid shares an edge with it");
+        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), nm,
+            "the shared edges must be the sole objection");
     }
 
     /// ADR-258 β-1 — a coplanar rect fully CONTAINED in a solid face does NOT

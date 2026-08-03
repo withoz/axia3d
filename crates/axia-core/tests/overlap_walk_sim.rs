@@ -310,11 +310,16 @@ fn the_walk_only_proceeds_when_there_is_one_way_on() {
 /// litter, so removing it first would lose the one case that works. The tool
 /// path has to stand on its own first.
 ///
-/// That gives the remaining work a finish line: **when stripping the spares
-/// stops changing what the tool does, the accident is gone.** This test is that
-/// finish line, and it fails the day it is crossed.
+/// That gave the remaining work a finish line: **when stripping the spares stops
+/// changing what the tool does, the accident is gone.**
+///
+/// 2026-08-03 — crossed. The tool path stands on its own: with every spare
+/// stripped the extruded box behaves exactly like the one-shot box, and both
+/// accept the overlapping draw. So the litter is now purely leftover, and the
+/// follow-up is free to land: have the extrude stop allocating the spare pair,
+/// leaving one kind of solid. This test guards both halves of that claim.
 #[test]
-fn the_spare_is_leftover_and_the_tool_still_leans_on_it() {
+fn the_spare_is_leftover_and_the_tool_no_longer_leans_on_it() {
     // 1. Structure or leftover?
     let mut scene = prod();
     extruded_box(&mut scene);
@@ -367,7 +372,7 @@ fn the_spare_is_leftover_and_the_tool_still_leans_on_it() {
         "with the spares gone the two boxes must be indistinguishable to the tool"
     );
     assert!(
-        !ok_without,
-        "THE TOOL PATH NO LONGER NEEDS THE LEFTOVER — the remaining half of the          overlap fix is done. Delete this assertion, and have the extrude stop          allocating the spare pair so there is one kind of solid."
+        ok_without,
+        "the tool path leans on the leftover again — it used to, and the overlap          fix is what freed it. Whatever regressed, the two kinds of box are          telling different stories once more."
     );
 }
