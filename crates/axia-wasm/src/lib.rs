@@ -5711,6 +5711,41 @@ impl AxiaEngine {
         }
     }
 
+    /// Rebuild a member the file says is a line: the line itself, plus the
+    /// section its body was swept from.
+    ///
+    /// The outline comes back as an outline. A rectangle and a circle are
+    /// recognised so they read as "300×300" and "⌀200" rather than as a
+    /// four-sided and a sixty-four-sided polygon — the numbers are the same
+    /// either way, but a member should say what it is.
+    fn import_line_member(
+        &mut self,
+        el: &axia_ifc::ifc_geometry::ElementGeometry,
+        lm: &axia_ifc::ifc_geometry::LineMemberGeometry,
+    ) -> Option<axia_core::ShapeId> {
+        let profile = recognise_section(&lm.outline)?;
+        let cmd = axia_core::Command::DrawLineAsShape {
+            start: lm.start,
+            end: lm.end,
+            surface_normal: None,
+        };
+        let sid = match self.scene.execute(cmd) {
+            axia_core::commands::CommandResult::ShapeCreated(id) => axia_core::ShapeId::new(id),
+            _ => return None,
+        };
+        let eid = self.scene.shapes.get(&sid).and_then(|sh| sh.standalone_edge_id)?;
+        self.scene.set_edge_profile(eid, Some(profile)).ok()?;
+        if let Some(name) = &el.name {
+            if let Some(sh) = self.scene.shapes.get_mut(&sid) {
+                sh.name = name.clone();
+            }
+        }
+        if let Some(tag) = axia_ifc::IfcElementKind::from_tag(&el.ifc_type) {
+            self.scene.shape_element_kind.insert(sid, tag.tag().to_string());
+        }
+        Some(sid)
+    }
+
     /// A member that is a line with a section, ready for the exporter.
     ///
     /// `None` when the entity owns no standalone edge, when that edge is gone,
@@ -6015,6 +6050,7 @@ impl AxiaEngine {
 
         let before_verts = self.scene.mesh.vert_count();
         let before_faces = self.scene.mesh.face_count();
+        let before_edges = self.scene.mesh.edge_count();
 
         self.scene.transactions.begin();
         let before_snapshot = self.scene.scene_snapshot();
@@ -6026,6 +6062,18 @@ impl AxiaEngine {
         // rebuilt as scene groups once everything is in.
         let mut element_faces: Vec<(usize, Vec<axia_geo::FaceId>)> = Vec::new();
         for (ei, el) in g.elements.iter().enumerate() {
+            // A member the file says is a LINE comes back as one, with the
+            // section its body was swept from. Building the prism instead would
+            // be a faithful picture and a lost member: the line, its section and
+            // its quantities all gone, replaced by twelve faces.
+            if let Some(lm) = &el.line {
+                if self.import_line_member(el, lm).is_some() {
+                    element_faces.push((ei, Vec::new()));
+                    continue;
+                }
+                // Could not be rebuilt as a line — fall through and import the
+                // solid, which is what the file also draws.
+            }
             let mut mine: Vec<axia_geo::FaceId> = Vec::new();
             for f in &el.faces {
                 // A single closed-curve disk — a drawn circle / ellipse / spline
@@ -6108,7 +6156,15 @@ impl AxiaEngine {
         }
 
         let added_faces = self.scene.mesh.face_count().saturating_sub(before_faces);
-        if added_faces == 0 {
+        // A file of line members adds no faces at all — a column that is a line
+        // is an edge and a section, and counting faces would call that failure
+        // and throw the import away.
+        let added_lines = self
+            .scene
+            .mesh
+            .edge_count()
+            .saturating_sub(before_edges);
+        if added_faces == 0 && added_lines == 0 {
             // Nothing landed — restore rather than leave half-built vertices.
             self.scene.restore_scene_snapshot(&before_snapshot);
             self.scene.transactions.cancel();
@@ -15809,6 +15865,9 @@ mod line_member_export_tests {
         // 300 mm → 0.3 m, and the sweep is the line's own 3 m.
         assert!(step.contains(",0.3,0.3);"), "300×300 in metres:\n{step}");
         assert!(step.contains(",3.);"), "swept 3 m:\n{step}");
+        // And it says it is a line, so a reader does not have to guess.
+        assert!(step.contains("'Axis','Curve3D'"), "axis representation:
+{step}");
     }
 
     /// The same member once it has been given a material and become a property
@@ -15856,5 +15915,145 @@ mod line_member_export_tests {
         e.draw_line_as_shape(0.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0, 0.0);
         let step = e.export_ifc_model("Col".into());
         assert!(!step.contains("IFCRECTANGLEPROFILEDEF"), "nothing to sweep:\n{step}");
+    }
+}
+
+
+/// An outline read from a file, as the section it describes.
+///
+/// A four-cornered box with right angles is a rectangle; a many-sided ring
+/// whose corners are all the same distance from its centre is a circle. Anything
+/// else keeps its outline, which is exactly right for the structural shapes
+/// (I, T, U, L, C, Z) — they have no two numbers that describe them.
+fn recognise_section(outline: &[(f64, f64)]) -> Option<axia_core::profile::Profile> {
+    use axia_core::profile::Profile;
+    if outline.len() < 3 {
+        return None;
+    }
+    let cx = outline.iter().map(|p| p.0).sum::<f64>() / outline.len() as f64;
+    let cy = outline.iter().map(|p| p.1).sum::<f64>() / outline.len() as f64;
+
+    if outline.len() == 4 {
+        let d = |i: usize, j: usize| {
+            let (a, b) = (outline[i], outline[j]);
+            ((b.0 - a.0).hypot(b.1 - a.1), (b.0 - a.0, b.1 - a.1))
+        };
+        let (l0, e0) = d(0, 1);
+        let (l1, e1) = d(1, 2);
+        let (l2, _) = d(2, 3);
+        let (l3, _) = d(3, 0);
+        let square = (e0.0 * e1.0 + e0.1 * e1.1).abs() < 1e-6 * l0.max(l1).max(1.0);
+        if square && (l0 - l2).abs() < 1e-6 && (l1 - l3).abs() < 1e-6 && l0 > 0.0 && l1 > 0.0 {
+            return Some(Profile::Rectangular { width: l0, height: l1 });
+        }
+    }
+
+    if outline.len() >= 8 {
+        let radii: Vec<f64> = outline.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
+        let r0 = radii[0];
+        if r0 > 0.0 && radii.iter().all(|r| (r - r0).abs() < r0 * 1e-3) {
+            // The corners sit on the circle, so the outline is a hair inside it;
+            // take the radius from the corners, which is what was written.
+            return Some(Profile::Circular { radius: r0 });
+        }
+    }
+
+    Some(Profile::Polygon { points: outline.to_vec() })
+}
+
+#[cfg(test)]
+mod line_member_roundtrip_tests {
+    use super::*;
+    use axia_core::profile::Profile;
+
+    /// Out as a line, back as a line. Before this a column went out as a swept
+    /// section and came home as a twelve-face prism: the right picture, and no
+    /// member left in it.
+    #[test]
+    fn a_column_survives_the_round_trip() {
+        let mut out = AxiaEngine::new();
+        out.draw_line_as_shape(0.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0, 0.0);
+        let eid = out.scene.shapes.values().find_map(|sh| sh.standalone_edge_id).unwrap();
+        out.scene
+            .set_edge_profile(eid, Some(Profile::Rectangular { width: 300.0, height: 300.0 }))
+            .unwrap();
+        let sid = *out.scene.shapes.keys().next().unwrap();
+        out.scene.shape_element_kind.insert(sid, "column".into());
+        let step = out.export_ifc_model("Col".into());
+
+        let mut back = AxiaEngine::new();
+        let report = back.import_ifc(step);
+        assert!(report.contains("\"ok\":true"), "{report}");
+
+        // One line, no prism.
+        assert_eq!(back.scene.mesh.face_count(), 0, "a line member draws no faces");
+        let edges: Vec<_> = back
+            .scene
+            .mesh
+            .edges
+            .iter()
+            .filter(|(_, e)| e.is_active())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(edges.len(), 1, "one line came back");
+
+        // Its section, and its length.
+        let p = back.scene.edge_profile(edges[0]).expect("the section came back");
+        assert_eq!(*p, Profile::Rectangular { width: 300.0, height: 300.0 });
+        let e = back.scene.mesh.edges.get(edges[0]).unwrap();
+        let a = back.scene.mesh.vertex_pos(e.v_small()).unwrap();
+        let b = back.scene.mesh.vertex_pos(e.v_large()).unwrap();
+        assert!(((b - a).length() - 3000.0).abs() < 1e-6, "3 m: {a:?}→{b:?}");
+
+        // And it is still a column.
+        let sid = *back.scene.shapes.keys().next().unwrap();
+        assert_eq!(back.scene.shape_element_kind.get(&sid).map(|s| s.as_str()), Some("column"));
+    }
+
+    /// A round bar comes back round, not as a sixty-four-sided polygon.
+    #[test]
+    fn a_round_section_is_recognised_again() {
+        let mut out = AxiaEngine::new();
+        out.draw_line_as_shape(0.0, 0.0, 0.0, 2000.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let eid = out.scene.shapes.values().find_map(|sh| sh.standalone_edge_id).unwrap();
+        out.scene.set_edge_profile(eid, Some(Profile::Circular { radius: 100.0 })).unwrap();
+        let step = out.export_ifc_model("Bar".into());
+
+        let mut back = AxiaEngine::new();
+        back.import_ifc(step);
+        let e = back.scene.mesh.edges.iter().find(|(_, e)| e.is_active()).map(|(i, _)| i).unwrap();
+        match back.scene.edge_profile(e) {
+            Some(Profile::Circular { radius }) => {
+                assert!((radius - 100.0).abs() < 1.0, "⌀200 within a millimetre: {radius}")
+            }
+            other => panic!("expected a round section, got {other:?}"),
+        }
+    }
+
+    /// A wall is not a line and must not be turned into one — it has no Axis.
+    #[test]
+    fn a_solid_member_still_imports_as_a_solid() {
+        let mut out = AxiaEngine::new();
+        // Built on the mesh directly: the wasm-facing constructor reaches for a
+        // JS binding that is not there off-target.
+        out.scene
+            .mesh
+            .create_box(
+                glam::DVec3::new(0.0, 0.0, 500.0),
+                1000.0,
+                200.0,
+                1000.0,
+                axia_core::FORM_MATERIAL,
+            )
+            .unwrap();
+        let step = out.export_ifc_model("Wall".into());
+
+        let mut back = AxiaEngine::new();
+        back.import_ifc(step);
+        assert!(back.scene.mesh.face_count() > 0, "the wall came back as a solid");
+        assert!(
+            back.scene.edge_profile.is_empty(),
+            "and nothing was mistaken for a section"
+        );
     }
 }

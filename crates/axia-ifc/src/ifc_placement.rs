@@ -194,7 +194,7 @@ pub fn world_coordinate_system(file: &StepFile, scale: f64) -> Option<Placement>
 }
 
 /// `IfcCartesianPoint` → mm.
-fn cartesian_point(file: &StepFile, id: u32, scale: f64) -> Option<DVec3> {
+pub(crate) fn cartesian_point(file: &StepFile, id: u32, scale: f64) -> Option<DVec3> {
     let e = file.entity(id)?;
     if !e.tag.eq_ignore_ascii_case("IFCCARTESIANPOINT") {
         return None;

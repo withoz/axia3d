@@ -340,9 +340,33 @@ pub fn emit_ifc_model_with_openings(
                 StepValue::List(vec![StepValue::Ref(brep)]),
             ],
         );
+        // A member that is a line says so, the way IFC says it: an "Axis"
+        // representation carrying the line itself, beside the body swept from
+        // it. Without it a reader has only the swept solid and cannot tell a
+        // column that IS a line from a column modelled as a box — it would have
+        // to guess from the element type, and a box column is an IfcColumn too.
+        let mut reps = vec![StepValue::Ref(shape_rep)];
+        if let Some(lm) = &el.line {
+            let a = crate::ifc_common::pt(&mut w, lm.start * scale);
+            let b = crate::ifc_common::pt(&mut w, lm.end * scale);
+            let axis_poly = w.add(
+                "IFCPOLYLINE",
+                vec![StepValue::List(vec![StepValue::Ref(a), StepValue::Ref(b)])],
+            );
+            let axis_rep = w.add(
+                "IFCSHAPEREPRESENTATION",
+                vec![
+                    StepValue::Ref(sc.context),
+                    StepValue::Str("Axis".into()),
+                    StepValue::Str("Curve3D".into()),
+                    StepValue::List(vec![StepValue::Ref(axis_poly)]),
+                ],
+            );
+            reps.push(StepValue::Ref(axis_rep));
+        }
         let prod_def = w.add(
             "IFCPRODUCTDEFINITIONSHAPE",
-            vec![StepValue::Unset, StepValue::Unset, StepValue::List(vec![StepValue::Ref(shape_rep)])],
+            vec![StepValue::Unset, StepValue::Unset, StepValue::List(reps)],
         );
         // The eight attributes every IfcElement has, then whatever this kind
         // adds. A door or a window takes thirteen, not nine — emitting them in
