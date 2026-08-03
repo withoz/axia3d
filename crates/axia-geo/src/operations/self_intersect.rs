@@ -200,6 +200,45 @@ impl Mesh {
         SelfIntersectionReport { intersecting_pairs: pairs }
     }
 
+    /// Boundary polygon of one loop, in order.
+    ///
+    /// A loop normally has one vertex per corner, but an ADR-089 Path B closed
+    /// curve is a single self-loop half-edge on ONE anchor vertex — a circle,
+    /// ellipse, or closed spline carries its shape in the edge's `AnalyticCurve`,
+    /// not in the vertex ring. Reading only the vertices leaves such a loop with
+    /// one point, so the caller used to give up on the whole face and the
+    /// self-intersection scan never saw it. Since a kernel-native circle is the
+    /// production default for the circle tools, that blind spot sat exactly where
+    /// most curved geometry lives. Sample the curve instead when the ring is too
+    /// short to be a polygon.
+    fn loop_boundary_positions(&self, start: crate::HeId) -> Option<Vec<DVec3>> {
+        let verts = self.collect_loop_verts(start).ok()?;
+        if verts.len() >= 3 {
+            return Some(
+                verts.iter().map(|&v| self.vertex_pos(v).unwrap_or(DVec3::ZERO)).collect(),
+            );
+        }
+        // Fall back to the analytic curve carried by the loop's single edge.
+        use crate::curves::CurveOps;
+        let edge = self.edges.get(self.hes.get(start)?.edge())?;
+        let curve = edge.curve()?;
+        // Chord tolerance follows the render path (LOCKED #40): fine enough that
+        // the sampled polygon does not report a false overlap against a straight
+        // neighbour, coarse enough to stay cheap.
+        let pts = curve.tessellate(0.02, self).ok()?;
+        // `tessellate` returns a closed polyline (last point repeats the first).
+        let pts = match pts.split_last() {
+            Some((last, head)) if head.first().map_or(false, |f| f.abs_diff_eq(*last, 1e-9)) => {
+                head.to_vec()
+            }
+            _ => pts,
+        };
+        if pts.len() < 3 {
+            return None;
+        }
+        Some(pts)
+    }
+
     /// Tessellate a face's outer loop (with holes) into 3D triangles via earcut.
     /// `None` if the face is degenerate / untriangulable.
     fn tessellate_face_geom(&self, fid: FaceId) -> Option<FaceGeom> {
@@ -208,18 +247,13 @@ impl Mesh {
             return None;
         }
         let outer = self.collect_loop_verts(face.outer().start).ok()?;
-        if outer.len() < 3 {
-            return None;
-        }
+        let outer_pos = self.loop_boundary_positions(face.outer().start)?;
 
         // Face normal (skip degenerate faces — can't project reliably).
         let normal = face.normal().normalize_or_zero();
         if normal.length_squared() < 0.5 {
             return None;
         }
-
-        let outer_pos: Vec<DVec3> =
-            outer.iter().map(|&v| self.vertex_pos(v).unwrap_or(DVec3::ZERO)).collect();
 
         // Project the outer loop to 2D; reuse the SAME basis for holes.
         let (outer2d, u, v_axis, origin) = project_to_2d(&outer_pos, normal);
@@ -237,19 +271,22 @@ impl Mesh {
             if inner.start.is_null() {
                 continue;
             }
-            let hv = match self.collect_loop_verts(inner.start) {
-                Ok(v) if v.len() >= 3 => v,
-                _ => continue,
+            // Holes get the same treatment as the outer loop: a circular hole
+            // (ADR-185 annulus) is also a one-vertex self-loop.
+            let hp = match self.loop_boundary_positions(inner.start) {
+                Some(p) => p,
+                None => continue,
             };
             hole_indices.push(coords.len() / 2);
-            for &vid in &hv {
-                let p = self.vertex_pos(vid).unwrap_or(DVec3::ZERO);
+            for &p in &hp {
                 let rel = p - origin;
                 coords.push(rel.dot(u));
                 coords.push(rel.dot(v_axis));
                 pos3d.push(p);
             }
-            all_verts.extend(hv);
+            if let Ok(hv) = self.collect_loop_verts(inner.start) {
+                all_verts.extend(hv);
+            }
         }
 
         let idx = crate::mesh::earcut_safe(&coords, &hole_indices, 2)?;
@@ -767,6 +804,71 @@ mod tests {
         let b3 = m.add_vertex(DVec3::new(0.0, 10.0, 100.0));
         m.add_face(&[b0, b1, b2, b3], mat).unwrap();
 
+        assert!(m.detect_self_intersections().is_clean());
+    }
+
+    /// A kernel-native circle (ADR-089 Path B) is ONE self-loop half-edge on one
+    /// anchor vertex, so reading only the vertex ring gives a single point. The
+    /// detector used to bail on such a face, which meant the production default
+    /// representation for circles was invisible to it: a disk could lie flat on
+    /// top of an overlapping square and the scan reported "clean".
+    #[test]
+    fn closed_curve_face_is_visible_to_the_scan() {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        // A square on z=0.
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(100.0, 100.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 100.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        // A kernel-native circle overlapping it, on the same plane. Its centre is
+        // inside the square and it shares no vertex with it.
+        let anchor = m.add_vertex(DVec3::new(80.0, 50.0, 0.0));
+        let f = m
+            .add_face_closed_curve(
+                anchor,
+                crate::curves::AnalyticCurve::Circle {
+                    center: DVec3::new(50.0, 50.0, 0.0),
+                    radius: 30.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                mat,
+            )
+            .expect("closed-curve face");
+        assert!(m.faces[f].is_active());
+        let report = m.detect_self_intersections();
+        assert!(
+            !report.is_clean(),
+            "a disk lying on an overlapping square must be reported, got {}",
+            report.summary()
+        );
+    }
+
+    /// …and the fallback must not invent an overlap where there is none: the same
+    /// circle moved clear of the square is still clean.
+    #[test]
+    fn disjoint_closed_curve_face_stays_clean() {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a0 = m.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let a1 = m.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let a2 = m.add_vertex(DVec3::new(100.0, 100.0, 0.0));
+        let a3 = m.add_vertex(DVec3::new(0.0, 100.0, 0.0));
+        m.add_face(&[a0, a1, a2, a3], mat).unwrap();
+        let anchor = m.add_vertex(DVec3::new(530.0, 500.0, 0.0));
+        m.add_face_closed_curve(
+            anchor,
+            crate::curves::AnalyticCurve::Circle {
+                center: DVec3::new(500.0, 500.0, 0.0),
+                radius: 30.0,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+            },
+            mat,
+        )
+        .expect("closed-curve face");
         assert!(m.detect_self_intersections().is_clean());
     }
 }
