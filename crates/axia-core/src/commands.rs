@@ -151,6 +151,24 @@ pub enum Command {
         surface_normal: Option<DVec3>,
     },
 
+    /// 면을 따라 그리기 — a line that follows the solid instead of cutting
+    /// through it.
+    ///
+    /// `DrawLineAsShape` resolves onto one plane, so two points on two different
+    /// faces are joined by a chord through the interior: it touches neither
+    /// face, and neither face is divided. This variant asks the mesh for the
+    /// route that stays on the surface (`Mesh::path_along_surface`) and draws
+    /// each leg in the face it belongs to, so the drawn line bends over the
+    /// shared edge and each face is cut by its own leg.
+    ///
+    /// Both endpoints must lie on the solid. When they sit on the same face this
+    /// is exactly `DrawLineAsShape`. When no surface route is found the reason
+    /// comes back as an error rather than silently falling back to a chord.
+    DrawLineAlongSurface {
+        start: DVec3,
+        end: DVec3,
+    },
+
     /// ADR-219 — Draw a standalone construction Point as a form-layer Shape.
     ///
     /// A Point is a Form-citizen Shape (ADR-049/050 Q1=B) owning a single

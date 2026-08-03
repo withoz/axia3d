@@ -4368,6 +4368,9 @@ impl Scene {
             Command::DrawLineAsShape { start, end, surface_normal } => {
                 self.exec_draw_line_as_shape(start, end, surface_normal)
             }
+            Command::DrawLineAlongSurface { start, end } => {
+                self.exec_draw_line_along_surface(start, end)
+            }
             Command::DrawPointAsShape { pos } => {
                 self.exec_draw_point_as_shape(pos)
             }
@@ -7458,6 +7461,92 @@ impl Scene {
     ///
     /// **ADR-050 P-5e-γ collapse**: single transaction via
     /// `replace_last_after_snapshot` — Undo 1회로 pre-line 복원.
+    /// 면을 따라 그리기 — draw the route that stays on the solid.
+    ///
+    /// The chord between two points on different faces passes through the
+    /// interior and divides nothing. `Mesh::path_along_surface` returns the
+    /// route that bends over the shared edge instead; each leg is then drawn in
+    /// its own face's plane, so each face is cut by the part of the line that
+    /// crosses it.
+    ///
+    /// The legs go down one at a time through the ordinary draw, which means
+    /// each one gets the usual splitting and face synthesis. They share a single
+    /// transaction so the whole path is one undo, and if a later leg fails the
+    /// earlier ones are rolled back rather than left as a half-drawn line.
+    fn exec_draw_line_along_surface(&mut self, start: DVec3, end: DVec3) -> CommandResult {
+        use axia_geo::operations::surface_path::NoPath;
+
+        // The endpoints name their own faces. A point exactly on an edge belongs
+        // to several faces at once; taking the first is fine here because the
+        // path then starts at a bend anyway.
+        let tol = 1e-3;
+        let (fa, fb) = match (
+            self.mesh.find_surface_face(start, tol),
+            self.mesh.find_surface_face(end, tol),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            (None, _) => {
+                return CommandResult::Error(
+                    "시작점이 입체 표면 위에 있지 않습니다".to_string(),
+                )
+            }
+            (_, None) => {
+                return CommandResult::Error(
+                    "끝점이 입체 표면 위에 있지 않습니다".to_string(),
+                )
+            }
+        };
+
+        let path = match self.mesh.path_along_surface(start, fa, end, fb) {
+            Ok(p) => p,
+            Err(why) => {
+                let msg = match why {
+                    NoPath::NotAdjacent => {
+                        "두 점이 맞닿지 않은 면 위에 있습니다 (사이 면을 지나는 경로는 아직 없습니다)"
+                    }
+                    NoPath::LeavesThroughAnotherEdge => {
+                        "경로가 세 번째 면을 지나갑니다 (아직 두 면까지만 따라갑니다)"
+                    }
+                    NoPath::EndpointOffItsFace => "점이 그 면 위에 있지 않습니다",
+                    NoPath::NoSuchFace => "면을 찾을 수 없습니다",
+                    NoPath::Degenerate => "두 점이 너무 가깝거나 면이 퇴화했습니다",
+                };
+                return CommandResult::Error(msg.to_string());
+            }
+        };
+
+        // One transaction for the whole path.
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let before = self.scene_snapshot();
+
+        let mut last = CommandResult::Error("경로가 비어 있습니다".to_string());
+        for (i, leg) in path.points.windows(2).enumerate() {
+            let n = path
+                .faces
+                .get(i)
+                .and_then(|&f| self.mesh.faces.get(f))
+                .map(|f| f.normal().normalize_or_zero());
+            last = self.exec_draw_line_as_shape(leg[0], leg[1], n);
+            if let CommandResult::Error(e) = &last {
+                let msg = format!("면 따라 그리기 {}번째 구간 실패: {e}", i + 1);
+                self.restore_scene_snapshot(&before);
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                return CommandResult::Error(msg);
+            }
+        }
+
+        if own_transaction {
+            self.transactions.commit();
+        }
+        last
+    }
+
     fn exec_draw_line_as_shape(
         &mut self,
         start: DVec3,
