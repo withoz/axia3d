@@ -913,6 +913,31 @@ impl AxiaEngine {
         }
     }
 
+    /// Turn a line's section about the line, in DEGREES.
+    ///
+    /// Degrees at this boundary because that is what the user types; the engine
+    /// keeps radians. Zero is the level default — width across, height upright.
+    /// Refused on a line with no section, with the reason in last_error.
+    #[wasm_bindgen(js_name = "setEdgeRoll")]
+    pub fn set_edge_roll(&mut self, edge_id: u32, degrees: f64) -> bool {
+        match self
+            .scene
+            .set_edge_roll(axia_geo::EdgeId::new(edge_id), degrees.to_radians())
+        {
+            Ok(()) => true,
+            Err(e) => {
+                self.set_error(e.to_string());
+                false
+            }
+        }
+    }
+
+    /// How far a line's section is turned, in DEGREES. Zero when it never was.
+    #[wasm_bindgen(js_name = "getEdgeRoll")]
+    pub fn get_edge_roll(&self, edge_id: u32) -> f64 {
+        self.scene.edge_roll(axia_geo::EdgeId::new(edge_id)).to_degrees()
+    }
+
     /// Take a line's cross-section away. True if it had one.
     #[wasm_bindgen(js_name = "clearEdgeProfile")]
     pub fn clear_edge_profile(&mut self, edge_id: u32) -> bool {
@@ -5735,6 +5760,8 @@ impl AxiaEngine {
         };
         let eid = self.scene.shapes.get(&sid).and_then(|sh| sh.standalone_edge_id)?;
         self.scene.set_edge_profile(eid, Some(profile)).ok()?;
+        // After the section, because a line with nothing to turn is refused.
+        let _ = self.scene.set_edge_roll(eid, lm.roll);
         if let Some(name) = &el.name {
             if let Some(sh) = self.scene.shapes.get_mut(&sid) {
                 sh.name = name.clone();
@@ -5771,7 +5798,7 @@ impl AxiaEngine {
             Profile::Circular { radius } => SectionProfile::Circular { radius: *radius },
             Profile::Polygon { points } => SectionProfile::Polygon(points.clone()),
         };
-        Some(LineMember { start, end, profile })
+        Some(LineMember { start, end, profile, roll: self.scene.edge_roll(eid) })
     }
 
     #[wasm_bindgen(js_name = "exportIfcModel")]
@@ -15874,6 +15901,67 @@ mod line_member_export_tests {
         // And it says it is a line, so a reader does not have to guess.
         assert!(step.contains("'Axis','Curve3D'"), "axis representation:
 {step}");
+    }
+
+    /// A beam turned on its side goes out turned and comes home turned.
+    ///
+    /// The outline alone cannot say which way it faces — it is written in the
+    /// profile's own 2D frame, and how that frame sits in space is the sweep
+    /// placement's business. Measured before this: exported at 90°, imported at
+    /// 0°, so a member laid flat quietly stood back up on the way home.
+    #[test]
+    fn a_turned_section_survives_the_round_trip() {
+        let mut e = AxiaEngine::new();
+        // A 5 m beam along +X, 200 wide × 400 deep, laid on its side.
+        e.draw_line_as_shape(0.0, 0.0, 0.0, 5000.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let eid = e
+            .scene
+            .shapes
+            .values()
+            .find_map(|sh| sh.standalone_edge_id)
+            .expect("the line owns an edge");
+        e.scene
+            .set_edge_profile(eid, Some(Profile::Rectangular { width: 200.0, height: 400.0 }))
+            .expect("a 200×400 beam");
+        let quarter = std::f64::consts::FRAC_PI_2;
+        e.scene.set_edge_roll(eid, quarter).expect("laid on its side");
+        let step = e.export_ifc_model("Beam".into());
+
+        let mut back = AxiaEngine::new();
+        let report = back.import_ifc(step);
+        assert!(report.contains("\"ok\":true"), "{report}");
+        let back_eid = back
+            .scene
+            .shapes
+            .values()
+            .find_map(|sh| sh.standalone_edge_id)
+            .expect("a line came home");
+        assert!(
+            back.scene.edge_profile(back_eid).is_some(),
+            "and it came home with its section"
+        );
+        let got = back.scene.edge_roll(back_eid);
+        assert!(
+            (got - quarter).abs() < 1e-6,
+            "and still on its side: wanted {quarter}, got {got}"
+        );
+    }
+
+    /// A member left level comes home level — the reading is of the file, not a
+    /// default that happens to be right.
+    #[test]
+    fn a_level_section_comes_home_level() {
+        let mut e = AxiaEngine::new();
+        e.draw_line_as_shape(0.0, 0.0, 0.0, 5000.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let eid = e.scene.shapes.values().find_map(|sh| sh.standalone_edge_id).unwrap();
+        e.scene
+            .set_edge_profile(eid, Some(Profile::Rectangular { width: 200.0, height: 400.0 }))
+            .unwrap();
+        let step = e.export_ifc_model("Beam".into());
+        let mut back = AxiaEngine::new();
+        back.import_ifc(step);
+        let back_eid = back.scene.shapes.values().find_map(|sh| sh.standalone_edge_id).unwrap();
+        assert_eq!(back.scene.edge_roll(back_eid), 0.0);
     }
 
     /// The same member once it has been given a material and become a property

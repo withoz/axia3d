@@ -2325,4 +2325,8 @@ export const EN: Record<string, string> = {
   '이 솔리드 전체 선택': 'Select this whole solid',
   '닫힌 솔리드 안이 아닙니다': 'Not inside a closed solid',
   '솔리드 선택: {n}개 면': 'Solid selected: {n} faces',
+
+  // ── batch 13h — turning a line's section about the line ──
+  '단면을 선 둘레로 돌립니다. 0° = 폭은 가로, 높이는 세로.':
+    'Turns the section about the line. 0° = width across, height upright.',
 };

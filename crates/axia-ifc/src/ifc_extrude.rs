@@ -450,6 +450,10 @@ pub struct LineMember {
     pub start: DVec3,
     pub end: DVec3,
     pub profile: SectionProfile,
+    /// Which way the section faces about the line, in radians. Zero is level —
+    /// width across, height upright — which is what a member gets unless someone
+    /// says otherwise.
+    pub roll: f64,
 }
 
 /// Sweep a line member's section along its own length.
@@ -476,12 +480,34 @@ pub fn emit_line_member(
         return None;
     }
     let axis = span / depth;
-    // Square to the axis, preferring "up" so a column's section stays level.
-    let up = if axis.z.abs() > 0.999 { DVec3::X } else { DVec3::Z };
-    let ref_dir = (up - axis * up.dot(axis)).normalize_or_zero();
-    if ref_dir.length() < 0.5 {
-        return None;
-    }
+    // The section stands level: width across, height upright.
+    //
+    // The profile lies in the placement's local XY with width along RefDir, so
+    // RefDir has to be the HORIZONTAL one. Taking `up` squared to the axis put
+    // width vertical instead, and a 200×400 beam came out lying on its side —
+    // 200 tall, 400 across (measured). `Z × axis` is horizontal by construction,
+    // which leaves local Y = `axis × RefDir` = up squared to the axis. That is
+    // what the old comment already said it wanted.
+    //
+    // A vertical member has no horizontal `Z × axis`, and no preferred way round
+    // either — both of its section axes are horizontal — so it takes +X. Which
+    // way a section faces about its own axis is the user's to say, and it is not
+    // said yet: see `EdgeSection`.
+    let horizontal = DVec3::Z.cross(axis);
+    let level = if horizontal.length() > 1e-6 {
+        horizontal.normalize()
+    } else {
+        DVec3::X
+    };
+    // Turned about the line by however much the user asked for. Rodrigues, with
+    // the axis as the rotation axis, so the frame stays square and unit whatever
+    // the angle: an I-beam laid flat is a quarter turn from one stood upright.
+    let ref_dir = if member.roll.abs() < 1e-12 {
+        level
+    } else {
+        let (s, c) = member.roll.sin_cos();
+        (level * c + axis.cross(level) * s + axis * (axis.dot(level) * (1.0 - c))).normalize()
+    };
 
     let pos2d = identity_placement_2d(w);
     let profile = match &member.profile {

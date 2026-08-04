@@ -282,6 +282,37 @@ describe('WasmBridge', () => {
       delete eng.setEdgeProfile;
     });
 
+    it('setEdgeRoll() passes DEGREES through and marks the buffers dirty', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      const spy = vi.fn().mockReturnValue(true);
+      eng.setEdgeRoll = spy;
+      bridge.getMeshBuffers(); // clear the dirty flag
+
+      expect(bridge.setEdgeRoll(5, 90)).toBe(true);
+      expect(spy).toHaveBeenLastCalledWith(5, 90);
+      // The solid it sweeps changes shape, so the view has to be redrawn.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((bridge as any).bufferCache.dirty).toBe(true);
+
+      // A refusal (no section on that line) comes back as false, not a throw.
+      spy.mockReturnValue(false);
+      expect(bridge.setEdgeRoll(5, 90)).toBe(false);
+      delete eng.setEdgeRoll;
+    });
+
+    it('getEdgeRoll() reads degrees, and says zero when the engine cannot', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      eng.getEdgeRoll = vi.fn().mockReturnValue(90);
+      expect(bridge.getEdgeRoll(5)).toBe(90);
+      delete eng.getEdgeRoll;
+      // An older engine simply has no such call — level, not a crash.
+      expect(bridge.getEdgeRoll(5)).toBe(0);
+    });
+
     it('getEdgeProfile() returns null when the line carries nothing', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const eng = (bridge as any).engine;
