@@ -425,6 +425,21 @@ pub struct Scene {
     /// by the edge's raw id since `EdgeId` does not order.
     pub edge_profile: std::collections::BTreeMap<u32, crate::profile::EdgeSection>,
 
+    /// Which way that section FACES about the line's own axis, in radians.
+    ///
+    /// Zero is the level default the exporter picks — width across, height
+    /// upright — so an entry only exists where the user turned one. An I-beam
+    /// laid flat is the same section as one stood upright; only this differs.
+    ///
+    /// A separate map rather than a field on `EdgeSection` because that struct
+    /// is bincode-encoded into snapshot section 13, and bincode is positional:
+    /// a new field makes every existing file's section fail to decode, and every
+    /// line quietly lose the thickness it was given (ADR-091 §E L1 — this is why
+    /// that lock-in exists). Kept in step with `edge_profile` at the two places
+    /// that can separate them: `set_edge_profile(None)` clears it, and
+    /// `reconcile_edge_profiles` carries it to a crossed line's pieces.
+    pub edge_roll: std::collections::BTreeMap<u32, f64>,
+
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
     /// layer. Updated by `create_shape` (registration) and
@@ -585,6 +600,7 @@ impl Scene {
     pub fn new() -> Self {
         Self {
             edge_profile: std::collections::BTreeMap::new(),
+            edge_roll: std::collections::BTreeMap::new(),
             mesh: Mesh::new(),
             xias: HashMap::new(),
             face_to_xia: HashMap::new(),
@@ -781,6 +797,12 @@ impl Scene {
         let profiles_data = bincode::serialize(&self.edge_profile).unwrap_or_default();
         buf.extend_from_slice(&(profiles_data.len() as u64).to_le_bytes());
         buf.extend_from_slice(&profiles_data);
+        // Section roll — section 14 (additive). Which way each section faces
+        // about its line. Legacy snapshots truncate before this → every section
+        // restores at the level default, which is what they were saved with.
+        let roll_data = bincode::serialize(&self.edge_roll).unwrap_or_default();
+        buf.extend_from_slice(&(roll_data.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&roll_data);
         buf
     }
 
@@ -1117,6 +1139,34 @@ impl Scene {
         if !profiles_section_present {
             self.edge_profile.clear();
         }
+
+        // 14. Section roll — which way each section faces about its line.
+        //     Additive: a legacy snapshot truncates before this and every
+        //     section goes back to the level default.
+        let mut roll_section_present = false;
+        if offset + 8 <= data.len() {
+            let rlen = read_len(data, &mut offset);
+            if rlen > 0 && offset + rlen <= data.len() {
+                match bincode::deserialize::<std::collections::BTreeMap<u32, f64>>(
+                    &data[offset..offset + rlen],
+                ) {
+                    Ok(m) => {
+                        self.edge_roll = m;
+                        roll_section_present = true;
+                    }
+                    Err(e) => eprintln!(
+                        "[Scene] section 14 edge_roll deserialize failed: {e} (rlen={rlen}). Sections restore at the level default."
+                    ),
+                }
+                offset += rlen;
+            } else if rlen == 0 {
+                self.edge_roll.clear();
+                roll_section_present = true;
+            }
+        }
+        if !roll_section_present {
+            self.edge_roll.clear();
+        }
         let _ = offset;
 
         // 9. 역인덱스 재구축 (face_ids가 이제 직렬화되므로)
@@ -1381,6 +1431,8 @@ impl Scene {
         match profile {
             None => {
                 self.edge_profile.remove(&edge.raw());
+                // A roll with no section to turn is nothing at all.
+                self.edge_roll.remove(&edge.raw());
                 Ok(())
             }
             Some(p) => {
@@ -1442,6 +1494,8 @@ impl Scene {
         }
         for raw in stale {
             let Some(sec) = self.edge_profile.remove(&raw) else { continue };
+            // The dead line's roll goes with its section, or nothing does.
+            let roll = self.edge_roll.remove(&raw);
             // Its pieces: the live edges lying along the stretch it was given
             // for. A crossed column keeps its thickness on both halves.
             let heirs: Vec<u32> = self
@@ -1465,6 +1519,10 @@ impl Scene {
                     from: a,
                     to: b,
                 });
+                // A piece of a beam faces the way the beam faced.
+                if let Some(r) = roll {
+                    self.edge_roll.entry(h).or_insert(r);
+                }
             }
         }
     }
@@ -1472,6 +1530,36 @@ impl Scene {
     /// The cross-section this line carries, if it has been given one.
     pub fn edge_profile(&self, edge: axia_geo::EdgeId) -> Option<&crate::profile::Profile> {
         self.edge_profile.get(&edge.raw()).map(|s| &s.profile)
+    }
+
+    /// Turn this line's section about the line, in radians.
+    ///
+    /// Refused on a line with no section: there would be nothing to turn, and an
+    /// orphan entry would outlive the line it was meant for. Zero removes the
+    /// entry rather than storing it, so the level default stays the absence of a
+    /// choice instead of a value that happens to equal it.
+    pub fn set_edge_roll(&mut self, edge: axia_geo::EdgeId, radians: f64) -> Result<(), &'static str> {
+        if !self.edge_profile.contains_key(&edge.raw()) {
+            return Err("단면이 없는 선은 돌릴 것이 없습니다");
+        }
+        if !radians.is_finite() {
+            return Err("회전 각이 수가 아닙니다");
+        }
+        // Wrapped, so a full turn is no turn and the stored value stays readable.
+        let full = std::f64::consts::TAU;
+        let r = radians.rem_euclid(full);
+        if r.abs() < 1e-12 || (full - r).abs() < 1e-12 {
+            self.edge_roll.remove(&edge.raw());
+        } else {
+            self.edge_roll.insert(edge.raw(), r);
+        }
+        Ok(())
+    }
+
+    /// Which way this line's section faces, in radians. Zero when it was never
+    /// turned — the level default.
+    pub fn edge_roll(&self, edge: axia_geo::EdgeId) -> f64 {
+        self.edge_roll.get(&edge.raw()).copied().unwrap_or(0.0)
     }
 
     pub fn create_shape(&mut self, name: String, face_ids: Vec<FaceId>) -> crate::ShapeId {

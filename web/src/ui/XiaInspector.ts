@@ -372,6 +372,8 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     w: document.getElementById('xi-section-w') as HTMLInputElement | null,
     h: document.getElementById('xi-section-h') as HTMLInputElement | null,
     d: document.getElementById('xi-section-d') as HTMLInputElement | null,
+    rollWrap: document.getElementById('xi-section-roll-wrap') as HTMLElement | null,
+    roll: document.getElementById('xi-section-roll') as HTMLInputElement | null,
   });
 
   const hideSectionControl = (): void => {
@@ -397,6 +399,10 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     } else if (kind === 'circular') {
       if (el.d) el.d.value = String((p?.radius ?? 0) * 2);
     }
+    // A round section has no way round, so there is nothing to ask about.
+    const turnable = kind === 'rectangular';
+    if (el.rollWrap) el.rollWrap.style.display = turnable ? 'inline-flex' : 'none';
+    if (el.roll && turnable) el.roll.value = String(Math.round(bridge.getEdgeRoll?.(edgeId) ?? 0));
     // An outline arriving from a file has no editable dimensions here, but it
     // still has an area, and the panel should say so rather than show zero.
     return p ? { area: p.area, width: p.width, height: p.height, radius: p.radius } : null;
@@ -410,6 +416,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     const kind = el.kind.value;
     if (el.rect) el.rect.style.display = kind === 'rectangular' ? 'inline-flex' : 'none';
     if (el.circ) el.circ.style.display = kind === 'circular' ? 'inline-flex' : 'none';
+    if (el.rollWrap) el.rollWrap.style.display = kind === 'rectangular' ? 'inline-flex' : 'none';
 
     let ok = false;
     if (kind === 'none') {
@@ -423,6 +430,11 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
       const d = Number(el.d?.value ?? 0);
       ok = d > 0 && (bridge.setEdgeProfile?.(edgeId, { kind: 'circular', radius: d / 2 }) ?? false);
     }
+    if (ok && kind === 'rectangular') {
+      // After the section, never before: a line with nothing to turn is refused.
+      const deg = Number(el.roll?.value ?? 0);
+      if (Number.isFinite(deg)) bridge.setEdgeRoll?.(edgeId, deg);
+    }
     if (!ok && kind !== 'none') {
       // Half-typed dimensions are the normal state while typing, so this only
       // speaks up when the engine refused something complete.
@@ -434,7 +446,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     updateInspector(toolManager.selection.getSelectedFaces());
   };
 
-  for (const id of ['xi-section-kind', 'xi-section-w', 'xi-section-h', 'xi-section-d']) {
+  for (const id of ['xi-section-kind', 'xi-section-w', 'xi-section-h', 'xi-section-d', 'xi-section-roll']) {
     document.getElementById(id)?.addEventListener('change', applySectionFromControl);
   }
 

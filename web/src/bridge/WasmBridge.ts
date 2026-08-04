@@ -1135,6 +1135,41 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * Turn a line's section about the line, in DEGREES.
+   *
+   * Zero is level — width across, height upright — which is what a member gets
+   * unless someone says otherwise. An I-beam laid flat is a quarter turn from
+   * one stood upright. Returns false on a line with no section to turn, with
+   * the reason in `lastError()`.
+   */
+  setEdgeRoll(edgeId: number, degrees: number): boolean {
+    if (!this.engine) return false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).setEdgeRoll;
+    if (!fn) return false;
+    this.markDirty();
+    try {
+      return fn.call(this.engine, edgeId, degrees);
+    } catch (e) {
+      console.error('[WasmBridge] setEdgeRoll failed:', e);
+      return false;
+    }
+  }
+
+  /** How far a line's section is turned, in degrees. Zero when it never was. */
+  getEdgeRoll(edgeId: number): number {
+    if (!this.engine) return 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).getEdgeRoll;
+    if (!fn) return 0;
+    try {
+      return fn.call(this.engine, edgeId) as number;
+    } catch {
+      return 0;
+    }
+  }
+
   /** Take a line's cross-section away. True if it had one. */
   clearEdgeProfile(edgeId: number): boolean {
     if (!this.engine) return false;

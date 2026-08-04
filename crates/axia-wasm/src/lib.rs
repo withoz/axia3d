@@ -913,6 +913,31 @@ impl AxiaEngine {
         }
     }
 
+    /// Turn a line's section about the line, in DEGREES.
+    ///
+    /// Degrees at this boundary because that is what the user types; the engine
+    /// keeps radians. Zero is the level default — width across, height upright.
+    /// Refused on a line with no section, with the reason in last_error.
+    #[wasm_bindgen(js_name = "setEdgeRoll")]
+    pub fn set_edge_roll(&mut self, edge_id: u32, degrees: f64) -> bool {
+        match self
+            .scene
+            .set_edge_roll(axia_geo::EdgeId::new(edge_id), degrees.to_radians())
+        {
+            Ok(()) => true,
+            Err(e) => {
+                self.set_error(e.to_string());
+                false
+            }
+        }
+    }
+
+    /// How far a line's section is turned, in DEGREES. Zero when it never was.
+    #[wasm_bindgen(js_name = "getEdgeRoll")]
+    pub fn get_edge_roll(&self, edge_id: u32) -> f64 {
+        self.scene.edge_roll(axia_geo::EdgeId::new(edge_id)).to_degrees()
+    }
+
     /// Take a line's cross-section away. True if it had one.
     #[wasm_bindgen(js_name = "clearEdgeProfile")]
     pub fn clear_edge_profile(&mut self, edge_id: u32) -> bool {
@@ -5771,7 +5796,7 @@ impl AxiaEngine {
             Profile::Circular { radius } => SectionProfile::Circular { radius: *radius },
             Profile::Polygon { points } => SectionProfile::Polygon(points.clone()),
         };
-        Some(LineMember { start, end, profile })
+        Some(LineMember { start, end, profile, roll: self.scene.edge_roll(eid) })
     }
 
     #[wasm_bindgen(js_name = "exportIfcModel")]

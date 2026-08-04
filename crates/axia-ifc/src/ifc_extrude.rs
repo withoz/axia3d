@@ -450,6 +450,10 @@ pub struct LineMember {
     pub start: DVec3,
     pub end: DVec3,
     pub profile: SectionProfile,
+    /// Which way the section faces about the line, in radians. Zero is level —
+    /// width across, height upright — which is what a member gets unless someone
+    /// says otherwise.
+    pub roll: f64,
 }
 
 /// Sweep a line member's section along its own length.
@@ -490,10 +494,19 @@ pub fn emit_line_member(
     // way a section faces about its own axis is the user's to say, and it is not
     // said yet: see `EdgeSection`.
     let horizontal = DVec3::Z.cross(axis);
-    let ref_dir = if horizontal.length() > 1e-6 {
+    let level = if horizontal.length() > 1e-6 {
         horizontal.normalize()
     } else {
         DVec3::X
+    };
+    // Turned about the line by however much the user asked for. Rodrigues, with
+    // the axis as the rotation axis, so the frame stays square and unit whatever
+    // the angle: an I-beam laid flat is a quarter turn from one stood upright.
+    let ref_dir = if member.roll.abs() < 1e-12 {
+        level
+    } else {
+        let (s, c) = member.roll.sin_cos();
+        (level * c + axis.cross(level) * s + axis * (axis.dot(level) * (1.0 - c))).normalize()
     };
 
     let pos2d = identity_placement_2d(w);

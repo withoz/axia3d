@@ -19,13 +19,20 @@ use axia_ifc::step_writer::StepWriter;
 use glam::DVec3;
 use std::collections::HashMap;
 
-/// The placement's (Axis, RefDir), read back out of the emitted file.
+/// The placement's (Axis, RefDir) for a level section, read back out of the
+/// emitted file.
 fn emitted_frame(start: DVec3, end: DVec3, w: f64, h: f64) -> (DVec3, DVec3) {
+    emitted_frame_rolled(start, end, w, h, 0.0)
+}
+
+/// The same, for a section turned about its line.
+fn emitted_frame_rolled(start: DVec3, end: DVec3, w: f64, h: f64, roll: f64) -> (DVec3, DVec3) {
     let mut sw = StepWriter::new();
     let m = LineMember {
         start,
         end,
         profile: SectionProfile::Rectangular { width: w, height: h },
+        roll,
     };
     emit_line_member(&mut sw, &m, 0.001).expect("a member with a section is emitted");
     let step: String = sw.build();
@@ -141,6 +148,65 @@ fn a_member_of_no_length_is_refused() {
         start: DVec3::ZERO,
         end: DVec3::ZERO,
         profile: SectionProfile::Rectangular { width: 200.0, height: 400.0 },
+        roll: 0.0,
     };
     assert!(emit_line_member(&mut sw, &m, 0.001).is_none());
+}
+
+/// A quarter turn puts the depth across and the width upright — an I-beam laid
+/// flat. The engine stores the turn; this is the exporter honouring it.
+#[test]
+fn a_quarter_turn_lays_the_section_flat() {
+    let end = DVec3::new(5000.0, 0.0, 0.0);
+    let (axis, ref_dir) =
+        emitted_frame_rolled(DVec3::ZERO, end, BEAM_W, BEAM_H, std::f64::consts::FRAC_PI_2);
+    let local_y = axis.cross(ref_dir);
+    assert!(
+        (ref_dir.z.abs() - 1.0).abs() < 1e-9,
+        "the width now stands upright: {ref_dir:?}"
+    );
+    assert!(local_y.z.abs() < 1e-9, "and the depth lies across: {local_y:?}");
+    // Which is exactly the shape of the OLD defect — reachable now only when
+    // asked for, which is the difference between a bug and a choice.
+    let (w_up, h_up) = (BEAM_W * ref_dir.z.abs(), BEAM_H * local_y.z.abs());
+    assert!((w_up - BEAM_W).abs() < 1e-9 && h_up < 1e-9);
+}
+
+/// Any angle, not just the right ones — and the frame stays a frame.
+#[test]
+fn an_arbitrary_turn_stays_square_and_unit() {
+    let end = DVec3::new(5000.0, 0.0, 0.0);
+    for deg in [17.0_f64, 45.0, 123.0, 270.0, 359.5] {
+        let (axis, ref_dir) =
+            emitted_frame_rolled(DVec3::ZERO, end, BEAM_W, BEAM_H, deg.to_radians());
+        assert!((ref_dir.length() - 1.0).abs() < 1e-9, "{deg}°: {ref_dir:?}");
+        assert!(axis.dot(ref_dir).abs() < 1e-9, "{deg}°: square to the line");
+        // The section turned by exactly what was asked: the angle from level.
+        let level = DVec3::Z.cross(axis).normalize();
+        let cos = ref_dir.dot(level).clamp(-1.0, 1.0);
+        let got = cos.acos().to_degrees();
+        let want = if deg > 180.0 { 360.0 - deg } else { deg };
+        assert!((got - want).abs() < 1e-6, "{deg}° asked, {got}° written");
+    }
+}
+
+/// A round section has no way round, so turning it changes nothing anyone can
+/// see — but it must not change the FILE either, or a round column would differ by
+/// its own placement between two saves that mean the same thing.
+#[test]
+fn turning_a_round_section_writes_the_same_solid() {
+    let mut a = StepWriter::new();
+    let mut b = StepWriter::new();
+    let mk = |roll: f64| LineMember {
+        start: DVec3::ZERO,
+        end: DVec3::new(0.0, 0.0, 3000.0),
+        profile: SectionProfile::Circular { radius: 150.0 },
+        roll,
+    };
+    emit_line_member(&mut a, &mk(0.0), 0.001).unwrap();
+    emit_line_member(&mut b, &mk(std::f64::consts::FRAC_PI_2), 0.001).unwrap();
+    // The placement differs (it must — the frame really is turned), but the
+    // profile it sweeps is the same circle.
+    assert!(a.build().contains("IFCCIRCLEPROFILEDEF"));
+    assert!(b.build().contains("IFCCIRCLEPROFILEDEF"));
 }
