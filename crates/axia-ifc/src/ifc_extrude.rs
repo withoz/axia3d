@@ -476,12 +476,25 @@ pub fn emit_line_member(
         return None;
     }
     let axis = span / depth;
-    // Square to the axis, preferring "up" so a column's section stays level.
-    let up = if axis.z.abs() > 0.999 { DVec3::X } else { DVec3::Z };
-    let ref_dir = (up - axis * up.dot(axis)).normalize_or_zero();
-    if ref_dir.length() < 0.5 {
-        return None;
-    }
+    // The section stands level: width across, height upright.
+    //
+    // The profile lies in the placement's local XY with width along RefDir, so
+    // RefDir has to be the HORIZONTAL one. Taking `up` squared to the axis put
+    // width vertical instead, and a 200×400 beam came out lying on its side —
+    // 200 tall, 400 across (measured). `Z × axis` is horizontal by construction,
+    // which leaves local Y = `axis × RefDir` = up squared to the axis. That is
+    // what the old comment already said it wanted.
+    //
+    // A vertical member has no horizontal `Z × axis`, and no preferred way round
+    // either — both of its section axes are horizontal — so it takes +X. Which
+    // way a section faces about its own axis is the user's to say, and it is not
+    // said yet: see `EdgeSection`.
+    let horizontal = DVec3::Z.cross(axis);
+    let ref_dir = if horizontal.length() > 1e-6 {
+        horizontal.normalize()
+    } else {
+        DVec3::X
+    };
 
     let pos2d = identity_placement_2d(w);
     let profile = match &member.profile {
