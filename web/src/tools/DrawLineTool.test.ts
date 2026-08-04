@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import { DrawLineTool } from './DrawLineTool';
+import { Toast } from '../ui/Toast';
 
 vi.mock('../utils/debug', () => ({ debugLog: vi.fn() }));
 vi.mock('../ui/Toast', () => ({
@@ -109,6 +110,83 @@ describe('DrawLineTool', () => {
       tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3());
       tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
       expect(tool.isBusy()).toBe(false);
+    });
+  });
+
+  describe('면을 따라 그리기 (drawing along the solid)', () => {
+    /** Make the two clicks land on two different faces, with the second one
+     *  picking a point on the solid that is NOT on the first click's plane. */
+    function twoFaces(secondSurfacePoint: THREE.Vector3) {
+      let call = 0;
+      ctx.getFaceId = vi.fn(() => (call++ === 0 ? 7 : 9));
+      ctx.viewport.pick = vi.fn(() => ({
+        faceIndex: 0,
+        point: secondSurfacePoint.clone(),
+        face: { normal: new THREE.Vector3(0, 0, 1) },
+        object: null,
+      }));
+      ctx.bridge.drawLineAlongSurface = vi.fn().mockReturnValue(3);
+      ctx.bridge.lastError = vi.fn().mockReturnValue('');
+    }
+
+    it('routes to the surface path when the second click is on another face', () => {
+      const onWall = new THREE.Vector3(200, 100, 50);
+      twoFaces(onWall);
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(200, 100, 100));
+
+      // The point sent is the one picked ON the wall, not the one the state
+      // machine received (which was projected onto the top face's plane).
+      expect(ctx.bridge.drawLineAlongSurface).toHaveBeenCalledWith(
+        100, 100, 100, 200, 100, 50,
+      );
+      expect(ctx.bridge.drawLineAsShape).not.toHaveBeenCalled();
+      expect(ctx.syncMesh).toHaveBeenCalled();
+    });
+
+    it('leaves same-face drawing on the ordinary path', () => {
+      ctx.getFaceId = vi.fn().mockReturnValue(7); // both clicks, one face
+      ctx.viewport.pick = vi.fn(() => ({
+        faceIndex: 0,
+        point: new THREE.Vector3(150, 100, 100),
+        face: { normal: new THREE.Vector3(0, 0, 1) },
+        object: null,
+      }));
+      ctx.bridge.drawLineAlongSurface = vi.fn().mockReturnValue(3);
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(150, 100, 100));
+
+      expect(ctx.bridge.drawLineAlongSurface).not.toHaveBeenCalled();
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+    });
+
+    it('falls back to the ordinary line when the engine cannot follow', () => {
+      twoFaces(new THREE.Vector3(100, 100, 0));
+      ctx.bridge.drawLineAlongSurface = vi.fn().mockReturnValue(-1);
+      ctx.bridge.lastError = vi.fn().mockReturnValue('두 점이 맞닿지 않은 면 위에 있습니다');
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 0));
+
+      expect(ctx.bridge.drawLineAlongSurface).toHaveBeenCalled();
+      // Refused, so what the user could already do still happens.
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+      // And the engine's reason reaches the user. Asserting the text catches a
+      // wrong accessor name, which `?? ''` would otherwise swallow.
+      expect(Toast.info).toHaveBeenCalledWith(
+        expect.stringContaining('맞닿지 않은'), expect.anything(),
+      );
+    });
+
+    it('does nothing new when the engine has no such export', () => {
+      twoFaces(new THREE.Vector3(200, 100, 50));
+      delete (ctx.bridge as Record<string, unknown>).drawLineAlongSurface;
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(200, 100, 100));
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
     });
   });
 

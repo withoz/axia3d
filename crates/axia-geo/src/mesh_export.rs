@@ -418,7 +418,11 @@ impl Mesh {
             // emit tessellated triangle fan + analytic Plane normals.
             // Read-only (no mesh mutation; A-θ-β handles substitution
             // for Push-Pull). L-κ-1 / L-κ-3 / L-κ-4.
-            if loop_verts.len() == 1 {
+            // The fan below draws the whole disk, so it is only right when the
+            // face IS the whole disk. A closed-curve face that has since been
+            // given a hole (a ring drawn around a smaller shape) has to go the
+            // long way round, where the holes are honoured.
+            if loop_verts.len() == 1 && face.inners().is_empty() {
                 let outer_start = face.outer().start;
                 let edge_id = self.hes[outer_start].edge();
                 if let Some(edge_ref) = self.edges.get(edge_id) {
@@ -435,15 +439,17 @@ impl Mesh {
                         // `radius * 0.01`). For r=5 → 0.01mm → ~78 fan
                         // triangles (was ~22). ADR-135 β: analytic_chord_tol
                         // is now caller-provided (LOD-aware).
-                        let chord_tol = analytic_chord_tol.min(radius * 0.002).max(1e-6);
-                        let pts = crate::curves::circle::tessellate_full(
-                            center, radius, c_normal, basis_u, chord_tol,
-                        );
-                        if pts.len() < 4 {
+                        //
+                        // Through the shared flattener, so the fan and the
+                        // hole-aware path below cannot drift apart: the same
+                        // circle has to give the same rim either way.
+                        let Some(unique_pts) = self.closed_curve_loop_points(
+                            outer_start,
+                            analytic_chord_tol,
+                        ) else {
                             stats.outer_too_short += 1;
                             continue;
-                        }
-                        let unique_pts = &pts[..pts.len() - 1];
+                        };
                         let n_seg = unique_pts.len();
 
                         // Build vertex buffer: center + N rim verts.
@@ -466,7 +472,7 @@ impl Mesh {
                         normals.push(n_normal.z as f32);
 
                         // Emit N rim vertices (vert_offset + 1 .. vert_offset + N).
-                        for &p in unique_pts {
+                        for &p in &unique_pts {
                             positions.push(p.x as f32);
                             positions.push(p.y as f32);
                             positions.push(p.z as f32);
@@ -579,10 +585,35 @@ impl Mesh {
                 // < 3 skip.
             }
 
-            if loop_verts.len() < 3 {
+            // A closed curve as the OUTER boundary — flatten it to a polygon so
+            // the hole-aware triangulation below can read it.
+            let outer_curve_pts: Option<Vec<DVec3>> = if loop_verts.len() == 1 {
+                self.closed_curve_loop_points(face.outer().start, analytic_chord_tol)
+            } else {
+                None
+            };
+
+            if loop_verts.len() < 3 && outer_curve_pts.is_none() {
                 stats.outer_too_short += 1;
                 continue;
             }
+
+            // A one-vertex loop has no polygon to take a normal from, so the
+            // face's stored one can be degenerate here; fall back to the plane
+            // the flattened curve lies in.
+            let normal = match &outer_curve_pts {
+                Some(pts) if !(normal.is_finite() && normal.length_squared() > 1e-20) => {
+                    let mut n = DVec3::ZERO;
+                    for i in 0..pts.len() {
+                        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                        n.x += (a.y - b.y) * (a.z + b.z);
+                        n.y += (a.z - b.z) * (a.x + b.x);
+                        n.z += (a.x - b.x) * (a.y + b.y);
+                    }
+                    n.normalize_or_zero()
+                }
+                _ => normal,
+            };
 
             // Project to 2D for triangulation
             let (coord1, coord2) = Self::projection_axes(normal);
@@ -592,7 +623,19 @@ impl Mesh {
             let mut vert_normals: Vec<DVec3> = Vec::with_capacity(loop_verts.len());
 
             let mut skip_face = false;
+            if let Some(pts) = &outer_curve_pts {
+                for &p in pts {
+                    positions_3d.push(p);
+                    let arr = [p.x, p.y, p.z];
+                    coords_2d.push(arr[coord1]);
+                    coords_2d.push(arr[coord2]);
+                    vert_normals.push(normal);
+                }
+            }
             for (i, &vid) in loop_verts.iter().enumerate() {
+                if outer_curve_pts.is_some() {
+                    break; // the flattened curve above IS the outer boundary
+                }
                 // ADR-186 — arc edge fill sampling. If the HE ending at this
                 // vertex carries an Arc curve, insert its interior points
                 // (origin→dst) BEFORE the endpoint so the fill follows the
@@ -655,59 +698,12 @@ impl Mesh {
                 // engine 은 smooth self-loop edge 보존). 미처리 시 rect 가 hole
                 // 없이 full 삼각화 → "면분할 안 보임" 회귀.
                 if inner_verts.len() < 3 {
-                    let edge_id = self.hes[inner_ref.start].edge();
-                    // ADR-186 A2 — freeform closed curve hole tessellate (closing dup drop).
-                    fn dedup_closed(pts: Vec<DVec3>) -> Option<Vec<DVec3>> {
-                        if pts.len() < 4 {
-                            return None;
-                        }
-                        let uniq = if (pts[0] - pts[pts.len() - 1]).length()
-                            < crate::tolerances::EPSILON_LENGTH
-                        {
-                            pts[..pts.len() - 1].to_vec()
-                        } else {
-                            pts
-                        };
-                        if uniq.len() >= 3 {
-                            Some(uniq)
-                        } else {
-                            None
-                        }
-                    }
-                    let circ_pts: Option<Vec<DVec3>> = self.edges.get(edge_id).and_then(|e| {
-                        match e.curve().cloned() {
-                            Some(crate::curves::AnalyticCurve::Circle {
-                                center, radius, normal: c_normal, basis_u,
-                            }) => {
-                                let ct = analytic_chord_tol.min(radius * 0.002).max(1e-6);
-                                let pts = crate::curves::circle::tessellate_full(
-                                    center, radius, c_normal, basis_u, ct,
-                                );
-                                if pts.len() >= 4 { Some(pts[..pts.len() - 1].to_vec()) } else { None }
-                            }
-                            // ADR-186 A2 — Bezier/BSpline/NURBS hole (outer fast-path 답습).
-                            Some(crate::curves::AnalyticCurve::Bezier { control_pts }) => {
-                                crate::curves::bezier::tessellate(&control_pts, analytic_chord_tol)
-                                    .ok()
-                                    .and_then(dedup_closed)
-                            }
-                            Some(crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree }) => {
-                                crate::curves::bspline::tessellate(
-                                    &control_pts, &knots, degree as usize, analytic_chord_tol,
-                                )
-                                .ok()
-                                .and_then(dedup_closed)
-                            }
-                            Some(crate::curves::AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
-                                crate::curves::nurbs::tessellate(
-                                    &control_pts, &weights, &knots, degree as usize, analytic_chord_tol,
-                                )
-                                .ok()
-                                .and_then(dedup_closed)
-                            }
-                            _ => None,
-                        }
-                    });
+                    // A curved hole (a circle drawn inside a rect, a ring's own
+                    // rim) is one self-loop half-edge; flatten it, or the face
+                    // triangulates straight over the hole and the split stops
+                    // being visible.
+                    let circ_pts =
+                        self.closed_curve_loop_points(inner_ref.start, analytic_chord_tol);
                     if let Some(mut pts) = circ_pts {
                         pts.reverse(); // hole 은 outer(CCW)와 반대 winding (CW)
                         hole_indices.push(coords_2d.len() / 2);
@@ -914,6 +910,20 @@ impl Mesh {
         // the cleanup without also clearing the list.
         debug_assert!(self.last_export_empty_faces.borrow().is_empty());
         n
+    }
+
+    /// The polygon a closed curve stands for, at this chord tolerance.
+    ///
+    /// A closed curve is ONE self-loop half-edge (ADR-089 Phase 2), so anything
+    /// downstream that wants a polygon — the hole list, the triangulator — reads
+    /// a single vertex and gives up. This flattens it. Returns the unique points
+    /// (no closing duplicate), or `None` if the edge carries no closed curve.
+    fn closed_curve_loop_points(&self, start: crate::HeId, chord_tol: f64) -> Option<Vec<DVec3>> {
+        // Render policy: the caller's LOD tolerance (ADR-135), capped by the
+        // radius so a small circle still looks round. Finer than anything else
+        // asks for, which is why a ring and the disk inside it must both come
+        // through here — they share the rim they are cut along.
+        self.loop_polygon(start, crate::mesh::ChordTol::scaled(chord_tol, 0.002, 1e-6))
     }
 
     /// Choose the best 2D projection axes based on the face normal.

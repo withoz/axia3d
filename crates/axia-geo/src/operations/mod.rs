@@ -20,6 +20,7 @@ pub mod transform;
 pub mod offset;
 pub mod primitives;
 pub mod face_split;
+pub mod surface_path;  // 면을 따라 그리기 — a path that follows the solid across shared edges
 pub mod mirror;
 pub mod revolve;
 pub mod loft;

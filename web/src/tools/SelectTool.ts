@@ -38,6 +38,8 @@ export function sameHoverOwner(a: HoverTarget, b: HoverTarget): boolean {
 
 export class SelectTool implements ITool {
   readonly name = 'select';
+  /** Alt on a click removes from the selection (SelectionManager). */
+  readonly handlesAltClick = true;
   // Select uses pickEdgeOrFace (BVH raycast); snap markers are visual noise here.
   readonly wantsSnap = false;
 

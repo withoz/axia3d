@@ -296,9 +296,9 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   // could only ever produce a silent no-op. It stays in ActionCatalog — it is
   // a real right-click item, so it keeps its identity (ADR-133: AC = identity,
   // CC = dispatch), it just has nothing for a dispatch surface to call.
-  cmds.push(action('axis',           'snap', '축 스냅',            'Axis',   undefined, false, deps));
-  cmds.push(action('grid',           'snap', '그리드 스냅',         'Grid',   undefined, false, deps));
-  cmds.push(action('edge',           'snap', '엣지 스냅',          'Edge',   undefined, false, deps));
+  cmds.push(action('axis',           'snap', '축 표시',            'Axis',   undefined, false, deps));
+  cmds.push(action('grid',           'snap', '그리드 표시',         'Grid',   undefined, false, deps));
+  cmds.push(action('edge',           'snap', '엣지 표시',          'Edge',   undefined, false, deps));
 
   // ── File ────────────────────────────────────────────────────────
   cmds.push(action('file-new',     'file', '새 파일',     'New',     'Ctrl+N',      false, deps));

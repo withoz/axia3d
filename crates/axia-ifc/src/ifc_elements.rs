@@ -302,8 +302,8 @@ mod tests {
         emit_ifc_model(
             &mesh,
             &[
-                IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a },
-                IfcElement { name: "Wall B".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b },
+                IfcElement { name: "Wall A".into(), material_name: Some("Concrete".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: a, line: None },
+                IfcElement { name: "Wall B".into(), material_name: None, material_style: None, kind: crate::IfcElementKind::Wall, face_ids: b, line: None },
             ],
             0.001,
             "House",
@@ -458,8 +458,7 @@ END-ISO-10303-21;
             &[IfcElement {
                 name: "벽체".into(),
                 material_name: Some("강철".into()), material_style: None,
-                kind: crate::IfcElementKind::Wall, face_ids: faces,
-            }],
+                kind: crate::IfcElementKind::Wall, face_ids: faces, line: None }],
             0.001,
             "House",
         )

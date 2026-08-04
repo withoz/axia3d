@@ -37,7 +37,12 @@ fn scene_slice_creates_two_xias() {
     let face_ids: Vec<_> = scene.xias[&original_xia].face_ids.clone();
 
     let plane = SlicePlane::new(DVec3::ZERO, DVec3::Z).unwrap();
-    let new_xia = scene.slice_volume_by_plane(&face_ids, plane).expect("slice succeeds");
+    let new_owner = scene.slice_volume_by_plane(&face_ids, plane).expect("slice succeeds");
+    // The fixture is XIA-owned, so the new half must be a XIA too.
+    let new_xia = match new_owner {
+        axia_core::SolidOwner::Xia(x) => x,
+        other => panic!("expected the new half to be a XIA, got {other:?}"),
+    };
 
     // Two XIAs now: original (above) + new (below).
     assert_ne!(original_xia, new_xia);

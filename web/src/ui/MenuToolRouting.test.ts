@@ -100,3 +100,54 @@ describe('tool-* menu items activate their tool', () => {
     }
   });
 });
+
+/**
+ * A command's label has to name what it does. The palette called three entries
+ * "축 스냅" / "그리드 스냅" / "엣지 스냅"; they dispatch to the status bar's
+ * F4/F6/F7 buttons, which toggle the viewport's grid, edges and axes. Measured
+ * live: each flipped its display flag true→false while `snap.enabled` stayed
+ * true. Real axis/grid snap modes DO exist in SnapManager, so the labels named
+ * something the engine has and these commands do not touch — the worst kind of
+ * wrong name.
+ *
+ * (SettingsPanel's own "그리드 스냅" checkbox is honest — it sets
+ * `units.gridSnap` — so the phrase itself is fine, just not for these three.)
+ */
+describe('a command labelled X does X', () => {
+  const CMDS = read('src/commands/AxiaCommands.ts');
+  const STATUS = read('src/ui/StatusBar.ts');
+
+  it('the display toggles are not called snap', () => {
+    for (const id of ['axis', 'grid', 'edge']) {
+      const line = CMDS.split('\n').find((l) => l.includes(`action('${id}',`));
+      expect(line, `palette entry '${id}' not found`).toBeTruthy();
+      expect(
+        /스냅/.test(line!),
+        `'${id}' is labelled a snap but dispatches to the ${id} DISPLAY toggle`,
+      ).toBe(false);
+    }
+  });
+
+  it('…because that is what the handler behind them does', () => {
+    // If a future change makes these actually toggle snapping, this fails and
+    // the labels should go back to saying "스냅".
+    for (const [id, call] of [
+      ['axis', 'setAxisVisible'],
+      ['grid', 'setGridVisible'],
+      ['edge', 'setEdgeStyle'],
+    ]) {
+      const at = STATUS.indexOf(`case '${id}': {`);
+      expect(at, `StatusBar case '${id}' not found`).toBeGreaterThan(-1);
+      const arm = STATUS.slice(at, at + 400);
+      expect(arm).toContain(call);
+      expect(arm, `'${id}' now touches snap — relabel it`).not.toContain('snap.toggle');
+    }
+  });
+
+  it('and the one that really is a snap toggle still says so', () => {
+    const at = STATUS.indexOf("case 'osnap': {");
+    expect(at).toBeGreaterThan(-1);
+    expect(STATUS.slice(at, at + 300)).toContain('snap.toggle');
+    expect(CMDS.split('\n').find((l) => l.includes("action('osnap',"))).toMatch(/스냅/);
+  });
+});

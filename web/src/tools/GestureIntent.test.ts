@@ -96,3 +96,41 @@ describe('a double-click resolves to one selection, with the modifiers intact', 
     expect(sig.replace(/\s/g, '')).toContain('shiftKey:boolean=false');
   });
 });
+
+describe('Alt reaches the tools that mean something by it', () => {
+  it('the canvas no longer drops every alt-click', () => {
+    const h = TM.slice(TM.indexOf("addEventListener('mousedown'"), TM.indexOf("// ===== MOUSE MOVE ====="));
+    expect(h.length, 'mousedown handler not found').toBeGreaterThan(100);
+    expect(
+      /if \(e\.button !== 0 \|\| e\.altKey\) return;/.test(h),
+      'the blanket alt-click drop is back — Alt-removes-from-selection and ' +
+        'alt-drag-select both start in this handler and would be dead again',
+    ).toBe(false);
+    expect(h, 'alt must still be gated on the tool opting in').toContain('handlesAltClick');
+  });
+
+  it('exactly the tools that read e.altKey on a press opt in', () => {
+    const readsAlt = new Set<string>();
+    const optedIn = new Set<string>();
+    // ITool.ts is the interface, not a tool — it names the flag by definition.
+    for (const f of readdirSync(TOOLS_DIR).filter((n) => /^\w+Tool\.ts$/.test(n) && n !== 'ITool.ts')) {
+      const src = read(f);
+      // onMouseDown body only — a keyboard guard like `!e.altKey` in onKeyDown
+      // is not a claim on the click.
+      const md = src.slice(src.indexOf('onMouseDown('), src.indexOf('onKeyDown(') >= 0 ? src.indexOf('onKeyDown(') : undefined);
+      if (md.includes('onMouseDown(') && /e\.altKey/.test(md)) readsAlt.add(f);
+      if (/handlesAltClick\s*=\s*true/.test(src)) optedIn.add(f);
+    }
+    expect(readsAlt.size, 'no tool reads e.altKey on a press — did the convention change?')
+      .toBeGreaterThan(0);
+    expect([...optedIn].sort(), 'a tool claims alt-clicks without reading the modifier, or vice versa')
+      .toEqual([...readsAlt].sort());
+  });
+
+  it('and Alt still means "remove from the selection" downstream', () => {
+    const sm = read('SelectionManager.ts');
+    const body = sm.slice(sm.indexOf('handleClick(faceId'), sm.indexOf('handleClick(faceId') + 900);
+    expect(body).toMatch(/if \(altKey\)/);
+    expect(body).toMatch(/this\.selected\.delete\(faceId\)/);
+  });
+});

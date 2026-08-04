@@ -290,6 +290,25 @@ pub struct ElementGeometry {
     /// `IfcRelVoidsElement`, I-5). A door or window is grouped under that wall
     /// rather than sitting loose in the storey. `None` for a plain member.
     pub fills_wall: Option<u32>,
+    /// A member that IS a line: its axis and the section its body was swept
+    /// from, in world millimetres.
+    ///
+    /// Read from an `Axis` representation beside the `Body` — the way IFC says
+    /// a beam or a column is a line rather than a box that happens to be
+    /// column-shaped. Without it there is no telling the two apart, so `None`
+    /// means "import this as the solid it draws", which is every other member.
+    pub line: Option<LineMemberGeometry>,
+}
+
+/// A member that is a line with a section, as read from a file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineMemberGeometry {
+    pub start: DVec3,
+    pub end: DVec3,
+    /// The section outline in its own plane, closed and not repeating its first
+    /// point. A rectangle and a circle arrive as outlines too — the caller
+    /// recognises them if it wants the parametric form back.
+    pub outline: Vec<(f64, f64)>,
 }
 
 /// An opening (`IfcRelVoidsElement`) read from the file, as the rectangle the
@@ -625,6 +644,16 @@ pub fn from_file(file: &StepFile) -> GeometryImport {
             faces,
             booleans,
             fills_wall: fills.get(&el.id).copied(),
+            // Read in the same frame the body was built in, and moved by the
+            // project transform alongside it so the line and its solid stay
+            // together.
+            line: read_line_member(file, el.id, scale, &placement).map(|mut lm| {
+                if let Some(w) = &wcs {
+                    lm.start = w.apply(lm.start);
+                    lm.end = w.apply(lm.end);
+                }
+                lm
+            }),
         });
     }
     GeometryImport { elements, openings, spatial, scale_to_mm: scale, placed, warnings }
@@ -1748,6 +1777,80 @@ fn parse_half_space(file: &StepFile, id: u32, scale: f64) -> Option<HalfSpace> {
     };
 
     Some(HalfSpace { base_origin, base_normal, agreement, boundary })
+}
+
+/// A member that is a line, if the file says it is one.
+///
+/// Looks for an `Axis` representation holding a two-point polyline — the line
+/// itself — and takes the section from the `Body`'s swept profile. Both are
+/// needed: an axis with no readable section is a line whose thickness we cannot
+/// state, and this returns `None` so the member imports as the solid it draws
+/// rather than as a line with an invented size.
+pub fn read_line_member(
+    file: &StepFile,
+    product_id: u32,
+    scale: f64,
+    placement: &crate::ifc_placement::Placement,
+) -> Option<LineMemberGeometry> {
+    let el = file.entity(product_id)?;
+    // Representation is attribute 6 on IfcProduct's element subtypes.
+    let shape = el.args.get(6).and_then(|v| v.as_ref()).and_then(|s| file.entity(s))?;
+    if !shape.tag.eq_ignore_ascii_case("IFCPRODUCTDEFINITIONSHAPE") {
+        return None;
+    }
+    let reps = shape.args.get(2)?.as_list()?;
+
+    let mut axis: Option<(DVec3, DVec3)> = None;
+    let mut outline: Option<Vec<(f64, f64)>> = None;
+    for rep_val in reps {
+        let Some(rep) = rep_val.as_ref().and_then(|r| file.entity(r)) else { continue };
+        if !rep.tag.eq_ignore_ascii_case("IFCSHAPEREPRESENTATION") {
+            continue;
+        }
+        let ident = rep.args.get(1).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let Some(items) = rep.args.get(3).and_then(|v| v.as_list()) else { continue };
+        if ident.eq_ignore_ascii_case("Axis") {
+            for item in items {
+                let Some(poly) = item.as_ref().and_then(|i| file.entity(i)) else { continue };
+                if !poly.tag.eq_ignore_ascii_case("IFCPOLYLINE") {
+                    continue;
+                }
+                let Some(pts) = poly.args.first().and_then(|v| v.as_list()) else { continue };
+                if pts.len() != 2 {
+                    continue; // a curved or many-segment axis is a different thing
+                }
+                let (Some(pa), Some(pb)) = (pts[0].as_ref(), pts[1].as_ref()) else { continue };
+                let (Some(a), Some(b)) = (
+                    crate::ifc_placement::cartesian_point(file, pa, scale),
+                    crate::ifc_placement::cartesian_point(file, pb, scale),
+                ) else {
+                    continue;
+                };
+                axis = Some((a, b));
+            }
+        } else if ident.eq_ignore_ascii_case("Body") {
+            for item in items {
+                let Some(solid) = item.as_ref().and_then(|i| file.entity(i)) else { continue };
+                if !solid.tag.eq_ignore_ascii_case("IFCEXTRUDEDAREASOLID") {
+                    continue;
+                }
+                let Some(prof_id) = solid.args.first().and_then(|v| v.as_ref()) else { continue };
+                outline = parse_profile(file, prof_id, scale);
+            }
+        }
+    }
+
+    let (a, b) = axis?;
+    let outline = outline?;
+    if outline.len() < 3 {
+        return None;
+    }
+    // The axis is written in the member's own frame, like its body.
+    Some(LineMemberGeometry {
+        start: placement.apply(a),
+        end: placement.apply(b),
+        outline,
+    })
 }
 
 /// A profile's outer boundary as 2D points in its own plane (engine units).
@@ -2978,8 +3081,7 @@ mod tests {
             material_name: None,
             material_style: None,
             kind: crate::IfcElementKind::Wall,
-            face_ids: faces,
-        }];
+            face_ids: faces, line: None }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Ball").unwrap();
         let g = import_ifc_geometry(&s).unwrap();
         let hemis = &g.elements[0].faces;
@@ -3009,8 +3111,7 @@ mod tests {
             material_name: None,
             material_style: None,
             kind: crate::IfcElementKind::Wall,
-            face_ids: vec![f],
-        }];
+            face_ids: vec![f], line: None }];
         let s = emit_ifc_model(&mesh, &elements, 0.001, "Ring").unwrap();
         let g = import_ifc_geometry(&s).unwrap();
         let ring = &g.elements[0].faces;
@@ -3244,8 +3345,7 @@ END-ISO-10303-21;
                 name: "Spline".into(),
                 material_name: None, material_style: None,
                 kind: crate::IfcElementKind::Wall,
-                face_ids: vec![f],
-            }],
+                face_ids: vec![f], line: None }],
             0.001,
             "Spline",
         )
@@ -3427,7 +3527,7 @@ END-ISO-10303-21;
             .unwrap();
         let ifc = emit_ifc_model(
             &mesh,
-            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: faces }],
+            &[IfcElement { name: "벽체".into(), material_name: Some("강철".into()), material_style: None, kind: crate::IfcElementKind::Wall, face_ids: faces, line: None }],
             0.001,
             "House",
         )

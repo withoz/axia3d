@@ -53,6 +53,15 @@ pub const COPLANARITY_NORMAL_DOT_MIN: f64 = 0.9999;
 /// in β-3 — semantically distinct.
 pub const COPLANARITY_OFFSET_TOL: f64 = 1.5e-6;
 
+/// How finely a kernel-native closed curve is sampled when it takes part in
+/// coplanar work (see `collect_face_boundary`).
+///
+/// Matches the render chord tolerance (LOCKED #40 §L1), so the polygon the
+/// arithmetic sees is the same shape the user sees. Finer would cost points for
+/// a difference that is not on screen; coarser would carve a host face along a
+/// visibly different line from the circle drawn on it.
+pub const CURVE_BOUNDARY_CHORD_TOL: f64 = 0.02;
+
 /// 2D dedup tolerance for crossings + lens vertices (project space).
 const DEDUP_EPS_2D: f64 = 1e-6;
 
@@ -251,7 +260,7 @@ pub fn coplanar_intersection_segments(
     //   (so downstream `polygon_difference_walking` inserts it just after
     //   the host vertex in the walking order — geometrically equivalent
     //   to "the vertex is the crossing").
-    if raw_crossings.is_empty() && !lens_polygon.is_empty() {
+    if raw_crossings.len() < 2 && !lens_polygon.is_empty() {
         let detected = detect_vertex_incidence_crossings(
             &a_2d, &b_2d, b_reversed, &plane,
         );
@@ -275,6 +284,53 @@ pub fn coplanar_intersection_segments(
         });
         if !dup {
             crossings.push(c);
+        }
+    }
+
+    // A shape drawn PAST the edge of the face it overlaps meets it differently
+    // from two shapes that merely cross: their boundaries run together for a
+    // stretch and then part. Every point along that shared run reads as a
+    // crossing, so the corner where the run begins gets counted alongside the
+    // two places the boundaries actually part — three, where the difference walk
+    // wants two, and the whole thing declines.
+    //
+    // A crossing is a real switch only if the boundaries part there. At a point
+    // where BOTH neighbouring stretches of the overlap still lie on BOTH
+    // outlines, nothing switches; it is a point on the shared run. Drop those.
+    //
+    // Only consulted when there are more than two, so every pair that already
+    // resolved keeps its exact behaviour.
+    if crossings.len() > 2 {
+        let lens_2d: Vec<(f64, f64)> =
+            lens_polygon.iter().map(|p| plane.project(*p)).collect();
+        let on_outline = |pt: (f64, f64), poly: &[(f64, f64)]| -> bool {
+            (0..poly.len()).any(|i| {
+                point_on_segment_2d(pt, poly[i], poly[(i + 1) % poly.len()], VERTEX_ON_EDGE_EPS_2D).is_some()
+            })
+        };
+        let n = lens_2d.len();
+        let tangential = |c: &CoplanarCrossing| -> bool {
+            let cp = plane.project(c.point);
+            // the overlap corner this crossing sits on
+            let Some(i) = (0..n).find(|&i| {
+                (lens_2d[i].0 - cp.0).abs() < VERTEX_ON_EDGE_EPS_2D
+                    && (lens_2d[i].1 - cp.1).abs() < VERTEX_ON_EDGE_EPS_2D
+            }) else {
+                return false;
+            };
+            // midpoints of the two overlap edges meeting there
+            let prev = lens_2d[(i + n - 1) % n];
+            let next = lens_2d[(i + 1) % n];
+            let mids = [
+                ((cp.0 + prev.0) * 0.5, (cp.1 + prev.1) * 0.5),
+                ((cp.0 + next.0) * 0.5, (cp.1 + next.1) * 0.5),
+            ];
+            mids.iter().all(|m| on_outline(*m, &a_2d) && on_outline(*m, &b_2d))
+        };
+        let kept: Vec<CoplanarCrossing> =
+            crossings.iter().filter(|c| !tangential(c)).cloned().collect();
+        if kept.len() == 2 {
+            crossings = kept;
         }
     }
 
@@ -886,13 +942,39 @@ fn collect_face_boundary(mesh: &Mesh, face_id: FaceId) -> Result<Vec<DVec3>> {
         bail!("face {:?} has null outer loop", face_id);
     }
     let verts = mesh.collect_loop_verts(outer_start)?;
-    if verts.len() < 3 {
-        bail!("face {:?} boundary has fewer than 3 verts", face_id);
+    if verts.len() >= 3 {
+        let positions: Vec<DVec3> = verts.iter()
+            .map(|&vid| mesh.verts.get(vid).map(|v| v.pos()).unwrap_or(DVec3::ZERO))
+            .collect();
+        return Ok(positions);
     }
-    let positions: Vec<DVec3> = verts.iter()
-        .map(|&vid| mesh.verts.get(vid).map(|v| v.pos()).unwrap_or(DVec3::ZERO))
-        .collect();
-    Ok(positions)
+    // A kernel-native closed curve (ADR-089) carries its whole boundary on one
+    // self-loop edge, so the loop holds a single anchor vertex and the count
+    // above says "fewer than 3". The face is not degenerate — its shape lives in
+    // the curve. Sample it, the same way the self-intersection detector does,
+    // so a drawn circle takes part in coplanar work instead of being invisible
+    // to it. The mesh is untouched: this polygon is for the arithmetic only, and
+    // the face keeps its arc.
+    use crate::curves::CurveOps;
+    let curve = mesh
+        .hes
+        .get(outer_start)
+        .and_then(|he| mesh.edges.get(he.edge()))
+        .and_then(|e| e.curve())
+        .ok_or_else(|| anyhow::anyhow!(
+            "face {:?} boundary has fewer than 3 verts and no curve", face_id))?;
+    let pts = curve.tessellate(CURVE_BOUNDARY_CHORD_TOL, mesh)?;
+    // `tessellate` closes the polyline by repeating the first point.
+    let pts = match pts.split_last() {
+        Some((last, head)) if head.first().map_or(false, |f| f.abs_diff_eq(*last, 1e-9)) => {
+            head.to_vec()
+        }
+        _ => pts,
+    };
+    if pts.len() < 3 {
+        bail!("face {:?} curve sampled to fewer than 3 points", face_id);
+    }
+    Ok(pts)
 }
 
 /// Shoelace signed area (CCW > 0).

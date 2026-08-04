@@ -415,6 +415,15 @@ pub struct Scene {
     /// resolved by containment at export time. Persisted via additive snapshot
     /// section 12; legacy snapshots restore this empty.
     pub openings: Vec<RectOpening>,
+    /// What each line is thick with — the cross-section a standalone edge
+    /// carries (`Profile`).
+    ///
+    /// Keyed by the EDGE, not by the Shape or the Xia, so it survives
+    /// promotion and demotion without anyone carrying it across: both
+    /// citizenships point at the same edge. A `BTreeMap` because snapshots
+    /// must come out byte-identical for the same scene (LOCKED #37 L1), keyed
+    /// by the edge's raw id since `EdgeId` does not order.
+    pub edge_profile: std::collections::BTreeMap<u32, crate::profile::EdgeSection>,
 
     /// ADR-079 W-1 — Reverse index: `FaceId → ShapeId` for form-layer
     /// face ownership. Mirror of `face_to_xia` for the form citizenship
@@ -544,9 +553,38 @@ impl std::fmt::Display for ReferenceCreateError {
 
 impl std::error::Error for ReferenceCreateError {}
 
+/// Which citizen owns a solid — form-layer [`crate::Shape`] or property-layer
+/// [`crate::xia::Xia`].
+///
+/// The plane cuts used to demand a XIA, which meant they worked on primitives
+/// and refused everything the user had drawn: since ADR-050 P-5e-α a drawn
+/// shape stays form-layer until it is given a material, so "rectangle, pull it
+/// up, slice it" failed on the last step while the same cut on a primitive box
+/// went through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolidOwner {
+    Xia(crate::xia::XiaId),
+    Shape(crate::ShapeId),
+}
+
+impl SolidOwner {
+    /// Raw id, for bridge/JSON reporting.
+    pub fn raw(self) -> u32 {
+        match self {
+            SolidOwner::Xia(x) => x,
+            SolidOwner::Shape(s) => s.raw(),
+        }
+    }
+    /// True when the owner is a property-layer XIA.
+    pub fn is_xia(self) -> bool {
+        matches!(self, SolidOwner::Xia(_))
+    }
+}
+
 impl Scene {
     pub fn new() -> Self {
         Self {
+            edge_profile: std::collections::BTreeMap::new(),
             mesh: Mesh::new(),
             xias: HashMap::new(),
             face_to_xia: HashMap::new(),
@@ -737,6 +775,12 @@ impl Scene {
         let openings_data = bincode::serialize(&self.openings).unwrap_or_default();
         buf.extend_from_slice(&(openings_data.len() as u64).to_le_bytes());
         buf.extend_from_slice(&openings_data);
+        // Cross-sections — section 13 (additive). What each line is thick with.
+        // Legacy snapshots truncate before this → restore reads none, and every
+        // line is simply a line again.
+        let profiles_data = bincode::serialize(&self.edge_profile).unwrap_or_default();
+        buf.extend_from_slice(&(profiles_data.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&profiles_data);
         buf
     }
 
@@ -1044,6 +1088,35 @@ impl Scene {
         if !openings_section_present {
             self.openings.clear();
         }
+
+        // 13. Cross-sections — what each line is thick with.
+        //     Additive: a legacy snapshot truncates before this and every line
+        //     goes back to being just a line.
+        let mut profiles_section_present = false;
+        if offset + 8 <= data.len() {
+            let plen = read_len(data, &mut offset);
+            if plen > 0 && offset + plen <= data.len() {
+                match bincode::deserialize::<
+                    std::collections::BTreeMap<u32, crate::profile::EdgeSection>,
+                >(&data[offset..offset + plen])
+                {
+                    Ok(m) => {
+                        self.edge_profile = m;
+                        profiles_section_present = true;
+                    }
+                    Err(e) => eprintln!(
+                        "[Scene] section 13 edge_profile deserialize failed: {e} (plen={plen}).                          Lines restore without their sections."
+                    ),
+                }
+                offset += plen;
+            } else if plen == 0 {
+                self.edge_profile.clear();
+                profiles_section_present = true;
+            }
+        }
+        if !profiles_section_present {
+            self.edge_profile.clear();
+        }
         let _ = offset;
 
         // 9. 역인덱스 재구축 (face_ids가 이제 직렬화되므로)
@@ -1294,6 +1367,113 @@ impl Scene {
     ///
     /// `face_ids` may be empty — a line-only Shape with `standalone_edge_id`
     /// set later is valid (mirrors `Xia` line-tool behavior).
+    /// Give a line a cross-section, or take it away with `None`.
+    ///
+    /// The section rides on the edge, so it stays with the line through
+    /// promotion to a member and demotion back to a form. A section that
+    /// measures nothing is refused here rather than at promotion, where the
+    /// failure would be a long way from the mistake.
+    pub fn set_edge_profile(
+        &mut self,
+        edge: axia_geo::EdgeId,
+        profile: Option<crate::profile::Profile>,
+    ) -> Result<(), &'static str> {
+        match profile {
+            None => {
+                self.edge_profile.remove(&edge.raw());
+                Ok(())
+            }
+            Some(p) => {
+                if p.area().is_none() {
+                    return Err("단면이 면적을 갖지 않습니다");
+                }
+                // Record where it was given, so it can recognise its own pieces
+                // later and refuse to follow a reused id onto another line.
+                let (from, to) = match self.mesh.edges.get(edge).filter(|e| e.is_active()) {
+                    Some(e) => match (
+                        self.mesh.vertex_pos(e.v_small()),
+                        self.mesh.vertex_pos(e.v_large()),
+                    ) {
+                        (Ok(a), Ok(b)) => (a, b),
+                        _ => return Err("선의 끝점을 읽을 수 없습니다"),
+                    },
+                    None => return Err("그런 선이 없습니다"),
+                };
+                self.edge_profile
+                    .insert(edge.raw(), crate::profile::EdgeSection { profile: p, from, to });
+                Ok(())
+            }
+        }
+    }
+
+    /// Keep sections attached to the lines they were given to.
+    ///
+    /// An edge does not survive being crossed: it is deactivated and its pieces
+    /// take its place under new ids. Left alone, the section would sit on the
+    /// dead edge — so the column that a beam runs through would quietly lose its
+    /// thickness — and the freed id would later hand that section to whatever
+    /// line came next.
+    ///
+    /// So a section on a dead edge is passed to the live edges that lie along
+    /// it, which are exactly its pieces, and dropped if there are none. Nothing
+    /// is invented: a piece of a 300×300 column is 300×300.
+    fn reconcile_edge_profiles(&mut self) {
+        if self.edge_profile.is_empty() {
+            return;
+        }
+        let ends = |m: &axia_geo::Mesh, raw: u32| -> Option<(glam::DVec3, glam::DVec3)> {
+            let e = m.edges.get(axia_geo::EdgeId::new(raw)).filter(|e| e.is_active())?;
+            Some((m.vertex_pos(e.v_small()).ok()?, m.vertex_pos(e.v_large()).ok()?))
+        };
+        // An entry is still its own when the edge under that id is alive AND
+        // lies along the stretch the section was given for. Alive but somewhere
+        // else means the id was handed out again — a different line entirely.
+        let stale: Vec<u32> = self
+            .edge_profile
+            .iter()
+            .filter(|(&raw, sec)| match ends(&self.mesh, raw) {
+                Some((a, b)) => !sec.covers(a, b),
+                None => true,
+            })
+            .map(|(&raw, _)| raw)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for raw in stale {
+            let Some(sec) = self.edge_profile.remove(&raw) else { continue };
+            // Its pieces: the live edges lying along the stretch it was given
+            // for. A crossed column keeps its thickness on both halves.
+            let heirs: Vec<u32> = self
+                .mesh
+                .edges
+                .iter()
+                .filter(|(_, e)| e.is_active())
+                .filter_map(|(id, e)| {
+                    let a = self.mesh.vertex_pos(e.v_small()).ok()?;
+                    let b = self.mesh.vertex_pos(e.v_large()).ok()?;
+                    sec.covers(a, b).then(|| id.raw())
+                })
+                .collect();
+            for h in heirs {
+                let (a, b) = match ends(&self.mesh, h) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                self.edge_profile.entry(h).or_insert_with(|| crate::profile::EdgeSection {
+                    profile: sec.profile.clone(),
+                    from: a,
+                    to: b,
+                });
+            }
+        }
+    }
+
+    /// The cross-section this line carries, if it has been given one.
+    pub fn edge_profile(&self, edge: axia_geo::EdgeId) -> Option<&crate::profile::Profile> {
+        self.edge_profile.get(&edge.raw()).map(|s| &s.profile)
+    }
+
     pub fn create_shape(&mut self, name: String, face_ids: Vec<FaceId>) -> crate::ShapeId {
         let id = crate::ShapeId::new(self.next_shape_id);
         self.next_shape_id = self.next_shape_id.saturating_add(1);
@@ -1679,7 +1859,10 @@ impl Scene {
 
         // ADR-050 P-2 — shared validation kernel (DRY with
         // `promote_shape_to_xia`). Side-effect free.
-        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material)?;
+        let section = standalone
+            .and_then(|e| self.edge_profile.get(&e.raw()))
+            .and_then(|s| s.profile.area());
+        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → assign material in-place.
         if let Some(xia_mut) = self.xias.get_mut(&xia_id) {
@@ -1728,7 +1911,10 @@ impl Scene {
         let surface_normal = shape.surface_normal;
 
         // Shared validation kernel — same 4 conditions as Phase 1.A.
-        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material)?;
+        let section = standalone
+            .and_then(|e| self.edge_profile.get(&e.raw()))
+            .and_then(|s| s.profile.area());
+        let kind = validate_promotion(&self.mesh, &face_ids, standalone, material, section)?;
 
         // All 4 conditions OK → create the Xia.
         let xia_id = self.next_xia_id;
@@ -1977,6 +2163,190 @@ impl Scene {
 
     /// ADR-079 W-1 — Rebuild reverse index from all Shapes
     /// (after snapshot restore). Mirrors `rebuild_face_to_xia_index`.
+    /// Who owns a solid: see [`SolidOwner`].
+    ///
+    /// The plane-cut operations used to demand a XIA, which meant they worked on
+    /// primitives and refused everything the user had drawn — since ADR-050
+    /// P-5e-α a drawn shape stays form-layer until it gets a material, so
+    /// "rectangle, pull it up, slice it" failed on the last step while the same
+    /// cut on a primitive box succeeded.
+    fn solid_owner_of(
+        &self,
+        face_ids: &[axia_geo::FaceId],
+        op: &str,
+    ) -> anyhow::Result<SolidOwner> {
+        let mut owner: Option<SolidOwner> = None;
+        for &fid in face_ids {
+            let this = match (self.face_to_xia.get(&fid), self.face_to_shape.get(&fid)) {
+                (Some(&x), _) => SolidOwner::Xia(x),
+                (None, Some(&s)) => SolidOwner::Shape(s),
+                (None, None) => {
+                    anyhow::bail!("{op}: face {fid:?} belongs to no shape or XIA")
+                }
+            };
+            match owner {
+                None => owner = Some(this),
+                Some(prev) if prev == this => {}
+                Some(_) => anyhow::bail!(
+                    "{op}: input faces span more than one object — \
+                     select the faces of a single volume"
+                ),
+            }
+        }
+        owner.ok_or_else(|| anyhow::anyhow!("{op}: cannot determine the owning object"))
+    }
+
+    /// Point an owner at exactly this face set (both the owner's list and the
+    /// reverse index), leaving the other layer's mapping untouched.
+    fn reassign_owner_faces(&mut self, owner: SolidOwner, faces: &[axia_geo::FaceId]) {
+        match owner {
+            SolidOwner::Xia(x) => {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.face_ids = faces.to_vec();
+                }
+                for &f in faces {
+                    self.face_to_xia.insert(f, x);
+                }
+            }
+            SolidOwner::Shape(s) => {
+                if let Some(shape) = self.shapes.get_mut(&s) {
+                    shape.face_ids = faces.to_vec();
+                }
+                for &f in faces {
+                    self.face_to_shape.insert(f, s);
+                }
+            }
+        }
+    }
+
+    fn owner_name(&self, owner: SolidOwner) -> String {
+        match owner {
+            SolidOwner::Xia(x) => self.xias.get(&x).map(|v| v.name.clone()),
+            SolidOwner::Shape(s) => self.shapes.get(&s).map(|v| v.name.clone()),
+        }
+        .unwrap_or_else(|| "Volume".to_string())
+    }
+
+    /// A shape drawn PAST the edge of a face it overlaps ends up covering the
+    /// shared part twice: the synthesis builds the whole shape, and the part
+    /// inside the existing face is already that face's. Replace the larger face
+    /// with the larger minus the smaller, so the overlap belongs to one face.
+    ///
+    /// Uses ADR-101's own pieces — `coplanar_intersection_segments` for the
+    /// switch points and `polygon_difference_walking` for the shape. Nothing new
+    /// geometrically; see `tests/tool_overlap_repair_sim.rs` for the measurement
+    /// that says these two suffice, and for the two routes that do not work.
+    ///
+    /// Runs only where two faces actually overlap, so a draw that resolved
+    /// cleanly never reaches it.
+    fn subtract_double_covered_faces(&mut self) -> usize {
+        use axia_geo::operations::coplanar as cop;
+        let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
+        if pairs.is_empty() {
+            return 0;
+        }
+        let mut repaired = 0usize;
+        for (fa, fb) in pairs {
+            let alive = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
+                m.faces.get(f).map_or(false, |x| x.is_active())
+            };
+            if !alive(&self.mesh, fa) || !alive(&self.mesh, fb) {
+                continue; // an earlier repair already consumed it
+            }
+            // Coplanar only — a fold between faces at an angle is a different
+            // problem and must not be "repaired" by subtraction.
+            let (na, nb) = (self.mesh.faces[fa].normal(), self.mesh.faces[fb].normal());
+            if na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() < 0.999 {
+                continue;
+            }
+            let vcount = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
+                m.collect_loop_verts(m.faces[f].outer().start).map(|v| v.len()).unwrap_or(0)
+            };
+            // The difference has to be taken from the bigger one; asking the
+            // smaller to give up a region it does not contain fails outright.
+            let (big, small) = if vcount(&self.mesh, fa) >= vcount(&self.mesh, fb) {
+                (fa, fb)
+            } else {
+                (fb, fa)
+            };
+            let Ok(ci) = cop::coplanar_intersection_segments(&self.mesh, big, small) else {
+                continue;
+            };
+            if ci.crossings.len() != 2 {
+                continue;
+            }
+            let Ok(base_v) = self.mesh.collect_loop_verts(self.mesh.faces[big].outer().start)
+            else {
+                continue;
+            };
+            let base2d: Vec<(f64, f64)> = base_v
+                .iter()
+                .filter_map(|v| self.mesh.vertex_pos(*v).ok())
+                .map(|p| ci.plane.project(p))
+                .collect();
+            if base2d.len() != base_v.len() {
+                continue;
+            }
+            let lens2d: Vec<(f64, f64)> =
+                ci.lens_polygon.iter().map(|p| ci.plane.project(*p)).collect();
+            let cr: Vec<(usize, f64, (f64, f64))> = ci
+                .crossings
+                .iter()
+                .map(|c| (c.face_a_edge, c.face_a_t, ci.plane.project(c.point)))
+                .collect();
+            let Ok(poly2d) = cop::polygon_difference_walking(&base2d, &lens2d, &cr) else {
+                continue;
+            };
+            if poly2d.len() < 3 {
+                continue;
+            }
+            // Rebuild. Every corner is a vertex that already exists — the
+            // original ones plus the two switch points — so `add_vertex` dedups
+            // onto them rather than making new ones.
+            let material = self.mesh.faces[big].material();
+            let surface = self.mesh.faces[big].surface().cloned();
+            let owner_xia = self.face_to_xia.get(&big).copied();
+            let owner_shape = self.face_to_shape.get(&big).copied();
+            let vids: Vec<axia_geo::VertId> = poly2d
+                .iter()
+                .map(|&(x, y)| self.mesh.add_vertex(ci.plane.lift(x, y)))
+                .collect();
+            if self.mesh.remove_face(big).is_err() {
+                continue;
+            }
+            match self.mesh.add_face_with_holes(&vids, &[], material) {
+                Ok(new_fid) => {
+                    if let Some(su) = surface {
+                        self.mesh.set_face_surface(new_fid, Some(su));
+                    }
+                    self.face_to_xia.remove(&big);
+                    self.face_to_shape.remove(&big);
+                    if let Some(x) = owner_xia {
+                        self.face_to_xia.insert(new_fid, x);
+                        if let Some(xia) = self.xias.get_mut(&x) {
+                            xia.face_ids.retain(|&f| f != big);
+                            xia.face_ids.push(new_fid);
+                        }
+                    }
+                    if let Some(sh) = owner_shape {
+                        self.face_to_shape.insert(new_fid, sh);
+                        if let Some(shape) = self.shapes.get_mut(&sh) {
+                            shape.face_ids.retain(|&f| f != big);
+                            shape.face_ids.push(new_fid);
+                        }
+                    }
+                    repaired += 1;
+                }
+                Err(_) => {
+                    // Could not rebuild — the face is gone and putting it back is
+                    // not possible here, so let the caller's rollback handle it.
+                    return repaired;
+                }
+            }
+        }
+        repaired
+    }
+
     fn rebuild_face_to_shape_index(&mut self) {
         self.face_to_shape.clear();
         for (shape_id, shape) in &self.shapes {
@@ -2001,39 +2371,57 @@ impl Scene {
         &mut self,
         face_ids: &[axia_geo::FaceId],
         plane: axia_geo::operations::slice::SlicePlane,
-    ) -> anyhow::Result<crate::xia::XiaId> {
+    ) -> anyhow::Result<SolidOwner> {
         if face_ids.is_empty() {
             anyhow::bail!("slice_volume_by_plane: empty face set");
         }
 
-        // Determine the source XIA — must be unique across the input set.
-        let mut source_xia: Option<crate::xia::XiaId> = None;
-        for &fid in face_ids {
-            match (source_xia, self.face_to_xia.get(&fid).copied()) {
-                (None, Some(x)) => source_xia = Some(x),
-                (Some(prev), Some(x)) if prev == x => {}
-                (Some(_), Some(_)) => anyhow::bail!(
-                    "slice_volume_by_plane: input faces span multiple XIAs — \
-                    select faces from a single volume only"),
-                (_, None) => anyhow::bail!(
-                    "slice_volume_by_plane: face {:?} has no owning XIA", fid),
-            }
-        }
-        let source_xia = source_xia
-            .ok_or_else(|| anyhow::anyhow!("slice_volume_by_plane: cannot determine source XIA"))?;
+        let owner = self.solid_owner_of(face_ids, "slice_volume_by_plane")?;
+        let violations_before = self.mesh.verify_face_invariants().violations.len();
 
         self.transactions.begin();
-        self.transactions.set_before_snapshot(self.scene_snapshot());
+        let pre_slice = self.scene_snapshot();
+        self.transactions.set_before_snapshot(pre_slice.clone());
 
         // Run the geometric slice.
         let mat = FORM_MATERIAL;
         let result = match self.mesh.slice_volume_by_plane(face_ids, plane, mat) {
             Ok(r) => r,
             Err(e) => {
+                // The cut mutates incrementally before a late bail, and cancel()
+                // drops the recording rather than the mutation — measured, a
+                // refused slice of an open sheet still left the mesh cut from 1
+                // face to 2. Trim already restored here; slice did not.
+                self.restore_scene_snapshot(&pre_slice);
                 self.transactions.cancel();
                 return Err(e);
             }
         };
+
+        // Check the postcondition here, where both halves are known.
+        //
+        // A slice cannot be judged by counting coincident edges over the whole
+        // mesh: it deliberately leaves two solids resting against each other, so
+        // every segment of the cut boundary exists twice, once per half. That is
+        // the result, not damage — measured on a box cut in two, eight such
+        // edges appear while both halves are watertight with clean invariants.
+        // What actually has to hold is that each half came out a closed solid.
+        let above_check: Vec<axia_geo::FaceId> =
+            result.above_walls.iter().chain(result.cap_above.iter()).copied().collect();
+        let below_check: Vec<axia_geo::FaceId> =
+            result.below_walls.iter().chain(result.cap_below.iter()).copied().collect();
+        let open_above = self.mesh.face_set_manifold_info(&above_check).boundary_edge_count;
+        let open_below = self.mesh.face_set_manifold_info(&below_check).boundary_edge_count;
+        let violations_after = self.mesh.verify_face_invariants().violations.len();
+        if open_above > 0 || open_below > 0 || violations_after > violations_before {
+            self.restore_scene_snapshot(&pre_slice);
+            self.transactions.cancel();
+            anyhow::bail!(
+                "slice_volume_by_plane: the cut did not close — \
+                 {open_above} open edge(s) above, {open_below} below, \
+                 {violations_after} invariant violation(s)"
+            );
+        }
 
         // ── XIA management ──────────────────────────────────────────────
         // 1. Strip original XIA's face_ids of the consumed input faces.
@@ -2042,18 +2430,14 @@ impl Scene {
         //    face_ids entirely from the above set.
         for &fid in face_ids {
             self.face_to_xia.remove(&fid);
+            self.face_to_shape.remove(&fid);
         }
-        // Above half — assigned to the source XIA.
+        // Above half — stays with the original owner.
         let above_all: Vec<axia_geo::FaceId> = result.above_walls.iter()
             .chain(result.cap_above.iter())
             .copied()
             .collect();
-        if let Some(xia) = self.xias.get_mut(&source_xia) {
-            xia.face_ids = above_all.clone();
-        }
-        for &f in &above_all {
-            self.face_to_xia.insert(f, source_xia);
-        }
+        self.reassign_owner_faces(owner, &above_all);
 
         // Below half — new XIA.
         let below_all: Vec<axia_geo::FaceId> = result.below_walls.iter()
@@ -2076,11 +2460,24 @@ impl Scene {
         }
         if count > 0 { centroid /= count as f64; }
 
-        let original_name = self.xias.get(&source_xia)
-            .map(|x| x.name.clone())
-            .unwrap_or_else(|| "Volume".to_string());
-        let below_name = format!("{}_below", original_name);
-        let new_xia = self.create_xia_with_faces(below_name, centroid, below_all);
+        let below_name = format!("{}_below", self.owner_name(owner));
+        // The new half joins the same layer as the original: slicing a drawn
+        // shape must not silently promote half of it into a property-layer XIA.
+        let new_owner = match owner {
+            SolidOwner::Xia(_) => {
+                SolidOwner::Xia(self.create_xia_with_faces(below_name, centroid, below_all))
+            }
+            SolidOwner::Shape(_) => {
+                let sid = self.create_shape(below_name, below_all.clone());
+                if let Some(sh) = self.shapes.get_mut(&sid) {
+                    sh.position = centroid;
+                }
+                for &f in &below_all {
+                    self.face_to_shape.insert(f, sid);
+                }
+                SolidOwner::Shape(sid)
+            }
+        };
 
         // Inherit material assignment for new faces (default already set).
         // Future: copy any per-face material attributes from source if needed.
@@ -2088,7 +2485,7 @@ impl Scene {
         self.transactions.set_after_snapshot(self.scene_snapshot());
         self.transactions.commit();
 
-        Ok(new_xia)
+        Ok(new_owner)
     }
 
     /// ADR-241 (Phase 1 C5) — polygonal TRIM: plane-cut a volume and KEEP only
@@ -2104,21 +2501,7 @@ impl Scene {
         if face_ids.is_empty() {
             anyhow::bail!("trim_volume_by_plane: empty face set");
         }
-        // Determine the source XIA — must be unique across the input set.
-        let mut source_xia: Option<crate::xia::XiaId> = None;
-        for &fid in face_ids {
-            match (source_xia, self.face_to_xia.get(&fid).copied()) {
-                (None, Some(x)) => source_xia = Some(x),
-                (Some(prev), Some(x)) if prev == x => {}
-                (Some(_), Some(_)) => anyhow::bail!(
-                    "trim_volume_by_plane: input faces span multiple XIAs — \
-                    select faces from a single volume only"),
-                (_, None) => anyhow::bail!(
-                    "trim_volume_by_plane: face {:?} has no owning XIA", fid),
-            }
-        }
-        let source_xia = source_xia
-            .ok_or_else(|| anyhow::anyhow!("trim_volume_by_plane: cannot determine source XIA"))?;
+        let owner = self.solid_owner_of(face_ids, "trim_volume_by_plane")?;
 
         let before = self.scene_snapshot();
         self.transactions.begin();
@@ -2140,13 +2523,9 @@ impl Scene {
         // half (the discarded half's faces were removed by the mesh op).
         for &fid in face_ids {
             self.face_to_xia.remove(&fid);
+            self.face_to_shape.remove(&fid);
         }
-        if let Some(xia) = self.xias.get_mut(&source_xia) {
-            xia.face_ids = kept.clone();
-        }
-        for &f in &kept {
-            self.face_to_xia.insert(f, source_xia);
-        }
+        self.reassign_owner_faces(owner, &kept);
 
         self.transactions.set_after_snapshot(self.scene_snapshot());
         self.transactions.commit();
@@ -3668,6 +4047,227 @@ impl Scene {
         ok
     }
 
+    /// Divide faces that pass through faces on other planes.
+    ///
+    /// Coplanar overlap is handled by the re-derive; this is the other half.
+    /// Two faces meeting at an angle intersect along a line, and until they are
+    /// split along it they are simply interpenetrating — the shape drawn across
+    /// them looks whole but divides nothing.
+    ///
+    /// Only pairs that actually cross are touched, and only when their planes
+    /// genuinely differ: faces sharing a plane belong to the re-derive, and
+    /// running this on them would fight it. When nothing crosses, this does
+    /// nothing at all, so the cost is one intersection scan.
+    ///
+    /// And only pairs involving what was just drawn. Two solids may sit inside
+    /// each other quite legitimately; a draw somewhere else in the scene has no
+    /// business carving them up.
+    fn split_faces_crossing_other_planes(
+        &mut self,
+        before: &std::collections::HashSet<FaceId>,
+    ) -> anyhow::Result<usize> {
+        use axia_geo::surfaces::AnalyticSurface as S;
+        let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        // A curved primitive's faces are not auto-intersect targets (ADR-197):
+        // a drawn shape must not be carved by a sphere's silhouette.
+        let planar = |m: &axia_geo::Mesh, f: FaceId| {
+            m.faces.get(f).map_or(false, |x| {
+                x.is_active()
+                    && !matches!(
+                        x.surface(),
+                        Some(S::Sphere { .. })
+                            | Some(S::Cylinder { .. })
+                            | Some(S::Cone { .. })
+                            | Some(S::Torus { .. })
+                            | Some(S::BezierPatch { .. })
+                            | Some(S::BSplineSurface { .. })
+                            | Some(S::NURBSSurface { .. })
+                    )
+            })
+        };
+        // Only ONE side of each pair goes in. `intersect_faces_with_model`
+        // splits what it is given against everything else, so putting both
+        // halves in leaves it nothing to cut against and it does nothing at all.
+        //
+        // Splitting a pair can expose another — a face cut in two now crosses
+        // something its whole self did not reach — so this repeats until the
+        // scan comes back clean. The bound is there because a pass that stops
+        // making progress must not spin: if it cannot finish, it leaves the rest
+        // for the guard to judge rather than looping.
+        // Only ONE side of each pair goes in. `intersect_faces_with_model`
+        // cuts what it is given against everything else, so putting both halves
+        // in leaves it nothing to cut against and it does nothing at all.
+        //
+        // One pass. Cutting a face can expose crossings its whole self did not
+        // reach, and chasing those turned out to make things worse rather than
+        // better — on a tilted plane the follow-up rounds damaged the mesh and
+        // the whole draw got rolled back. So this divides what it can see now
+        // and leaves the rest visible rather than half-repaired.
+        let mut crossing: Vec<FaceId> = Vec::new();
+        for (fa, fb) in pairs {
+            let (new_a, new_b) = (!before.contains(&fa), !before.contains(&fb));
+            if !new_a && !new_b {
+                continue; // both were already here — not this draw's doing
+            }
+            if !planar(&self.mesh, fa) || !planar(&self.mesh, fb) {
+                continue;
+            }
+            let na = self.mesh.faces[fa].normal().normalize_or_zero();
+            let nb = self.mesh.faces[fb].normal().normalize_or_zero();
+            if na.dot(nb).abs() >= 0.999 {
+                continue; // same plane — the re-derive owns this pair
+            }
+            // Cut the new face; the model side gets divided by the same call.
+            let cut = if new_a { fa } else { fb };
+            let other = if cut == fa { fb } else { fa };
+            if !crossing.contains(&cut) && !crossing.contains(&other) {
+                crossing.push(cut);
+            }
+        }
+        if crossing.is_empty() {
+            return Ok(0);
+        }
+        let out = self
+            .mesh
+            .intersect_faces_with_model(&crossing, FORM_MATERIAL)?;
+
+        // 사용자: "선은 별개의 객체로 존재하도록 합니다."
+        //
+        // The line where the two faces meet is already in the mesh — the split
+        // put it there, or it was the standing face's own foot. What it did not
+        // have was an identity: it belonged to the faces on either side and to
+        // nothing of its own, so there was nothing to select, name or move. Give
+        // it one.
+        let named = self.name_the_contact_lines(&before)?;
+        Ok(out.len() + named)
+    }
+
+    /// Give the line where two faces meet an identity of its own.
+    ///
+    /// It stays exactly where it is and keeps bounding whatever it bounded —
+    /// this adds a form-layer Shape that owns the edge, so the line is a thing
+    /// in the model rather than a side effect of two faces happening to cross.
+    ///
+    /// An edge already owned by a line Shape is left alone, so drawing over the
+    /// same crossing twice does not pile up duplicates.
+    fn name_the_contact_lines(
+        &mut self,
+        before: &std::collections::HashSet<FaceId>,
+    ) -> anyhow::Result<usize> {
+        // Every pair where the planes differ and at least one side is new since
+        // this draw. Looking at what still overlaps would miss the cases the
+        // split resolved completely — which are exactly the ones with the
+        // cleanest line to name. A solid's own adjacent faces are all old, so
+        // they are not swept up.
+        let live: Vec<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(i, _)| i)
+            .collect();
+        let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
+        for (i, &fa) in live.iter().enumerate() {
+            for &fb in &live[i + 1..] {
+                if before.contains(&fa) && before.contains(&fb) {
+                    continue;
+                }
+                pairs.push((fa, fb));
+            }
+        }
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        // Edges that already answer to a line Shape.
+        let mut spoken_for: std::collections::HashSet<axia_geo::EdgeId> = self
+            .shapes
+            .values()
+            .filter_map(|sh| sh.standalone_edge_id)
+            .chain(self.xias.values().filter_map(|x| x.standalone_edge_id))
+            .collect();
+
+        let mut named = 0usize;
+        for (fa, fb) in pairs {
+            let (Some(a), Some(b)) = (self.mesh.faces.get(fa), self.mesh.faces.get(fb)) else {
+                continue;
+            };
+            if !a.is_active() || !b.is_active() {
+                continue;
+            }
+            let na = a.normal().normalize_or_zero();
+            let nb = b.normal().normalize_or_zero();
+            if na.dot(nb).abs() >= 0.999 {
+                continue; // same plane — the re-derive's business, not a crossing
+            }
+            // Edges shared by the two faces are exactly the line they meet on.
+            let ea = self.mesh.face_outer_edges(fa).unwrap_or_default();
+            let eb = self.mesh.face_outer_edges(fb).unwrap_or_default();
+            let mut shared: Vec<axia_geo::EdgeId> =
+                ea.into_iter().filter(|e| eb.contains(e)).collect();
+            // …and when only one of them was divided, the line is that one's own
+            // boundary edge lying in the other's plane. Either side may be the
+            // divided one, so look both ways.
+            if shared.is_empty() {
+                shared = self.contact_edges_lying_in_plane(fa, fb);
+                if shared.is_empty() {
+                    shared = self.contact_edges_lying_in_plane(fb, fa);
+                }
+            }
+            for eid in shared {
+                if spoken_for.contains(&eid) {
+                    continue;
+                }
+                let sid = self.create_shape(format!("교차선 {}", eid.raw()), Vec::new());
+                if let Some(sh) = self.shapes.get_mut(&sid) {
+                    sh.standalone_edge_id = Some(eid);
+                }
+                spoken_for.insert(eid);
+                named += 1;
+            }
+        }
+        Ok(named)
+    }
+
+    /// Edges of `owner` that lie in `other`'s plane — where one face was divided
+    /// and the other could not be, this is the line between them.
+    fn contact_edges_lying_in_plane(
+        &self,
+        owner: FaceId,
+        other: FaceId,
+    ) -> Vec<axia_geo::EdgeId> {
+        let Some(of) = self.mesh.faces.get(other) else { return Vec::new() };
+        let n = of.normal().normalize_or_zero();
+        let origin = match self
+            .mesh
+            .collect_loop_verts(of.outer().start)
+            .ok()
+            .and_then(|v| v.first().copied())
+            .and_then(|v| self.mesh.verts.get(v).map(|x| x.pos()))
+        {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let on_plane = |p: DVec3| (p - origin).dot(n).abs() < 1e-6;
+        self.mesh
+            .face_outer_edges(owner)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&e| {
+                let Some(ed) = self.mesh.edges.get(e) else { return false };
+                let (Some(a), Some(b)) = (
+                    self.mesh.verts.get(ed.v_small()).map(|x| x.pos()),
+                    self.mesh.verts.get(ed.v_large()).map(|x| x.pos()),
+                ) else {
+                    return false;
+                };
+                on_plane(a) && on_plane(b)
+            })
+            .collect()
+    }
+
     pub fn intersect_faces_inner(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() { return Ok(0); }
 
@@ -3711,7 +4311,25 @@ impl Scene {
         // intersect/annulus 대신 boundary kernel re-derive (rebuild_coplanar_faces).
         // flag OFF (default) = 아래 legacy 경로 보존 (245+ 회귀 무영향).
         if self.face_rederive_on_draw {
-            return self.rederive_coplanar_on_draw(face_ids);
+            // Which faces existed before this draw. The re-derive rebuilds the
+            // region it touches, handing out fresh ids, so the ids we were
+            // called with are stale by the time it returns — "new since we
+            // started" is the only handle that survives it.
+            let before: std::collections::HashSet<FaceId> = self
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(i, _)| i)
+                .collect();
+            let coplanar = self.rederive_coplanar_on_draw(face_ids)?;
+            // The re-derive divides faces that share a plane. A face that meets
+            // another one at an ANGLE is a different problem and used to be
+            // skipped entirely — the two simply passed through each other,
+            // which is what a user sees as "면 교차시 분할이 안 된다". Split
+            // those along the line where they meet.
+            let crossing = self.split_faces_crossing_other_planes(&before)?;
+            return Ok(coplanar + crossing);
         }
 
         // 원본 face 의 XIA 매핑 보존 (분할 후 승계용)
@@ -4012,11 +4630,49 @@ impl Scene {
     /// (`restore_scene_snapshot` + `discard_last_undo`) — a rejected op leaves
     /// no dangling undo/redo entry. detection metric = the SAME measurement the
     /// orange overlay uses, so reject fires exactly when the orange would.
+    /// How many face pairs overlap where at least one of them belongs to a
+    /// solid. Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
+    fn solid_overlap_count(&self) -> usize {
+        self.mesh
+            .detect_self_intersections()
+            .intersecting_pairs
+            .iter()
+            .filter(|(a, b)| !self.mesh.is_sheet_face(*a) || !self.mesh.is_sheet_face(*b))
+            .count()
+    }
+
     fn guard_imprint<F>(&mut self, draw: F) -> CommandResult
     where
         F: FnOnce(&mut Self) -> CommandResult,
     {
         let nm_before = self.mesh.collect_non_manifold_edges().len();
+        // Counting non-manifold edges alone was wrong in BOTH directions.
+        //
+        // Too strict: a sheet drawn across a solid's footprint necessarily puts
+        // the solid's wall, its cap and the sheet on one shared edge — three
+        // faces, no two of which occupy the same space. That is a T-junction,
+        // not damage; SketchUp makes exactly this, and rolling it back is why
+        // "draw a rectangle on the ground overlapping a box" was impossible.
+        //
+        // Too lax: a shape that merely straddles a face's boundary adds NO
+        // non-manifold edge, so it sailed through while leaving its face lying
+        // on top of the one it overlapped — two faces in the same place, which
+        // is real corruption (z-fighting, wrong volumes, wrong export).
+        //
+        // So ask the question we actually mean — did the draw make geometry
+        // overlap? — and let a mere T-junction through. The scan costs about
+        // what the rollback snapshot below already costs (measured 7.8ms vs
+        // 4.7ms on an 888-face scene), and it must be a before/after comparison:
+        // two solids may legitimately interpenetrate before the draw, and
+        // demanding a clean result outright would lock the user out of drawing
+        // at all in that scene.
+        //
+        // Scoped to overlaps that involve a SOLID face, which is what this guard
+        // exists to protect. Sheet-on-sheet overlap is the arrangement's business
+        // and has its own switches — with `freeform_overlap_on_draw` off, two
+        // overlapping blobs are deliberately left as they are, and that is not
+        // this guard's call to override.
+        let si_before = self.solid_overlap_count();
         // ADR-282 — reject ONLY genuine corruption (a NEW non-manifold edge, i.e.
         // an edge that ends up bearing ≥3 faces). The former ADR-280
         // `opened_solid` check (reject if a closed solid merely OPENS) was
@@ -4032,15 +4688,37 @@ impl Scene {
         if matches!(result, CommandResult::Error(_)) {
             return result;
         }
-        if self.mesh.collect_non_manifold_edges().len() > nm_before {
-            // The draw introduced a non-manifold edge (≥3 faces) — genuine
-            // corruption. Roll back + reject (surfaced as a Toast by the bridge
-            // via surfaceDrawReject). A mere open (deformation) is NOT rejected.
-            self.restore_scene_snapshot(&before_snapshot);
-            self.transactions.discard_last_undo();
-            return CommandResult::Error(
-                "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요".to_string(),
+        // A shape drawn past the edge of a face it overlaps leaves the shared
+        // part covered twice. That is repairable and the repair is the point of
+        // the draw, so do it before judging rather than rolling the draw back
+        // for a state the engine can fix.
+        self.subtract_double_covered_faces();
+        let nm_after = self.mesh.collect_non_manifold_edges().len();
+        let si_after = self.solid_overlap_count();
+        let reject = |scene: &mut Self, msg: &str| -> CommandResult {
+            scene.restore_scene_snapshot(&before_snapshot);
+            scene.transactions.discard_last_undo();
+            CommandResult::Error(msg.to_string())
+        };
+        if si_after > si_before {
+            // Two faces now occupy the same space. Always damage.
+            return reject(
+                self,
+                "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요",
             );
+        }
+        if nm_after > nm_before {
+            // No new overlap, so this is a shared edge. Accept it only when it
+            // is the ONLY thing the invariant checker objects to — each
+            // non-manifold edge yields exactly one violation, so an equal count
+            // means nothing else (winding, degenerate, broken loop) went wrong.
+            let violations = self.mesh.verify_face_invariants().violations.len();
+            if violations != nm_after {
+                return reject(
+                    self,
+                    "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요",
+                );
+            }
         }
         result
     }
@@ -4054,6 +4732,16 @@ impl Scene {
         if !self.transactions.is_recording() {
             self.mesh.clear_face_aabb_cache();
         }
+        let result = self.execute_inner(cmd);
+        // Sections are keyed by edge, and edges do not live forever: a line that
+        // gets crossed is replaced by its pieces, and the id it held is handed
+        // out again later. Settle up after every command so a section follows
+        // the line it was given to and never lands on a stranger.
+        self.reconcile_edge_profiles();
+        result
+    }
+
+    fn execute_inner(&mut self, cmd: Command) -> CommandResult {
         match cmd {
             // ADR-087 K-ζ — Legacy DrawLine / DrawRect / DrawCircle /
             // PushPull 은 internal-only (Test 회귀 자산 보존용). User-facing
@@ -4086,6 +4774,9 @@ impl Scene {
             }
             Command::DrawLineAsShape { start, end, surface_normal } => {
                 self.exec_draw_line_as_shape(start, end, surface_normal)
+            }
+            Command::DrawLineAlongSurface { start, end } => {
+                self.exec_draw_line_along_surface(start, end)
             }
             Command::DrawPointAsShape { pos } => {
                 self.exec_draw_point_as_shape(pos)
@@ -6321,8 +7012,8 @@ impl Scene {
             let mut seg_faces: usize = 0;
             let mut excluded_edges: Vec<EdgeId> = Vec::new();
             loop {
-                let loop_verts = match self.mesh.detect_free_edge_loop_excluding(
-                    v_a, v_b, new_edge_id, &excluded_edges,
+                let loop_verts = match self.mesh.detect_free_edge_loop_excluding_on_plane(
+                    v_a, v_b, new_edge_id, &excluded_edges, surface_normal,
                 ) {
                     Some(v) => v,
                     None => break,
@@ -7177,6 +7868,92 @@ impl Scene {
     ///
     /// **ADR-050 P-5e-γ collapse**: single transaction via
     /// `replace_last_after_snapshot` — Undo 1회로 pre-line 복원.
+    /// 면을 따라 그리기 — draw the route that stays on the solid.
+    ///
+    /// The chord between two points on different faces passes through the
+    /// interior and divides nothing. `Mesh::path_along_surface` returns the
+    /// route that bends over the shared edge instead; each leg is then drawn in
+    /// its own face's plane, so each face is cut by the part of the line that
+    /// crosses it.
+    ///
+    /// The legs go down one at a time through the ordinary draw, which means
+    /// each one gets the usual splitting and face synthesis. They share a single
+    /// transaction so the whole path is one undo, and if a later leg fails the
+    /// earlier ones are rolled back rather than left as a half-drawn line.
+    fn exec_draw_line_along_surface(&mut self, start: DVec3, end: DVec3) -> CommandResult {
+        use axia_geo::operations::surface_path::NoPath;
+
+        // The endpoints name their own faces. A point exactly on an edge belongs
+        // to several faces at once; taking the first is fine here because the
+        // path then starts at a bend anyway.
+        let tol = 1e-3;
+        let (fa, fb) = match (
+            self.mesh.find_surface_face(start, tol),
+            self.mesh.find_surface_face(end, tol),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            (None, _) => {
+                return CommandResult::Error(
+                    "시작점이 입체 표면 위에 있지 않습니다".to_string(),
+                )
+            }
+            (_, None) => {
+                return CommandResult::Error(
+                    "끝점이 입체 표면 위에 있지 않습니다".to_string(),
+                )
+            }
+        };
+
+        let path = match self.mesh.path_along_surface(start, fa, end, fb) {
+            Ok(p) => p,
+            Err(why) => {
+                let msg = match why {
+                    NoPath::NotAdjacent => {
+                        "두 점이 맞닿지 않은 면 위에 있습니다 (사이 면을 지나는 경로는 아직 없습니다)"
+                    }
+                    NoPath::LeavesThroughAnotherEdge => {
+                        "경로가 세 번째 면을 지나갑니다 (아직 두 면까지만 따라갑니다)"
+                    }
+                    NoPath::EndpointOffItsFace => "점이 그 면 위에 있지 않습니다",
+                    NoPath::NoSuchFace => "면을 찾을 수 없습니다",
+                    NoPath::Degenerate => "두 점이 너무 가깝거나 면이 퇴화했습니다",
+                };
+                return CommandResult::Error(msg.to_string());
+            }
+        };
+
+        // One transaction for the whole path.
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let before = self.scene_snapshot();
+
+        let mut last = CommandResult::Error("경로가 비어 있습니다".to_string());
+        for (i, leg) in path.points.windows(2).enumerate() {
+            let n = path
+                .faces
+                .get(i)
+                .and_then(|&f| self.mesh.faces.get(f))
+                .map(|f| f.normal().normalize_or_zero());
+            last = self.exec_draw_line_as_shape(leg[0], leg[1], n);
+            if let CommandResult::Error(e) = &last {
+                let msg = format!("면 따라 그리기 {}번째 구간 실패: {e}", i + 1);
+                self.restore_scene_snapshot(&before);
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                return CommandResult::Error(msg);
+            }
+        }
+
+        if own_transaction {
+            self.transactions.commit();
+        }
+        last
+    }
+
     fn exec_draw_line_as_shape(
         &mut self,
         start: DVec3,
@@ -18397,7 +19174,9 @@ mod tests {
         match ok.kind {
             crate::promote::XiaKind::Linear { length, cross_section_area } => {
                 assert!((length - 5.0).abs() < 1e-6, "length should be 5, got {}", length);
-                assert_eq!(cross_section_area, 1.0, "MVP sentinel cross-section");
+                // No section was given, so there is none to report. This used
+                // to answer 1.0, which read like a measurement and was not one.
+                assert_eq!(cross_section_area, None, "a line with no profile has no area");
             }
             other => panic!("expected Linear, got {:?}", other),
         }
@@ -18844,7 +19623,7 @@ mod tests {
         match ok.kind {
             crate::promote::XiaKind::Linear { length, cross_section_area } => {
                 assert!((length - 2.0).abs() < 1e-9, "edge length = 2, got {length}");
-                assert!(cross_section_area > 0.0);
+                assert_eq!(cross_section_area, None, "no profile was set on this edge");
             }
             other => panic!("expected Linear, got {other:?}"),
         }
@@ -21380,19 +22159,26 @@ mod tests {
         let bytes = scene.export_versioned_snapshot().expect("export");
 
         // Every additive section lands AFTER sub-section 7d, so simulating a
-        // legacy V2 file means stripping all of them: 11 (element kinds,
-        // ADR-203 δ), 10 (point verts, ADR-219), 9 (material library,
-        // ADR-098 S-γ), 8 (references + next id, ADR-095 Phase 3-ε), then 7d
-        // itself. A new section must be added here too, or the truncation
-        // stops landing on a section boundary and the test starts passing for
-        // the wrong reason.
+        // legacy V2 file means stripping all of them: 13 (cross-sections),
+        // 12 (openings, ADR-203), 11 (element kinds, ADR-203 δ), 10 (point
+        // verts, ADR-219), 9 (material library, ADR-098 S-γ), 8 (references +
+        // next id, ADR-095 Phase 3-ε), then 7d itself. A new section must be
+        // added here too, or the truncation stops landing on a section
+        // boundary and the test starts passing for the wrong reason — which is
+        // exactly what happened: section 12 was never added here, so this cut
+        // in the middle of it and only appeared to hold until section 13
+        // arrived and pushed the landing point far enough to notice.
         let refs_data = bincode::serialize(&scene.references).unwrap();
         let xia_orig_data = bincode::serialize(&scene.xia_to_original_shape).unwrap();
         let ml_data = bincode::serialize(&scene.material_library).unwrap();
         let point_verts_data = bincode::serialize(&scene.shape_to_standalone_vertex).unwrap();
         let element_kind_data =
             bincode::serialize(&(&scene.xia_element_kind, &scene.shape_element_kind)).unwrap();
-        let strip_len = (8 + element_kind_data.len())
+        let openings_data = bincode::serialize(&scene.openings).unwrap();
+        let profiles_data = bincode::serialize(&scene.edge_profile).unwrap();
+        let strip_len = (8 + profiles_data.len())
+            + (8 + openings_data.len())
+            + (8 + element_kind_data.len())
             + (8 + point_verts_data.len())
             + (8 + ml_data.len())
             + (8 + refs_data.len() + 8)
@@ -22581,6 +23367,389 @@ mod tests {
     /// Regression lock: the "선만 그려, 케이크는 알아서 나뉜다" auto-split
     /// behavior that ADR-176 enables by default.
     #[test]
+    /// A shape that straddles a solid face's boundary used to land ON TOP of the
+    /// face it overlapped — two faces in the same place — so the guard refused it.
+    ///
+    /// It resolves now: the part beyond the edge becomes its own sheet, the part
+    /// over the face belongs to the face. What this pins is that the accepted
+    /// result is clean, since accepting a corrupt one would be worse than the
+    /// refusal it replaced.
+    #[test]
+    fn draw_straddling_a_solid_face_resolves_cleanly() {
+        let mut scene = prod_scene();
+        let solid = box_from_ground_rect(&mut scene);
+        assert_eq!(solid, 6, "expected a 6-face box, got {solid}");
+        let si_before = scene.mesh.detect_self_intersections().count();
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 100.0, 100.0),
+            normal: DVec3::Z,
+            up: DVec3::Y,
+            width: 120.0,
+            height: 120.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "a straddling shape must be accepted now");
+        assert!(active_faces(&scene) > solid, "and must add the part beyond the edge");
+        assert_eq!(
+            scene.mesh.detect_self_intersections().count(),
+            si_before,
+            "with nothing lying on top of anything — that was the whole objection"
+        );
+    }
+
+    /// Drawing a shape that overlaps a solid's coplanar face splits three ways —
+    /// the shape minus the overlap, the overlap, and the face minus the overlap —
+    /// and the result is accepted because none of the three overlap each other.
+    ///
+    /// It does NOT work for most solids, and the dividing line is not the one it
+    /// first looked like. Measured across every primitive and several drawn
+    /// profiles, the ONLY case that succeeds is a solid whose ground face was
+    /// built by LINE SYNTHESIS — which today means exactly one thing, a drawn
+    /// rectangle, because `exec_draw_rect` lays down four lines and lets the
+    /// closing one synthesise the face. Every profile built in one shot with
+    /// `mesh.add_face` is refused: the Box, Cylinder and Cone primitives, a drawn
+    /// polygon, a drawn circle. (Sphere and Torus are accepted only because they
+    /// have no flat face on the ground for the rectangle to overlap — they are
+    /// not immune, the case does not arise.)
+    ///
+    /// So it is not primitive-versus-drawn. Drawing the rectangle as its four
+    /// lines and watching each: the fixtures are identical through line 2, and
+    /// the z=0 DCEL matches exactly — nine edges, same positions, same face
+    /// counts, only the EdgeIds differ. They diverge on the closing line, in
+    /// face synthesis: the synthesised-face solid gets a face for the region
+    /// outside the box, the other gets none at all. (`DrawRectAsShape` has its
+    /// own fast path, which is why there the rectangle ends up whole and lying
+    /// over the overlap, and the guard rolls it back.)
+    ///
+    /// That region needs the solid's own boundary as part of its outline, and
+    /// those edges already carry two faces — accepting it means a third, the
+    /// T-junction this engine now allows. Something makes the synthesiser
+    /// willing in one case and not the other, and it is NOT: HARD flags,
+    /// ownership layer (Shape vs XIA), crossing detection (`edges_near` and
+    /// `find_line_crossings` return identical results), cap classification
+    /// (`is_sheet_face`, normal, surface all match), or scene state left by a
+    /// prior draw. Each was measured and ruled out.
+    ///
+    /// MECHANISM (measured 2026-08-03, no longer a suspicion). The cycle finder
+    /// that closes a region collects only half-edges with NO face
+    /// (`h.is_active() && h.face().is_null()`, mesh.rs ~5549/5563). Counting the
+    /// half-edges on a ground edge:
+    ///
+    ///   drawn rectangle, no extrude   2 per edge  (1 face + 1 spare)
+    ///   …then extruded                4 per edge  (2 faces + 2 SPARE)
+    ///   `create_box`                  2 per edge  (2 faces + 0 spare)
+    ///
+    /// So the extrude leaves a spare pair on every profile-boundary edge — it
+    /// adds a new pair for the wall instead of taking the one already free. Those
+    /// leftovers are what the later overlap draw walks along to close the region
+    /// outside the box. `create_box` allocates exactly what it needs, so the
+    /// finder sees nothing to walk and no face is made.
+    ///
+    /// The working case therefore works BY ACCIDENT, off an inefficiency in the
+    /// extrude path — not by design. Which also says what the fix is not: making
+    /// one-shot faces leave litter too. `find_halfedge` already has a Pass 2 that
+    /// creates a half-edge pair when none is free (mesh.rs ~9522), and
+    /// `add_face_with_holes` reaches it, so ATTACHING the third face is solved.
+    /// What is missing is that the finder refuses to route through an edge whose
+    /// slots are full, even when the third face is the T-junction this engine now
+    /// permits. That is a change to the cycle finder — the one place where a
+    /// wrong edit corrupts geometry silently — so it wants its own measured pass.
+    ///
+    /// Recorded as the behaviour that HOLDS today rather than `#[ignore]`d, so
+    /// the next reader starts from here instead of rediscovering it.
+    #[test]
+    fn a_shape_overlapping_a_drawn_solid_splits_three_ways() {
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "the overlapping draw must be accepted");
+        assert_eq!(
+            scene.mesh.detect_self_intersections().count(), 0,
+            "the three regions must not overlap each other"
+        );
+        // Exactly three faces sit on the ground plane afterwards.
+        let ground = scene
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(i, _)| i)
+            .filter(|&i| {
+                scene.mesh.collect_loop_verts(scene.mesh.faces[i].outer().start).map_or(false, |vs| {
+                    !vs.is_empty()
+                        && vs.iter().all(|v| scene.mesh.vertex_pos(*v).unwrap().z.abs() < 1e-6)
+                })
+            })
+            .count();
+        assert_eq!(ground, 3, "shape-minus-overlap, overlap, face-minus-overlap");
+    }
+
+    /// The other half of the pair: the same draw over a solid whose ground face
+    /// was added in one call — the Box primitive. It was refused while the drawn
+    /// solid's was accepted, which is what made "how the solid was built" look
+    /// like the dividing line.
+    ///
+    /// Both resolve now, and identically. What this pins is exactly that: the two
+    /// must not drift apart again.
+    #[test]
+    fn the_same_draw_over_a_one_shot_face_now_resolves_too() {
+        let mut scene = prod_scene();
+        let faces = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        scene.create_xia_with_faces("box".into(), DVec3::ZERO, faces.clone());
+        let n = active_faces(&scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(
+            !matches!(r, CommandResult::Error(_)),
+            "a one-shot solid must take the draw exactly as a drawn one does"
+        );
+        assert!(active_faces(&scene) > n, "and must add geometry");
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0,
+            "with nothing double-covered");
+    }
+
+    /// A slice leaves two solids resting against each other, so every segment of
+    /// the cut boundary exists twice — one edge per half. The mesh-wide crack
+    /// count therefore reads eight on a box cut in two, and the integrity gate
+    /// that consumed it refused every slice the engine ever made. What has to
+    /// hold instead is that each half came out closed.
+    #[test]
+    fn a_slice_produces_two_closed_halves() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        let faces = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        let src = scene.create_xia_with_faces("box".into(), DVec3::ZERO, faces.clone());
+        let owner = scene
+            .slice_volume_by_plane(&faces, SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap())
+            .expect("a clean cut through a box must succeed");
+
+        let above = scene.xias.get(&src).map(|x| x.face_ids.clone()).unwrap_or_default();
+        let below = match owner {
+            SolidOwner::Xia(x) => scene.xias.get(&x).map(|v| v.face_ids.clone()).unwrap_or_default(),
+            SolidOwner::Shape(_) => panic!("a XIA-owned box must slice into XIAs"),
+        };
+        assert_eq!(above.len(), 6, "the upper half must be a 6-face box");
+        assert_eq!(below.len(), 6, "the lower half must be a 6-face box");
+        assert_eq!(
+            scene.mesh.face_set_manifold_info(&above).boundary_edge_count, 0,
+            "the upper half must be watertight"
+        );
+        assert_eq!(
+            scene.mesh.face_set_manifold_info(&below).boundary_edge_count, 0,
+            "the lower half must be watertight"
+        );
+        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), 0);
+        // And the thing that used to sink it is still present and still fine:
+        // the shared cut boundary reads as coincident edges.
+        assert!(
+            scene.mesh.collect_non_manifold_edges_geometric().len() >= 4,
+            "the shared cut boundary is expected — if this ever reads zero the              test no longer covers the case the gate got wrong"
+        );
+    }
+
+    /// A refused slice must leave nothing behind. The cut mutates incrementally
+    /// before a late bail, and `cancel()` drops the recording rather than the
+    /// mutation — measured, refusing to slice an open sheet still left it cut
+    /// from one face into two.
+    #[test]
+    fn a_refused_slice_leaves_the_mesh_untouched() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        let a = scene.mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let b = scene.mesh.add_vertex(DVec3::new(200.0, 0.0, 0.0));
+        let c = scene.mesh.add_vertex(DVec3::new(200.0, 200.0, 0.0));
+        let d = scene.mesh.add_vertex(DVec3::new(0.0, 200.0, 0.0));
+        let f = scene.mesh.add_face(&[a, b, c, d], crate::FORM_MATERIAL).unwrap();
+        scene.create_xia_with_faces("sheet".into(), DVec3::ZERO, vec![f]);
+        let before = scene.scene_snapshot();
+        let n = active_faces(&scene);
+
+        let r = scene.slice_volume_by_plane(
+            &[f],
+            SlicePlane::new(DVec3::new(100.0, 0.0, 0.0), DVec3::X).unwrap(),
+        );
+        assert!(r.is_err(), "an open sheet cannot slice into two closed halves");
+        assert_eq!(active_faces(&scene), n, "the refused slice cut the mesh anyway");
+        assert_eq!(scene.scene_snapshot(), before, "the refused slice must restore byte-for-byte");
+    }
+
+    /// Plane cuts used to demand a property-layer XIA, so they worked on a
+    /// primitive box and refused a solid the user had drawn — even though the
+    /// default for a drawn shape is to stay form-layer until it is given a
+    /// material. Both must cut.
+    #[test]
+    fn plane_cuts_accept_a_drawn_solid_not_only_a_primitive() {
+        use axia_geo::operations::slice::SlicePlane;
+        let plane = || SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap();
+
+        // form-layer: drawn rectangle pulled up
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let faces: Vec<axia_geo::FaceId> =
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        assert!(
+            faces.iter().all(|f| scene.face_to_xia.get(f).is_none()),
+            "fixture must be form-layer (no XIA) or this proves nothing"
+        );
+        scene
+            .trim_volume_by_plane(&faces, plane(), true)
+            .expect("a drawn solid must be trimmable");
+
+        // property-layer: primitive box owned by a XIA — unchanged behaviour
+        let mut scene = prod_scene();
+        let f = scene
+            .mesh
+            .create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL)
+            .unwrap();
+        scene.create_xia_with_faces("box".into(), DVec3::ZERO, f.clone());
+        scene.trim_volume_by_plane(&f, plane(), true).expect("a primitive must stay trimmable");
+    }
+
+    /// Slicing a drawn solid must leave BOTH halves form-layer — the cut must not
+    /// quietly promote half of it into a property-layer XIA.
+    #[test]
+    fn slicing_a_drawn_solid_keeps_both_halves_in_the_same_layer() {
+        use axia_geo::operations::slice::SlicePlane;
+        let mut scene = prod_scene();
+        box_from_ground_rect(&mut scene);
+        let faces: Vec<axia_geo::FaceId> =
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        let owner = scene
+            .slice_volume_by_plane(&faces, SlicePlane::new(DVec3::new(0.0, 0.0, 50.0), DVec3::Z).unwrap())
+            .expect("a drawn solid must be sliceable");
+        assert!(!owner.is_xia(), "the new half of a drawn solid must be a Shape, got {owner:?}");
+        assert!(
+            scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).all(|(i, _)| {
+                scene.face_to_shape.contains_key(&i) || scene.face_to_xia.contains_key(&i)
+            }),
+            "every face must still have an owner after the slice"
+        );
+    }
+
+    /// The case the whole guard was blocking: draw a rectangle on the ground, pull
+    /// it up into a box, then draw another rectangle on the ground that overlaps
+    /// its footprint. The result necessarily shares an edge between the box wall,
+    /// the box cap and the new sheet — three faces on one edge — but no two of
+    /// them occupy the same space, so it is a T-junction and must be allowed.
+    /// SketchUp makes exactly this.
+    #[test]
+    fn a_sheet_may_meet_a_solid_along_a_shared_edge() {
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(
+            !matches!(r, CommandResult::Error(_)),
+            "a sheet abutting a solid must be allowed, got {r:?}"
+        );
+        assert!(active_faces(&scene) > n, "the draw must actually add geometry");
+        let nm = scene.mesh.collect_non_manifold_edges().len();
+        assert!(nm > 0, "this fixture is meant to produce a T-junction, got nm={nm}");
+        // Allowed only because the shared edges are the ONLY thing wrong: nothing
+        // overlaps, and the invariant checker objects to nothing else.
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
+        assert_eq!(
+            scene.mesh.verify_face_invariants().violations.len(),
+            nm,
+            "a T-junction is allowed only when the shared edges are the sole complaint"
+        );
+    }
+
+    /// …and the refusal must be about overlap, not about drawing near a solid:
+    /// these three must still work.
+    #[test]
+    fn draws_that_do_not_overlap_a_solid_still_work() {
+        // clear of the solid
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(500.0, 500.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "a disjoint draw must be allowed");
+        assert_eq!(active_faces(&scene), n + 1);
+
+        // wholly inside the top face
+        let mut scene = prod_scene();
+        let n = box_from_ground_rect(&mut scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 100.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "a contained draw must be allowed");
+        assert_eq!(active_faces(&scene), n + 1);
+
+        // sheet over sheet still splits three ways
+        let mut scene = prod_scene();
+        scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(200.0, 200.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)));
+        assert_eq!(active_faces(&scene), 3, "two overlapping sheets still make three faces");
+    }
+
+    /// The overlap test compares before with after on purpose. Two solids may sit
+    /// inside each other quite legitimately — demanding a clean result outright
+    /// would lock the user out of drawing anything at all in such a scene.
+    #[test]
+    fn a_scene_that_already_self_intersects_can_still_be_drawn_in() {
+        let mut scene = prod_scene();
+        let _ = scene.mesh.create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        let _ = scene.mesh.create_box(DVec3::new(150.0, 150.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        let si = scene.mesh.detect_self_intersections().count();
+        assert!(si > 0, "fixture must already self-intersect, got {si}");
+        let n = active_faces(&scene);
+        let r = scene.execute(Command::DrawRectAsShape {
+            center: DVec3::new(900.0, 900.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 100.0, height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "an unrelated draw must not be blocked");
+        assert_eq!(active_faces(&scene), n + 1);
+    }
+
+    fn prod_scene() -> Scene {
+        let mut s = Scene::new();
+        s.auto_intersect_on_draw = true;
+        s.auto_face_synthesis_on_draw = true;
+        s.face_rederive_on_draw = true;
+        s.freeform_overlap_on_draw = true;
+        s
+    }
+    fn active_faces(s: &Scene) -> usize {
+        s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count()
+    }
+    /// ground rect [0,200]^2 extruded up: a box occupying z in [0,100].
+    fn box_from_ground_rect(s: &mut Scene) -> usize {
+        s.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 0.0),
+            normal: DVec3::Z, up: DVec3::Y, width: 200.0, height: 200.0,
+        });
+        let f = s.mesh.faces.iter().filter(|(_, x)| x.is_active()).map(|(i, _)| i).next().unwrap();
+        s.execute(Command::CreateSolid {
+            face_id: f,
+            mode: axia_geo::CreateSolidMode::Extrude { distance: 100.0 },
+        });
+        active_faces(s)
+    }
+
+    #[test]
     fn adr176_two_rects_as_shape_partial_overlap_auto_split() {
         let mut scene = Scene::new();
         scene.auto_intersect_on_draw = true;
@@ -22740,11 +23909,21 @@ mod tests {
         scene
     }
 
-    /// ADR-258 β-1 — a coplanar rect that PARTIALLY OVERLAPS a solid face
-    /// (crosses the box-top boundary) introduces a non-manifold edge → the
-    /// guard rolls back + rejects. The mesh is left exactly as the clean box.
+    /// ADR-258 β-1 held that a coplanar rectangle crossing a solid face's
+    /// boundary must be rejected — fail-closed, because the engine could not
+    /// resolve it and left a non-manifold edge behind.
+    ///
+    /// SUPERSEDED 2026-08-03 by explicit instruction: "입체면 밖으로 확장해서
+    /// 그리는 기능도 구현해야 합니다" — a shape must be drawable past a face's
+    /// edge. The engine can resolve it now: the part over the face splits it, the
+    /// part beyond becomes a sheet meeting the solid along a shared edge.
+    ///
+    /// So the assertion is inverted, and what it guards is the RESULT — that the
+    /// draw lands cleanly. Rejection is no longer the correct outcome, but a
+    /// corrupt acceptance would be worse than the old refusal, which is why every
+    /// property ADR-258 cared about is still checked here.
     #[test]
-    fn adr258_partial_overlap_imprint_rejected() {
+    fn adr258_partial_overlap_imprint_now_resolves() {
         let mut scene = adr258_solid_box();
         assert_eq!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 6, "clean box");
         assert!(scene.mesh.verify_face_invariants().is_valid());
@@ -22755,15 +23934,19 @@ mod tests {
             center: DVec3::new(20.0, 20.0, 100.0), normal: DVec3::Z, up: DVec3::Y,
             width: 100.0, height: 100.0,
         });
-        assert!(matches!(result, CommandResult::Error(_)),
-            "cross-boundary imprint must be rejected");
-        // mesh restored to the clean box — no non-manifold left behind.
-        assert_eq!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(), 6,
-            "restored to 6-face box after reject");
-        assert!(scene.mesh.collect_non_manifold_edges().is_empty(),
-            "no non-manifold after reject");
-        assert!(scene.mesh.verify_face_invariants().is_valid(),
-            "manifold valid after reject");
+        assert!(!matches!(result, CommandResult::Error(_)),
+            "a shape drawn past the face's edge must be accepted now");
+        assert!(scene.mesh.faces.iter().filter(|(_, f)| f.is_active()).count() > 6,
+            "and must actually add geometry");
+        // The one thing that must never come back: two faces in the same place.
+        assert_eq!(scene.mesh.detect_self_intersections().count(), 0,
+            "the part over the face belongs to one face, not two");
+        // The shared edge carries three faces — wall, cap, new sheet. That is the
+        // T-junction this engine permits, and it must be the ONLY complaint.
+        let nm = scene.mesh.collect_non_manifold_edges().len();
+        assert!(nm > 0, "a sheet meeting a solid shares an edge with it");
+        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), nm,
+            "the shared edges must be the sole objection");
     }
 
     /// ADR-258 β-1 — a coplanar rect fully CONTAINED in a solid face does NOT

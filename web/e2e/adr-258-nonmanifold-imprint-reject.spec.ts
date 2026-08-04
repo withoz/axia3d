@@ -1,5 +1,17 @@
 /**
- * ADR-258 γ — Reject Non-Manifold Coplanar Imprint E2E (real Chromium).
+ * ADR-258 γ — Coplanar imprint on a solid face, E2E (real Chromium).
+ *
+ * 2026-08-03 — the first case changed meaning. A rectangle that overlaps a
+ * solid's face and runs past its edge used to be rolled back: the part inside
+ * the face ended up covered twice, and the engine treated that as damage. It is
+ * repairable, and repairing it is the point of the draw
+ * (`subtract_double_covered_faces`), so the draw is now resolved instead of
+ * refused. The user asked for exactly this:
+ *
+ *   "입체면 밖으로 확장해서 그리는 기능도 구현해야 합니다"
+ *
+ * What the guard still refuses is genuine corruption, and the second case —
+ * a contained imprint — is unchanged.
  *
  * End-to-end regression (real Chromium + production build + compiled WASM)
  * for the fail-closed guard (Scene::guard_imprint, β-1): a coplanar draw that
@@ -36,7 +48,7 @@ test.describe('ADR-258 — reject non-manifold coplanar imprint', () => {
     );
   });
 
-  test('partial-overlap imprint on a solid face is rejected (mesh stays a clean manifold box)', async ({ page }) => {
+  test('an imprint that runs past the face edge now resolves into separate regions', async ({ page }) => {
     const r = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const w = window as any;
@@ -53,15 +65,20 @@ test.describe('ADR-258 — reject non-manifold coplanar imprint', () => {
         ret, beforeFaces, afterFaces: bridge.getStats().faces,
         nm: mi.nonManifoldEdgeCount, closed: mi.isClosedSolid,
         valid: inv.valid, viol: inv.violationCount,
+        si: bridge.detectSelfIntersections?.()?.count ?? 0,
       };
     });
-    expect(r.beforeFaces).toBe(6);          // clean box
-    expect(r.ret).toBeLessThan(0);          // imprint rejected (-1 sentinel)
-    expect(r.afterFaces).toBe(6);           // mesh restored — no new faces
-    expect(r.nm).toBe(0);                   // no non-manifold introduced
-    expect(r.closed).toBe(true);            // still a closed solid
-    expect(r.valid).toBe(true);             // invariants valid after reject
-    expect(r.viol).toBe(0);
+    expect(r.beforeFaces).toBe(6);            // clean box
+    expect(r.ret).toBeGreaterThanOrEqual(0);  // accepted
+    // Three regions where there were two overlapping ones: the part only the
+    // top face had, the part they shared, and the part that reached past the
+    // edge.
+    expect(r.afterFaces).toBeGreaterThan(6);
+    expect(r.si, 'nothing may end up covered twice').toBe(0);
+    // The solid is open along the new boundary — that is what drawing past an
+    // edge means — but every violation must be one of those shared edges and
+    // nothing else.
+    expect(r.viol).toBe(r.nm);
   });
 
   test('contained imprint on a solid face is accepted (manifold split)', async ({ page }) => {

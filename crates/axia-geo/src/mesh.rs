@@ -545,6 +545,43 @@ impl NormalizeReport {
 // `mesh_invariants.rs` 로 추출. 재export 는 `lib.rs` 에서 처리.
 pub use crate::mesh_invariants::{InvariantReport, OutwardReport};
 
+/// How finely to sample a curve — and why the answer differs per caller.
+///
+/// Every consumer of a closed boundary carried its own copy of this arithmetic,
+/// and they disagreed: three different circle tolerances, none of them visible
+/// from the others. Naming the policy puts them side by side.
+///
+/// `radius_factor` is what keeps a SMALL circle from becoming a triangle — the
+/// tolerance is capped at `radius × factor`, so a Ø2 circle is sampled finer
+/// than a flat base tolerance would give.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChordTol {
+    pub base: f64,
+    pub radius_factor: Option<f64>,
+    pub floor: f64,
+}
+
+impl ChordTol {
+    /// The same tolerance whatever the size — for anything MEASURED, which must
+    /// not change because the camera moved or the shape got smaller.
+    pub const fn fixed(base: f64) -> Self {
+        Self { base, radius_factor: None, floor: 0.0 }
+    }
+
+    /// Capped by the radius, so small curves stay round.
+    pub const fn scaled(base: f64, radius_factor: f64, floor: f64) -> Self {
+        Self { base, radius_factor: Some(radius_factor), floor }
+    }
+
+    /// The tolerance to sample a circle of this radius at.
+    pub fn for_radius(&self, radius: f64) -> f64 {
+        match self.radius_factor {
+            Some(f) => self.base.min(radius * f).max(self.floor),
+            None => self.base,
+        }
+    }
+}
+
 impl Mesh {
     /// Create a new empty mesh.
     pub fn new() -> Self {
@@ -10784,7 +10821,28 @@ impl Mesh {
         new_edge_id: EdgeId,
         excluded: &[EdgeId],
     ) -> Option<Vec<VertId>> {
-        if let Some(verts) = self.detect_loop_by_chain_walk_excluding(v0, v1, new_edge_id, excluded) {
+        self.detect_free_edge_loop_excluding_on_plane(v0, v1, new_edge_id, excluded, None)
+    }
+
+    /// As [`Self::detect_free_edge_loop_excluding`], but told which plane the
+    /// loop is meant to lie in.
+    ///
+    /// The chain walk needs that to get past a dead end. Where the only ways on
+    /// are a solid's own boundary — every half-edge slot taken — it has to pick
+    /// one, and picking means measuring a turn, which means knowing the plane and
+    /// its sense. Without a normal it declines exactly as it always did, so a
+    /// caller that has no plane in mind loses nothing.
+    pub fn detect_free_edge_loop_excluding_on_plane(
+        &self,
+        v0: VertId,
+        v1: VertId,
+        new_edge_id: EdgeId,
+        excluded: &[EdgeId],
+        plane_normal: Option<DVec3>,
+    ) -> Option<Vec<VertId>> {
+        if let Some(verts) =
+            self.detect_loop_by_chain_walk_excluding(v0, v1, new_edge_id, excluded, plane_normal)
+        {
             return Some(verts);
         }
         self.detect_loop_by_bfs_excluding(v0, v1, new_edge_id, excluded)
@@ -10796,29 +10854,98 @@ impl Mesh {
         v1: VertId,
         new_edge_id: EdgeId,
         excluded: &[EdgeId],
+        plane_normal: Option<DVec3>,
     ) -> Option<Vec<VertId>> {
         let mut path = vec![v0, v1];
         let mut prev_v = v0;
         let mut curr_v = v1;
+        // Set once the walk has stepped onto a used-up edge. Only from then on
+        // does it resolve forks by turning; before that a fork still ends the
+        // walk, so the caller's retry-with-exclusions search — which is how the
+        // working cases find their loop — behaves exactly as it always has.
+        let mut past_dead_end = false;
         for _ in 0..10000 {
             let mut neighbors = Vec::new();
+            // Ways on whose half-edge slots are already full. Held back, because
+            // stepping onto one means a third face on that edge; only consulted
+            // when there is nothing else, so every walk that used to get
+            // somewhere still takes exactly the route it always took.
+            let mut taken: Vec<VertId> = Vec::new();
             for (&key, &edge_id) in &self.vert_to_edge {
                 if edge_id == new_edge_id { continue; }
                 if excluded.contains(&edge_id) { continue; }
                 if key.v_small != curr_v && key.v_large != curr_v { continue; }
                 if !self.edges[edge_id].is_active() { continue; }
-                if !self.edge_has_free_he(edge_id) { continue; }
                 // ADR-089 A-ζ-2: skip self-loop edges (key.v_small == key.v_large).
                 // Self-loop = closed analytic curve = already complete cycle by
                 // itself; not part of polygon-edge chain walking.
                 if key.v_small == key.v_large { continue; }
                 let other = if key.v_small == curr_v { key.v_large } else { key.v_small };
-                if other != prev_v { neighbors.push(other); }
+                if other == prev_v { continue; }
+                if self.edge_has_free_he(edge_id) {
+                    neighbors.push(other);
+                } else {
+                    taken.push(other);
+                }
+            }
+            // Dead end. Measured: this is how a shape drawn beside a solid fails
+            // — not at a fork, but with nowhere to go, because the only ways on
+            // are the solid's own boundary and every slot there is spoken for.
+            // A third face on such an edge is the T-junction the engine now
+            // allows, so try them rather than stopping.
+            if neighbors.is_empty() && !taken.is_empty() {
+                let pick = plane_normal.and_then(|n| {
+                    if taken.len() == 1 {
+                        Some(taken[0])
+                    } else {
+                        self.leftmost_turn(prev_v, curr_v, &taken, n)
+                    }
+                });
+                match pick {
+                    // Routing over used-up edges can circle; the free walk
+                    // cannot, so this guard belongs here and only here.
+                    Some(v) if v == v0 || !path.contains(&v) => {
+                        past_dead_end = true;
+                        neighbors.push(v);
+                    }
+                    _ => return None,
+                }
+            }
+            if neighbors.len() > 1 && past_dead_end {
+                match plane_normal.and_then(|n| self.leftmost_turn(prev_v, curr_v, &neighbors, n)) {
+                    Some(v) => neighbors = vec![v],
+                    None => return None,
+                }
             }
             if neighbors.len() == 1 {
                 let next_v = neighbors[0];
                 if next_v == v0 {
-                    if path.len() >= 3 && self.are_verts_coplanar(&path) { return Some(path); }
+                    if path.len() >= 3 && self.are_verts_coplanar(&path) {
+                        // A walk that had to step onto a used-up edge borrowed
+                        // somebody's boundary to get here, and the only ways on
+                        // there are a solid's own walls. Left alone it comes
+                        // back with a loop drawn around the wall as well as the
+                        // shape — one face spanning both, while the wall's own
+                        // faces are still there. Refuse that loop and let the
+                        // caller's retry find the shape's own.
+                        //
+                        // Only for such walks — kept as a narrowing, not as a
+                        // demonstrated necessity. Applying the check to EVERY
+                        // walk behaves identically on everything measured: the
+                        // requirement grid, the walk sims, and a big rectangle
+                        // drawn around a small one (which is the case the gate
+                        // is meant to protect, and which passes either way). It
+                        // stays because it can only reduce what this touches,
+                        // and it is written down here that nothing exercises it.
+                        if past_dead_end {
+                            if let Some(n) = plane_normal {
+                                if self.loop_swallows_a_face(&path, n) {
+                                    return None;
+                                }
+                            }
+                        }
+                        return Some(path);
+                    }
                     return None;
                 }
                 prev_v = curr_v;
@@ -10829,6 +10956,126 @@ impl Mesh {
             }
         }
         None
+    }
+
+    /// Does this loop close around a face that was already there?
+    ///
+    /// Asked only of a loop that stepped past a dead end, and answered by
+    /// testing each coplanar face's centre against the loop. A face whose
+    /// vertices are all ON the loop is part of it, not swallowed by it.
+    ///
+    /// The centre is the average of the face's corners, which sits inside a
+    /// convex face and may not for others. Where it does not, the answer is
+    /// "no" and the loop is allowed — the check errs toward letting a walk
+    /// through rather than blocking one it should not.
+    fn loop_swallows_a_face(&self, path: &[VertId], plane_normal: DVec3) -> bool {
+        let n = plane_normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return false;
+        }
+        // A frame on the loop's plane.
+        let u = if n.z.abs() > 0.9 { DVec3::X } else { DVec3::Z };
+        let u = (u - n * u.dot(n)).normalize_or_zero();
+        if u.length_squared() < 0.5 {
+            return false;
+        }
+        let v = n.cross(u);
+        let origin = match path.first().and_then(|&p| self.vertex_pos(p).ok()) {
+            Some(p) => p,
+            None => return false,
+        };
+        let flat = |p: DVec3| ((p - origin).dot(u), (p - origin).dot(v));
+        let poly: Vec<(f64, f64)> = path
+            .iter()
+            .filter_map(|&vid| self.vertex_pos(vid).ok())
+            .map(flat)
+            .collect();
+        if poly.len() < 3 {
+            return false;
+        }
+        let inside = |(x, y): (f64, f64)| -> bool {
+            let mut c = false;
+            let mut j = poly.len() - 1;
+            for i in 0..poly.len() {
+                let (xi, yi) = poly[i];
+                let (xj, yj) = poly[j];
+                if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+                    c = !c;
+                }
+                j = i;
+            }
+            c
+        };
+        let on_path: std::collections::HashSet<VertId> = path.iter().copied().collect();
+
+        for (fid, face) in self.faces.iter() {
+            if !face.is_active() {
+                continue;
+            }
+            if face.normal().normalize_or_zero().dot(n).abs() < 0.999 {
+                continue; // a different plane — not this loop's business
+            }
+            let verts = match self.collect_loop_verts(face.outer().start) {
+                Ok(v) if v.len() >= 3 => v,
+                _ => continue,
+            };
+            if verts.iter().all(|vd| on_path.contains(vd)) {
+                continue; // this face IS the loop, not something inside it
+            }
+            let pts: Vec<DVec3> = verts.iter().filter_map(|&vd| self.vertex_pos(vd).ok()).collect();
+            if pts.len() != verts.len() {
+                continue;
+            }
+            // Same plane? Its corners must lie on the loop's.
+            if pts.iter().any(|p| (*p - origin).dot(n).abs() > 1e-6) {
+                continue;
+            }
+            let centre = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
+            if inside(flat(centre)) {
+                let _ = fid;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Of several ways on from `curr`, the leftmost turn — the smallest positive
+    /// CCW angle measured from the reverse of the incoming direction, which is
+    /// the rule and the sense `operations::planar_walk` already uses.
+    ///
+    /// The plane comes from the step itself: `prev→curr` with whichever candidate
+    /// lies furthest off that line, so the basis is the best-conditioned one to
+    /// hand. `None` when every way on is collinear and there is no plane to turn
+    /// in — the caller then declines, as it did before there was a choice.
+    fn leftmost_turn(&self, prev: VertId, curr: VertId, cands: &[VertId], normal: DVec3) -> Option<VertId> {
+        let p_prev = self.vertex_pos(prev).ok()?;
+        let p_curr = self.vertex_pos(curr).ok()?;
+        let incoming = p_curr - p_prev;
+        if incoming.length_squared() < 1e-18 {
+            return None;
+        }
+        let in_dir = incoming.normalize();
+        let (u, v) = (in_dir, normal.cross(in_dir));
+        let from = (-1.0f64, 0.0f64); // reverse of incoming, in that basis
+
+        let mut best: Option<(VertId, f64)> = None;
+        for &c in cands {
+            let Ok(p) = self.vertex_pos(c) else { continue };
+            let d = p - p_curr;
+            let to = (d.dot(u), d.dot(v));
+            if to.0.abs() < 1e-15 && to.1.abs() < 1e-15 { continue; }
+            let mut angle = (from.0 * to.1 - from.1 * to.0)
+                .atan2(to.0 * from.0 + to.1 * from.1);
+            if angle < 0.0 { angle += std::f64::consts::TAU; }
+            match best {
+                None => best = Some((c, angle)),
+                // Largest CCW angle from the reverse of incoming = the LEFTmost
+                // turn, which traces the loop counter-clockwise about `normal`.
+                Some((_, a)) if angle > a => best = Some((c, angle)),
+                _ => {}
+            }
+        }
+        best.map(|(c, _)| c)
     }
 
     fn detect_loop_by_bfs_excluding(
@@ -12170,7 +12417,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -12510,7 +12759,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -12762,7 +13013,9 @@ impl Mesh {
             if in_hole {
                 continue;
             }
-            let area = self.face_area(fid);
+            // Smallest CONTAINING region, so the outer extent is what decides —
+            // a ring with a wide hole is not a small container.
+            let area = self.face_outer_area(fid);
             if host.map(|(_, a)| area < a).unwrap_or(true) {
                 host = Some((fid, area));
             }
@@ -13103,6 +13356,58 @@ impl Mesh {
     /// Cross-link: ADR-104 family (Path B primitives), ADR-031 Phase D
     /// (AnalyticSurface infra), ADR-121 (Finding #1 closure).
     pub fn face_area(&self, face_id: FaceId) -> f64 {
+        let outer = self.face_outer_area(face_id);
+        if outer <= 0.0 {
+            return outer;
+        }
+        let Some(f) = self.faces.get(face_id).filter(|f| f.is_active()) else {
+            return 0.0;
+        };
+        // On a CURVED surface an inner loop need not be a hole at all: a Path B
+        // cylinder side is one face whose two loops are the two RIMS of the tube
+        // (ADR-094), and its area already comes from the surface formula, not
+        // from the boundary. Deducting the top rim there took 2πrh down to
+        // 2πrh − πr² — measured. The two cases cannot be told apart from the
+        // loops alone, so only a planar face deducts, and a window carved in a
+        // curved wall still over-reports (unchanged, and now written down).
+        use crate::surfaces::AnalyticSurface as S;
+        if matches!(
+            f.surface(),
+            Some(
+                S::Cylinder { .. }
+                    | S::Sphere { .. }
+                    | S::Cone { .. }
+                    | S::Torus { .. }
+                    | S::BezierPatch { .. }
+                    | S::BSplineSurface { .. }
+                    | S::NURBSSurface { .. }
+            )
+        ) {
+            return outer;
+        }
+        let holes: f64 = f
+            .inners()
+            .iter()
+            .filter(|lr| !lr.start.is_null())
+            .map(|lr| self.loop_enclosed_area(lr.start))
+            .sum();
+        (outer - holes).max(0.0)
+    }
+
+    /// The area the OUTER boundary encloses, with holes NOT deducted.
+    ///
+    /// This is the one to ask for when the question is "how big is this region",
+    /// not "how much material is here": which coplanar face contains a point,
+    /// which of two containers is the inner one, whether a boundary is
+    /// degenerate. Measured — every such caller in the engine wants this, and
+    /// only the two user-facing measures (`faceArea`, a XIA's 표면적) want the
+    /// area with holes taken out.
+    ///
+    /// Deducting there too would be quietly wrong in both directions: a ring
+    /// with a wide hole would sort as SMALLER than a face it contains, breaking
+    /// innermost-parent, and a thin frame would fall under the degeneracy
+    /// threshold and be deleted as a zero-area face.
+    pub fn face_outer_area(&self, face_id: FaceId) -> f64 {
         let f = match self.faces.get(face_id) {
             Some(f) if f.is_active() => f,
             _ => return 0.0,
@@ -13160,41 +13465,65 @@ impl Mesh {
         if self.collect_loop_verts(outer_start).ok()?.len() != 1 {
             return None;
         }
-        let edge_id = self.hes[outer_start].edge();
-        let edge = self.edges.get(edge_id)?;
+        let a = self.loop_enclosed_area(outer_start);
+        (a > 0.0).then_some(a)
+    }
+
+    /// The polygon ONE loop stands for.
+    ///
+    /// A polygon loop is its vertices. A CLOSED CURVE is one self-loop half-edge
+    /// (ADR-089 Phase 2), so reading vertices gives a single point and every
+    /// caller that wanted a polygon had to know to tessellate — four of them
+    /// did, separately, at three different tolerances. This is that step, once.
+    ///
+    /// Closed kinds only (Circle / Bezier / BSpline / NURBS): a Line or Arc
+    /// self-loop does not bound a region. The closing duplicate point is
+    /// dropped, so the result is the unique corners.
+    pub fn loop_polygon(&self, start: crate::HeId, tol: ChordTol) -> Option<Vec<DVec3>> {
+        if let Ok(verts) = self.collect_loop_verts(start) {
+            if verts.len() >= 3 {
+                let pts: Vec<DVec3> =
+                    verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+                return (pts.len() == verts.len()).then_some(pts);
+            }
+        }
         use crate::curves::AnalyticCurve;
-        const AREA_CHORD_TOL: f64 = 0.1;
-        let pts: Vec<DVec3> = match edge.curve().cloned()? {
-            // Exact disk area for a Circle (Path B cylinder/cone/sphere bases).
-            AnalyticCurve::Circle { radius, .. } => {
-                return Some(std::f64::consts::PI * radius * radius);
+        let curve = self.edges.get(self.hes.get(start)?.edge())?.curve().cloned()?;
+        let pts = match &curve {
+            AnalyticCurve::Circle { center, radius, normal, basis_u } => {
+                crate::curves::circle::tessellate_full(
+                    *center,
+                    *radius,
+                    *normal,
+                    *basis_u,
+                    tol.for_radius(*radius),
+                )
             }
             AnalyticCurve::Bezier { control_pts } => {
-                crate::curves::bezier::tessellate(&control_pts, AREA_CHORD_TOL).ok()?
+                crate::curves::bezier::tessellate(control_pts, tol.base).ok()?
             }
             AnalyticCurve::BSpline { control_pts, knots, degree } => {
                 crate::curves::bspline::tessellate(
-                    &control_pts,
-                    &knots,
-                    degree as usize,
-                    AREA_CHORD_TOL,
+                    control_pts,
+                    knots,
+                    *degree as usize,
+                    tol.base,
                 )
                 .ok()?
             }
             AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
                 crate::curves::nurbs::tessellate(
-                    &control_pts,
-                    &weights,
-                    &knots,
-                    degree as usize,
-                    AREA_CHORD_TOL,
+                    control_pts,
+                    weights,
+                    knots,
+                    *degree as usize,
+                    tol.base,
                 )
                 .ok()?
             }
-            // Arc / Line self-loop → not a closed disk; defer to surface analytic.
+            // Line / Arc self-loop → not a closed region.
             _ => return None,
         };
-        // Drop the closing duplicate point, then Newell/shoelace.
         let unique: &[DVec3] = if pts.len() >= 4
             && (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
         {
@@ -13202,15 +13531,40 @@ impl Mesh {
         } else {
             &pts[..]
         };
-        if unique.len() < 3 {
-            return None;
+        (unique.len() >= 3).then(|| unique.to_vec())
+    }
+
+    /// The area ONE loop encloses — polygon or closed curve, outer or hole.
+    ///
+    /// A closed curve is one self-loop half-edge (ADR-089 Phase 2), so a loop
+    /// cannot be measured by reading its vertices alone. Circle is exact (πr²);
+    /// the free-form kinds are sampled and shoelaced.
+    ///
+    /// Sampled at a fixed 0.1 mm rather than the render's camera-dependent
+    /// tolerance: a measurement must not change because someone zoomed out.
+    pub fn loop_enclosed_area(&self, start: crate::HeId) -> f64 {
+        // A circle is exact — no reason to sample what has a closed form.
+        if let Ok(verts) = self.collect_loop_verts(start) {
+            if verts.len() < 3 {
+                if let Some(crate::curves::AnalyticCurve::Circle { radius, .. }) = self
+                    .hes
+                    .get(start)
+                    .and_then(|he| self.edges.get(he.edge()))
+                    .and_then(|e| e.curve().cloned())
+                {
+                    return std::f64::consts::PI * radius * radius;
+                }
+            }
         }
-        let p0 = unique[0];
+        // Measurement policy: a fixed tolerance. What something measures must
+        // not change because the camera moved or the shape got smaller.
+        let Some(pts) = self.loop_polygon(start, ChordTol::fixed(0.1)) else { return 0.0 };
+        let p0 = pts[0];
         let mut area_vec = DVec3::ZERO;
-        for i in 1..unique.len() - 1 {
-            area_vec += (unique[i] - p0).cross(unique[i + 1] - p0);
+        for i in 1..pts.len() - 1 {
+            area_vec += (pts[i] - p0).cross(pts[i + 1] - p0);
         }
-        Some(area_vec.length() * 0.5)
+        area_vec.length() * 0.5
     }
 
     /// ADR-121 β — Compute analytic area from `AnalyticSurface` variant
@@ -13384,7 +13738,9 @@ impl Mesh {
         let mut to_remove: Vec<FaceId> = Vec::new();
         for (fid, face) in self.faces.iter() {
             if !face.is_active() { continue; }
-            let area = self.face_area(fid);
+            // A degenerate face is one whose BOUNDARY collapsed; a thin frame
+            // with a wide hole is small in material and perfectly good geometry.
+            let area = self.face_outer_area(fid);
             if area < tol {
                 to_remove.push(fid);
             }
@@ -13437,7 +13793,7 @@ impl Mesh {
             .iter()
             .filter(|(_, f)| f.is_active())
             .map(|(fid, _)| fid)
-            .filter(|&fid| self.face_area(fid) < area_tol)
+            .filter(|&fid| self.face_outer_area(fid) < area_tol)
             .collect();
         if walls.is_empty() {
             return Ok(0);
@@ -13460,7 +13816,7 @@ impl Mesh {
         let nondegen: Vec<FaceId> = self
             .faces
             .iter()
-            .filter(|(fid, f)| f.is_active() && self.face_area(*fid) >= area_tol)
+            .filter(|(fid, f)| f.is_active() && self.face_outer_area(*fid) >= area_tol)
             .map(|(fid, _)| fid)
             .collect();
         let mut incidence: HashMap<VertId, u32> = HashMap::new();

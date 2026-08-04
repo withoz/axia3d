@@ -239,6 +239,60 @@ describe('WasmBridge', () => {
       expect(typeof result).toBe('number');
     });
 
+    it('drawLineAlongSurface() forwards the picked points unchanged', () => {
+      // The endpoints are points on the solid. drawLineAsShape snaps near-zero
+      // coordinates to a cardinal plane, which would move a surface point off
+      // the face it belongs to — so this path must not.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      const spy = vi.fn().mockReturnValue(3);
+      eng.drawLineAlongSurface = spy;
+      const r = bridge.drawLineAlongSurface(1.0, 1e-7, 2.0, 5.0, 3e-8, 7.0);
+      expect(r).toBe(3);
+      expect(spy).toHaveBeenCalledWith(1.0, 1e-7, 2.0, 5.0, 3e-8, 7.0);
+      delete eng.drawLineAlongSurface;
+    });
+
+    it('drawLineAlongSurface() returns -1 when the engine has no such export', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      delete eng.drawLineAlongSurface;
+      expect(bridge.drawLineAlongSurface(0, 0, 0, 1, 0, 0)).toBe(-1);
+    });
+
+    it('setEdgeProfile() sends the section the caller described', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      const spy = vi.fn().mockReturnValue(true);
+      eng.setEdgeProfile = spy;
+
+      expect(bridge.setEdgeProfile(5, { kind: 'rectangular', width: 200, height: 400 })).toBe(true);
+      expect(spy).toHaveBeenLastCalledWith(5, 0, 200, 400, expect.anything());
+
+      bridge.setEdgeProfile(5, { kind: 'circular', radius: 50 });
+      expect(spy).toHaveBeenLastCalledWith(5, 1, 50, 0, expect.anything());
+
+      bridge.setEdgeProfile(5, { kind: 'polygon', points: [[0, 0], [10, 0], [10, 10]] });
+      const last = spy.mock.calls[spy.mock.calls.length - 1];
+      expect(last[1]).toBe(2);
+      expect(Array.from(last[4] as Float64Array)).toEqual([0, 0, 10, 0, 10, 10]);
+      delete eng.setEdgeProfile;
+    });
+
+    it('getEdgeProfile() returns null when the line carries nothing', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eng = (bridge as any).engine;
+      if (!eng) return;
+      eng.getEdgeProfile = vi.fn().mockReturnValue('null');
+      expect(bridge.getEdgeProfile(5)).toBeNull();
+      eng.getEdgeProfile = vi.fn().mockReturnValue('{"kind":"circular","radius":50,"area":7853.98,"describe":"⌀100"}');
+      expect(bridge.getEdgeProfile(5)).toMatchObject({ kind: 'circular', radius: 50 });
+      delete eng.getEdgeProfile;
+    });
+
     it('drawLine() marks buffers dirty', () => {
       bridge.getMeshBuffers(); // clear dirty flag
       bridge.drawLineAsShape(0, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -1794,6 +1848,11 @@ describe('WasmBridge', () => {
     it('drawLineAsShape returns -1 when not ready', () => {
       const uninitBridge = new WasmBridge();
       expect(uninitBridge.drawLineAsShape(0, 0, 0, 1, 0, 0, 0, 0, 1)).toBe(-1);
+    });
+
+    it('drawLineAlongSurface returns -1 when not ready', () => {
+      const uninitBridge = new WasmBridge();
+      expect(uninitBridge.drawLineAlongSurface(0, 0, 0, 1, 0, 0)).toBe(-1);
     });
 
     it('createSolidExtrude returns false when not ready', () => {

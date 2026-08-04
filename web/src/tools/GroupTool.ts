@@ -16,6 +16,8 @@ import { debugLog } from '../utils/debug';
 
 export class GroupTool implements ITool {
   readonly name = 'group';
+  /** Alt on a click removes from the selection (SelectionManager). */
+  readonly handlesAltClick = true;
   private ctx: ToolContext;
   private busy = false;
 

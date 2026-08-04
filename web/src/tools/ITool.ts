@@ -255,6 +255,15 @@ export interface ITool {
    */
   readonly handlesRightClick?: boolean;
 
+  /**
+   * Set when the tool reads `e.altKey` on a mouse press and means something by
+   * it. The canvas swallows alt-clicks by default, so a tool that does not opt
+   * in behaves exactly as before — but SelectionManager has implemented
+   * "Alt removes from the selection" all along, and without this the event
+   * never reached the tool that passes the flag on.
+   */
+  readonly handlesAltClick?: boolean;
+
   /** Called when tool becomes active (setTool was called) */
   onActivate?(): void;
 
