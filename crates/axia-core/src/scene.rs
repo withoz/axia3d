@@ -10086,6 +10086,16 @@ impl Scene {
         self.mesh.export_edge_lines_with_map(angle_threshold_deg)
     }
 
+    /// The same, at the caller's chord tolerance — the LOD value the face
+    /// export is already given, so the rim and the boundary stay alike.
+    pub fn export_edge_lines_with_map_tol(
+        &self,
+        angle_threshold_deg: f64,
+        chord_tol: f64,
+    ) -> (Vec<f32>, Vec<u32>) {
+        self.mesh.export_edge_lines_with_map_tol(angle_threshold_deg, chord_tol)
+    }
+
     /// Orient all faces for consistent normals (SketchUp "Orient Faces").
     pub fn orient_faces(&mut self) -> (usize, usize) {
         match self.mesh.orient_faces() {
