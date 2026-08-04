@@ -309,6 +309,12 @@ pub struct LineMemberGeometry {
     /// point. A rectangle and a circle arrive as outlines too — the caller
     /// recognises them if it wants the parametric form back.
     pub outline: Vec<(f64, f64)>,
+    /// Which way that outline faces about the member's own line, in radians,
+    /// measured from level — width across, height upright. Read back out of the
+    /// sweep's placement, because the outline alone cannot say: it is written in
+    /// the profile's own 2D frame, and how that frame sits in space is the
+    /// placement's business.
+    pub roll: f64,
 }
 
 /// An opening (`IfcRelVoidsElement`) read from the file, as the rectangle the
@@ -1802,6 +1808,7 @@ pub fn read_line_member(
 
     let mut axis: Option<(DVec3, DVec3)> = None;
     let mut outline: Option<Vec<(f64, f64)>> = None;
+    let mut sweep_frame: Option<crate::ifc_placement::Placement> = None;
     for rep_val in reps {
         let Some(rep) = rep_val.as_ref().and_then(|r| file.entity(r)) else { continue };
         if !rep.tag.eq_ignore_ascii_case("IFCSHAPEREPRESENTATION") {
@@ -1836,6 +1843,14 @@ pub fn read_line_member(
                 }
                 let Some(prof_id) = solid.args.first().and_then(|v| v.as_ref()) else { continue };
                 outline = parse_profile(file, prof_id, scale);
+                // The sweep's own frame, which is where the section's facing
+                // lives. Kept alongside the outline so the two are read from the
+                // same solid rather than from whichever came last.
+                sweep_frame = solid
+                    .args
+                    .get(1)
+                    .and_then(|v| v.as_ref())
+                    .and_then(|pid| crate::ifc_placement::axis_placement(file, pid, scale));
             }
         }
     }
@@ -1845,11 +1860,37 @@ pub fn read_line_member(
     if outline.len() < 3 {
         return None;
     }
+    // How far the section is turned from level, in the world the member ends up
+    // in — so the element's own rotation is applied to the sweep's frame first.
+    // Both directions get the same rotation, but "level" is defined against
+    // world up, so it has to be asked in world terms.
+    let roll = sweep_frame
+        .map(|f| {
+            let rot = |v: DVec3| placement.x * v.x + placement.y * v.y + placement.z * v.z;
+            let axis_w = rot(f.z).normalize_or_zero();
+            let ref_w = rot(f.x).normalize_or_zero();
+            if axis_w.length_squared() < 0.5 || ref_w.length_squared() < 0.5 {
+                return 0.0;
+            }
+            let horizontal = DVec3::Z.cross(axis_w);
+            let level = if horizontal.length() > 1e-6 {
+                horizontal.normalize()
+            } else {
+                DVec3::X
+            };
+            // Signed about the member's own axis, so a turn one way is not read
+            // as the same turn the other.
+            let angle = level.cross(ref_w).dot(axis_w).atan2(level.dot(ref_w));
+            if angle.is_finite() { angle.rem_euclid(std::f64::consts::TAU) } else { 0.0 }
+        })
+        .unwrap_or(0.0);
+
     // The axis is written in the member's own frame, like its body.
     Some(LineMemberGeometry {
         start: placement.apply(a),
         end: placement.apply(b),
         outline,
+        roll,
     })
 }
 
