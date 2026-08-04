@@ -545,6 +545,43 @@ impl NormalizeReport {
 // `mesh_invariants.rs` 로 추출. 재export 는 `lib.rs` 에서 처리.
 pub use crate::mesh_invariants::{InvariantReport, OutwardReport};
 
+/// How finely to sample a curve — and why the answer differs per caller.
+///
+/// Every consumer of a closed boundary carried its own copy of this arithmetic,
+/// and they disagreed: three different circle tolerances, none of them visible
+/// from the others. Naming the policy puts them side by side.
+///
+/// `radius_factor` is what keeps a SMALL circle from becoming a triangle — the
+/// tolerance is capped at `radius × factor`, so a Ø2 circle is sampled finer
+/// than a flat base tolerance would give.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChordTol {
+    pub base: f64,
+    pub radius_factor: Option<f64>,
+    pub floor: f64,
+}
+
+impl ChordTol {
+    /// The same tolerance whatever the size — for anything MEASURED, which must
+    /// not change because the camera moved or the shape got smaller.
+    pub const fn fixed(base: f64) -> Self {
+        Self { base, radius_factor: None, floor: 0.0 }
+    }
+
+    /// Capped by the radius, so small curves stay round.
+    pub const fn scaled(base: f64, radius_factor: f64, floor: f64) -> Self {
+        Self { base, radius_factor: Some(radius_factor), floor }
+    }
+
+    /// The tolerance to sample a circle of this radius at.
+    pub fn for_radius(&self, radius: f64) -> f64 {
+        match self.radius_factor {
+            Some(f) => self.base.min(radius * f).max(self.floor),
+            None => self.base,
+        }
+    }
+}
+
 impl Mesh {
     /// Create a new empty mesh.
     pub fn new() -> Self {
@@ -13432,6 +13469,71 @@ impl Mesh {
         (a > 0.0).then_some(a)
     }
 
+    /// The polygon ONE loop stands for.
+    ///
+    /// A polygon loop is its vertices. A CLOSED CURVE is one self-loop half-edge
+    /// (ADR-089 Phase 2), so reading vertices gives a single point and every
+    /// caller that wanted a polygon had to know to tessellate — four of them
+    /// did, separately, at three different tolerances. This is that step, once.
+    ///
+    /// Closed kinds only (Circle / Bezier / BSpline / NURBS): a Line or Arc
+    /// self-loop does not bound a region. The closing duplicate point is
+    /// dropped, so the result is the unique corners.
+    pub fn loop_polygon(&self, start: crate::HeId, tol: ChordTol) -> Option<Vec<DVec3>> {
+        if let Ok(verts) = self.collect_loop_verts(start) {
+            if verts.len() >= 3 {
+                let pts: Vec<DVec3> =
+                    verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+                return (pts.len() == verts.len()).then_some(pts);
+            }
+        }
+        use crate::curves::AnalyticCurve;
+        let curve = self.edges.get(self.hes.get(start)?.edge())?.curve().cloned()?;
+        let pts = match &curve {
+            AnalyticCurve::Circle { center, radius, normal, basis_u } => {
+                crate::curves::circle::tessellate_full(
+                    *center,
+                    *radius,
+                    *normal,
+                    *basis_u,
+                    tol.for_radius(*radius),
+                )
+            }
+            AnalyticCurve::Bezier { control_pts } => {
+                crate::curves::bezier::tessellate(control_pts, tol.base).ok()?
+            }
+            AnalyticCurve::BSpline { control_pts, knots, degree } => {
+                crate::curves::bspline::tessellate(
+                    control_pts,
+                    knots,
+                    *degree as usize,
+                    tol.base,
+                )
+                .ok()?
+            }
+            AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
+                crate::curves::nurbs::tessellate(
+                    control_pts,
+                    weights,
+                    knots,
+                    *degree as usize,
+                    tol.base,
+                )
+                .ok()?
+            }
+            // Line / Arc self-loop → not a closed region.
+            _ => return None,
+        };
+        let unique: &[DVec3] = if pts.len() >= 4
+            && (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
+        {
+            &pts[..pts.len() - 1]
+        } else {
+            &pts[..]
+        };
+        (unique.len() >= 3).then(|| unique.to_vec())
+    }
+
     /// The area ONE loop encloses — polygon or closed curve, outer or hole.
     ///
     /// A closed curve is one self-loop half-edge (ADR-089 Phase 2), so a loop
@@ -13441,60 +13543,26 @@ impl Mesh {
     /// Sampled at a fixed 0.1 mm rather than the render's camera-dependent
     /// tolerance: a measurement must not change because someone zoomed out.
     pub fn loop_enclosed_area(&self, start: crate::HeId) -> f64 {
+        // A circle is exact — no reason to sample what has a closed form.
         if let Ok(verts) = self.collect_loop_verts(start) {
-            if verts.len() >= 3 {
-                return self.newell_raw(&verts).map(|n| n.length() * 0.5).unwrap_or(0.0);
+            if verts.len() < 3 {
+                if let Some(crate::curves::AnalyticCurve::Circle { radius, .. }) = self
+                    .hes
+                    .get(start)
+                    .and_then(|he| self.edges.get(he.edge()))
+                    .and_then(|e| e.curve().cloned())
+                {
+                    return std::f64::consts::PI * radius * radius;
+                }
             }
         }
-        use crate::curves::AnalyticCurve;
-        const AREA_CHORD_TOL: f64 = 0.1;
-        let Some(he) = self.hes.get(start) else { return 0.0 };
-        let Some(edge) = self.edges.get(he.edge()) else { return 0.0 };
-        let pts: Vec<DVec3> = match edge.curve().cloned() {
-            // Exact disk area for a Circle (Path B cylinder/cone/sphere bases).
-            Some(AnalyticCurve::Circle { radius, .. }) => {
-                return std::f64::consts::PI * radius * radius
-            }
-            Some(AnalyticCurve::Bezier { control_pts }) => {
-                crate::curves::bezier::tessellate(&control_pts, AREA_CHORD_TOL).unwrap_or_default()
-            }
-            Some(AnalyticCurve::BSpline { control_pts, knots, degree }) => {
-                crate::curves::bspline::tessellate(
-                    &control_pts,
-                    &knots,
-                    degree as usize,
-                    AREA_CHORD_TOL,
-                )
-                .unwrap_or_default()
-            }
-            Some(AnalyticCurve::NURBS { control_pts, weights, knots, degree }) => {
-                crate::curves::nurbs::tessellate(
-                    &control_pts,
-                    &weights,
-                    &knots,
-                    degree as usize,
-                    AREA_CHORD_TOL,
-                )
-                .unwrap_or_default()
-            }
-            // Arc / Line self-loop → not a closed region.
-            _ => return 0.0,
-        };
-        // Drop the closing duplicate point, then Newell/shoelace.
-        let unique: &[DVec3] = if pts.len() >= 4
-            && (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
-        {
-            &pts[..pts.len() - 1]
-        } else {
-            &pts[..]
-        };
-        if unique.len() < 3 {
-            return 0.0;
-        }
-        let p0 = unique[0];
+        // Measurement policy: a fixed tolerance. What something measures must
+        // not change because the camera moved or the shape got smaller.
+        let Some(pts) = self.loop_polygon(start, ChordTol::fixed(0.1)) else { return 0.0 };
+        let p0 = pts[0];
         let mut area_vec = DVec3::ZERO;
-        for i in 1..unique.len() - 1 {
-            area_vec += (unique[i] - p0).cross(unique[i + 1] - p0);
+        for i in 1..pts.len() - 1 {
+            area_vec += (pts[i] - p0).cross(pts[i + 1] - p0);
         }
         area_vec.length() * 0.5
     }

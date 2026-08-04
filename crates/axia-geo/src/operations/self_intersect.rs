@@ -212,31 +212,17 @@ impl Mesh {
     /// most curved geometry lives. Sample the curve instead when the ring is too
     /// short to be a polygon.
     fn loop_boundary_positions(&self, start: crate::HeId) -> Option<Vec<DVec3>> {
-        let verts = self.collect_loop_verts(start).ok()?;
-        if verts.len() >= 3 {
-            return Some(
-                verts.iter().map(|&v| self.vertex_pos(v).unwrap_or(DVec3::ZERO)).collect(),
-            );
-        }
-        // Fall back to the analytic curve carried by the loop's single edge.
-        use crate::curves::CurveOps;
-        let edge = self.edges.get(self.hes.get(start)?.edge())?;
-        let curve = edge.curve()?;
-        // Chord tolerance follows the render path (LOCKED #40): fine enough that
-        // the sampled polygon does not report a false overlap against a straight
-        // neighbour, coarse enough to stay cheap.
-        let pts = curve.tessellate(0.02, self).ok()?;
-        // `tessellate` returns a closed polyline (last point repeats the first).
-        let pts = match pts.split_last() {
-            Some((last, head)) if head.first().map_or(false, |f| f.abs_diff_eq(*last, 1e-9)) => {
-                head.to_vec()
-            }
-            _ => pts,
-        };
-        if pts.len() < 3 {
-            return None;
-        }
-        Some(pts)
+        // Detector policy: a fixed 0.02 mm, NOT the render's camera-dependent
+        // tolerance — whether two faces overlap must not depend on the view. Not
+        // radius-scaled either: this runs as a gate on every edit, and sampling
+        // small circles finer buys accuracy the AABB phase then pays for.
+        //
+        // Known limit, measured: an ARC along a polygon edge is taken as its
+        // straight chord here, while the render follows the curve. The gap is
+        // bounded by the sagitta at this tolerance (~0.02 mm), so a genuine
+        // overlap thinner than that is missed. Closing it means sampling every
+        // arc edge on the hot path; not paid for yet.
+        self.loop_polygon(start, crate::mesh::ChordTol::fixed(0.02))
     }
 
     /// Tessellate a face's outer loop (with holes) into 3D triangles via earcut.

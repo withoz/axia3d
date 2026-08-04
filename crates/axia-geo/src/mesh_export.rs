@@ -439,15 +439,17 @@ impl Mesh {
                         // `radius * 0.01`). For r=5 → 0.01mm → ~78 fan
                         // triangles (was ~22). ADR-135 β: analytic_chord_tol
                         // is now caller-provided (LOD-aware).
-                        let chord_tol = analytic_chord_tol.min(radius * 0.002).max(1e-6);
-                        let pts = crate::curves::circle::tessellate_full(
-                            center, radius, c_normal, basis_u, chord_tol,
-                        );
-                        if pts.len() < 4 {
+                        //
+                        // Through the shared flattener, so the fan and the
+                        // hole-aware path below cannot drift apart: the same
+                        // circle has to give the same rim either way.
+                        let Some(unique_pts) = self.closed_curve_loop_points(
+                            outer_start,
+                            analytic_chord_tol,
+                        ) else {
                             stats.outer_too_short += 1;
                             continue;
-                        }
-                        let unique_pts = &pts[..pts.len() - 1];
+                        };
                         let n_seg = unique_pts.len();
 
                         // Build vertex buffer: center + N rim verts.
@@ -470,7 +472,7 @@ impl Mesh {
                         normals.push(n_normal.z as f32);
 
                         // Emit N rim vertices (vert_offset + 1 .. vert_offset + N).
-                        for &p in unique_pts {
+                        for &p in &unique_pts {
                             positions.push(p.x as f32);
                             positions.push(p.y as f32);
                             positions.push(p.z as f32);
@@ -917,44 +919,11 @@ impl Mesh {
     /// a single vertex and gives up. This flattens it. Returns the unique points
     /// (no closing duplicate), or `None` if the edge carries no closed curve.
     fn closed_curve_loop_points(&self, start: crate::HeId, chord_tol: f64) -> Option<Vec<DVec3>> {
-        fn dedup_closed(pts: Vec<DVec3>) -> Option<Vec<DVec3>> {
-            if pts.len() < 4 {
-                return None;
-            }
-            let uniq = if (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
-            {
-                pts[..pts.len() - 1].to_vec()
-            } else {
-                pts
-            };
-            (uniq.len() >= 3).then_some(uniq)
-        }
-        let edge_id = self.hes.get(start)?.edge();
-        match self.edges.get(edge_id)?.curve().cloned()? {
-            crate::curves::AnalyticCurve::Circle { center, radius, normal, basis_u } => {
-                // Same tolerance the fan fast-path draws at, so a ring and the
-                // disk inside it share the rim they are cut along.
-                let ct = chord_tol.min(radius * 0.002).max(1e-6);
-                let pts = crate::curves::circle::tessellate_full(center, radius, normal, basis_u, ct);
-                (pts.len() >= 4).then(|| pts[..pts.len() - 1].to_vec())
-            }
-            crate::curves::AnalyticCurve::Bezier { control_pts } => {
-                crate::curves::bezier::tessellate(&control_pts, chord_tol).ok().and_then(dedup_closed)
-            }
-            crate::curves::AnalyticCurve::BSpline { control_pts, knots, degree } => {
-                crate::curves::bspline::tessellate(&control_pts, &knots, degree as usize, chord_tol)
-                    .ok()
-                    .and_then(dedup_closed)
-            }
-            crate::curves::AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
-                crate::curves::nurbs::tessellate(
-                    &control_pts, &weights, &knots, degree as usize, chord_tol,
-                )
-                .ok()
-                .and_then(dedup_closed)
-            }
-            _ => None,
-        }
+        // Render policy: the caller's LOD tolerance (ADR-135), capped by the
+        // radius so a small circle still looks round. Finer than anything else
+        // asks for, which is why a ring and the disk inside it must both come
+        // through here — they share the rim they are cut along.
+        self.loop_polygon(start, crate::mesh::ChordTol::scaled(chord_tol, 0.002, 1e-6))
     }
 
     /// Choose the best 2D projection axes based on the face normal.

@@ -1527,53 +1527,12 @@ impl Mesh {
     /// way they consume a rect — matching `punch_circular_hole`'s faceted behavior.
     pub fn face_outline_points(&self, face: FaceId) -> Option<Vec<DVec3>> {
         let f = self.faces.get(face).filter(|x| x.is_active())?;
-        let verts = self.collect_loop_verts(f.outer().start).ok()?;
-        if verts.len() >= 3 {
-            let pts: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
-            return if pts.len() >= 3 { Some(pts) } else { None };
-        }
-        // Closed-curve profile: 1-vert self-loop with an analytic curve.
-        if verts.len() == 1 {
-            let hes = self.collect_loop_hes(f.outer().start).ok()?;
-            if hes.len() == 1 {
-                let eid = self.hes[hes[0]].edge();
-                let curve = self.edges.get(eid).filter(|e| e.is_active())?.curve().cloned()?;
-                return Self::curve_closed_outline(&curve);
-            }
-        }
-        None
-    }
-
-    /// Tessellate a CLOSED analytic curve to a polygon outline (closing dup
-    /// dropped). Line/Arc are not closed profiles → `None`.
-    fn curve_closed_outline(curve: &crate::curves::AnalyticCurve) -> Option<Vec<DVec3>> {
-        use crate::curves::AnalyticCurve;
-        let tol = 0.1_f64;
-        let finish = |pts: Vec<DVec3>| -> Option<Vec<DVec3>> {
-            let mut pts = pts;
-            if pts.len() >= 4
-                && (pts[0] - pts[pts.len() - 1]).length() < crate::tolerances::EPSILON_LENGTH
-            {
-                pts.pop();
-            }
-            if pts.len() >= 3 { Some(pts) } else { None }
-        };
-        match curve {
-            AnalyticCurve::Circle { center, radius, normal, basis_u } => {
-                let ct = tol.min(radius * 0.02).max(1e-4);
-                finish(crate::curves::circle::tessellate_full(*center, *radius, *normal, *basis_u, ct))
-            }
-            AnalyticCurve::Bezier { control_pts } => {
-                crate::curves::bezier::tessellate(control_pts, tol).ok().and_then(finish)
-            }
-            AnalyticCurve::BSpline { control_pts, knots, degree } => {
-                crate::curves::bspline::tessellate(control_pts, knots, *degree as usize, tol).ok().and_then(finish)
-            }
-            AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
-                crate::curves::nurbs::tessellate(control_pts, weights, knots, *degree as usize, tol).ok().and_then(finish)
-            }
-            _ => None,
-        }
+        // Cutting policy: a fixed 0.1 mm capped by the radius. This outline
+        // becomes GEOMETRY (the pocket that gets carved), so it may not follow
+        // the camera — but a small circle still has to stay round.
+        let pts = self
+            .loop_polygon(f.outer().start, crate::mesh::ChordTol::scaled(0.1, 0.02, 1e-4))?;
+        (pts.len() >= 3).then_some(pts)
     }
 
     pub fn face_has_larger_coplanar_container(&self, face: FaceId) -> bool {
