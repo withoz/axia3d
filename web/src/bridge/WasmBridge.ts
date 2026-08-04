@@ -1105,6 +1105,31 @@ export class WasmBridge {
   }
 
   /**
+   * The route a line WOULD take along the surface — for the preview.
+   *
+   * Read-only, so it is safe on every mouse move: the same walk
+   * `drawLineAlongSurface` uses, asked without drawing anything, so what the
+   * user sees under the cursor is what the click will make. Empty when there is
+   * no such route (the preview then shows the straight line it would draw
+   * instead) and empty on an engine that predates the export.
+   */
+  previewPathAlongSurface(
+    x0: number, y0: number, z0: number,
+    x1: number, y1: number, z1: number,
+  ): Float32Array {
+    if (!this.engine) return new Float32Array(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = (this.engine as any).previewPathAlongSurface;
+    if (!fn) return new Float32Array(0);
+    try {
+      return fn.call(this.engine, x0, y0, z0, x1, y1, z1) ?? new Float32Array(0);
+    } catch (e) {
+      console.error('[WasmBridge] previewPathAlongSurface failed:', e);
+      return new Float32Array(0);
+    }
+  }
+
+  /**
    * Give a line a cross-section — what it is thick with.
    *
    * A line has length and nothing else; a member is a line with a section, and

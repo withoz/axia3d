@@ -75,6 +75,17 @@ export enum LineDrawEvent {
 
 export class DrawLineTool implements ITool {
   readonly name = 'line';
+  /**
+   * Alt is a claim on the click here, so the canvas must not drop it.
+   *
+   * 사용자 (2026-08-04): `수식어가 반대로 누르고 그리면 면따라서, 기본은 연장으로`.
+   * Drawing along the solid used to happen by itself whenever the second click
+   * landed on another face — which meant the cursor decided, not the user, and
+   * a line meant to leave the shape and carry on into space bent back onto it
+   * as soon as a wall got under the pointer. Staying in the plane you started
+   * on is now what happens; wrapping is what you ask for.
+   */
+  readonly handlesAltClick = true;
   /** A right-click ends the polyline here rather than discarding it, so this
    *  tool takes the event instead of being cancelled by ToolManager (ITool).
    *  It is the only tool that reads `e.button` — see onMouseDown. */
@@ -94,8 +105,17 @@ export class DrawLineTool implements ITool {
    *  before projection onto the first click's plane. Null when that click was
    *  not on a face. */
   private endSurfacePoint: THREE.Vector3 | null = null;
+  /** 면을 따라 그리기 — held on the click that ended the segment. Read at
+   *  commit, because commitLine has no event to ask. */
+  private alongSurfaceAsked = false;
+  /** The same, read live during the move so the preview can show the route
+   *  before it is committed to. */
+  private alongSurfaceHeld = false;
   /** 현재 마우스 커서가 올라간 face ID (mousemove 갱신). -1 = 허공. */
   private hoverFaceId: number = -1;
+  /** Where the cursor is ON the solid, unprojected — what the route preview
+   *  needs, for the same reason the commit needs `endSurfacePoint`. */
+  private hoverSurfacePoint: THREE.Vector3 | null = null;
 
   // Chain tracking — first point of continuous drawing chain (for loop close detection)
   private chainStartPoint: THREE.Vector3 | null = null;
@@ -103,6 +123,10 @@ export class DrawLineTool implements ITool {
   private chainPoints: THREE.Vector3[] = [];
   /** Last loop-close target type (for Toast/UI differentiation) */
   private lastCloseKind: 'chain-start' | 'chain-mid' | 'free' | null = null;
+  /** 면을 따라 그리기 — told once per activation, and only when the cursor is
+   *  somewhere the modifier would change the answer. A key nobody knows about
+   *  is the same as no key. */
+  private alongHintShown = false;
   /** ADR-284 β-4-4 — curved-face hint fired once per tool activation. */
   private curvedHintShown = false;
   /**
@@ -134,6 +158,7 @@ export class DrawLineTool implements ITool {
     // Line 도구 진입 시 face-creation 최적 snap 프리셋 적용.
     // 기존 snap 설정은 onDeactivate에서 원복.
     this.curvedHintShown = false; // ADR-284 β-4-4 — re-arm the once-per-activation hint
+    this.alongHintShown = false;
     this._savedSnapModes = this.ctx.snap.saveSnapConfig();
     this.ctx.snap.applyFaceCreationPreset();
 
@@ -206,6 +231,7 @@ export class DrawLineTool implements ITool {
       // to ask the engine for a route along the surface.
       const surfaceHit = this.ctx.viewport.pick(e.clientX, e.clientY);
       this.endSurfacePoint = surfaceHit?.point ? surfaceHit.point.clone() : null;
+      this.alongSurfaceAsked = e.altKey;
     }
 
     // Check loop close first (higher priority than regular snap)
@@ -226,8 +252,29 @@ export class DrawLineTool implements ITool {
     // 면 분할 프리뷰용: 현재 hover face 추적 (drawing 중일 때만 의미 있음)
     if (this.state === LineDrawState.Drawing) {
       this.hoverFaceId = this.pickFaceAtMouse(e);
+      // 면을 따라 그리기 미리보기 — the point as it lands ON the solid, and
+      // whether the user is asking for it right now. Both read live, so
+      // pressing or releasing Alt changes what is drawn under the cursor.
+      const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
+      this.hoverSurfacePoint = hit?.point ? hit.point.clone() : null;
+      this.alongSurfaceHeld = e.altKey;
+      // Say it once, and only where it would change the answer: the cursor is
+      // on a DIFFERENT face of the solid, so the line could either stay on the
+      // plane it started on or bend over the edge.
+      if (
+        !this.alongHintShown &&
+        !e.altKey &&
+        this.startFaceId >= 0 &&
+        this.hoverFaceId >= 0 &&
+        this.hoverFaceId !== this.startFaceId
+      ) {
+        this.alongHintShown = true;
+        Toast.info(t('Alt 를 누른 채 클릭하면 면을 따라 그립니다 (기본은 평면 연장)'), 3000);
+      }
     } else {
       this.hoverFaceId = -1;
+      this.hoverSurfacePoint = null;
+      this.alongSurfaceHeld = false;
     }
 
     // Check for loop close proximity (snap to chain start point)
@@ -406,6 +453,7 @@ export class DrawLineTool implements ITool {
         this.startFaceId = -1;
         this.endFaceId = -1;
         this.endSurfacePoint = null;
+        this.alongSurfaceAsked = false;
         this.hoverFaceId = -1;
         this.removeLinePreview();
         this.removeStartDot();
@@ -441,7 +489,8 @@ export class DrawLineTool implements ITool {
           this.drawingPlane = null;
           this.startFaceId = -1;
           this.endFaceId = -1;
-        this.endSurfacePoint = null;
+          this.endSurfacePoint = null;
+          this.alongSurfaceAsked = false;
           this.hoverFaceId = -1;
           this.ctx.clearAxisGuide();
           this.ctx.dimLabel.clear();
@@ -480,7 +529,39 @@ export class DrawLineTool implements ITool {
    * and drawing falls through to the ordinary single-plane line so nothing the
    * user could already do stops working.
    */
+  /**
+   * The route the click would take along the solid, or null if there is none.
+   *
+   * Read-only — it asks the engine the same question `drawLineAlongSurface`
+   * answers, without drawing. Null means the straight line is what would be
+   * drawn, and the preview says so by staying its usual colour.
+   */
+  private surfaceRoutePreview(): THREE.Vector3[] | null {
+    if (!this.startPoint || !this.hoverSurfacePoint) return null;
+    const bridge = this.ctx.bridge as unknown as {
+      previewPathAlongSurface?: (
+        x0: number, y0: number, z0: number,
+        x1: number, y1: number, z1: number,
+      ) => Float32Array;
+    };
+    if (typeof bridge.previewPathAlongSurface !== 'function') return null;
+    const flat = bridge.previewPathAlongSurface(
+      this.startPoint.x, this.startPoint.y, this.startPoint.z,
+      this.hoverSurfacePoint.x, this.hoverSurfacePoint.y, this.hoverSurfacePoint.z,
+    );
+    if (!flat || flat.length < 6) return null;
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i + 2 < flat.length; i += 3) {
+      out.push(new THREE.Vector3(flat[i], flat[i + 1], flat[i + 2]));
+    }
+    return out.length >= 2 ? out : null;
+  }
+
   private tryCommitAlongSurface(): boolean {
+    // Asked for, not inferred. Without this the cursor decided: a line meant to
+    // leave the face and carry on into space bent back onto the solid the moment
+    // a wall happened to be under the pointer.
+    if (!this.alongSurfaceAsked) return false;
     if (!this.startPoint || !this.endSurfacePoint) return false;
     if (this.startFaceId < 0 || this.endFaceId < 0) return false;
     if (this.startFaceId === this.endFaceId) return false;
@@ -849,6 +930,7 @@ export class DrawLineTool implements ITool {
       this.startFaceId = this.endFaceId;
       this.endFaceId = -1;
       this.endSurfacePoint = null;
+      this.alongSurfaceAsked = false;
       this.removeLinePreview();
       this.ctx.clearAxisGuide();
       this.ctx.dimLabel.clear();
@@ -1241,8 +1323,19 @@ export class DrawLineTool implements ITool {
     const lineColor = willSplit ? SPLIT_COLOR : axisColors[axis];
     const lineColorStr = willSplit ? SPLIT_COLOR_STR : axisColorStr[axis];
 
+    // ──── 면을 따라 그리기 미리보기 ────────────────────────────
+    // While Alt is held, show the route the click would actually make. Without
+    // it the user only finds out afterwards whether the line bent over the edge
+    // or shot off into space. The query is read-only, so asking on every move
+    // costs nothing but the walk.
+    const route = this.alongSurfaceHeld ? this.surfaceRoutePreview() : null;
+    const ALONG_COLOR = 0x22c1a6; // teal — following the solid, not the plane
+    const ALONG_COLOR_STR = '#22c1a6';
+    const previewColor = route ? ALONG_COLOR : lineColor;
+    const previewColorStr = route ? ALONG_COLOR_STR : lineColorStr;
+
     // Preview line
-    this.renderLinePreview(this.startPoint, this.previewEnd, lineColor, willSplit);
+    this.renderLinePreview(this.startPoint, this.previewEnd, previewColor, willSplit, route);
 
     // Axis guide
     this.ctx.updateAxisGuide(this.startPoint, axis, this.previewEnd);
@@ -1256,7 +1349,7 @@ export class DrawLineTool implements ITool {
       // 분할 예정이면 라벨 앞에 표시기 추가
       const label = willSplit ? `\u2702 ${baseLabel}` : baseLabel;
       this.ctx.dimLabel.update(this.ctx.viewport.activeCamera, [
-        { from: this.startPoint.clone(), to: this.previewEnd.clone(), text: label, color: lineColorStr },
+        { from: this.startPoint.clone(), to: this.previewEnd.clone(), text: label, color: previewColorStr },
       ]);
     }
   }
@@ -1270,12 +1363,16 @@ export class DrawLineTool implements ITool {
     end: THREE.Vector3,
     color: number,
     dashed: boolean = false,
+    route: THREE.Vector3[] | null = null,
   ): void {
     this.removeLinePreview();
 
     // Bug 4 fix: Y축 고정 오프셋 제거 — 수직 벽 위 프리뷰가 벽 속에 파묻히던 문제 해결.
     // 대신 depthTest: false + 높은 renderOrder로 항상 최상위 렌더.
-    const points = [start.clone(), end.clone()];
+    // `route` is the bent path along the solid when one was asked for — the
+    // straight ends would say nothing about where it actually goes.
+    const points =
+      route && route.length >= 2 ? route.map((p) => p.clone()) : [start.clone(), end.clone()];
     const geo = new THREE.BufferGeometry().setFromPoints(points);
     if (dashed) {
       // 분할 예정 — 점선 + 보라색으로 "이 선은 면을 자른다" 신호

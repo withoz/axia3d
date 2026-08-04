@@ -8137,6 +8137,23 @@ impl Scene {
     /// each one gets the usual splitting and face synthesis. They share a single
     /// transaction so the whole path is one undo, and if a later leg fails the
     /// earlier ones are rolled back rather than left as a half-drawn line.
+    /// The route a line WOULD take along the surface, without drawing it.
+    ///
+    /// Same two lookups and the same walk the command uses, so what the preview
+    /// shows is what the click will make. Read-only, so it is safe to ask on
+    /// every mouse move; empty when there is no such route, which is the
+    /// preview's cue to fall back to the straight line.
+    pub fn preview_path_along_surface(&self, start: DVec3, end: DVec3) -> Vec<DVec3> {
+        let tol = 1e-3;
+        let (Some(fa), Some(fb)) = (
+            self.mesh.find_surface_face(start, tol),
+            self.mesh.find_surface_face(end, tol),
+        ) else {
+            return Vec::new();
+        };
+        self.mesh.path_along_surface(start, fa, end, fb).map(|p| p.points).unwrap_or_default()
+    }
+
     fn exec_draw_line_along_surface(&mut self, start: DVec3, end: DVec3) -> CommandResult {
         use axia_geo::operations::surface_path::NoPath;
 

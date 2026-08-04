@@ -888,6 +888,29 @@ impl AxiaEngine {
         }
     }
 
+    /// The route a line WOULD take along the surface — for the preview.
+    ///
+    /// Read-only: the same walk `drawLineAlongSurface` uses, asked without
+    /// drawing anything, so what is shown under the cursor is what the click
+    /// will make. Flat `x,y,z,…`; empty when there is no such route.
+    #[wasm_bindgen(js_name = "previewPathAlongSurface")]
+    pub fn preview_path_along_surface(
+        &self,
+        x0: f64, y0: f64, z0: f64,
+        x1: f64, y1: f64, z1: f64,
+    ) -> Vec<f32> {
+        let pts = self
+            .scene
+            .preview_path_along_surface(DVec3::new(x0, y0, z0), DVec3::new(x1, y1, z1));
+        let mut out = Vec::with_capacity(pts.len() * 3);
+        for p in pts {
+            out.push(p.x as f32);
+            out.push(p.y as f32);
+            out.push(p.z as f32);
+        }
+        out
+    }
+
     /// Give a line a cross-section — what it is thick with.
     ///
     /// `kind`: 0 rectangular (a=width, b=height), 1 circular (a=radius),

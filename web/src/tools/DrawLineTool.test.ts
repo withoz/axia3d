@@ -129,12 +129,15 @@ describe('DrawLineTool', () => {
       ctx.bridge.lastError = vi.fn().mockReturnValue('');
     }
 
-    it('routes to the surface path when the second click is on another face', () => {
+    it('follows the solid when Alt is held on the ending click', () => {
       const onWall = new THREE.Vector3(200, 100, 50);
       twoFaces(onWall);
       tool.onActivate();
       tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
-      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(200, 100, 100));
+      tool.onMouseDown(
+        { button: 0, altKey: true } as MouseEvent,
+        new THREE.Vector3(200, 100, 100),
+      );
 
       // The point sent is the one picked ON the wall, not the one the state
       // machine received (which was projected onto the top face's plane).
@@ -143,6 +146,43 @@ describe('DrawLineTool', () => {
       );
       expect(ctx.bridge.drawLineAsShape).not.toHaveBeenCalled();
       expect(ctx.syncMesh).toHaveBeenCalled();
+    });
+
+    /// 사용자 (2026-08-04): `기본은 연장으로`.
+    ///
+    /// Without the modifier this used to happen by itself whenever the cursor
+    /// landed on another face — so a line meant to leave the shape and carry on
+    /// bent back onto it as soon as a wall got under the pointer. The cursor
+    /// decided; now the user does.
+    it('stays on the plane it started on when Alt is not held', () => {
+      twoFaces(new THREE.Vector3(200, 100, 50));
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(200, 100, 100));
+
+      expect(ctx.bridge.drawLineAlongSurface).not.toHaveBeenCalled();
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+    });
+
+    /// A held Alt belongs to the click it was held on, not to the tool. The
+    /// next line, drawn without it, is an ordinary one.
+    it('the ask does not carry over to the next line', () => {
+      twoFaces(new THREE.Vector3(200, 100, 50));
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
+      tool.onMouseDown(
+        { button: 0, altKey: true } as MouseEvent,
+        new THREE.Vector3(200, 100, 100),
+      );
+      expect(ctx.bridge.drawLineAlongSurface).toHaveBeenCalledTimes(1);
+
+      (ctx.bridge.drawLineAlongSurface as ReturnType<typeof vi.fn>).mockClear();
+      (ctx.bridge.drawLineAsShape as ReturnType<typeof vi.fn>).mockClear();
+      tool.onActivate();
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(300, 100, 100));
+      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(400, 100, 100));
+      expect(ctx.bridge.drawLineAlongSurface).not.toHaveBeenCalled();
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
     });
 
     it('leaves same-face drawing on the ordinary path', () => {
@@ -168,7 +208,10 @@ describe('DrawLineTool', () => {
       ctx.bridge.lastError = vi.fn().mockReturnValue('두 점이 맞닿지 않은 면 위에 있습니다');
       tool.onActivate();
       tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
-      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 0));
+      tool.onMouseDown(
+        { button: 0, altKey: true } as MouseEvent,
+        new THREE.Vector3(100, 100, 0),
+      );
 
       expect(ctx.bridge.drawLineAlongSurface).toHaveBeenCalled();
       // Refused, so what the user could already do still happens.
@@ -185,7 +228,10 @@ describe('DrawLineTool', () => {
       delete (ctx.bridge as Record<string, unknown>).drawLineAlongSurface;
       tool.onActivate();
       tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(100, 100, 100));
-      tool.onMouseDown({ button: 0 } as MouseEvent, new THREE.Vector3(200, 100, 100));
+      tool.onMouseDown(
+        { button: 0, altKey: true } as MouseEvent,
+        new THREE.Vector3(200, 100, 100),
+      );
       expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
     });
   });
