@@ -152,7 +152,7 @@ impl Mesh {
     /// **B4b-2b** — Bezier/BSpline/NURBS regular-edge fill sampling activated
     /// (was straight chord). Mirrors the Arc arm; samples the sub-bezier so the
     /// freeform lens boundary renders smooth (else 2 chords < B4b-2a line-seg).
-    fn he_arc_fill_points(
+    pub(crate) fn he_arc_fill_points(
         &self,
         he_id: HeId,
         origin_pos: DVec3,
@@ -984,6 +984,28 @@ impl Mesh {
     /// Centerline edges are excluded — render them separately via
     /// `export_centerline_lines` to apply dashed / dimmer styling.
     pub fn export_edge_lines_with_map(&self, angle_threshold_deg: f64) -> (Vec<f32>, Vec<u32>) {
+        self.export_edge_lines_with_map_tol(angle_threshold_deg, DEFAULT_ANALYTIC_CHORD_TOL)
+    }
+
+    /// The same, at a caller-chosen chord tolerance.
+    ///
+    /// The face export has taken an LOD tolerance since ADR-135; the wireframe
+    /// did not, so a circle's rim was sampled at the near-view tolerance however
+    /// far away it was. Measured on 20 circles of r=100: at distance the face
+    /// dropped from 3160 triangles to 1000 while the wireframe stayed at 3160
+    /// segments — full price for detail nothing can see, and each segment is a
+    /// quad in the line shader.
+    ///
+    /// Passing the same tolerance the face got also settles what LOCKED #40 §L2
+    /// claims: the rim and the face boundary are sampled alike. They already
+    /// were near the camera (measured identical); they now stay alike as it
+    /// pulls back, where the two formulas had drifted up to ~1 mm apart — which
+    /// is about a quarter of a pixel, since LOD is chosen to keep it there.
+    pub fn export_edge_lines_with_map_tol(
+        &self,
+        angle_threshold_deg: f64,
+        chord_tol: f64,
+    ) -> (Vec<f32>, Vec<u32>) {
         let cos_threshold = angle_threshold_deg.to_radians().cos();
         let mut lines: Vec<f32> = Vec::new();
         let mut edge_map: Vec<u32> = Vec::new();
@@ -1026,7 +1048,7 @@ impl Mesh {
                     // and rim wireframe align in 3D. Was `radius * 0.01`,
                     // now `min(0.02, radius * 0.002)` per render chord
                     // tolerance policy.
-                    let chord_tol = (radius * 0.002).clamp(5e-5, 0.02);
+                    let chord_tol = chord_tol.min(radius * 0.002).max(5e-5);
                     let pts = crate::curves::circle::tessellate_full(
                         center, radius, c_normal, basis_u, chord_tol,
                     );
@@ -1173,7 +1195,7 @@ impl Mesh {
                     // *trimmed* circle's Arc edges rendered at ~8 segments
                     // (visible facets / "정점") while a full Circle rendered
                     // smooth (~122 segments). Now identical.
-                    let chord_tol = (radius * 0.002).clamp(5e-5, 0.02);
+                    let chord_tol = chord_tol.min(radius * 0.002).max(5e-5);
                     let pts = crate::curves::arc::tessellate(
                         center,
                         radius,

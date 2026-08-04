@@ -2327,6 +2327,150 @@ impl Scene {
     ///
     /// Runs only where two faces actually overlap, so a draw that resolved
     /// cleanly never reaches it.
+    /// Give `big` a hole where `small` sits inside it, so the two stop covering
+    /// the same ground.
+    ///
+    /// The hand-over in `annulus` moves a hole to a nearer parent by re-pointing
+    /// the inner's twin half-edges, which only works while those twins are free.
+    /// They are not when `small` is a SOLID's cap: its boundary already carries
+    /// the walls. So the container is rebuilt instead, with `small`'s outline as
+    /// an inner loop of its own.
+    ///
+    /// That edge then bears three faces — cap, wall, and the new ring. A
+    /// T-junction, which is what drawing a sheet across a solid's footprint
+    /// means and what the guard already allows; it is not the same thing as two
+    /// faces occupying one patch of plane.
+    ///
+    /// Returns false and leaves the mesh alone if anything does not fit.
+    fn can_punch_contained(&self, big: axia_geo::FaceId, small: axia_geo::FaceId) -> bool {
+        let (Ok(outer_v), Ok(hole_v)) = (
+            self.mesh.collect_loop_verts(self.mesh.faces[big].outer().start),
+            self.mesh.collect_loop_verts(self.mesh.faces[small].outer().start),
+        ) else {
+            return false;
+        };
+        // A closed curve is one anchor vertex — no polygon to punch with, and
+        // polygonising it here would throw away the exact circle.
+        if outer_v.len() < 3 || hole_v.len() < 3 {
+            return false;
+        }
+        // And `small` really is inside `big`. The caller picks the two by area,
+        // which is right but is not proof: get it backwards and this would punch
+        // the CONTAINED face with its own container's outline. Checked here so a
+        // wrong order fails safely instead of quietly building nonsense.
+        let n = self.mesh.faces[big].normal().normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return false;
+        }
+        let aux = if n.x.abs() < 0.9 { glam::DVec3::X } else { glam::DVec3::Y };
+        let u = n.cross(aux).normalize_or_zero();
+        let v = n.cross(u).normalize_or_zero();
+        let Some(origin) = outer_v.first().and_then(|&x| self.mesh.vertex_pos(x).ok()) else {
+            return false;
+        };
+        let poly: Vec<(f64, f64)> = outer_v
+            .iter()
+            .filter_map(|&x| self.mesh.vertex_pos(x).ok())
+            .map(|p| ((p - origin).dot(u), (p - origin).dot(v)))
+            .collect();
+        if poly.len() != outer_v.len() {
+            return false;
+        }
+        let inside = |q: (f64, f64)| {
+            // Even-odd, with the boundary counted as inside.
+            let mut hit = false;
+            for i in 0..poly.len() {
+                let (x0, y0) = poly[i];
+                let (x1, y1) = poly[(i + 1) % poly.len()];
+                if ((y0 > q.1) != (y1 > q.1))
+                    && q.0 < (x1 - x0) * (q.1 - y0) / (y1 - y0) + x0
+                {
+                    hit = !hit;
+                }
+            }
+            hit
+        };
+        let mut on_plane = 0usize;
+        for &x in &hole_v {
+            let Ok(p) = self.mesh.vertex_pos(x) else { return false };
+            let d = p - origin;
+            if d.dot(n).abs() > 1e-3 {
+                return false; // not even coplanar
+            }
+            if inside((d.dot(u), d.dot(v))) {
+                on_plane += 1;
+            }
+        }
+        // Corners sitting exactly on the boundary read either way, so ask for a
+        // clear majority rather than every single one.
+        if on_plane * 2 <= hole_v.len() {
+            return false;
+        }
+        // Already punched, by an earlier repair or by the draw itself.
+        !self.mesh.faces[big].inners().iter().any(|lr| {
+            self.mesh
+                .collect_loop_verts(lr.start)
+                .map(|v| v.len() == hole_v.len() && v.iter().all(|x| hole_v.contains(x)))
+                .unwrap_or(false)
+        })
+    }
+
+    fn punch_contained_face_as_hole(
+        &mut self,
+        big: axia_geo::FaceId,
+        small: axia_geo::FaceId,
+    ) -> bool {
+        if !self.can_punch_contained(big, small) {
+            return false;
+        }
+        let Ok(outer_v) = self.mesh.collect_loop_verts(self.mesh.faces[big].outer().start) else {
+            return false;
+        };
+        let Ok(hole_v) = self.mesh.collect_loop_verts(self.mesh.faces[small].outer().start) else {
+            return false;
+        };
+        let material = self.mesh.faces[big].material();
+        let surface = self.mesh.faces[big].surface().cloned();
+        let owner_xia = self.face_to_xia.get(&big).copied();
+        let owner_shape = self.face_to_shape.get(&big).copied();
+        let existing: Vec<Vec<axia_geo::VertId>> = self.mesh.faces[big]
+            .inners()
+            .iter()
+            .filter_map(|lr| self.mesh.collect_loop_verts(lr.start).ok())
+            .collect();
+
+        if self.mesh.remove_face(big).is_err() {
+            return false;
+        }
+        let mut holes: Vec<&[axia_geo::VertId]> = existing.iter().map(|v| v.as_slice()).collect();
+        holes.push(&hole_v);
+        let Ok(new_fid) = self.mesh.add_face_with_holes(&outer_v, &holes, material) else {
+            // The face is gone and cannot go back from here; the caller's
+            // rollback is what covers this.
+            return false;
+        };
+        if let Some(su) = surface {
+            self.mesh.set_face_surface(new_fid, Some(su));
+        }
+        self.face_to_xia.remove(&big);
+        self.face_to_shape.remove(&big);
+        if let Some(x) = owner_xia {
+            self.face_to_xia.insert(new_fid, x);
+            if let Some(xia) = self.xias.get_mut(&x) {
+                xia.face_ids.retain(|&f| f != big);
+                xia.face_ids.push(new_fid);
+            }
+        }
+        if let Some(sh) = owner_shape {
+            self.face_to_shape.insert(new_fid, sh);
+            if let Some(shape) = self.shapes.get_mut(&sh) {
+                shape.face_ids.retain(|&f| f != big);
+                shape.face_ids.push(new_fid);
+            }
+        }
+        true
+    }
+
     fn subtract_double_covered_faces(&mut self) -> usize {
         use axia_geo::operations::coplanar as cop;
         let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
@@ -2347,11 +2491,36 @@ impl Scene {
             if na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() < 0.999 {
                 continue;
             }
+            // CONTAINMENT first, and by AREA, because that is the only ordering
+            // that says which one is outside the other. No crossings plus a lens
+            // means the small one sits INSIDE the big one rather than straddling
+            // it — a shape drawn right around something — and the difference is
+            // then the big one with a hole in it, which the walk below has no way
+            // to express. Only taken when it can actually be punched; a closed
+            // curve has no polygon to punch with and falls through unharmed.
+            let (outer, inner) = if self.mesh.face_outer_area(fa) >= self.mesh.face_outer_area(fb) {
+                (fa, fb)
+            } else {
+                (fb, fa)
+            };
+            if self.can_punch_contained(outer, inner) {
+                if let Ok(ci) = cop::coplanar_intersection_segments(&self.mesh, outer, inner) {
+                    if ci.crossings.is_empty() && !ci.lens_polygon.is_empty() {
+                        if self.punch_contained_face_as_hole(outer, inner) {
+                            repaired += 1;
+                        }
+                        // Taken either way: on failure the face is already gone
+                        // and the caller's rollback is what covers it.
+                        continue;
+                    }
+                }
+            }
             let vcount = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
                 m.collect_loop_verts(m.faces[f].outer().start).map(|v| v.len()).unwrap_or(0)
             };
-            // The difference has to be taken from the bigger one; asking the
-            // smaller to give up a region it does not contain fails outright.
+            // For the straddling case the difference is taken from the bigger
+            // one; asking the smaller to give up a region it does not contain
+            // fails outright.
             let (big, small) = if vcount(&self.mesh, fa) >= vcount(&self.mesh, fb) {
                 (fa, fb)
             } else {
@@ -7968,6 +8137,23 @@ impl Scene {
     /// each one gets the usual splitting and face synthesis. They share a single
     /// transaction so the whole path is one undo, and if a later leg fails the
     /// earlier ones are rolled back rather than left as a half-drawn line.
+    /// The route a line WOULD take along the surface, without drawing it.
+    ///
+    /// Same two lookups and the same walk the command uses, so what the preview
+    /// shows is what the click will make. Read-only, so it is safe to ask on
+    /// every mouse move; empty when there is no such route, which is the
+    /// preview's cue to fall back to the straight line.
+    pub fn preview_path_along_surface(&self, start: DVec3, end: DVec3) -> Vec<DVec3> {
+        let tol = 1e-3;
+        let (Some(fa), Some(fb)) = (
+            self.mesh.find_surface_face(start, tol),
+            self.mesh.find_surface_face(end, tol),
+        ) else {
+            return Vec::new();
+        };
+        self.mesh.path_along_surface(start, fa, end, fb).map(|p| p.points).unwrap_or_default()
+    }
+
     fn exec_draw_line_along_surface(&mut self, start: DVec3, end: DVec3) -> CommandResult {
         use axia_geo::operations::surface_path::NoPath;
 
@@ -10084,6 +10270,16 @@ impl Scene {
     /// Export edge lines + edge ID map (segment index → EdgeId raw)
     pub fn export_edge_lines_with_map(&self, angle_threshold_deg: f64) -> (Vec<f32>, Vec<u32>) {
         self.mesh.export_edge_lines_with_map(angle_threshold_deg)
+    }
+
+    /// The same, at the caller's chord tolerance — the LOD value the face
+    /// export is already given, so the rim and the boundary stay alike.
+    pub fn export_edge_lines_with_map_tol(
+        &self,
+        angle_threshold_deg: f64,
+        chord_tol: f64,
+    ) -> (Vec<f32>, Vec<u32>) {
+        self.mesh.export_edge_lines_with_map_tol(angle_threshold_deg, chord_tol)
     }
 
     /// Orient all faces for consistent normals (SketchUp "Orient Faces").
@@ -26313,5 +26509,65 @@ mod audit_missing_id_tests {
         // The engine still works — the half the panic actually destroyed.
         assert_eq!(scene.mesh.face_count(), 0);
         assert!(scene.scene_snapshot().len() > 0, "the scene is still serializable");
+    }
+}
+
+#[cfg(test)]
+mod containment_punch_tests {
+    use super::*;
+    use glam::DVec3;
+
+    fn rect(s: &mut Scene, cx: f64, cy: f64, half: f64) -> axia_geo::FaceId {
+        let vids: Vec<_> = [
+            DVec3::new(cx - half, cy - half, 0.0),
+            DVec3::new(cx + half, cy - half, 0.0),
+            DVec3::new(cx + half, cy + half, 0.0),
+            DVec3::new(cx - half, cy + half, 0.0),
+        ]
+        .iter()
+        .map(|&p| s.mesh.add_vertex(p))
+        .collect();
+        s.mesh.add_face(&vids, FORM_MATERIAL).expect("a rect")
+    }
+
+    /// The punch is asked for by area, and that is right — but an ordering is
+    /// not a proof. Get it backwards and it would give the CONTAINED face a hole
+    /// shaped like its own container. No caller reaches that today, which is
+    /// exactly why the contract is asked here rather than left to luck.
+    #[test]
+    fn a_face_is_only_punched_by_something_it_actually_contains() {
+        let mut s = Scene::new();
+        let big = rect(&mut s, 0.0, 0.0, 100.0);
+        let small = rect(&mut s, 0.0, 0.0, 30.0);
+        assert!(s.can_punch_contained(big, small), "the small one is inside");
+        assert!(!s.can_punch_contained(small, big), "and the big one is not inside it");
+    }
+
+    #[test]
+    fn a_face_beside_another_is_not_contained_by_it() {
+        let mut s = Scene::new();
+        let a = rect(&mut s, 0.0, 0.0, 100.0);
+        let b = rect(&mut s, 300.0, 0.0, 30.0);
+        assert!(!s.can_punch_contained(a, b), "disjoint is not containment");
+        assert!(!s.can_punch_contained(b, a));
+    }
+
+    /// A face on another plane is not inside anything here, however it looks
+    /// from above.
+    #[test]
+    fn a_face_on_another_plane_is_refused() {
+        let mut s = Scene::new();
+        let big = rect(&mut s, 0.0, 0.0, 100.0);
+        let vids: Vec<_> = [
+            DVec3::new(-30.0, -30.0, 50.0),
+            DVec3::new(30.0, -30.0, 50.0),
+            DVec3::new(30.0, 30.0, 50.0),
+            DVec3::new(-30.0, 30.0, 50.0),
+        ]
+        .iter()
+        .map(|&p| s.mesh.add_vertex(p))
+        .collect();
+        let above = s.mesh.add_face(&vids, FORM_MATERIAL).unwrap();
+        assert!(!s.can_punch_contained(big, above));
     }
 }

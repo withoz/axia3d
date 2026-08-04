@@ -276,3 +276,95 @@ fn a_route_it_cannot_follow_is_refused_by_name() {
     }
     assert_eq!(faces(&s), before, "a refusal must leave the solid alone");
 }
+
+/// THE PREVIEW SHOWS WHAT THE CLICK WILL MAKE.
+///
+/// 사용자 (2026-08-04): `수식어가 반대로 누르고 그리면 면따라서, 기본은 연장으로`.
+/// Wrapping is now asked for rather than inferred, and a thing you ask for has
+/// to be visible before you commit to it — otherwise the modifier just moves the
+/// guessing from the engine to the user.
+///
+/// So the preview asks the engine the SAME question the command answers, and
+/// what matters is that the two agree. A preview computed its own way would be a
+/// second implementation to drift.
+#[test]
+fn the_preview_route_is_the_route_that_gets_drawn() {
+    let mut s = prod();
+    box_solid(&mut s);
+    let start = DVec3::new(100.0, 100.0, 100.0); // on the top
+    let end = DVec3::new(200.0, 100.0, 50.0); // on a wall
+
+    let route = s.preview_path_along_surface(start, end);
+    assert!(route.len() >= 3, "a route over two faces bends at least once: {route:?}");
+    assert!((route[0] - start).length() < 1e-6, "it starts where asked");
+    assert!(
+        (route[route.len() - 1] - end).length() < 1e-6,
+        "and ends where asked: {:?}",
+        route[route.len() - 1]
+    );
+    // Every point lies ON the solid — that is what "along the surface" means.
+    for p in &route {
+        let on_top = (p.z - 100.0).abs() < 1e-6;
+        let on_wall = (p.x - 200.0).abs() < 1e-6;
+        assert!(on_top || on_wall, "a route point left the solid: {p:?}");
+    }
+
+    // And the draw takes the same one. Not a face count — a line from the
+    // middle of one face to the middle of another closes no region, so it adds
+    // edges and no face. What it must do is land the route's own bend points.
+    let before = s.mesh.vert_count();
+    let r = s.execute(Command::DrawLineAlongSurface { start, end });
+    assert!(!matches!(r, CommandResult::Error(_)), "{r:?}");
+    assert!(
+        s.mesh.vert_count() > before,
+        "the preview promised a route and the draw made it"
+    );
+    for p in &route {
+        assert!(
+            s.mesh
+                .verts
+                .iter()
+                .any(|(_, v)| (v.pos() - *p).length() < 1e-6),
+            "the drawn line passes through the point the preview showed: {p:?}"
+        );
+    }
+}
+
+/// Read-only: asking does not change anything, which is what lets the tool ask
+/// on every mouse move.
+#[test]
+fn asking_for_the_route_draws_nothing() {
+    let mut s = prod();
+    box_solid(&mut s);
+    let before = (faces(&s), s.mesh.vert_count(), s.scene_snapshot().len());
+    for _ in 0..5 {
+        let _ = s.preview_path_along_surface(
+            DVec3::new(100.0, 100.0, 100.0),
+            DVec3::new(200.0, 100.0, 50.0),
+        );
+    }
+    assert_eq!((faces(&s), s.mesh.vert_count(), s.scene_snapshot().len()), before);
+}
+
+/// No route means no route — the preview says nothing rather than inventing a
+/// straight line, so the tool can tell the difference and show what it would
+/// really draw instead.
+#[test]
+fn no_route_is_reported_as_none() {
+    let mut s = prod();
+    box_solid(&mut s);
+    // Opposite faces: no two-face path, the same case the command refuses.
+    assert!(s
+        .preview_path_along_surface(
+            DVec3::new(100.0, 100.0, 100.0),
+            DVec3::new(100.0, 100.0, 0.0),
+        )
+        .is_empty());
+    // And a point that is not on the solid at all.
+    assert!(s
+        .preview_path_along_surface(
+            DVec3::new(100.0, 100.0, 100.0),
+            DVec3::new(9000.0, 9000.0, 9000.0),
+        )
+        .is_empty());
+}

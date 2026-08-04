@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AXiA 3D — 작업 원칙 (실수 방지)</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --line: #e2e2e2;
+    --card: #fafafa; --accent: #b23c17; --ok: #2f7d4f; --code: #f4f4f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c2f36;
+      --card: #1c1f25; --accent: #ff8a5c; --ok: #6bbf8a; --code: #23262d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 5rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.75 -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; line-height: 1.35; margin: 0 0 .35rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 0 0 2.5rem; }
+  h2 {
+    font-size: 1.15rem; margin: 3rem 0 1rem; padding-bottom: .5rem;
+    border-bottom: 1px solid var(--line); letter-spacing: -.01em;
+  }
+  h3 { font-size: 1rem; margin: 2rem 0 .5rem; }
+  p { margin: 0 0 1rem; }
+  code {
+    background: var(--code); padding: .12em .38em; border-radius: 4px;
+    font: .87em/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  pre {
+    background: var(--code); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; border: 1px solid var(--line);
+    font: .87rem/1.7 ui-monospace, "Cascadia Code", Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .rule {
+    background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 1rem 1.15rem; margin: 0 0 .9rem;
+  }
+  .rule b { display: block; margin-bottom: .3rem; font-size: 1.02rem; }
+  .rule .why { color: var(--muted); font-size: .9rem; margin: .45rem 0 0; }
+  ol.rules { list-style: none; counter-reset: r; padding: 0; margin: 0; }
+  ol.rules > li { counter-increment: r; position: relative; }
+  ol.rules > li .rule b::before {
+    content: counter(r); display: inline-block; min-width: 1.5em;
+    color: var(--accent); font-variant-numeric: tabular-nums;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .6rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .84rem; }
+  .cost { color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .tag {
+    display: inline-block; font-size: .74rem; padding: .1rem .45rem; border-radius: 3px;
+    background: var(--code); color: var(--muted); margin-left: .4rem; vertical-align: 1px;
+  }
+  .scroll { overflow-x: auto; }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>AXiA 3D — 작업 원칙</h1>
+<p class="sub">실제로 저지른 실수에서 뽑은 재발 방지 규칙 · 2026-08-04</p>
+
+<p>
+  아래 규칙은 전부 <strong>실제로 일어난 일</strong>에서 나왔습니다. 일반론이 아니라,
+  한 번씩 대가를 치른 것들입니다. §1 만 읽어도 됩니다 — §2 는 왜 그런지의 근거입니다.
+</p>
+
+<h2>§1. 붙여 쓸 프롬프트</h2>
+
+<pre>작업 전:
+- 메모리와 기존 기록을 먼저 읽는다. 이미 적어 둔 함정을 다시 밟지 않는다.
+- 코드를 읽고 원인을 "추론"하지 않는다. 계측하고 측정한다.
+
+판단할 때:
+- 측정하지 않은 것은 말하지 않는다. 추정치를 근거로 결정하지 않는다.
+- 아무것도 안 나온 측정은 "차이 없음"이 아니라 "묻지 않았음"일 수 있다.
+  무엇을 물었는지 먼저 확인한다.
+- 테스트를 대상 코드와 같은 믿음으로 쓰지 않는다. 결과물을 읽는다.
+
+바꿀 때:
+- 커밋하고 나서 변형한다. `git checkout --` 로 되돌리지 않는다(백업 복사본으로).
+- 한 번에 한 가지만 바꾼다. 고치는 김에 다른 걸 함께 바꾸지 않는다.
+- 가드를 넣었으면 그 가드를 깨서 실패를 눈으로 본다. 통과는 증거가 아니다.
+- 잡히지 않는 변이는 억지 픽스처로 메우지 말고, 왜 관측 불가인지 적는다.
+
+끝내기 전:
+- 변경이 닿는 모든 검사를 돌린다. 도구의 동작이 바뀌었으면 E2E도 돌린다.
+- Playwright 전에는 반드시 빌드한다(`npm run build`). dist 는 자동으로 안 따라온다.
+- 결과를 있는 그대로 보고한다. 실패했으면 실패라고, 건너뛰었으면 건너뛰었다고.</pre>
+
+<h2>§2. 무엇을 틀렸나</h2>
+
+<h3>측정하지 않고 말했다</h3>
+
+<ol class="rules">
+<li><div class="rule">
+  <b>추정치를 적어 두고 그걸 근거로 우선순위를 정했다</b>
+  검출기의 Arc 문제를 “≈0.02 mm, 아직 값어치 없음”이라 기록했습니다.
+  실제로 재보니 <strong>29 mm</strong> — 세 자릿수 차이였고, 6 mm 도형이 통째로 안 보이는 크기였습니다.
+  <p class="why">그 기록 때문에 하루 동안 “값어치 없는 항목”으로 미뤄져 있었습니다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>코드를 읽고 원인을 네 번 발표했고, 네 번 다 틀렸다</b>
+  수직면 문제 / 솔리드 벽 보호 / coplanar 재유도 / Weiler-Atherton —
+  전부 테스트 전에 말했고 전부 계측에서 무너졌습니다.
+  면 생성에 backtrace 를 걸자 <strong>한 번에</strong> 나왔습니다.
+  <p class="why">원인이 “무엇이 이걸 만들었나”일 때는 읽지 말고 계측한다.</p>
+</div></li>
+</ol>
+
+<h3>측정했지만 아무것도 묻지 않았다</h3>
+
+<ol class="rules" start="3">
+<li><div class="rule">
+  <b>프로브가 대상 코드의 계산을 복제했다</b>
+  IFC 단면 자세를 검사하는 프로브가 exporter 의 산술을 그대로 옮겨 적었습니다.
+  고친 뒤에도 <strong>옛 답</strong>을 보고했습니다.
+  <p class="why">같은 믿음으로 쓴 검사는 코드와 의견이 다를 수 없다. 내보낸 파일을 읽어야 한다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>전부 0 이 나온 측정을 “차이 없음”으로 읽었다</b>
+  겹친 원 장면들이 모두 si=0 이라 허용오차를 200× 조여도 답이 같았습니다.
+  검출기가 <strong>곡면 겹침을 아예 안 본 것</strong>이었습니다 — arrangement 가 먼저 해소했으니까.
+  <p class="why">답이 안 변하면, 질문이 도달했는지부터 확인한다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>내 프로브가 만든 결과를 결함으로 읽을 뻔했다</b>
+  <code>clearShapes()</code> 를 부르고 면 수가 8→14→8 로 줄어드는 걸 보고 놀랐습니다.
+  그 API 는 메시를 안 지우고 주인만 지웁니다. 앱 코드는 그걸 호출하지도 않습니다.
+  <p class="why">이상한 숫자를 보면 내 계측이 만든 것인지부터 의심한다.</p>
+</div></li>
+</ol>
+
+<h3>가드가 아무것도 붙잡고 있지 않았다</h3>
+
+<ol class="rules" start="6">
+<li><div class="rule">
+  <b>“고정했다”고 커밋 메시지에 썼는데 고정되지 않았다</b>
+  치환이 0번 매치했고, 테스트는 값을 출력만 하고 아무것도 단언하지 않았습니다.
+  <p class="why">치환·삽입이 <em>적용됐는지</em> 확인하고 나서 그 결과를 믿는다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>픽스처가 우연히 맞게 정렬돼 변이가 통과했다</b>
+  포함 관계의 큰/작은 선택을 뒤집는 변이가 테스트를 통과했습니다 —
+  face id 가 하필 맞는 순서였기 때문입니다.
+  <p class="why">순서는 증명이 아니다. 함수가 스스로 검증하게 만든다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>도달할 수 없는 가드를 “검증됨”처럼 두었다</b>
+  안쪽 전용 가드를 지워도 3366개가 전부 통과했습니다. 두 호출자 다 그 지점에 못 갑니다.
+  <p class="why">지우지 말고, <strong>함수의 계약을 직접</strong> 시험한다. 그리고 도달 불가라고 적는다.</p>
+</div></li>
+</ol>
+
+<h3>필요 이상으로 바꿨다</h3>
+
+<ol class="rules" start="9">
+<li><div class="rule">
+  <b>고치는 김에 함께 바꾼 것이 멀쩡하던 걸 깨뜨렸다</b>
+  포함 처리를 넣으면서 큰/작은 선택 기준을 꼭짓점 수 → 면적으로 함께 바꿨더니,
+  잘 되던 “원이 옆면을 넘어감”이 거부됐습니다.
+  <p class="why">옛 경로는 그대로 두고 새 경우만 위에 얹는다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b><code>git checkout --</code> 로 커밋 안 된 작업을 날렸다</b>
+  변이 검증 중 되돌리려다 한 시간치 구현이 사라졌습니다. <span class="tag">여러 세션에서 반복</span>
+  <p class="why">커밋이 복구 지점이다. 변형 전에 커밋하고, 복구는 <code>cp</code> 백업으로.</p>
+</div></li>
+</ol>
+
+<h3>검증을 건너뛰었다</h3>
+
+<ol class="rules" start="11">
+<li><div class="rule">
+  <b>관련 없다고 판단해 E2E 를 건너뛰었고, CI 가 잡았다</b>
+  cargo·vitest·tsc 전부 초록인데 Playwright 만 실패 — <strong>도구의 동작</strong>을 바꿨고,
+  실제 클릭으로 실제 도구를 거치는 건 E2E 뿐이었습니다.
+  <p class="why">“엔진을 바꿨을 때”가 아니라 <strong>“도구가 하는 일이 바뀌었을 때”</strong> E2E 를 돌린다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>메모리에 이미 적어 둔 함정을 다시 밟았다</b>
+  Playwright 는 <code>dist/</code> 를 서빙하는데 TS 변경 후 빌드를 안 했습니다.
+  버그 없는 실패를 보고 잠시 헤맸습니다. <span class="tag">기록되어 있었음</span>
+  <p class="why">시작 전에 메모리를 읽는다. 적어 두는 것만으로는 안 밟히지 않는다.</p>
+</div></li>
+
+<li><div class="rule">
+  <b>API 이름을 확인하지 않고 썼고, 오류가 삼켜졌다</b>
+  <code>getLastError()</code>(실제는 <code>lastError()</code>)를 부르고 <code>?? ''</code> 로 감싸서,
+  거부 사유가 사용자에게 <strong>영영 도달하지 않았습니다</strong>. 틀린 이름을 mock 한 테스트는 통과했습니다.
+  <p class="why">호출이 아니라 <strong>사용자에게 보이는 문자열</strong>을 단언한다.</p>
+</div></li>
+</ol>
+
+<h2>§3. 한 줄로</h2>
+
+<div class="rule">
+  <b>통과는 증거가 아니다</b>
+  초록불은 “내가 생각한 경로에서 아무 일도 없었다”는 뜻입니다.
+  가드를 깨서 실패를 보기 전까지, 그 가드는 아무것도 붙잡고 있지 않을 수 있습니다 —
+  이 저장소에서 여덟 번 그랬습니다.
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>상황</th><th>하지 말 것</th><th>할 것</th></tr></thead>
+  <tbody>
+    <tr><td>원인을 모를 때</td><td>코드를 읽고 추론해 발표</td><td>계측(backtrace·print)</td></tr>
+    <tr><td>크기를 모를 때</td><td>“대략 ~mm” 로 적고 우선순위 결정</td><td>재고 나서 적기</td></tr>
+    <tr><td>측정이 0 일 때</td><td>“차이 없음”으로 결론</td><td>질문이 도달했는지 확인</td></tr>
+    <tr><td>가드를 넣었을 때</td><td>통과 확인하고 끝</td><td>깨서 실패를 눈으로 보기</td></tr>
+    <tr><td>변이가 안 잡힐 때</td><td>픽스처를 비틀어 맞추기</td><td>왜 관측 불가인지 적기</td></tr>
+    <tr><td>고치는 김에</td><td>주변도 함께 정리</td><td>한 가지만, 옛 경로는 보존</td></tr>
+    <tr><td>변형 실험 전</td><td><code>git checkout --</code></td><td>커밋 → <code>cp</code> 백업</td></tr>
+    <tr><td>도구 동작 변경 후</td><td>cargo·vitest 만</td><td><code>npm run build</code> → Playwright</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  E:/AXiA3D · 이 문서는 저장소에 커밋되지 않은 상태로 두었습니다 —
+  버전 관리에 넣으려면 말씀해 주세요.
+</footer>
+
+</main>
+</body>
+</html>

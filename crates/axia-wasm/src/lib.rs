@@ -518,8 +518,12 @@ impl AxiaEngine {
         // Edge lines are computed from DCEL topology (not from triangle geometry).
         // 임계 각도는 런타임 조절 가능 (StylePanel 슬라이더). 기본은 tolerances.rs의
         // EDGE_VISIBILITY_ANGLE_DEG (15°).
-        let (edge_lines, edge_map) = self.scene
-            .export_edge_lines_with_map(self.edge_angle_threshold_deg);
+        // The same LOD tolerance the faces just got (ADR-135), so the rim is
+        // sampled to match the boundary rather than at full detail forever.
+        let (edge_lines, edge_map) = self.scene.export_edge_lines_with_map_tol(
+            self.edge_angle_threshold_deg,
+            self.render_chord_tol,
+        );
         self.cached_edge_lines = edge_lines;
         self.cached_edge_map = edge_map;
         self.cache_dirty = false;
@@ -882,6 +886,29 @@ impl AxiaEngine {
                 -1.0
             }
         }
+    }
+
+    /// The route a line WOULD take along the surface — for the preview.
+    ///
+    /// Read-only: the same walk `drawLineAlongSurface` uses, asked without
+    /// drawing anything, so what is shown under the cursor is what the click
+    /// will make. Flat `x,y,z,…`; empty when there is no such route.
+    #[wasm_bindgen(js_name = "previewPathAlongSurface")]
+    pub fn preview_path_along_surface(
+        &self,
+        x0: f64, y0: f64, z0: f64,
+        x1: f64, y1: f64, z1: f64,
+    ) -> Vec<f32> {
+        let pts = self
+            .scene
+            .preview_path_along_surface(DVec3::new(x0, y0, z0), DVec3::new(x1, y1, z1));
+        let mut out = Vec::with_capacity(pts.len() * 3);
+        for p in pts {
+            out.push(p.x as f32);
+            out.push(p.y as f32);
+            out.push(p.z as f32);
+        }
+        out
     }
 
     /// Give a line a cross-section — what it is thick with.
@@ -15862,6 +15889,35 @@ mod adr311_style_warning_tests {
         let g = axia_ifc::ifc_geometry::import_ifc_geometry(&styled_ifc()).unwrap();
         assert!(g.elements[0].style.is_some(), "read fine");
         assert!(g.warnings.is_empty(), "a style we read is not a drop: {:?}", g.warnings);
+    }
+}
+
+#[cfg(test)]
+mod wireframe_lod_tests {
+    use super::*;
+
+    /// The rim takes the LOD discount because the engine is HANDED the LOD
+    /// value here. The engine-level tests can prove the export honours a
+    /// tolerance; only this layer can prove the tolerance actually arrives.
+    #[test]
+    fn the_engine_hands_the_lod_value_to_the_edge_export() {
+        let mut e = AxiaEngine::new();
+        e.draw_circle_as_curve(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 100.0);
+
+        let near = e.get_edge_lines().len();
+        assert!(near > 600, "a r=100 circle is drawn with many segments: {near}");
+
+        // Pull the camera back (ADR-135 hands this in through setRenderChordTol).
+        e.set_render_chord_tol(1.0);
+        let far = e.get_edge_lines().len();
+        assert!(
+            far < near / 2,
+            "the rim must get coarser with the faces: {near} → {far}"
+        );
+
+        // And back again, so this is the tolerance and not a one-way rebuild.
+        e.set_render_chord_tol(0.02);
+        assert_eq!(e.get_edge_lines().len(), near);
     }
 }
 

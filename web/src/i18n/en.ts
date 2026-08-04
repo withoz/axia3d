@@ -1008,6 +1008,8 @@ export const EN: Record<string, string> = {
     'Loop closed, but no face — it is not flat, or it crosses itself',
   '곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.':
     'A straight line on a curved surface is only a flat guide. To split one, use a freehand or Bezier curve (sphere, cone) or a closed circle (cylinder, torus).',
+  'Alt 를 누른 채 클릭하면 면을 따라 그립니다 (기본은 평면 연장)':
+    'Hold Alt to draw along the solid; without it the line stays on the plane you started on',
   '⚠ 닫힘 세그먼트가 기존 체인과 교차합니다': '⚠ The closing segment crosses the chain',
   '이 곡면에는 그 반지름으로 원을 그릴 수 없습니다 — 마우스로 지정해 주세요':
     'A circle of that radius does not fit on this surface — draw it with the mouse instead',
