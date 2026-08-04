@@ -217,12 +217,13 @@ impl Mesh {
         // radius-scaled either: this runs as a gate on every edit, and sampling
         // small circles finer buys accuracy the AABB phase then pays for.
         //
-        // Known limit, measured: an ARC along a polygon edge is taken as its
-        // straight chord here, while the render follows the curve. The gap is
-        // bounded by the sagitta at this tolerance (~0.02 mm), so a genuine
-        // overlap thinner than that is missed. Closing it means sampling every
-        // arc edge on the hot path; not paid for yet.
-        self.loop_polygon(start, crate::mesh::ChordTol::fixed(0.02))
+        // Arcs on a polygon edge ARE followed here. Taking the chord instead
+        // left a blind spot the size of the sagitta, and that is no rounding
+        // difference: a quarter arc of r=100 bows 29 mm past its chord, and a
+        // 6 mm face sitting in that crescent was invisible to this scan —
+        // measured. Seeing faces that lie on top of each other is the whole job,
+        // so the boundary is read the way the renderer draws it.
+        self.loop_polygon(start, crate::mesh::ChordTol::fixed(0.02).following_arcs())
     }
 
     /// Tessellate a face's outer loop (with holes) into 3D triangles via earcut.

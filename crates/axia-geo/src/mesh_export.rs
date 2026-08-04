@@ -152,7 +152,7 @@ impl Mesh {
     /// **B4b-2b** — Bezier/BSpline/NURBS regular-edge fill sampling activated
     /// (was straight chord). Mirrors the Arc arm; samples the sub-bezier so the
     /// freeform lens boundary renders smooth (else 2 chords < B4b-2a line-seg).
-    fn he_arc_fill_points(
+    pub(crate) fn he_arc_fill_points(
         &self,
         he_id: HeId,
         origin_pos: DVec3,

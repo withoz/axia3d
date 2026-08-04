@@ -559,18 +559,37 @@ pub struct ChordTol {
     pub base: f64,
     pub radius_factor: Option<f64>,
     pub floor: f64,
+    /// Whether an ARC along a polygon edge is followed or cut across.
+    ///
+    /// A closed curve is always sampled — it has no vertices to read instead.
+    /// An arc on a polygon edge is different: the loop already has endpoints
+    /// there, so a reader can take the straight chord between them, and most do.
+    /// The chord bows INSIDE the true rim by the sagitta, which for a quarter
+    /// arc of r=100 is 29 mm — not a rounding difference but a region that
+    /// simply is not there.
+    ///
+    /// Off by default because switching it on is a behaviour change, not a
+    /// refinement: measured, it stops the cross-drilling guard rejecting a drill
+    /// whose axis crosses an existing hole. Whoever wants it says so.
+    pub follow_arc_edges: bool,
 }
 
 impl ChordTol {
     /// The same tolerance whatever the size — for anything MEASURED, which must
     /// not change because the camera moved or the shape got smaller.
     pub const fn fixed(base: f64) -> Self {
-        Self { base, radius_factor: None, floor: 0.0 }
+        Self { base, radius_factor: None, floor: 0.0, follow_arc_edges: false }
     }
 
     /// Capped by the radius, so small curves stay round.
     pub const fn scaled(base: f64, radius_factor: f64, floor: f64) -> Self {
-        Self { base, radius_factor: Some(radius_factor), floor }
+        Self { base, radius_factor: Some(radius_factor), floor, follow_arc_edges: false }
+    }
+
+    /// Read an arc on a polygon edge as the arc, not as its chord.
+    pub const fn following_arcs(mut self) -> Self {
+        self.follow_arc_edges = true;
+        self
     }
 
     /// The tolerance to sample a circle of this radius at.
@@ -13482,9 +13501,25 @@ impl Mesh {
     pub fn loop_polygon(&self, start: crate::HeId, tol: ChordTol) -> Option<Vec<DVec3>> {
         if let Ok(verts) = self.collect_loop_verts(start) {
             if verts.len() >= 3 {
-                let pts: Vec<DVec3> =
-                    verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
-                return (pts.len() == verts.len()).then_some(pts);
+                if !tol.follow_arc_edges {
+                    let pts: Vec<DVec3> =
+                        verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+                    return (pts.len() == verts.len()).then_some(pts);
+                }
+                // Follow each arc edge to its rim rather than cutting across it.
+                let hes = self.collect_loop_hes(start).unwrap_or_default();
+                let mut pts: Vec<DVec3> = Vec::with_capacity(verts.len());
+                for (i, &v) in verts.iter().enumerate() {
+                    let Ok(dst) = self.vertex_pos(v) else { return None };
+                    if i < hes.len() {
+                        let prev = if i == 0 { *verts.last().unwrap() } else { verts[i - 1] };
+                        if let Ok(o) = self.vertex_pos(prev) {
+                            pts.extend(self.he_arc_fill_points(hes[i], o, dst, tol.base));
+                        }
+                    }
+                    pts.push(dst);
+                }
+                return (pts.len() >= 3).then_some(pts);
             }
         }
         use crate::curves::AnalyticCurve;
