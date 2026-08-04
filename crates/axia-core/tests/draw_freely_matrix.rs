@@ -539,3 +539,74 @@ fn a_circle_drawn_around_a_smaller_circle_nests_on_a_solid() {
     assert!(solid.mesh.verify_face_invariants().violations.is_empty());
     assert!(solid.mesh.verify_outward_normals().is_closed_solid, "the solid stays closed");
 }
+
+/// Drawing a shape right AROUND a solid's whole face — past its boundary on
+/// every side at once.
+///
+/// 사용자 (2026-08-04): `입체면에서 경계면을 초과하여 그리는 기능`. Crossing one
+/// edge worked; crossing all four did not. The new shape came out solid, lying
+/// over the cap, and the guard rolled the whole draw back.
+///
+/// The hand-over that fixes this between two SHEETS cannot: it moves a hole by
+/// re-pointing the inner's twin half-edges, and a solid cap's twins already
+/// carry the walls. So the container is rebuilt with the cap as a hole of its
+/// own, and the cap's edges end up bearing three faces — cap, wall, ring. That
+/// is a T-junction, which is what drawing a sheet across a solid's footprint
+/// means, and it is why the guard counts overlaps rather than shared edges.
+#[test]
+fn a_shape_drawn_right_around_a_solids_face_is_accepted() {
+    let mut s = prod();
+    let f = s
+        .mesh
+        .create_box(DVec3::new(0.0, 0.0, 50.0), 200.0, 100.0, 200.0, FORM_MATERIAL)
+        .unwrap();
+    s.create_xia_with_faces("b".into(), DVec3::ZERO, f);
+    let before = faces(&s);
+
+    // The box top is 200 × 200; this is 400 × 400 centred on it.
+    let r = s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(0.0, 0.0, 100.0),
+        normal: DVec3::Z,
+        up: DVec3::Y,
+        width: 400.0,
+        height: 400.0,
+    });
+    assert!(!matches!(r, CommandResult::Error(_)), "drawn around the cap: {r:?}");
+    assert_eq!(faces(&s), before + 1, "one new region");
+
+    // The new shape is a RING: it holds the cap as a hole rather than covering it.
+    let ring = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .find(|(fid, f)| {
+            !f.inners().is_empty()
+                && s.mesh
+                    .collect_loop_verts(s.mesh.faces[*fid].outer().start)
+                    .map(|vs| {
+                        vs.iter()
+                            .filter_map(|v| s.mesh.vertex_pos(*v).ok())
+                            .all(|p| (p.z - 100.0).abs() < 1e-6 && p.x.abs() > 150.0)
+                    })
+                    .unwrap_or(false)
+        })
+        .map(|(fid, _)| fid)
+        .expect("a ring on the top plane holding the cap");
+    assert_eq!(s.mesh.faces[ring].inners().len(), 1);
+    assert!(
+        (s.mesh.face_area(ring) - (400.0 * 400.0 - 200.0 * 200.0)).abs() < 1e-6,
+        "and it measures as the ring it is: {}",
+        s.mesh.face_area(ring)
+    );
+
+    assert!(clean(&s), "nothing covers anything else");
+    // The shared edges DO bear three faces now, and that is the whole point —
+    // what must not appear is anything else wrong.
+    let nm = s.mesh.collect_non_manifold_edges().len();
+    assert_eq!(
+        s.mesh.verify_face_invariants().violations.len(),
+        nm,
+        "the T-junctions are the only complaint"
+    );
+}
