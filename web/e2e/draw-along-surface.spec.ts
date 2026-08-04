@@ -78,7 +78,7 @@ async function wirePoints(
 }
 
 test.describe('면을 따라 그리기 (drawing along a solid)', () => {
-  test('a line clicked across two faces bends on the edge between them', async ({ page }) => {
+  test('a line clicked across two faces bends on the edge — with Alt held', async ({ page }) => {
     test.setTimeout(45_000);
     await setup(page);
 
@@ -109,12 +109,16 @@ test.describe('면을 따라 그리기 (drawing along a solid)', () => {
       (window as any).__axia.get('toolManager').setTool('line');
     });
 
-    // One click on the top face, one on the east wall.
+    // One click on the top face, one on the east wall — the second with Alt
+    // held, which is how following the solid is asked for (사용자 2026-08-04:
+    // `수식어가 반대로 누르고 그리면 면따라서, 기본은 연장으로`).
     const a = await screenOf(page, [100, 100, 100]);
     const b = await screenOf(page, [200, 100, 50]);
     await page.mouse.click(a.x, a.y);
     await page.waitForTimeout(120);
+    await page.keyboard.down('Alt');
     await page.mouse.click(b.x, b.y);
+    await page.keyboard.up('Alt');
     await page.waitForTimeout(400);
 
     const after = await wirePoints(page);
@@ -130,6 +134,56 @@ test.describe('면을 따라 그리기 (drawing along a solid)', () => {
       ([x, y, z]) => x > 1 && x < 199 && y > 1 && y < 199 && z > 1 && z < 99,
     );
     expect(inside, 'no drawn point may sit inside the box').toEqual([]);
+
+    const health = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      const inv = bridge.verifyInvariants?.();
+      return { valid: inv?.valid, violations: inv?.violations?.length ?? 0 };
+    });
+    expect(health.valid, `invariants: ${health.violations} violations`).toBe(true);
+  });
+
+  /// The other half of the policy, and the half a user meets first.
+  ///
+  /// 사용자 (2026-08-04): `기본은 연장으로`. Without the modifier this used to
+  /// bend by itself the moment the cursor landed on another face — the cursor
+  /// deciding, not the user. Clicked the same way, the line must now stay on
+  /// the plane it started on.
+  test('the same two clicks WITHOUT Alt stay on the plane they started on', async ({ page }) => {
+    test.setTimeout(45_000);
+    await setup(page);
+
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const axia = (window as any).__axia;
+      axia.get('bridge').create_box(100, 100, 50, 200, 100, 200);
+      axia.get('toolManager').syncMesh();
+      axia.get('viewport').setViewMode?.('3d');
+    });
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__axia.get('toolManager').setTool('line');
+    });
+
+    const a = await screenOf(page, [100, 100, 100]);
+    const b = await screenOf(page, [200, 100, 50]);
+    await page.mouse.click(a.x, a.y);
+    await page.waitForTimeout(120);
+    await page.mouse.click(b.x, b.y); // no Alt
+    await page.waitForTimeout(400);
+
+    const after = await wirePoints(page);
+    const onSharedEdgeInterior = after.filter(
+      ([x, y, z]) =>
+        Math.abs(x - 200) < 0.5 && Math.abs(z - 100) < 0.5 && y > 1 && y < 199,
+    );
+    expect(
+      onSharedEdgeInterior,
+      'without the modifier the line must not turn the corner',
+    ).toEqual([]);
 
     const health = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
