@@ -107,10 +107,23 @@ export class CatmullRomCurve3 {
 export class Plane {
   normal = new Vector3(0, 1, 0);
   constant = 0;
+  constructor(normal?: Vector3, constant?: number) {
+    if (normal) this.normal.copy(normal);
+    if (constant !== undefined) this.constant = constant;
+  }
   setFromNormalAndCoplanarPoint(n: Vector3, p: Vector3) {
     this.normal.copy(n);
     this.constant = -n.dot(p);
     return this;
+  }
+  distanceToPoint(p: Vector3) {
+    return this.normal.dot(p) + this.constant;
+  }
+  /** The real one — anything reaching it in a test was previously a TypeError. */
+  projectPoint(p: Vector3, target: Vector3) {
+    const d = this.distanceToPoint(p);
+    target.set(p.x - this.normal.x * d, p.y - this.normal.y * d, p.z - this.normal.z * d);
+    return target;
   }
 }
 

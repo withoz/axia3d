@@ -202,6 +202,10 @@ function mockBridge() {
     //   default normal=null → graceful fallback if kind ≥ 2 ever set in test
     faceSurfaceKind: vi.fn().mockReturnValue(1),
     faceSurfaceNormalAtPos: vi.fn().mockReturnValue(null),
+    // Nearest point on a face's curved surface — the curved half of ADR-292's
+    // "a snap never leaves the active target". Default null = a face with no
+    // curved surface, which is what kind=1 above says.
+    projectPointToFaceSurface: vi.fn().mockReturnValue(null),
   } as any;
 }
 
@@ -1332,6 +1336,75 @@ describe('ToolManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (tm.selection as any).getSelectedFaces = () => [];
       expect(tm.executeAction('flip-faces')).toBe(true);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // A SNAP NEVER LEAVES THE ACTIVE TARGET — including when it is a surface.
+  //
+  // ADR-292's invariant is that a snap candidate is re-projected onto the
+  // active draw plane, so a snap can move the in-plane position and never the
+  // plane-normal coordinate. On a curved face `get3DPoint` used to skip snap
+  // entirely, and said why: "a curved face has none". It has a SURFACE, which
+  // is the same thing one step out — and `projectPointToFaceSurface` (2026-08-05)
+  // is how to ask. Without this, nothing drawn on a sphere could be made to
+  // meet anything already on it.
+  // ────────────────────────────────────────────────────────────────────
+  describe('object snap on a curved face', () => {
+    beforeEach(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tm as any).faceMap = new Uint32Array([7]);
+      bridge.faceSurfaceKind.mockReturnValue(3); // Sphere
+      viewport.pick.mockReturnValue({
+        faceIndex: 0,
+        point: { x: 100, y: 0, z: 0, clone: () => ({ x: 100, y: 0, z: 0 }) },
+      });
+      tm.snap.enabled = true;
+      vi.spyOn(tm.snap, 'findSnap').mockReturnValue({
+        position: { x: 0, y: 95, z: 20 }, // a vertex NOT on the sphere
+        type: 'endpoint',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+
+    const ev = () => ({ clientX: 100, clientY: 100 }) as MouseEvent;
+
+    it('a snapped point is put ON the surface, not taken raw', () => {
+      bridge.projectPointToFaceSurface.mockReturnValue(
+        new Float64Array([0, 100, 0]), // what the engine says the nearest point is
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      expect(bridge.projectPointToFaceSurface).toHaveBeenCalledWith(7, 0, 95, 20);
+      expect([pt.x, pt.y, pt.z]).toEqual([0, 100, 0]);
+    });
+
+    it('a candidate that cannot be put on the surface leaves the point alone', () => {
+      // The engine declines — a plane's face, a cone's apex, a build without
+      // the export. Committing the raw candidate would put the point off the
+      // face, which is the whole thing this guards.
+      bridge.projectPointToFaceSurface.mockReturnValue(null);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      expect([pt.x, pt.y, pt.z]).toEqual([100, 0, 0]); // the raw hit
+    });
+
+    it('with snap off the raw hit is used and the engine is not asked', () => {
+      tm.snap.enabled = false;
+      bridge.projectPointToFaceSurface.mockClear();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      expect([pt.x, pt.y, pt.z]).toEqual([100, 0, 0]);
+      expect(bridge.projectPointToFaceSurface).not.toHaveBeenCalled();
+    });
+
+    it('a PLANAR face still snaps onto the plane, not the surface', () => {
+      bridge.faceSurfaceKind.mockReturnValue(1); // Plane
+      bridge.getFaceNormal.mockReturnValue([0, 0, 1]);
+      bridge.projectPointToFaceSurface.mockClear();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tm as any).get3DPoint(ev());
+      expect(bridge.projectPointToFaceSurface).not.toHaveBeenCalled();
     });
   });
 

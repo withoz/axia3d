@@ -3254,7 +3254,60 @@ export class ToolManager {
    * face force afterwards.
    */
   private applyObjectSnap(raw: THREE.Vector3, plane: THREE.Plane, e: MouseEvent): THREE.Vector3 {
-    if (!this.snap.enabled) { this.snapVisual.clear(); return raw; }
+    const snap = this.findSnapCandidate(raw, e);
+    if (!snap) return raw;
+    // PROJECT the snap target onto the active draw plane — never leave it.
+    const projected = new THREE.Vector3();
+    plane.projectPoint(snap.position, projected);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    this.snapVisual.update(snap, this.viewport.activeCamera);
+    return projected;
+  }
+
+  /**
+   * The same invariant on a CURVED face, where the active target is the surface
+   * rather than a plane: a snap may move the point along the surface, never off
+   * it.
+   *
+   * Snap used to be skipped outright here — `get3DPoint` returned the raw hit
+   * and the code said why: *"a snap must be re-projected onto the ACTIVE PLANE,
+   * and a curved face has none"*. It has a surface, which is the same thing one
+   * step out; `AnalyticSurface::project_world_pos` is how to ask, and until
+   * 2026-08-05 nothing outside the engine could.
+   *
+   * A candidate that cannot be put on the surface (a plane's face, a cone's
+   * apex, an engine without the export) leaves the raw point alone rather than
+   * committing a point that floats off the face.
+   */
+  private applyObjectSnapOnSurface(
+    raw: THREE.Vector3,
+    faceId: number,
+    e: MouseEvent,
+  ): THREE.Vector3 {
+    const snap = this.findSnapCandidate(raw, e);
+    if (!snap) return raw;
+    const q = this.bridge.projectPointToFaceSurface?.(
+      faceId, snap.position.x, snap.position.y, snap.position.z,
+    );
+    if (!q || q.length !== 3 || !Number.isFinite(q[0] + q[1] + q[2])) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    this.snapVisual.update(snap, this.viewport.activeCamera);
+    return new THREE.Vector3(q[0], q[1], q[2]);
+  }
+
+  /**
+   * The snap candidate for this cursor position, or null — shared by the plane
+   * and surface paths so both get the same exclusions, the same Tab-cycled
+   * tentative and the same failure handling. It deliberately stops short of
+   * deciding WHERE the candidate goes; that is what differs between them.
+   */
+  private findSnapCandidate(raw: THREE.Vector3, e: MouseEvent): SnapPoint | null {
+    if (!this.snap.enabled) { this.snapVisual.clear(); return null; }
     // ADR-047 P32 — exclude the active tool's pending chain vertices so snap
     // never pulls a corner onto its own not-yet-committed vertex.
     const active = this.tools.get(this._currentTool);
@@ -3275,19 +3328,11 @@ export class ToolManager {
         snap = this.snap.findSnap(e.clientX, e.clientY, cam, canvas, raw, null);
       } catch {
         this.snapVisual.clear();
-        return raw;
+        return null;
       }
     }
-    if (!snap) { this.snapVisual.clear(); return raw; }
-    // PROJECT the snap target onto the active draw plane — never leave it.
-    const projected = new THREE.Vector3();
-    plane.projectPoint(snap.position, projected);
-    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) {
-      this.snapVisual.clear();
-      return raw;
-    }
-    this.snapVisual.update(snap, cam);
-    return projected;
+    if (!snap) { this.snapVisual.clear(); return null; }
+    return snap;
   }
 
   private get3DPoint(e: MouseEvent): THREE.Vector3 | null {
@@ -3364,11 +3409,13 @@ export class ToolManager {
         // and why DrawCircleTool — the one curved tool that worked — reads
         // plane.origin instead of this.
         //
-        // No object snap here: ADR-292's invariant is that a snap must be
-        // re-projected onto the ACTIVE PLANE, and a curved face has none.
-        // Snapping on curved surfaces needs its own design.
+        // Object snap DOES apply here (2026-08-05). ADR-292's invariant is that
+        // a snap is re-projected onto the active target; for a curved face that
+        // target is the SURFACE, not a plane — see `applyObjectSnapOnSurface`.
+        // Without it a point could only ever land where the ray happened to hit,
+        // so nothing on a sphere could be drawn to meet anything already there.
         const kind = this.bridge.faceSurfaceKind?.(fid) ?? -1;
-        if (kind >= 2) return faceHit.point.clone();
+        if (kind >= 2) return this.applyObjectSnapOnSurface(faceHit.point.clone(), fid, e);
 
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);
         if (Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)) {
@@ -3896,7 +3943,10 @@ export class ToolManager {
       );
       if (tangentNormal !== null) {
         normal = new THREE.Vector3(tangentNormal[0], tangentNormal[1], tangentNormal[2]);
-        surfaceAwareOrigin = hit.point.clone();
+        // The curved-face tools take their point from this origin (a circle's
+        // centre, a rect's first corner), so the snap belongs here too — on the
+        // surface, by the same invariant as the plane path.
+        surfaceAwareOrigin = this.applyObjectSnapOnSurface(hit.point.clone(), fid, e);
       } else {
         // Fallback: graceful degradation to DCEL face normal (legacy chord plane)
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);
