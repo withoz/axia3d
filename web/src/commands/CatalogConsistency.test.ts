@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (188, after -4 ghosts, +2 surfaced tools, -1 hover-only)', () => {
+  it('CommandCatalog count matches expected total (190, after -4 ghosts, +2 surfaced tools, -1 hover-only, +2 plane moves)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -129,7 +129,20 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // catalog — of 57 registered tools it was the only one that could not be
     // *browsed* to. Adding the menu item alone would have made it a DEAD menu
     // (the ADR-299 class); the MenuBar `case` went in with it.
-    expect(count).toBe(188);
+    //
+    // 190: sketch-offset + sketch-tilt (2026-08-05). They went into the menu
+    // and the ActionCatalog when they landed and NOT into the palette, which
+    // the AC ⊇ CC invariant permits, so nothing complained. The convention is
+    // the other way: every other sketch action is in the palette
+    // (sketch-start-face, sketch-align-up…), so leaving these out made them
+    // the only two that could not be searched for.
+    //
+    // A third went in with them and came straight back out: `tool-workplane`
+    // was a DUPLICATE of `tool-plane` (ADR-224's 3-point work plane), built
+    // because the audit grep asked for a name the repo does not use. Two
+    // near-identical entries in the palette is how a user finds out the
+    // codebase disagrees with itself.
+    expect(count).toBe(190);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

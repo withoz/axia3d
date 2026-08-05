@@ -7609,9 +7609,22 @@ LOCKED #44 (Complete Meaning per Merge) · #61 (identity vs dispatch) ·
   일반화. 이전엔 곡면에서 스냅이 통째로 꺼져 있었다(코드가 스스로 적어둔 gap).
 - **Alt = 접평면에 납작하게** (6도구). Alt 는 DrawLine 과 반대로 읽히지만 둘 다 **"기본값의
   반대"** — 결정으로 기록됨.
-- **3점 작업평면** (`tool-workplane`) + **평면 띄우기/기울이기** (`sketch-offset`/`sketch-tilt`).
-  `enterSketch` 는 원래 임의 평면을 받았고 `getDrawPlane`·`get3DPoint` 도 sketch 를 face hit
-  보다 먼저 봤다 — **없던 건 진입로뿐**.
+- **평면 띄우기/기울이기** (`sketch-offset`/`sketch-tilt`). `enterSketch` 는 원래 임의 평면을
+  받았고 `getDrawPlane`·`get3DPoint` 도 sketch 를 face hit 보다 먼저 봤다 — **없던 건 진입로뿐**.
+- **3점 작업평면이 스케치까지 연다** (`tool-plane`, `3859c95`). ⚠ 이 항목은 처음에
+  `tool-workplane` 이라는 **중복 도구**로 적혀 있었다 — `workPlane|constructionPlane|customPlane`
+  로 grep 해서 "없다" 고 판단했는데, 저장소는 그걸 `DrawPlaneTool`/`tool-plane` 이라 부르고
+  ADR-224 로 2026-06-08 부터 있었다. 이미 출력해 둔 도구 목록에 `DrawPlaneTool.ts` 가 있었고
+  내가 지나쳤다. 찾은 이름이 저장소의 것이 아니라 내 것이었다(한 세션에 두 번째 —
+  앞은 `drawPolylineOnSphere` vs `drawPolylineOnCurved`).
+  다만 **틀린 도구를 치우고 나니 진짜 gap 이 남았다**: 이 도구는 ADR-166 plane **lock** 만
+  걸었고, lock 은 `getDrawPlane`(rect·circle·polygon)을 지배하지만 **선의 양 끝이 나오는
+  `get3DPoint` 는 지배하지 않는다.** 실앱 실측 — 사선 3클릭 후 `getDrawPlane` 은 법선
+  (0.5774, 0.5774, 0.5774) 을 보고했는데 `get3DPoint` 는 6개 화면 위치 전부에서 **z=0**
+  을 냈다. 사각형은 평면에 앉고 선은 바닥에 앉았다. 이제 이 도구가 **sketch 도** 열어서
+  두 resolver 가 같은 평면을 보고(6/6 이 x+y+z=100 정확), face hit 로 자동 해제되지 않는다 —
+  그것이 "여기 그리라고 했다" 의 뜻이다. `up` 은 world-up 을 평면에 눕힌 것이라 벽이 서고,
+  수평 평면에서는 그 투영이 사라져 실제로 주어진 유일한 방향인 첫 모서리로 되돌아간다.
 
 **아직 남은 것**: 곡면 위 선은 rim→내부→rim **3-클릭 폴리라인**이면 가능(실측). DrawLine 이
 세그먼트마다 커밋해서 지금은 못 하고, 체인 전체를 모으는 상태기계 변경이 필요하다. 그리고

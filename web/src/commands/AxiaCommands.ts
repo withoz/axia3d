@@ -213,6 +213,8 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('sketch-start-xy',    'sketch', '✏️ 스케치 시작 · XY 바닥',   'XY',   undefined, false, deps));
   cmds.push(action('sketch-start-yz',    'sketch', '✏️ 스케치 시작 · YZ 측면',   'YZ',   undefined, false, deps));
   cmds.push(action('sketch-start-face',  'sketch', '✏️ 스케치 시작 · 선택 면',   '면',   undefined, false, deps));
+  cmds.push(action('sketch-offset',      'sketch', '⇕ 작업 평면 띄우기',        '띄움', undefined, false, deps));
+  cmds.push(action('sketch-tilt',        'sketch', '⟲ 작업 평면 기울이기',      '기울', undefined, false, deps));
   cmds.push(action('sketch-resume-last', 'sketch', '↩ 스케치 재개',             '재개', undefined, false, deps));
   cmds.push(action('sketch-align-up',    'sketch', '↻ up 카메라 정렬',           'Up↻',  undefined, false, deps));
   cmds.push(action('sketch-exit',        'sketch', '스케치 종료',                '종료', undefined, false, deps));

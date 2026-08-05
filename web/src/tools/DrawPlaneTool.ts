@@ -96,8 +96,24 @@ export class DrawPlaneTool implements ITool {
       return;
     }
     normal.normalize();
-    const up = u.clone().normalize(); // in-plane reference (perpendicular to normal)
+    // `up` is world-up laid onto the plane, so a wall reads upright rather than
+    // running along whichever edge happened to be picked first. When the plane
+    // is horizontal that projection vanishes and the first edge — the only
+    // direction actually given — is what is left.
+    const worldUp = new THREE.Vector3(0, 0, 1);
+    let up = worldUp.clone().sub(normal.clone().multiplyScalar(worldUp.dot(normal)));
+    if (up.lengthSq() < 1e-9) up = u.clone().normalize();
+    else up.normalize();
+    const right = new THREE.Vector3().crossVectors(up, normal).normalize();
+
     this.ctx.lockPlane?.({ origin: a.clone(), normal, up, source: 'manual' });
+    // The lock alone governs `getDrawPlane` — rect, circle, polygon — and NOT
+    // `get3DPoint`, which is where a line's ends come from. Measured
+    // 2026-08-05: after this tool set an oblique plane, `getDrawPlane` reported
+    // it and `get3DPoint` did not, so lines still landed on the ground while
+    // rectangles landed on the plane. A sketch is consulted by BOTH and does
+    // not auto-unlock on a face hit, which is what "I said to draw HERE" means.
+    this.ctx.enterSketch?.({ label: t('작업 평면 (3점)'), origin: a.clone(), normal, up, right });
     Toast.info(t('작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Home 키로 해제)'), 4000);
     debugLog(`[Plane] normal=(${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)})`);
   }

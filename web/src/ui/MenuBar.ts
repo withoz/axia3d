@@ -466,7 +466,6 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-bezier': setActiveTool('bezier'); break;
       case 'tool-spline': setActiveTool('spline'); break;
       case 'tool-point': setActiveTool('point'); break;
-      case 'tool-workplane': setActiveTool('workplane'); break;
       case 'tool-text3d': setActiveTool('text3d'); break;
 
       // ── 수정 ──
