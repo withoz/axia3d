@@ -751,6 +751,8 @@ export class ToolManager {
     'sketch-start-face': '스케치 시작 — 선택 면',
     'sketch-start-auto': '스케치 시작 — 자동 평면 감지',
     'sketch-align-up': '스케치 up 방향을 카메라에 정렬',
+    'sketch-offset': '작업 평면 띄우기 (법선 방향)',
+    'sketch-tilt': '작업 평면 기울이기',
     'sketch-resume-last': '마지막 스케치 평면 재진입',
     'sketch-exit': '스케치 종료',
     'convert-to-centerline': '선택 엣지 → 중심선 변환',
@@ -1473,6 +1475,8 @@ export class ToolManager {
       this.startSketchAuto();
     } else if (action === 'sketch-align-up') {
       this.alignSketchUpToCamera();
+    } else if (action === 'sketch-offset' || action === 'sketch-tilt') {
+      this.adjustSketchPlane(action === 'sketch-offset' ? 'offset' : 'tilt');
     } else if (action === 'sketch-resume-last') {
       try {
         const raw = localStorage.getItem(SKETCH_LAST_PLANE_KEY);
@@ -2774,6 +2778,52 @@ export class ToolManager {
     this._sketch.right = new THREE.Vector3().crossVectors(u, this._sketch.normal).normalize();
     this.viewport.setSketchPlaneVisual(this._sketch);
     Toast.info(t('스케치 up 방향을 카메라에 정렬했습니다'), 2000);
+  }
+
+  /**
+   * Move the active sketch plane: along its normal, or tilted about one of its
+   * own axes.
+   *
+   * Three points can express any plane, which makes them the general answer —
+   * but "the same wall, 300 further out" and "that face, tipped 30°" are the
+   * two a user reaches for constantly, and hunting three points for them is
+   * work the plane itself already knows how to do.
+   *
+   * The tilt turns about an axis IN the plane (its `right`), so the plane
+   * pivots the way a lid does rather than spinning in place — spinning about
+   * the normal would leave the plane exactly where it was.
+   */
+  adjustSketchPlane(kind: 'offset' | 'tilt'): void {
+    if (!this._sketch) {
+      Toast.warning(t('스케치 모드가 아닙니다'), 2500);
+      return;
+    }
+    const ask = kind === 'offset'
+      ? t('평면을 법선 방향으로 이동할 거리 (mm, 음수 가능)')
+      : t('평면을 기울일 각도 (도, 음수 가능)');
+    const raw = window.prompt(ask, kind === 'offset' ? '100' : '30');
+    if (raw === null) return;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value === 0) {
+      Toast.warning(t('숫자를 입력하세요'), 2000);
+      return;
+    }
+
+    const s = this._sketch;
+    if (kind === 'offset') {
+      s.origin = s.origin.clone().add(s.normal.clone().multiplyScalar(value));
+      Toast.info(t('평면을 {d} mm 이동했습니다', { d: String(value) }), 2000);
+    } else {
+      // Turn about the plane's own `right`, which lies IN the plane, so the
+      // origin stays put and the plane tips about that line.
+      const axis = s.right.clone().normalize();
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, (value * Math.PI) / 180);
+      s.normal = s.normal.clone().applyQuaternion(q).normalize();
+      s.up = s.up.clone().applyQuaternion(q).normalize();
+      s.right = axis; // unchanged — it is the axis we turned about
+      Toast.info(t('평면을 {a}° 기울였습니다', { a: String(value) }), 2000);
+    }
+    this.viewport.setSketchPlaneVisual(s);
   }
 
   /** Exit sketch mode. Geometry created during the session stays in the

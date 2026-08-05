@@ -735,6 +735,8 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'sketch-start-yz':
       case 'sketch-start-face':
       case 'sketch-resume-last':
+      case 'sketch-offset':
+      case 'sketch-tilt':
       case 'sketch-align-up':
       case 'sketch-exit':
         toolManager.executeAction(act);

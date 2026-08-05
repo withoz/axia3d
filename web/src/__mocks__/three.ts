@@ -18,6 +18,19 @@ export class Vector3 {
   x: number; y: number; z: number;
   isVector3 = true;
   constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+  /** The real one — v + 2q_w(q×v) + 2q×(q×v). Anything rotating a vector in a
+   *  test was previously left exactly where it started, which reads as a pass. */
+  applyQuaternion(q: { x: number; y: number; z: number; w: number }) {
+    const { x, y, z } = this;
+    const ix = q.w * x + q.y * z - q.z * y;
+    const iy = q.w * y + q.z * x - q.x * z;
+    const iz = q.w * z + q.x * y - q.y * x;
+    const iw = -q.x * x - q.y * y - q.z * z;
+    this.x = ix * q.w + iw * -q.x + iy * -q.z - iz * -q.y;
+    this.y = iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z;
+    this.z = iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x;
+    return this;
+  }
   set(x: number, y: number, z: number) { this.x = x; this.y = y; this.z = z; return this; }
   copy(v: Vector3) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
   clone() { return new Vector3(this.x, this.y, this.z); }
@@ -174,6 +187,12 @@ export class Quaternion {
   x = 0; y = 0; z = 0; w = 1;
   setFromUnitVectors(_a: any, _b: any) { return this; }
   copy(q: Quaternion) { this.x = q.x; this.y = q.y; this.z = q.z; this.w = q.w; return this; }
+  /** The real one — a rotation the tests can actually measure. */
+  setFromAxisAngle(axis: Vector3, angle: number) {
+    const h = angle / 2, s = Math.sin(h);
+    this.x = axis.x * s; this.y = axis.y * s; this.z = axis.z * s; this.w = Math.cos(h);
+    return this;
+  }
 }
 
 export class BufferAttribute {

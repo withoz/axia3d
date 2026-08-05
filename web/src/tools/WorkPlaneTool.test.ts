@@ -148,4 +148,88 @@ describe('the work plane can actually be reached', () => {
     expect(read('../packages/axia-action-catalog/src/catalog.ts'))
       .toContain("id: 'tool-workplane'");
   });
+
+  it('and so can moving the plane once it is set', () => {
+    const tm = read('src/tools/ToolManagerRefactored.ts');
+    const html = read('index.html');
+    const menu = read('src/ui/MenuBar.ts');
+    const cat = read('../packages/axia-action-catalog/src/catalog.ts');
+    for (const id of ['sketch-offset', 'sketch-tilt']) {
+      expect(tm, `${id} is not dispatched`).toContain(`'${id}'`);
+      expect(html, `${id} is in no menu`).toContain(`data-action="${id}"`);
+      expect(menu, `${id} does not reach the tool manager`).toContain(`case '${id}':`);
+      expect(cat, `${id} is not in the catalog`).toContain(`id: '${id}'`);
+    }
+  });
+});
+
+describe('moving a plane that is already set', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function managerWithSketch(normal: THREE.Vector3, up: THREE.Vector3, origin: THREE.Vector3): any {
+    // The method reads and writes `this._sketch` and calls two viewport hooks;
+    // a stand-in with those is enough to measure what it does to the plane.
+    const setVisual = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mgr: any = {
+      _sketch: {
+        label: 'x', origin: origin.clone(), normal: normal.clone(), up: up.clone(),
+        right: new THREE.Vector3().crossVectors(up, normal).normalize(),
+      },
+      viewport: { setSketchPlaneVisual: setVisual },
+    };
+    return { mgr, setVisual };
+  }
+
+  it('offset moves the origin along the normal and leaves the direction alone', async () => {
+    const { ToolManager } = await import('./ToolManagerRefactored');
+    const { mgr } = managerWithSketch(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
+    );
+    vi.spyOn(window, 'prompt').mockReturnValue('250');
+    ToolManager.prototype.adjustSketchPlane.call(mgr, 'offset');
+    expect([mgr._sketch.origin.x, mgr._sketch.origin.y, mgr._sketch.origin.z]).toEqual([0, 0, 250]);
+    expect(mgr._sketch.normal.z).toBeCloseTo(1, 9);
+  });
+
+  it('tilt turns the plane about an axis IN it, so the origin stays put', async () => {
+    const { ToolManager } = await import('./ToolManagerRefactored');
+    const origin = new THREE.Vector3(10, 20, 30);
+    const { mgr } = managerWithSketch(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), origin,
+    );
+    vi.spyOn(window, 'prompt').mockReturnValue('90');
+    ToolManager.prototype.adjustSketchPlane.call(mgr, 'tilt');
+    // Turned a quarter, so the normal has left +Z entirely.
+    expect(Math.abs(mgr._sketch.normal.z)).toBeLessThan(1e-9);
+    // The origin is a point ON the plane and the tilt pivots about it.
+    expect([mgr._sketch.origin.x, mgr._sketch.origin.y, mgr._sketch.origin.z])
+      .toEqual([10, 20, 30]);
+    // Still an orthonormal frame afterwards.
+    const { normal, up, right } = mgr._sketch;
+    expect(Math.abs(normal.dot(up))).toBeLessThan(1e-9);
+    expect(Math.abs(normal.dot(right))).toBeLessThan(1e-9);
+    expect(Math.abs(up.dot(right))).toBeLessThan(1e-9);
+  });
+
+  it('cancelling the prompt changes nothing', async () => {
+    const { ToolManager } = await import('./ToolManagerRefactored');
+    const { mgr, setVisual } = managerWithSketch(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
+    );
+    vi.spyOn(window, 'prompt').mockReturnValue(null);
+    ToolManager.prototype.adjustSketchPlane.call(mgr, 'offset');
+    expect(mgr._sketch.origin.z).toBe(0);
+    expect(setVisual).not.toHaveBeenCalled();
+  });
+
+  it('a non-number is refused rather than making the plane NaN', async () => {
+    const { ToolManager } = await import('./ToolManagerRefactored');
+    const { mgr } = managerWithSketch(
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
+    );
+    vi.spyOn(window, 'prompt').mockReturnValue('kkk');
+    ToolManager.prototype.adjustSketchPlane.call(mgr, 'offset');
+    expect(Number.isFinite(mgr._sketch.origin.z)).toBe(true);
+    expect(mgr._sketch.origin.z).toBe(0);
+  });
 });

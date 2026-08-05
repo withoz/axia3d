@@ -330,6 +330,24 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     adrs: ['ADR-219'],
   },
   {
+    id: 'sketch-offset',
+    label: '작업 평면 띄우기 (법선 방향)',
+    description: 'Move the active sketch plane along its own normal by a typed distance.',
+    tier: 1,
+    surfaces: ['menu'],
+    aliases: {},
+    status: 'ui-only',
+  },
+  {
+    id: 'sketch-tilt',
+    label: '작업 평면 기울이기',
+    description: 'Tip the active sketch plane about an axis lying in it, by a typed angle.',
+    tier: 1,
+    surfaces: ['menu'],
+    aliases: {},
+    status: 'ui-only',
+  },
+  {
     id: 'tool-workplane',
     label: '작업 평면 (3점)',
     description:
