@@ -44,6 +44,7 @@ pub mod repair;
 pub mod planar_walk;
 pub mod erase_resynth;
 pub mod import_mesh;
+pub mod circle_overlap;
 pub mod cleave;
 pub mod plane_snap;  // ADR-168 β-1 — Face plane drift snap (Q1=a tessellation chord substitute, layered on ADR-167)
 pub mod boundary_input;  // ADR-171 β-1 — Engine absorb_boundary_input SSOT (Phase 2, 4-step routine pure helper)

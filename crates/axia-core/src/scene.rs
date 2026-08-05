@@ -2471,6 +2471,57 @@ impl Scene {
         true
     }
 
+    /// Hand a face's owner — the Shape or XIA holding it — to the faces that
+    /// replaced it. A rebuilt face is the same thing to the user as the one it
+    /// stood in for, so it must not come out of the split unowned.
+    fn move_face_owner(&mut self, old: axia_geo::FaceId, new: &[axia_geo::FaceId]) {
+        let owner_xia = self.face_to_xia.remove(&old);
+        let owner_shape = self.face_to_shape.remove(&old);
+        if let Some(x) = owner_xia {
+            if let Some(xia) = self.xias.get_mut(&x) {
+                xia.face_ids.retain(|&f| f != old);
+                xia.face_ids.extend(new.iter().copied());
+            }
+            for &f in new {
+                self.face_to_xia.insert(f, x);
+            }
+        }
+        if let Some(sh) = owner_shape {
+            if let Some(shape) = self.shapes.get_mut(&sh) {
+                shape.face_ids.retain(|&f| f != old);
+                shape.face_ids.extend(new.iter().copied());
+            }
+            for &f in new {
+                self.face_to_shape.insert(f, sh);
+            }
+        }
+    }
+
+    /// Give the three regions of a circle overlap owners.
+    ///
+    /// Each crescent belongs to the circle it came out of. The lens belongs to
+    /// exactly one of them and the choice must not depend on which order the
+    /// overlap happened to be reported in, so it goes to the lower face id —
+    /// the same tie-break ADR-101 settles a lens between two shapes with.
+    fn adopt_circle_overlap_split(
+        &mut self,
+        fa: axia_geo::FaceId,
+        fb: axia_geo::FaceId,
+        split: &axia_geo::operations::circle_overlap::CircleOverlapSplit,
+    ) {
+        if let Some((old, new)) = split.parent {
+            self.move_face_owner(old, &[new]);
+        }
+        let lens_from_a = fa.raw() <= fb.raw();
+        let (a_gets, b_gets): (&[axia_geo::FaceId], &[axia_geo::FaceId]) = if lens_from_a {
+            (&[split.crescent_a, split.lens], &[split.crescent_b])
+        } else {
+            (&[split.crescent_a], &[split.crescent_b, split.lens])
+        };
+        self.move_face_owner(fa, a_gets);
+        self.move_face_owner(fb, b_gets);
+    }
+
     fn subtract_double_covered_faces(&mut self) -> usize {
         use axia_geo::operations::coplanar as cop;
         let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
@@ -2489,6 +2540,25 @@ impl Scene {
             // problem and must not be "repaired" by subtraction.
             let (na, nb) = (self.mesh.faces[fa].normal(), self.mesh.faces[fb].normal());
             if na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() < 0.999 {
+                continue;
+            }
+            // TWO CIRCLES THAT CROSS are three regions — a lens and two
+            // crescents — and whatever held them as holes ends up with one hole
+            // shaped like their union. Nothing further down can do this: a
+            // closed curve is a single anchor vertex, so the containment punch
+            // and the difference walk both have no polygon to work with, and
+            // the draw was refused outright. Taken first because the pair may
+            // be reported alongside cap↔circle pairs that would otherwise be
+            // considered before it.
+            if let Some(split) =
+                axia_geo::operations::circle_overlap::split_overlapping_circles(
+                    &mut self.mesh,
+                    fa,
+                    fb,
+                )
+            {
+                self.adopt_circle_overlap_split(fa, fb, &split);
+                repaired += 1;
                 continue;
             }
             // CONTAINMENT first, and by AREA, because that is the only ordering

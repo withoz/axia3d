@@ -830,7 +830,7 @@ fn subcurves_to_poly2d(lp: &[SubCurve]) -> Vec<Vec2> {
 
 /// **4-γ helper (D2)** — edge 에 Arc 곡선 부착. edge canonical(v_small→v_large) 에
 /// 각도 정렬. add_face 후 호출 (edge 재사용).
-fn set_arc_on_edge(
+pub(crate) fn set_arc_on_edge(
     mesh: &mut Mesh,
     v_from: VertId,
     v_to: VertId,
