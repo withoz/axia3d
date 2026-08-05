@@ -348,16 +348,6 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     status: 'ui-only',
   },
   {
-    id: 'tool-workplane',
-    label: '작업 평면 (3점)',
-    description:
-      'Define an arbitrary drawing plane from three clicked points — vertical, horizontal or oblique.',
-    tier: 1,
-    surfaces: ['menu'],
-    aliases: {},
-    status: 'ui-only',
-  },
-  {
     id: 'tool-text3d',
     label: '3D 텍스트',
     description: '3D text labels — extruded TextGeometry or canvas-sprite billboard (render-only Reference, mode-toggleable).',

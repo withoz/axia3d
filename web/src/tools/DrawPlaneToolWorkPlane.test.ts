@@ -1,68 +1,87 @@
 /**
- * THREE CLICKS GIVE ANY PLANE — including an oblique one.
+ * THE THREE-POINT WORK PLANE, AND WHY IT NEEDED A SKETCH.
  *
- * Measured 2026-08-05: the engine has always been free of direction. A rect and
- * a circle drawn on the normal (0.577, 0.577, 0.577) come out with zero
- * invariant violations, and `enterSketch` has always accepted any (origin,
- * normal, up, right) — both `getDrawPlane` and `get3DPoint` consult the sketch
- * before a face hit, so a plane set that way governs every tool.
+ * ⚠ This file exists because I built a duplicate. Planning "an arbitrary work
+ * plane", I grepped for `workPlane|WorkPlane|constructionPlane|customPlane`,
+ * found nothing, and wrote that the entry did not exist. It did:
+ * `DrawPlaneTool` (ADR-224, 2026-06-08) is a 3-point work plane, wired to the
+ * menu, the toolbar, the palette and the catalog under `tool-plane`. The tool
+ * listing I had already printed showed `DrawPlaneTool.ts` and I read past it.
+ * The name I searched for was mine, not the repo's.
  *
- * What did not exist was a way for the user to NAME one. The entries were XZ,
- * XY, YZ, a selected face and auto: three cardinal planes plus whatever face
- * happens to be there. An oblique plane in open space could not be reached at
- * all. Three points express any plane, so that is what this asks for.
+ * What measurement DID find, once the right tool was under it, is a real gap.
+ * The tool sets the ADR-166 plane LOCK, and a lock governs `getDrawPlane` —
+ * rect, circle, polygon — but NOT `get3DPoint`, which is where a line's ends
+ * come from. Measured 2026-08-05 in the running app: after three oblique
+ * clicks `getDrawPlane` reported normal (0.5774, 0.5774, 0.5774) and
+ * `get3DPoint` did not honour it at all. Rectangles landed on the plane and
+ * lines did not.
+ *
+ * So the tool now also enters a sketch, which BOTH resolvers consult and which
+ * does not auto-unlock on a face hit — that is what "I said to draw HERE" means.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { WorkPlaneTool } from './WorkPlaneTool';
+import { DrawPlaneTool } from './DrawPlaneTool';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeCtx(): any {
   return {
     enterSketch: vi.fn(),
+    lockPlane: vi.fn(),
     get3DPoint: vi.fn(),
     getSnappedPoint: vi.fn((_e: MouseEvent, raw: THREE.Vector3 | null) => raw),
     viewport: { scene: { add: vi.fn(), remove: vi.fn() } },
+    snap: { setReferencePoint: vi.fn(), clearReferencePoint: vi.fn() },
     syncMesh: vi.fn(),
   };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function clickAt(tool: WorkPlaneTool, ctx: any, p: THREE.Vector3) {
+function clickAt(tool: DrawPlaneTool, ctx: any, p: THREE.Vector3) {
   ctx.get3DPoint.mockReturnValue(p);
   tool.onMouseDown({ clientX: 0, clientY: 0 } as MouseEvent, p);
 }
 
-describe('WorkPlaneTool', () => {
+describe('the three-point work plane', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let ctx: any;
-  let tool: WorkPlaneTool;
+  let tool: DrawPlaneTool;
 
   beforeEach(() => {
     ctx = makeCtx();
-    tool = new WorkPlaneTool(ctx);
+    tool = new DrawPlaneTool(ctx);
     tool.onActivate();
   });
 
   it('three points on a slope give that slope, not a cardinal plane', () => {
-    // A plane whose normal is (1,1,1)/√3 — the case that had no entry at all.
     clickAt(tool, ctx, new THREE.Vector3(100, 0, 0));
     clickAt(tool, ctx, new THREE.Vector3(0, 100, 0));
-    expect(ctx.enterSketch).not.toHaveBeenCalled(); // not until the third
+    expect(ctx.lockPlane).not.toHaveBeenCalled(); // not until the third
     clickAt(tool, ctx, new THREE.Vector3(0, 0, 100));
 
-    expect(ctx.enterSketch).toHaveBeenCalledTimes(1);
-    const plane = ctx.enterSketch.mock.calls[0][0];
-    const n = plane.normal;
+    const lock = ctx.lockPlane.mock.calls[0][0];
     const s = 1 / Math.sqrt(3);
-    // Either winding is the same plane; compare the direction, not the sign.
-    expect(Math.abs(Math.abs(n.x) - s)).toBeLessThan(1e-9);
-    expect(Math.abs(Math.abs(n.y) - s)).toBeLessThan(1e-9);
-    expect(Math.abs(Math.abs(n.z) - s)).toBeLessThan(1e-9);
-    // The origin is the first point the user gave.
-    expect([plane.origin.x, plane.origin.y, plane.origin.z]).toEqual([100, 0, 0]);
+    // Either winding is the same plane; compare direction, not sign.
+    for (const c of ['x', 'y', 'z'] as const) {
+      expect(Math.abs(Math.abs(lock.normal[c]) - s)).toBeLessThan(1e-9);
+    }
+    expect([lock.origin.x, lock.origin.y, lock.origin.z]).toEqual([100, 0, 0]);
+  });
+
+  it('and a SKETCH too, or a line would still land on the ground', () => {
+    clickAt(tool, ctx, new THREE.Vector3(100, 0, 0));
+    clickAt(tool, ctx, new THREE.Vector3(0, 100, 0));
+    clickAt(tool, ctx, new THREE.Vector3(0, 0, 100));
+    expect(ctx.enterSketch).toHaveBeenCalledTimes(1);
+    const sketch = ctx.enterSketch.mock.calls[0][0];
+    const lock = ctx.lockPlane.mock.calls[0][0];
+    // The two must describe the SAME plane, or the tools would disagree.
+    expect(Math.abs(Math.abs(sketch.normal.dot(lock.normal)) - 1)).toBeLessThan(1e-9);
+    expect([sketch.origin.x, sketch.origin.y, sketch.origin.z])
+      .toEqual([lock.origin.x, lock.origin.y, lock.origin.z]);
   });
 
   it('the frame is orthonormal, so the plane is usable as a sketch', () => {
@@ -79,8 +98,8 @@ describe('WorkPlaneTool', () => {
   });
 
   it('a vertical plane stands upright — world up laid onto it', () => {
-    // The XZ wall: normal ±Y, so `up` must come out ±Z rather than an
-    // arbitrary in-plane direction.
+    // The XZ wall: normal ±Y, so `up` must be ±Z rather than whichever edge
+    // happened to be picked first, which is what it used to take.
     clickAt(tool, ctx, new THREE.Vector3(0, 0, 0));
     clickAt(tool, ctx, new THREE.Vector3(100, 0, 0));
     clickAt(tool, ctx, new THREE.Vector3(0, 0, 100));
@@ -98,67 +117,58 @@ describe('WorkPlaneTool', () => {
     expect(Math.abs(up.dot(normal))).toBeLessThan(1e-9);
   });
 
-  it('three points on a line are refused, and the third is asked for again', () => {
+  it('three points on a line set nothing', () => {
     clickAt(tool, ctx, new THREE.Vector3(0, 0, 0));
     clickAt(tool, ctx, new THREE.Vector3(100, 0, 0));
-    clickAt(tool, ctx, new THREE.Vector3(200, 0, 0)); // collinear
+    clickAt(tool, ctx, new THREE.Vector3(200, 0, 0));
+    expect(ctx.lockPlane).not.toHaveBeenCalled();
     expect(ctx.enterSketch).not.toHaveBeenCalled();
-    expect(tool.isBusy()).toBe(true); // still holding the first two
-
-    clickAt(tool, ctx, new THREE.Vector3(0, 50, 0)); // off the line
-    expect(ctx.enterSketch).toHaveBeenCalledTimes(1);
   });
 
-  it('the same point twice does not count', () => {
-    clickAt(tool, ctx, new THREE.Vector3(10, 20, 30));
-    clickAt(tool, ctx, new THREE.Vector3(10, 20, 30));
-    clickAt(tool, ctx, new THREE.Vector3(50, 0, 0));
-    expect(ctx.enterSketch).not.toHaveBeenCalled(); // only two distinct so far
-  });
-
-  it('Esc drops the points and Esc with none is not swallowed', () => {
-    expect(tool.onKeyDown({ key: 'Escape' } as KeyboardEvent)).toBe(false);
-    clickAt(tool, ctx, new THREE.Vector3(1, 2, 3));
-    expect(tool.isBusy()).toBe(true);
-    expect(tool.onKeyDown({ key: 'Escape' } as KeyboardEvent)).toBe(true);
-    expect(tool.isBusy()).toBe(false);
-  });
-
-  it('a context that cannot start a sketch says so instead of throwing', () => {
+  it('a context without enterSketch still sets the lock', () => {
+    // Backward compatible: the tool predates the sketch call, and an older host
+    // or a test double must not lose the plane it always had.
     ctx.enterSketch = undefined;
     clickAt(tool, ctx, new THREE.Vector3(0, 0, 0));
     clickAt(tool, ctx, new THREE.Vector3(100, 0, 0));
     expect(() => clickAt(tool, ctx, new THREE.Vector3(0, 100, 0))).not.toThrow();
-    expect(tool.isBusy()).toBe(false);
+    expect(ctx.lockPlane).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('the work plane can actually be reached', () => {
+describe('the work plane and its moves can be reached', () => {
   const read = (p: string) => readFileSync(join(__dirname, '..', '..', p), 'utf8');
 
-  it('registered, dispatched, in the menu and in the catalog', () => {
-    // A tool that works but appears nowhere is one only its author can use —
-    // this repo has shipped that twice (ADR-299, ADR-308).
-    expect(read('src/tools/ToolManagerRefactored.ts'))
-      .toContain("this.tools.set('workplane'");
-    expect(read('src/ui/MenuBar.ts'))
-      .toContain("case 'tool-workplane': setActiveTool('workplane');");
-    const html = read('index.html');
-    expect(html).toContain('data-action="tool-workplane"');
-    expect(read('../packages/axia-action-catalog/src/catalog.ts'))
-      .toContain("id: 'tool-workplane'");
+  it('the 3-point plane is registered, dispatched, in the menu and the catalog', () => {
+    expect(read('src/tools/ToolManagerRefactored.ts')).toContain("this.tools.set('plane'");
+    expect(read('src/ui/MenuBar.ts')).toContain("case 'tool-plane'");
+    expect(read('index.html')).toContain('data-action="tool-plane"');
+    expect(read('src/commands/AxiaCommands.ts')).toContain("'tool-plane'");
+    expect(read('../packages/axia-action-catalog/src/catalog.ts')).toContain("id: 'tool-plane'");
   });
 
-  it('and so can moving the plane once it is set', () => {
+  it('and there is only ONE of it', () => {
+    // The duplicate this file is named after. A second 3-point plane tool put
+    // two near-identical entries in the palette, which is how a user finds out
+    // the codebase disagrees with itself.
+    expect(read('../packages/axia-action-catalog/src/catalog.ts')).not.toContain('tool-workplane');
+    expect(read('src/commands/AxiaCommands.ts')).not.toContain('tool-workplane');
+    expect(read('index.html')).not.toContain('tool-workplane');
+    expect(read('src/tools/ToolManagerRefactored.ts')).not.toContain('WorkPlaneTool');
+  });
+
+  it('moving the plane once it is set is reachable too', () => {
     const tm = read('src/tools/ToolManagerRefactored.ts');
     const html = read('index.html');
     const menu = read('src/ui/MenuBar.ts');
     const cat = read('../packages/axia-action-catalog/src/catalog.ts');
+    const cmds = read('src/commands/AxiaCommands.ts');
     for (const id of ['sketch-offset', 'sketch-tilt']) {
       expect(tm, `${id} is not dispatched`).toContain(`'${id}'`);
       expect(html, `${id} is in no menu`).toContain(`data-action="${id}"`);
       expect(menu, `${id} does not reach the tool manager`).toContain(`case '${id}':`);
       expect(cat, `${id} is not in the catalog`).toContain(`id: '${id}'`);
+      expect(cmds, `${id} cannot be searched for`).toContain(`'${id}'`);
     }
   });
 });
@@ -166,7 +176,7 @@ describe('the work plane can actually be reached', () => {
 describe('moving a plane that is already set', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function managerWithSketch(normal: THREE.Vector3, up: THREE.Vector3, origin: THREE.Vector3): any {
-    // The method reads and writes `this._sketch` and calls two viewport hooks;
+    // The method reads and writes `this._sketch` and calls one viewport hook;
     // a stand-in with those is enough to measure what it does to the plane.
     const setVisual = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -204,7 +214,6 @@ describe('moving a plane that is already set', () => {
     // The origin is a point ON the plane and the tilt pivots about it.
     expect([mgr._sketch.origin.x, mgr._sketch.origin.y, mgr._sketch.origin.z])
       .toEqual([10, 20, 30]);
-    // Still an orthonormal frame afterwards.
     const { normal, up, right } = mgr._sketch;
     expect(Math.abs(normal.dot(up))).toBeLessThan(1e-9);
     expect(Math.abs(normal.dot(right))).toBeLessThan(1e-9);
