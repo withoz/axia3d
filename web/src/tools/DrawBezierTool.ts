@@ -25,6 +25,7 @@ import { t } from '../i18n';
 const BEZIER_CLOSURE_EPSILON_MM = 1e-3;
 
 export class DrawBezierTool implements ITool {
+  readonly handlesAltClick = true; // Alt = draw flat on the tangent plane
   readonly name = 'bezier';
 
   private ctx: ToolContext;
@@ -65,7 +66,13 @@ export class DrawBezierTool implements ITool {
       const ck = ({ 2: 'cylinder', 3: 'sphere', 4: 'cone', 5: 'torus' } as const)[
         this.plane.surfaceKind as 2 | 3 | 4 | 5
       ];
-      if (ck && typeof this.ctx.viewport?.pick === 'function') {
+// Alt draws FLAT on the tangent plane instead of following the
+      // surface. Skipping the capture is all it takes — every path below
+      // already handles a host that was never captured, which is the
+      // non-curved case. Alt means "not the default" here and in
+      // DrawLineTool alike; there the default is the plane and Alt follows
+      // the solid, so the two read opposite and are the same rule.
+      if (ck && !e.altKey && typeof this.ctx.viewport?.pick === 'function') {
         const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
         if (hit && hit.faceIndex != null) {
           const fid = this.ctx.getFaceId(hit.faceIndex);

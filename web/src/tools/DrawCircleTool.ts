@@ -24,6 +24,7 @@ import { humanizeEngineError } from '../bridge/humanizeEngineError';
 const MAX_DRAW_DISTANCE = 50000;
 
 export class DrawCircleTool implements ITool {
+  readonly handlesAltClick = true; // Alt = draw flat on the tangent plane
   readonly name = 'circle';
 
   private ctx: ToolContext;
@@ -70,9 +71,13 @@ export class DrawCircleTool implements ITool {
       // ADR-202 β-3c — first click on a Sphere face → draw the circle ON the
       // sphere (the engine projects center/radius onto the sphere + splits the
       // face into cap + annulus). Capture the host face + the surface hit point.
+      // Alt draws FLAT on the tangent plane instead of on the surface — the
+      // four branches below are what put a circle ON a sphere / cylinder /
+      // cone / torus, so declining to enter them IS the flat draw. Same rule
+      // as DrawLineTool's Alt: it means "not the default".
       this.sphereMode = false;
       this.sphereHostFace = -1;
-      if (this.plane.surfaceKind === 3 && this.plane.origin
+      if (this.plane.surfaceKind === 3 && !e.altKey && this.plane.origin
           && typeof this.ctx.bridge.drawCircleOnSphere === 'function') {
         const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
         if (hit && hit.faceIndex != null) {
@@ -90,7 +95,7 @@ export class DrawCircleTool implements ITool {
       // branch above.
       this.cylinderMode = false;
       this.cylinderHostFace = -1;
-      if (this.plane.surfaceKind === 2 && this.plane.origin
+      if (this.plane.surfaceKind === 2 && !e.altKey && this.plane.origin
           && typeof this.ctx.bridge.drawCircleOnCylinder === 'function') {
         const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
         if (hit && hit.faceIndex != null) {
@@ -106,7 +111,7 @@ export class DrawCircleTool implements ITool {
       // draw the geodesic porthole ON the wall. Mirror of the cylinder branch.
       this.coneMode = false;
       this.coneHostFace = -1;
-      if (this.plane.surfaceKind === 4 && this.plane.origin
+      if (this.plane.surfaceKind === 4 && !e.altKey && this.plane.origin
           && typeof this.ctx.bridge.drawCircleOnCone === 'function') {
         const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
         if (hit && hit.faceIndex != null) {
@@ -122,7 +127,7 @@ export class DrawCircleTool implements ITool {
       // porthole ON the wall. Mirror of the cone branch.
       this.torusMode = false;
       this.torusHostFace = -1;
-      if (this.plane.surfaceKind === 5 && this.plane.origin
+      if (this.plane.surfaceKind === 5 && !e.altKey && this.plane.origin
           && typeof this.ctx.bridge.drawCircleOnTorus === 'function') {
         const hit = this.ctx.viewport.pick(e.clientX, e.clientY);
         if (hit && hit.faceIndex != null) {
