@@ -2471,6 +2471,57 @@ impl Scene {
         true
     }
 
+    /// Hand a face's owner — the Shape or XIA holding it — to the faces that
+    /// replaced it. A rebuilt face is the same thing to the user as the one it
+    /// stood in for, so it must not come out of the split unowned.
+    fn move_face_owner(&mut self, old: axia_geo::FaceId, new: &[axia_geo::FaceId]) {
+        let owner_xia = self.face_to_xia.remove(&old);
+        let owner_shape = self.face_to_shape.remove(&old);
+        if let Some(x) = owner_xia {
+            if let Some(xia) = self.xias.get_mut(&x) {
+                xia.face_ids.retain(|&f| f != old);
+                xia.face_ids.extend(new.iter().copied());
+            }
+            for &f in new {
+                self.face_to_xia.insert(f, x);
+            }
+        }
+        if let Some(sh) = owner_shape {
+            if let Some(shape) = self.shapes.get_mut(&sh) {
+                shape.face_ids.retain(|&f| f != old);
+                shape.face_ids.extend(new.iter().copied());
+            }
+            for &f in new {
+                self.face_to_shape.insert(f, sh);
+            }
+        }
+    }
+
+    /// Give the three regions of a circle overlap owners.
+    ///
+    /// Each crescent belongs to the circle it came out of. The lens belongs to
+    /// exactly one of them and the choice must not depend on which order the
+    /// overlap happened to be reported in, so it goes to the lower face id —
+    /// the same tie-break ADR-101 settles a lens between two shapes with.
+    fn adopt_circle_overlap_split(
+        &mut self,
+        fa: axia_geo::FaceId,
+        fb: axia_geo::FaceId,
+        split: &axia_geo::operations::circle_overlap::CircleOverlapSplit,
+    ) {
+        if let Some((old, new)) = split.parent {
+            self.move_face_owner(old, &[new]);
+        }
+        let lens_from_a = fa.raw() <= fb.raw();
+        let (a_gets, b_gets): (&[axia_geo::FaceId], &[axia_geo::FaceId]) = if lens_from_a {
+            (&[split.crescent_a, split.lens], &[split.crescent_b])
+        } else {
+            (&[split.crescent_a], &[split.crescent_b, split.lens])
+        };
+        self.move_face_owner(fa, a_gets);
+        self.move_face_owner(fb, b_gets);
+    }
+
     fn subtract_double_covered_faces(&mut self) -> usize {
         use axia_geo::operations::coplanar as cop;
         let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
@@ -2489,6 +2540,25 @@ impl Scene {
             // problem and must not be "repaired" by subtraction.
             let (na, nb) = (self.mesh.faces[fa].normal(), self.mesh.faces[fb].normal());
             if na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() < 0.999 {
+                continue;
+            }
+            // TWO CIRCLES THAT CROSS are three regions — a lens and two
+            // crescents — and whatever held them as holes ends up with one hole
+            // shaped like their union. Nothing further down can do this: a
+            // closed curve is a single anchor vertex, so the containment punch
+            // and the difference walk both have no polygon to work with, and
+            // the draw was refused outright. Taken first because the pair may
+            // be reported alongside cap↔circle pairs that would otherwise be
+            // considered before it.
+            if let Some(split) =
+                axia_geo::operations::circle_overlap::split_overlapping_circles(
+                    &mut self.mesh,
+                    fa,
+                    fb,
+                )
+            {
+                self.adopt_circle_overlap_split(fa, fb, &split);
+                repaired += 1;
                 continue;
             }
             // CONTAINMENT first, and by AREA, because that is the only ordering
@@ -4887,15 +4957,96 @@ impl Scene {
     /// (`restore_scene_snapshot` + `discard_last_undo`) — a rejected op leaves
     /// no dangling undo/redo entry. detection metric = the SAME measurement the
     /// orange overlay uses, so reject fires exactly when the orange would.
-    /// How many face pairs overlap where at least one of them belongs to a
-    /// solid. Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
-    fn solid_overlap_count(&self) -> usize {
+    /// Face pairs that overlap where at least one of them belongs to a solid.
+    /// Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
+    fn solid_overlap_pairs(&self) -> Vec<(FaceId, FaceId)> {
         self.mesh
             .detect_self_intersections()
             .intersecting_pairs
-            .iter()
+            .into_iter()
             .filter(|(a, b)| !self.mesh.is_sheet_face(*a) || !self.mesh.is_sheet_face(*b))
-            .count()
+            .collect()
+    }
+
+    fn solid_overlap_count(&self) -> usize {
+        self.solid_overlap_pairs().len()
+    }
+
+    /// What to tell the user when an overlap on a solid could not be divided.
+    ///
+    /// The old line — "면이 겹치지 않게 그려주세요" — is now advice that is
+    /// mostly wrong: overlapping shapes DO divide each other in nearly every
+    /// case. Measured 2026-08-05, on a box top, what is left:
+    ///
+    /// ```text
+    ///   circle then rect     ok        two circles crossing   ok
+    ///   rect then circle     REFUSED   three circles          ok
+    ///   anything with an ellipse in it REFUSED, in either order
+    /// ```
+    ///
+    /// So there is one real workaround and it applies to circles only — draw
+    /// the round one first, and the angular one cuts it. Saying that beats
+    /// telling someone not to overlap shapes at all, and for a freeform curve,
+    /// where no order works, it says so rather than sending them round in
+    /// circles trying.
+    fn describe_overlap(&self, pairs: &[(FaceId, FaceId)]) -> String {
+        #[derive(PartialEq, Clone, Copy)]
+        enum Boundary {
+            Straight,
+            /// A circle or an arc — the shapes the divide understands.
+            Circular,
+            /// An ellipse, a Bezier, a spline.
+            Freeform,
+        }
+        let boundary_of = |f: FaceId| -> Boundary {
+            let Some(face) = self.mesh.faces.get(f) else { return Boundary::Straight };
+            let Ok(hes) = self.mesh.collect_loop_hes(face.outer().start) else {
+                return Boundary::Straight;
+            };
+            let mut kind = Boundary::Straight;
+            for &he in &hes {
+                let curve = self
+                    .mesh
+                    .hes
+                    .get(he)
+                    .and_then(|h| self.mesh.edges.get(h.edge()))
+                    .and_then(|e| e.curve());
+                match curve {
+                    None => {}
+                    Some(axia_geo::curves::AnalyticCurve::Circle { .. })
+                    | Some(axia_geo::curves::AnalyticCurve::Arc { .. }) => {
+                        if kind == Boundary::Straight {
+                            kind = Boundary::Circular;
+                        }
+                    }
+                    Some(_) => return Boundary::Freeform,
+                }
+            }
+            kind
+        };
+
+        let mut freeform = false;
+        let mut round_meets_straight = false;
+        for &(a, b) in pairs {
+            let (ka, kb) = (boundary_of(a), boundary_of(b));
+            if ka == Boundary::Freeform || kb == Boundary::Freeform {
+                freeform = true;
+            } else if (ka == Boundary::Circular) != (kb == Boundary::Circular) {
+                round_meets_straight = true;
+            }
+        }
+        if freeform {
+            "타원·자유곡선이 다른 도형과 겹치면 아직 나눌 수 없습니다 — \
+             겹치지 않게 그리거나, 원으로 그려주세요"
+                .to_string()
+        } else if round_meets_straight {
+            "원과 각진 도형이 겹칩니다 — 원을 먼저 그리고 각진 도형을 나중에 \
+             그리면 나뉩니다"
+                .to_string()
+        } else {
+            "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요"
+                .to_string()
+        }
     }
 
     fn guard_imprint<F>(&mut self, draw: F) -> CommandResult
@@ -4951,18 +5102,19 @@ impl Scene {
         // for a state the engine can fix.
         self.subtract_double_covered_faces();
         let nm_after = self.mesh.collect_non_manifold_edges().len();
-        let si_after = self.solid_overlap_count();
+        let after_pairs = self.solid_overlap_pairs();
+        let si_after = after_pairs.len();
         let reject = |scene: &mut Self, msg: &str| -> CommandResult {
             scene.restore_scene_snapshot(&before_snapshot);
             scene.transactions.discard_last_undo();
             CommandResult::Error(msg.to_string())
         };
         if si_after > si_before {
-            // Two faces now occupy the same space. Always damage.
-            return reject(
-                self,
-                "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요",
-            );
+            // Two faces now occupy the same space. Always damage — but say
+            // WHICH kind of overlap it was, because for most of them there is
+            // something the user can actually do.
+            let why = self.describe_overlap(&after_pairs);
+            return reject(self, &why);
         }
         if nm_after > nm_before {
             // No new overlap, so this is a shared edge. Accept it only when it
