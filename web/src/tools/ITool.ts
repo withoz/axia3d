@@ -85,6 +85,26 @@ export interface ToolContext {
   getSketchInfo: () => { origin: THREE.Vector3; normal: THREE.Vector3 } | null;
 
   /**
+   * Start a sketch on an ARBITRARY plane.
+   *
+   * `enterSketch` has always accepted any (origin, normal, up, right), and
+   * `getDrawPlane` and `get3DPoint` both consult the sketch before a face hit —
+   * so a plane set this way governs every tool. What was missing was a way for
+   * the user to name one: the entries were XZ, XY, YZ, a selected face and
+   * auto, which is three cardinal planes and whatever face happens to exist.
+   * An oblique plane in open space could not be reached at all.
+   *
+   * Optional so a tool degrades where the context is a test double.
+   */
+  enterSketch?: (plane: {
+    label: string;
+    origin: THREE.Vector3;
+    normal: THREE.Vector3;
+    up: THREE.Vector3;
+    right: THREE.Vector3;
+  }) => void;
+
+  /**
    * ADR-164 β-2 — Sticky Last Drawn Plane writer.
    *
    * Called by Draw tools (Rect/Circle/Line/Arc/Bezier/Freehand) *after*

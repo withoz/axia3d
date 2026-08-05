@@ -248,6 +248,18 @@ export const EN: Record<string, string> = {
   '✏️ 스케치 시작 · XY 바닥 (평면도)': '✏️ Start sketch · XY ground (plan)',
   '✏️ 스케치 시작 · YZ 측면': '✏️ Start sketch · YZ side',
   '✏️ 스케치 시작 · 선택 면': '✏️ Start sketch · selected face',
+  '📐 작업 평면 · 세 점 (사선 가능)': '📐 Work plane · three points (oblique too)',
+  '📐 작업 평면 · 세 점': '📐 Work plane · three points',
+  '작업 평면 (3점)': 'Work plane (3 points)',
+  '작업 평면: 세 점을 클릭하세요 (1/3)': 'Work plane: click three points (1/3)',
+  '작업 평면: 세 점을 클릭하세요 ({n}/3)': 'Work plane: click three points ({n}/3)',
+  '같은 점입니다 — 다른 위치를 클릭하세요': 'That is the same point — click somewhere else',
+  '세 점이 한 직선 위에 있습니다 — 다른 점을 클릭하세요':
+    'The three points are on one line — click a different point',
+  '✏️ 작업 평면 설정됨 — 모든 드로잉이 이 평면에 고정됩니다.':
+    '✏️ Work plane set — every draw is locked to it.',
+  '작업 평면 취소': 'Work plane cancelled',
+  '작업 평면을 시작할 수 없습니다': 'Cannot start a work plane here',
   '✨ 스케치 시작 · 자동 평면 감지': '✨ Start sketch · auto-detect plane',
   '↩ 스케치 재개 · 마지막 평면': '↩ Resume sketch · last plane',
   '↻ 스케치 up 카메라 정렬': '↻ Align camera to sketch up',

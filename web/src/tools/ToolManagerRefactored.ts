@@ -51,6 +51,7 @@ import { AngularDimensionTool } from './AngularDimensionTool';
 import { RadialDimensionTool } from './RadialDimensionTool';
 import { ReferenceDimensionTool } from './ReferenceDimensionTool';
 import { DrawPointTool } from './DrawPointTool';
+import { WorkPlaneTool } from './WorkPlaneTool';
 import { DrawText3DTool } from './DrawText3DTool';
 import { DrawNurbsTool } from './DrawNurbsTool';
 import { NurbsEditTool } from './NurbsEditTool';
@@ -382,6 +383,7 @@ export class ToolManager {
         const info = this.getSketchInfo();
         return info ? { origin: info.origin, normal: info.normal } : null;
       },
+      enterSketch: (plane) => this.enterSketch(plane),
       setLastDrawnPlane: (plane) => {
         // ADR-164 β-2 — Draw 도구 face 합성 후 sticky 저장.
         // β-1 API `setLastDrawnPlane` delegate.
@@ -438,6 +440,9 @@ export class ToolManager {
     this.tools.set('radial-dimension', new RadialDimensionTool(this.toolContext));
     this.tools.set('reference-dimension', new ReferenceDimensionTool(this.toolContext));
     this.tools.set('point', new DrawPointTool(this.toolContext));
+    // Three clicks give any plane — the only entries before this were three
+    // cardinal ones and whatever face happened to exist.
+    this.tools.set('workplane', new WorkPlaneTool(this.toolContext));
     // ADR-228 — 3D text (render-only TextGeometry/sprite, Text3DSettings mode)
     this.tools.set('text3d', new DrawText3DTool(this.toolContext));
     this.tools.set('hole', new DrawHoleTool(this.toolContext));
