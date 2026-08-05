@@ -132,39 +132,27 @@ pub fn tessellate(
 ) -> Result<Vec<DVec3>> {
     validate(control_pts, weights, knots, degree)?;
     let (t_start, t_end) = (knots[degree], knots[control_pts.len()]);
+    let tol = chord_tol.max(1e-9);
 
-    // Initial sample density proportional to control-polygon length.
-    let mut polygon_len: f64 = 0.0;
-    for i in 0..control_pts.len() - 1 {
-        polygon_len += (control_pts[i + 1] - control_pts[i]).length();
-    }
-    let init_n = ((polygon_len / chord_tol.max(1e-12)).ceil() as usize)
-        .clamp(degree * 2 + 1, 4096);
-    let mut params: Vec<f64> = (0..=init_n)
-        .map(|i| t_start + (t_end - t_start) * (i as f64) / (init_n as f64))
-        .collect();
-
-    // Adaptive midpoint refinement (one pass — Phase C MVP).
-    let mut refined = Vec::with_capacity(params.len() * 2);
-    refined.push(params[0]);
-    for i in 0..params.len() - 1 {
-        let t0 = params[i];
-        let t1 = params[i + 1];
-        let tm = 0.5 * (t0 + t1);
-        let p0 = evaluate(control_pts, weights, knots, degree, t0)?;
-        let p1 = evaluate(control_pts, weights, knots, degree, t1)?;
-        let pm_curve = evaluate(control_pts, weights, knots, degree, tm)?;
-        let pm_chord = (p0 + p1) * 0.5;
-        if (pm_curve - pm_chord).length() > chord_tol {
-            refined.push(tm);
+    // Start at the knots, then halve a span only while its chord still misses
+    // the curve — see `bspline::tessellate` for what this replaced and why.
+    // An ellipse is a rational quadratic with four spans, and this is the path
+    // it takes.
+    let mut params: Vec<f64> = vec![t_start];
+    for &k in &knots[degree..=control_pts.len()] {
+        if k > params[params.len() - 1] + 1e-12 && k < t_end - 1e-12 {
+            params.push(k);
         }
-        refined.push(t1);
     }
-    params = refined;
+    params.push(t_end);
 
-    let mut pts = Vec::with_capacity(params.len());
-    for &t in &params {
-        pts.push(evaluate(control_pts, weights, knots, degree, t)?);
+    let eval = |t: f64| evaluate(control_pts, weights, knots, degree, t);
+    let mut pts: Vec<DVec3> = vec![eval(t_start)?];
+    for i in 0..params.len() - 1 {
+        let (t0, t1) = (params[i], params[i + 1]);
+        let p0 = *pts.last().expect("seeded above");
+        let p1 = eval(t1)?;
+        crate::curves::refine_chord(&eval, t0, p0, t1, p1, tol, 0, &mut pts)?;
     }
     Ok(pts)
 }

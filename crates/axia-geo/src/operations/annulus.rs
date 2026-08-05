@@ -666,10 +666,15 @@ pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize
         if processed.contains(&inner) {
             continue;
         }
-        // Only a circle face can become a smooth (self-loop) hole here.
-        if extract_circle(mesh, inner).is_none() {
-            continue;
-        }
+        // Any closed curve can become a smooth (self-loop) hole — a circle, and
+        // since 2026-08-05 an ellipse or any other freeform too. Measured: an
+        // ellipse drawn on a solid's face was REFUSED outright, even a small one
+        // well inside it, while the same draw on a sheet was fine. The freeform
+        // containment that handles it there (ADR-186 A2) lives inside the
+        // coplanar re-derive, and that re-derive is skipped wherever the region
+        // touches a solid — so the ellipse simply lay on the cap.
+        let Some(_) = extract_closed_curve(mesh, inner) else { continue };
+        let inner_is_circle = extract_circle(mesh, inner).is_some();
         // A circle that is ALREADY a disk whose rim is a container's hole
         // (ring+disk formed on a prior draw / preserved by the scoped re-derive)
         // stays where it is — re-assigning it duplicates the hole → non-manifold.
@@ -697,7 +702,12 @@ pub fn assign_circle_holes_innermost(mesh: &mut Mesh, faces: &[FaceId]) -> usize
                 continue;
             }
             let try_split = |m: &mut Mesh| {
-                if extract_circle(m, outer).is_some() {
+                if !inner_is_circle {
+                    // Any other closed curve — the same reparent, with the
+                    // containment decided from a point on the curve rather than
+                    // from a centre and a radius.
+                    split_face_by_inner_closed_curve_generic(m, outer, inner).is_ok()
+                } else if extract_circle(m, outer).is_some() {
                     // both circles — split_face_by_inner_circle validates containment.
                     split_face_by_inner_circle(m, outer, inner).is_ok()
                 } else {

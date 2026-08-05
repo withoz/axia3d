@@ -279,6 +279,52 @@ pub(crate) fn basis_v(normal: DVec3, basis_u: DVec3) -> DVec3 {
     normal.cross(basis_u).normalize_or_zero()
 }
 
+/// Below this many halvings a span is subdivided whatever the flatness test
+/// says. The test asks whether the curve's midpoint sits on the chord, and on a
+/// span containing an inflection it can sit there while the two halves bow away
+/// on either side. Four segments per knot span is cheap and puts the test past
+/// that.
+const MIN_LEVELS: u32 = 2;
+
+/// A ceiling, not a target — the chord error falls off as the square of the
+/// span, so a smooth curve stops long before this. It is here so a cusp or a
+/// degenerate parameterisation cannot recurse without end.
+const MAX_LEVELS: u32 = 14;
+
+/// Halve `[t0, t1]` until its chord follows the curve within `tol`, appending
+/// each point reached — including `p1` — to `out`. `p0` is assumed already
+/// there.
+///
+/// Shared by the parametric forms (B-spline, NURBS) so there is one answer to
+/// "how finely is a curve sampled", the way `bezier` has always done it by
+/// subdividing its own control net.
+pub(crate) fn refine_chord<F>(
+    eval: &F,
+    t0: f64,
+    p0: DVec3,
+    t1: f64,
+    p1: DVec3,
+    tol: f64,
+    level: u32,
+    out: &mut Vec<DVec3>,
+) -> anyhow::Result<()>
+where
+    F: Fn(f64) -> anyhow::Result<DVec3>,
+{
+    let tm = 0.5 * (t0 + t1);
+    if level >= MAX_LEVELS || tm <= t0 || tm >= t1 {
+        out.push(p1);
+        return Ok(());
+    }
+    let pm = eval(tm)?;
+    if level >= MIN_LEVELS && (pm - (p0 + p1) * 0.5).length() <= tol {
+        out.push(p1);
+        return Ok(());
+    }
+    refine_chord(eval, t0, p0, tm, pm, tol, level + 1, out)?;
+    refine_chord(eval, tm, pm, t1, p1, tol, level + 1, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

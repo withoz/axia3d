@@ -116,7 +116,12 @@ fn every_region_has_an_owner_and_a_surface_to_push_from() {
     let mut s = box_scene();
     circle(&mut s, -R / 2.0);
     circle(&mut s, R / 2.0);
-    for f in on_top(&s) {
+    let top = on_top(&s);
+    // Without this the test also passes on the REFUSED state, where the top is
+    // just the cap and one whole disk and both are owned already — measured,
+    // when the repair was unwired to check this test could fail at all.
+    assert_eq!(top.len(), 4, "the split has to have happened for this to mean anything");
+    for f in top {
         assert!(
             s.face_to_shape.contains_key(&f) || s.get_xia_for_face(f).is_some(),
             "face {f:?} belongs to nobody"
@@ -160,6 +165,42 @@ fn circles_drawn_apart_are_left_alone() {
         );
     }
     assert!(s.mesh.verify_outward_normals().is_closed_solid);
+}
+
+/// An ellipse could not be drawn on a solid's face AT ALL — measured, even a
+/// small one well inside the top, while the same draw on a sheet was fine.
+///
+/// The freeform containment that handles it on a sheet (ADR-186 A2) lives inside
+/// the coplanar re-derive, and that re-derive is skipped wherever the region
+/// touches a solid. So the ellipse simply lay on the cap and the guard rolled
+/// the draw back. Circles had their own path out of this; nothing else did.
+#[test]
+fn an_ellipse_can_be_drawn_on_a_solid_face() {
+    for (rx, ry) in [(40.0, 25.0), (20.0, 10.0)] {
+        let mut s = box_scene();
+        let r = s.execute(Command::DrawEllipseAsCurve {
+            center: DVec3::new(0.0, 0.0, 100.0),
+            normal: DVec3::Z,
+            ref_dir: DVec3::X,
+            radius_x: rx,
+            radius_y: ry,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "ellipse {rx}x{ry}: {r:?}");
+        let top = on_top(&s);
+        assert_eq!(top.len(), 2, "the cap with a hole, and the ellipse filling it");
+        let cap = *top
+            .iter()
+            .find(|&&f| !s.mesh.faces[f].inners().is_empty())
+            .expect("the cap holds the hole");
+        assert_eq!(s.mesh.faces[cap].inners().len(), 1);
+        assert_eq!(
+            s.mesh.collect_loop_verts(s.mesh.faces[cap].inners()[0].start).unwrap().len(),
+            1,
+            "and it is still one closed curve, not flattened into a polygon"
+        );
+        assert!(s.mesh.verify_face_invariants().violations.is_empty());
+        assert!(s.mesh.verify_outward_normals().is_closed_solid);
+    }
 }
 
 /// And a circle drawn right around a smaller one still nests, rather than being

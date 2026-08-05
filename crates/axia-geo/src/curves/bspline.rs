@@ -68,10 +68,19 @@ pub fn derivative(
 
 /// Tessellate the curve into a polyline with chord error ≤ `chord_tol`.
 ///
-/// Strategy: sample uniformly in the parameter range with a count derived
-/// from the control polygon length and degree. Then run an adaptive midpoint
-/// refinement pass — if any chord midpoint is more than `chord_tol` from
-/// the analytic curve at midpoint t, insert that t.
+/// Strategy: start at the knots — a span boundary is where the curve is free
+/// to kink, so a sample belongs there — then halve a span only while its chord
+/// still misses the curve by more than `chord_tol`. This is what `bezier` in
+/// this same module has always done.
+///
+/// It used to start from `control polygon length ÷ chord_tol` instead, which
+/// asks for a point every `chord_tol` of ARC rather than one per unit of
+/// curvature. Measured 2026-08-05: an ellipse 40×25 at the render tolerance
+/// (0.02 mm) wanted thirteen thousand points and got the 4096 cap, while a
+/// CIRCLE of the same size needs 100 — and loosening the tolerance five times
+/// over only took it to 2600, because the count was never about the tolerance.
+/// Drawing one ellipse on a box took 36 seconds, 12 of them in the overlap scan
+/// alone, earcutting a four-thousand-point hole.
 pub fn tessellate(
     control_pts: &[DVec3],
     knots: &[f64],
@@ -80,43 +89,23 @@ pub fn tessellate(
 ) -> Result<Vec<DVec3>> {
     validate(control_pts, knots, degree)?;
     let (t_start, t_end) = parameter_range_inner(knots, degree, control_pts.len());
+    let tol = chord_tol.max(1e-9);
 
-    // Initial uniform sample — proportional to control polygon length.
-    let mut polygon_len: f64 = 0.0;
-    for i in 0..control_pts.len() - 1 {
-        polygon_len += (control_pts[i + 1] - control_pts[i]).length();
-    }
-    let init_n = ((polygon_len / chord_tol.max(1e-12)).ceil() as usize)
-        .clamp(degree * 2 + 1, 4096);
-
-    let mut params: Vec<f64> = (0..=init_n)
-        .map(|i| t_start + (t_end - t_start) * (i as f64) / (init_n as f64))
-        .collect();
-
-    // Adaptive midpoint refinement (single pass for Phase B; Phase C may
-    // recurse with full chord-error analysis).
-    let mut refined: Vec<f64> = Vec::with_capacity(params.len() * 2);
-    refined.push(params[0]);
-    for i in 0..params.len() - 1 {
-        let t0 = params[i];
-        let t1 = params[i + 1];
-        let tm = 0.5 * (t0 + t1);
-        let p0 = evaluate(control_pts, knots, degree, t0)?;
-        let p1 = evaluate(control_pts, knots, degree, t1)?;
-        let pm_curve = evaluate(control_pts, knots, degree, tm)?;
-        let pm_chord = (p0 + p1) * 0.5;
-        let dev = (pm_curve - pm_chord).length();
-        if dev > chord_tol {
-            refined.push(tm);
+    let mut params: Vec<f64> = vec![t_start];
+    for &k in &knots[degree..=control_pts.len()] {
+        if k > params[params.len() - 1] + 1e-12 && k < t_end - 1e-12 {
+            params.push(k);
         }
-        refined.push(t1);
     }
-    params = refined;
+    params.push(t_end);
 
-    // Final eval to produce points.
-    let mut pts: Vec<DVec3> = Vec::with_capacity(params.len());
-    for &t in &params {
-        pts.push(evaluate(control_pts, knots, degree, t)?);
+    let eval = |t: f64| evaluate(control_pts, knots, degree, t);
+    let mut pts: Vec<DVec3> = vec![eval(t_start)?];
+    for i in 0..params.len() - 1 {
+        let (t0, t1) = (params[i], params[i + 1]);
+        let p0 = *pts.last().expect("seeded above");
+        let p1 = eval(t1)?;
+        super::refine_chord(&eval, t0, p0, t1, p1, tol, 0, &mut pts)?;
     }
     Ok(pts)
 }
