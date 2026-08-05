@@ -3308,6 +3308,33 @@ impl AxiaEngine {
         vec![normal.x, normal.y, normal.z]
     }
 
+    /// Where a world point lands on a face's curved surface — the nearest point
+    /// on it, empty if the face has no curved surface or the projection is
+    /// undefined there.
+    ///
+    /// A tool that draws on a curved face has to put its points ON that face
+    /// before the engine will take them. Measured 2026-08-05: a seam whose
+    /// middle points sat on the straight chord between its ends — inside the
+    /// sphere — was declined outright, and nothing on this side could move them.
+    /// The four projections have always existed in `axia-geo`; this is the door.
+    #[wasm_bindgen(js_name = "projectPointToFaceSurface")]
+    pub fn project_point_to_face_surface(
+        &self,
+        face_id: u32,
+        x: f64, y: f64, z: f64,
+    ) -> Vec<f64> {
+        use axia_geo::FaceId;
+        use glam::DVec3;
+        let surface = match self.scene.mesh.face_surface(FaceId::new(face_id)) {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        match surface.project_world_pos(DVec3::new(x, y, z)) {
+            Some(q) if q.is_finite() => vec![q.x, q.y, q.z],
+            _ => Vec::new(),
+        }
+    }
+
     /// Tessellate a face's analytic surface for rendering. Returns flat
     /// `[v_count, t_count, vx, vy, vz, ..., t0_a, t0_b, t0_c, t1_a, ...]`.
     /// Returns empty array if face has no surface.
