@@ -3351,6 +3351,28 @@ export class ToolManager {
       this.snapVisual.clear();
       return raw;
     }
+    // ...and on the side the ray actually hit.
+    //
+    // A plane has one side, so projecting a far candidate onto it lands
+    // somewhere plausible. A CLOSED surface does not: a candidate that is near
+    // in SCREEN space can sit behind the object, and its nearest surface point
+    // is then on the far side — a different place entirely, hidden from the
+    // user who clicked. Measured on CI (2026-08-05): a click at (200, 0, 200)
+    // on a cylinder came back (-200, 0, 200), straight through to the back.
+    //
+    // The surface normals say which side each point is on, and the raw hit is
+    // by construction the visible one, so the camera never has to come into it.
+    // If the normals cannot be had, decline — a snap that might be behind the
+    // object is worth less than no snap.
+    const nRaw = this.bridge.faceSurfaceNormalAtPos?.(faceId, raw.x, raw.y, raw.z);
+    const nSnap = this.bridge.faceSurfaceNormalAtPos?.(faceId, q[0], q[1], q[2]);
+    const sameSide =
+      !!nRaw && !!nSnap && nRaw.length === 3 && nSnap.length === 3 &&
+      nRaw[0] * nSnap[0] + nRaw[1] * nSnap[1] + nRaw[2] * nSnap[2] > 0;
+    if (!sameSide) {
+      this.snapVisual.clear();
+      return raw;
+    }
     this.snapVisual.update(snap, this.viewport.activeCamera);
     return new THREE.Vector3(q[0], q[1], q[2]);
   }

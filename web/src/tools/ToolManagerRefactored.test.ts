@@ -1373,10 +1373,35 @@ describe('ToolManager', () => {
       bridge.projectPointToFaceSurface.mockReturnValue(
         new Float64Array([0, 100, 0]), // what the engine says the nearest point is
       );
+      // Both ends on the visible side — the far-side case has its own test.
+      bridge.faceSurfaceNormalAtPos.mockReturnValue(new Float64Array([1, 0, 0]));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pt = (tm as any).get3DPoint(ev());
       expect(bridge.projectPointToFaceSurface).toHaveBeenCalledWith(7, 0, 95, 20);
       expect([pt.x, pt.y, pt.z]).toEqual([0, 100, 0]);
+    });
+
+    it('a candidate behind the object is refused, not snapped through it', () => {
+      // A plane has one side, so projecting a far candidate onto it lands
+      // somewhere plausible. A closed surface does not. Measured on CI: a click
+      // at (200,0,200) on a cylinder came back (-200,0,200) — straight through
+      // to the back, where the user cannot see it.
+      bridge.projectPointToFaceSurface.mockReturnValue(new Float64Array([0, -100, 0]));
+      bridge.faceSurfaceNormalAtPos.mockImplementation((_f: number, x: number, y: number) =>
+        new Float64Array(x > 0 ? [1, 0, 0] : [0, y > 0 ? 1 : -1, 0]),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      expect([pt.x, pt.y, pt.z]).toEqual([100, 0, 0]); // the raw hit, unmoved
+    });
+
+    it('a candidate on the SAME side is still taken', () => {
+      bridge.projectPointToFaceSurface.mockReturnValue(new Float64Array([70, 70, 0]));
+      // Both normals face +X-ish — the visible side.
+      bridge.faceSurfaceNormalAtPos.mockReturnValue(new Float64Array([1, 0, 0]));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      expect([pt.x, pt.y, pt.z]).toEqual([70, 70, 0]);
     });
 
     it('a candidate that cannot be put on the surface leaves the point alone', () => {

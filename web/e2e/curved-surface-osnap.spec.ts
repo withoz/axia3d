@@ -117,10 +117,15 @@ test.describe('object snap on a curved face', () => {
     // (2) and it is ON the sphere — the invariant, restated for a surface.
     expect(Math.abs(Math.hypot(r.near![0], r.near![1], r.near![2]) - R)).toBeLessThan(0.01);
 
-    // (3) a click away from everything is the raw surface hit, still on the
-    //     sphere and NOT dragged to the vertex.
+    // (3) a click away from everything is the raw surface hit, and NOT dragged
+    //     to the vertex. It sits on the tessellated MESH, so it is inside the
+    //     analytic sphere by up to the chord sag — measured 0.067 mm on CI at
+    //     r=100, where the canvas is a different size and the ray lands
+    //     mid-triangle rather than near a vertex. Only the SNAPPED point is
+    //     analytically exact; asserting 0.01 mm on this one was asserting the
+    //     tessellation, not the behaviour.
     expect(r.far).not.toBeNull();
-    expect(Math.abs(Math.hypot(r.far![0], r.far![1], r.far![2]) - R)).toBeLessThan(0.01);
+    expect(Math.abs(Math.hypot(r.far![0], r.far![1], r.far![2]) - R)).toBeLessThan(1);
     expect(
       Math.hypot(r.far![0] - r.target![0], r.far![1] - r.target![1], r.far![2] - r.target![2]),
     ).toBeGreaterThan(5);
