@@ -4957,15 +4957,96 @@ impl Scene {
     /// (`restore_scene_snapshot` + `discard_last_undo`) — a rejected op leaves
     /// no dangling undo/redo entry. detection metric = the SAME measurement the
     /// orange overlay uses, so reject fires exactly when the orange would.
-    /// How many face pairs overlap where at least one of them belongs to a
-    /// solid. Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
-    fn solid_overlap_count(&self) -> usize {
+    /// Face pairs that overlap where at least one of them belongs to a solid.
+    /// Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
+    fn solid_overlap_pairs(&self) -> Vec<(FaceId, FaceId)> {
         self.mesh
             .detect_self_intersections()
             .intersecting_pairs
-            .iter()
+            .into_iter()
             .filter(|(a, b)| !self.mesh.is_sheet_face(*a) || !self.mesh.is_sheet_face(*b))
-            .count()
+            .collect()
+    }
+
+    fn solid_overlap_count(&self) -> usize {
+        self.solid_overlap_pairs().len()
+    }
+
+    /// What to tell the user when an overlap on a solid could not be divided.
+    ///
+    /// The old line — "면이 겹치지 않게 그려주세요" — is now advice that is
+    /// mostly wrong: overlapping shapes DO divide each other in nearly every
+    /// case. Measured 2026-08-05, on a box top, what is left:
+    ///
+    /// ```text
+    ///   circle then rect     ok        two circles crossing   ok
+    ///   rect then circle     REFUSED   three circles          ok
+    ///   anything with an ellipse in it REFUSED, in either order
+    /// ```
+    ///
+    /// So there is one real workaround and it applies to circles only — draw
+    /// the round one first, and the angular one cuts it. Saying that beats
+    /// telling someone not to overlap shapes at all, and for a freeform curve,
+    /// where no order works, it says so rather than sending them round in
+    /// circles trying.
+    fn describe_overlap(&self, pairs: &[(FaceId, FaceId)]) -> String {
+        #[derive(PartialEq, Clone, Copy)]
+        enum Boundary {
+            Straight,
+            /// A circle or an arc — the shapes the divide understands.
+            Circular,
+            /// An ellipse, a Bezier, a spline.
+            Freeform,
+        }
+        let boundary_of = |f: FaceId| -> Boundary {
+            let Some(face) = self.mesh.faces.get(f) else { return Boundary::Straight };
+            let Ok(hes) = self.mesh.collect_loop_hes(face.outer().start) else {
+                return Boundary::Straight;
+            };
+            let mut kind = Boundary::Straight;
+            for &he in &hes {
+                let curve = self
+                    .mesh
+                    .hes
+                    .get(he)
+                    .and_then(|h| self.mesh.edges.get(h.edge()))
+                    .and_then(|e| e.curve());
+                match curve {
+                    None => {}
+                    Some(axia_geo::curves::AnalyticCurve::Circle { .. })
+                    | Some(axia_geo::curves::AnalyticCurve::Arc { .. }) => {
+                        if kind == Boundary::Straight {
+                            kind = Boundary::Circular;
+                        }
+                    }
+                    Some(_) => return Boundary::Freeform,
+                }
+            }
+            kind
+        };
+
+        let mut freeform = false;
+        let mut round_meets_straight = false;
+        for &(a, b) in pairs {
+            let (ka, kb) = (boundary_of(a), boundary_of(b));
+            if ka == Boundary::Freeform || kb == Boundary::Freeform {
+                freeform = true;
+            } else if (ka == Boundary::Circular) != (kb == Boundary::Circular) {
+                round_meets_straight = true;
+            }
+        }
+        if freeform {
+            "타원·자유곡선이 다른 도형과 겹치면 아직 나눌 수 없습니다 — \
+             겹치지 않게 그리거나, 원으로 그려주세요"
+                .to_string()
+        } else if round_meets_straight {
+            "원과 각진 도형이 겹칩니다 — 원을 먼저 그리고 각진 도형을 나중에 \
+             그리면 나뉩니다"
+                .to_string()
+        } else {
+            "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요"
+                .to_string()
+        }
     }
 
     fn guard_imprint<F>(&mut self, draw: F) -> CommandResult
@@ -5021,18 +5102,19 @@ impl Scene {
         // for a state the engine can fix.
         self.subtract_double_covered_faces();
         let nm_after = self.mesh.collect_non_manifold_edges().len();
-        let si_after = self.solid_overlap_count();
+        let after_pairs = self.solid_overlap_pairs();
+        let si_after = after_pairs.len();
         let reject = |scene: &mut Self, msg: &str| -> CommandResult {
             scene.restore_scene_snapshot(&before_snapshot);
             scene.transactions.discard_last_undo();
             CommandResult::Error(msg.to_string())
         };
         if si_after > si_before {
-            // Two faces now occupy the same space. Always damage.
-            return reject(
-                self,
-                "도형이 기존 면과 같은 자리를 덮습니다 — 면이 겹치지 않게 그려주세요",
-            );
+            // Two faces now occupy the same space. Always damage — but say
+            // WHICH kind of overlap it was, because for most of them there is
+            // something the user can actually do.
+            let why = self.describe_overlap(&after_pairs);
+            return reject(self, &why);
         }
         if nm_after > nm_before {
             // No new overlap, so this is a shared edge. Accept it only when it
