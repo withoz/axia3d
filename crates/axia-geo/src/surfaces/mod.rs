@@ -418,6 +418,42 @@ impl SurfaceOps for AnalyticSurface {
 }
 
 impl AnalyticSurface {
+    /// The point on this surface nearest `p` — the one place that answers
+    /// "where does this land on the surface".
+    ///
+    /// The four primitives each already knew how (`sphere::project_to_surface`,
+    /// `cylinder::project_to_cylinder`, `cone::project_to_cone`,
+    /// `torus::project_to_torus`); nothing outside this module could ask
+    /// without picking the right one and unpacking the right fields first, so
+    /// nothing did. Measured 2026-08-05: a seam whose middle points sat on the
+    /// straight chord — inside the sphere — was declined, and the caller had no
+    /// way to put them back on the surface.
+    ///
+    /// `None` for a plane (a plane is not a curved target and its own
+    /// projection is trivial) and for the tensor variants, where the nearest
+    /// point needs an inversion that is not written.
+    pub fn project_world_pos(&self, p: DVec3) -> Option<DVec3> {
+        use AnalyticSurface as S;
+        match self {
+            S::Sphere { center, radius, .. } => sphere::project_to_surface(*center, *radius, p),
+            S::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+                cylinder::project_to_cylinder(*axis_origin, *axis_dir, *radius, *ref_dir, p)
+                    .map(|(q, _, _)| q)
+            }
+            S::Cone { apex, axis_dir, half_angle, ref_dir, .. } => {
+                cone::project_to_cone(*apex, *axis_dir, *half_angle, *ref_dir, p)
+                    .map(|(q, _, _)| q)
+            }
+            S::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } => {
+                torus::project_to_torus(
+                    *center, *axis_dir, *ref_dir, *major_radius, *minor_radius, p,
+                )
+                .map(|(q, _, _)| q)
+            }
+            _ => None,
+        }
+    }
+
     /// ADR-061 Phase P-narrow Step 3 — Closed-form surface normal at a
     /// world-space point ON or NEAR the surface.
     ///

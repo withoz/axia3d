@@ -466,6 +466,7 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'tool-bezier': setActiveTool('bezier'); break;
       case 'tool-spline': setActiveTool('spline'); break;
       case 'tool-point': setActiveTool('point'); break;
+      case 'tool-workplane': setActiveTool('workplane'); break;
       case 'tool-text3d': setActiveTool('text3d'); break;
 
       // ── 수정 ──
@@ -734,6 +735,8 @@ export function initMenuBar(deps: MenuBarDeps): void {
       case 'sketch-start-yz':
       case 'sketch-start-face':
       case 'sketch-resume-last':
+      case 'sketch-offset':
+      case 'sketch-tilt':
       case 'sketch-align-up':
       case 'sketch-exit':
         toolManager.executeAction(act);

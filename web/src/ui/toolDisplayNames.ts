@@ -52,6 +52,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   spline: t('스플라인'),
   centerline: t('중심선'),
   point: t('점'),
+  workplane: t('작업 평면'),
   text3d: t('3D 텍스트'),
   // Direct edit
   // Not wrapped: the same in both locales, and D2 keys on the source text —

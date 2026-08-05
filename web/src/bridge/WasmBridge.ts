@@ -854,6 +854,9 @@ type AxiaEngineExtended = AxiaEngine & {
   tessellateFaceSurface?(faceId: number, chordTol: number): Float64Array;
   // ADR-140 β — Surface-aware normal evaluation at world position
   faceSurfaceNormalAtPos?(faceId: number, x: number, y: number, z: number): Float64Array;
+  // Nearest point on a face's curved surface — what a curved-face draw needs
+  // before the engine will take its points.
+  projectPointToFaceSurface?(faceId: number, x: number, y: number, z: number): Float64Array;
   // ADR-086 O-γ — Inject external face (STEP/IGES Approach A)
   injectExternalFaceNoSurface?(positionsXyz: Float64Array): number;
   injectExternalFacePlane?(...args: number[]): number;
@@ -3161,6 +3164,36 @@ export class WasmBridge {
     const result = fn.call(this.engine, faceId, x, y, z);
     if (!result || result.length === 0) return null;
     if (result.length !== 3) return null;  // defensive — Rust always returns 0 or 3
+    return result instanceof Float64Array ? result : new Float64Array(result as number[]);
+  }
+
+  /**
+   * Where a world point lands on a face's curved surface.
+   *
+   * A tool drawing on a curved face has to put its points ON that face before
+   * the engine takes them — measured 2026-08-05, a seam whose middle points sat
+   * on the straight chord between its ends (inside the sphere) was declined, and
+   * nothing on this side could move them onto the surface. The four projections
+   * have always been in `axia-geo`; this is the way to them.
+   *
+   * `null` on every failure the caller should treat the same way — no engine, a
+   * build without the export, a face with no curved surface (a plane included),
+   * or a point where the projection is undefined (a cone's apex, a sphere's
+   * centre).
+   */
+  projectPointToFaceSurface(
+    faceId: number,
+    x: number,
+    y: number,
+    z: number,
+  ): Float64Array | null {
+    if (!this.engine) return null;
+    const fn = (this.engine as unknown as {
+      projectPointToFaceSurface?: (id: number, x: number, y: number, z: number) => Float64Array;
+    }).projectPointToFaceSurface;
+    if (!fn) return null;
+    const result = fn.call(this.engine, faceId, x, y, z);
+    if (!result || result.length !== 3) return null;
     return result instanceof Float64Array ? result : new Float64Array(result as number[]);
   }
 

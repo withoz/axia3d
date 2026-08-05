@@ -51,6 +51,7 @@ import { AngularDimensionTool } from './AngularDimensionTool';
 import { RadialDimensionTool } from './RadialDimensionTool';
 import { ReferenceDimensionTool } from './ReferenceDimensionTool';
 import { DrawPointTool } from './DrawPointTool';
+import { WorkPlaneTool } from './WorkPlaneTool';
 import { DrawText3DTool } from './DrawText3DTool';
 import { DrawNurbsTool } from './DrawNurbsTool';
 import { NurbsEditTool } from './NurbsEditTool';
@@ -382,6 +383,7 @@ export class ToolManager {
         const info = this.getSketchInfo();
         return info ? { origin: info.origin, normal: info.normal } : null;
       },
+      enterSketch: (plane) => this.enterSketch(plane),
       setLastDrawnPlane: (plane) => {
         // ADR-164 β-2 — Draw 도구 face 합성 후 sticky 저장.
         // β-1 API `setLastDrawnPlane` delegate.
@@ -438,6 +440,9 @@ export class ToolManager {
     this.tools.set('radial-dimension', new RadialDimensionTool(this.toolContext));
     this.tools.set('reference-dimension', new ReferenceDimensionTool(this.toolContext));
     this.tools.set('point', new DrawPointTool(this.toolContext));
+    // Three clicks give any plane — the only entries before this were three
+    // cardinal ones and whatever face happened to exist.
+    this.tools.set('workplane', new WorkPlaneTool(this.toolContext));
     // ADR-228 — 3D text (render-only TextGeometry/sprite, Text3DSettings mode)
     this.tools.set('text3d', new DrawText3DTool(this.toolContext));
     this.tools.set('hole', new DrawHoleTool(this.toolContext));
@@ -746,6 +751,8 @@ export class ToolManager {
     'sketch-start-face': '스케치 시작 — 선택 면',
     'sketch-start-auto': '스케치 시작 — 자동 평면 감지',
     'sketch-align-up': '스케치 up 방향을 카메라에 정렬',
+    'sketch-offset': '작업 평면 띄우기 (법선 방향)',
+    'sketch-tilt': '작업 평면 기울이기',
     'sketch-resume-last': '마지막 스케치 평면 재진입',
     'sketch-exit': '스케치 종료',
     'convert-to-centerline': '선택 엣지 → 중심선 변환',
@@ -1468,6 +1475,8 @@ export class ToolManager {
       this.startSketchAuto();
     } else if (action === 'sketch-align-up') {
       this.alignSketchUpToCamera();
+    } else if (action === 'sketch-offset' || action === 'sketch-tilt') {
+      this.adjustSketchPlane(action === 'sketch-offset' ? 'offset' : 'tilt');
     } else if (action === 'sketch-resume-last') {
       try {
         const raw = localStorage.getItem(SKETCH_LAST_PLANE_KEY);
@@ -2771,6 +2780,52 @@ export class ToolManager {
     Toast.info(t('스케치 up 방향을 카메라에 정렬했습니다'), 2000);
   }
 
+  /**
+   * Move the active sketch plane: along its normal, or tilted about one of its
+   * own axes.
+   *
+   * Three points can express any plane, which makes them the general answer —
+   * but "the same wall, 300 further out" and "that face, tipped 30°" are the
+   * two a user reaches for constantly, and hunting three points for them is
+   * work the plane itself already knows how to do.
+   *
+   * The tilt turns about an axis IN the plane (its `right`), so the plane
+   * pivots the way a lid does rather than spinning in place — spinning about
+   * the normal would leave the plane exactly where it was.
+   */
+  adjustSketchPlane(kind: 'offset' | 'tilt'): void {
+    if (!this._sketch) {
+      Toast.warning(t('스케치 모드가 아닙니다'), 2500);
+      return;
+    }
+    const ask = kind === 'offset'
+      ? t('평면을 법선 방향으로 이동할 거리 (mm, 음수 가능)')
+      : t('평면을 기울일 각도 (도, 음수 가능)');
+    const raw = window.prompt(ask, kind === 'offset' ? '100' : '30');
+    if (raw === null) return;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value === 0) {
+      Toast.warning(t('숫자를 입력하세요'), 2000);
+      return;
+    }
+
+    const s = this._sketch;
+    if (kind === 'offset') {
+      s.origin = s.origin.clone().add(s.normal.clone().multiplyScalar(value));
+      Toast.info(t('평면을 {d} mm 이동했습니다', { d: String(value) }), 2000);
+    } else {
+      // Turn about the plane's own `right`, which lies IN the plane, so the
+      // origin stays put and the plane tips about that line.
+      const axis = s.right.clone().normalize();
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, (value * Math.PI) / 180);
+      s.normal = s.normal.clone().applyQuaternion(q).normalize();
+      s.up = s.up.clone().applyQuaternion(q).normalize();
+      s.right = axis; // unchanged — it is the axis we turned about
+      Toast.info(t('평면을 {a}° 기울였습니다', { a: String(value) }), 2000);
+    }
+    this.viewport.setSketchPlaneVisual(s);
+  }
+
   /** Exit sketch mode. Geometry created during the session stays in the
    *  scene — users typically follow up with push_pull to extrude. */
   exitSketch(): void {
@@ -3254,7 +3309,82 @@ export class ToolManager {
    * face force afterwards.
    */
   private applyObjectSnap(raw: THREE.Vector3, plane: THREE.Plane, e: MouseEvent): THREE.Vector3 {
-    if (!this.snap.enabled) { this.snapVisual.clear(); return raw; }
+    const snap = this.findSnapCandidate(raw, e);
+    if (!snap) return raw;
+    // PROJECT the snap target onto the active draw plane — never leave it.
+    const projected = new THREE.Vector3();
+    plane.projectPoint(snap.position, projected);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    this.snapVisual.update(snap, this.viewport.activeCamera);
+    return projected;
+  }
+
+  /**
+   * The same invariant on a CURVED face, where the active target is the surface
+   * rather than a plane: a snap may move the point along the surface, never off
+   * it.
+   *
+   * Snap used to be skipped outright here — `get3DPoint` returned the raw hit
+   * and the code said why: *"a snap must be re-projected onto the ACTIVE PLANE,
+   * and a curved face has none"*. It has a surface, which is the same thing one
+   * step out; `AnalyticSurface::project_world_pos` is how to ask, and until
+   * 2026-08-05 nothing outside the engine could.
+   *
+   * A candidate that cannot be put on the surface (a plane's face, a cone's
+   * apex, an engine without the export) leaves the raw point alone rather than
+   * committing a point that floats off the face.
+   */
+  private applyObjectSnapOnSurface(
+    raw: THREE.Vector3,
+    faceId: number,
+    e: MouseEvent,
+  ): THREE.Vector3 {
+    const snap = this.findSnapCandidate(raw, e);
+    if (!snap) return raw;
+    const q = this.bridge.projectPointToFaceSurface?.(
+      faceId, snap.position.x, snap.position.y, snap.position.z,
+    );
+    if (!q || q.length !== 3 || !Number.isFinite(q[0] + q[1] + q[2])) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    // ...and on the side the ray actually hit.
+    //
+    // A plane has one side, so projecting a far candidate onto it lands
+    // somewhere plausible. A CLOSED surface does not: a candidate that is near
+    // in SCREEN space can sit behind the object, and its nearest surface point
+    // is then on the far side — a different place entirely, hidden from the
+    // user who clicked. Measured on CI (2026-08-05): a click at (200, 0, 200)
+    // on a cylinder came back (-200, 0, 200), straight through to the back.
+    //
+    // The surface normals say which side each point is on, and the raw hit is
+    // by construction the visible one, so the camera never has to come into it.
+    // If the normals cannot be had, decline — a snap that might be behind the
+    // object is worth less than no snap.
+    const nRaw = this.bridge.faceSurfaceNormalAtPos?.(faceId, raw.x, raw.y, raw.z);
+    const nSnap = this.bridge.faceSurfaceNormalAtPos?.(faceId, q[0], q[1], q[2]);
+    const sameSide =
+      !!nRaw && !!nSnap && nRaw.length === 3 && nSnap.length === 3 &&
+      nRaw[0] * nSnap[0] + nRaw[1] * nSnap[1] + nRaw[2] * nSnap[2] > 0;
+    if (!sameSide) {
+      this.snapVisual.clear();
+      return raw;
+    }
+    this.snapVisual.update(snap, this.viewport.activeCamera);
+    return new THREE.Vector3(q[0], q[1], q[2]);
+  }
+
+  /**
+   * The snap candidate for this cursor position, or null — shared by the plane
+   * and surface paths so both get the same exclusions, the same Tab-cycled
+   * tentative and the same failure handling. It deliberately stops short of
+   * deciding WHERE the candidate goes; that is what differs between them.
+   */
+  private findSnapCandidate(raw: THREE.Vector3, e: MouseEvent): SnapPoint | null {
+    if (!this.snap.enabled) { this.snapVisual.clear(); return null; }
     // ADR-047 P32 — exclude the active tool's pending chain vertices so snap
     // never pulls a corner onto its own not-yet-committed vertex.
     const active = this.tools.get(this._currentTool);
@@ -3275,19 +3405,11 @@ export class ToolManager {
         snap = this.snap.findSnap(e.clientX, e.clientY, cam, canvas, raw, null);
       } catch {
         this.snapVisual.clear();
-        return raw;
+        return null;
       }
     }
-    if (!snap) { this.snapVisual.clear(); return raw; }
-    // PROJECT the snap target onto the active draw plane — never leave it.
-    const projected = new THREE.Vector3();
-    plane.projectPoint(snap.position, projected);
-    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z)) {
-      this.snapVisual.clear();
-      return raw;
-    }
-    this.snapVisual.update(snap, cam);
-    return projected;
+    if (!snap) { this.snapVisual.clear(); return null; }
+    return snap;
   }
 
   private get3DPoint(e: MouseEvent): THREE.Vector3 | null {
@@ -3364,11 +3486,13 @@ export class ToolManager {
         // and why DrawCircleTool — the one curved tool that worked — reads
         // plane.origin instead of this.
         //
-        // No object snap here: ADR-292's invariant is that a snap must be
-        // re-projected onto the ACTIVE PLANE, and a curved face has none.
-        // Snapping on curved surfaces needs its own design.
+        // Object snap DOES apply here (2026-08-05). ADR-292's invariant is that
+        // a snap is re-projected onto the active target; for a curved face that
+        // target is the SURFACE, not a plane — see `applyObjectSnapOnSurface`.
+        // Without it a point could only ever land where the ray happened to hit,
+        // so nothing on a sphere could be drawn to meet anything already there.
         const kind = this.bridge.faceSurfaceKind?.(fid) ?? -1;
-        if (kind >= 2) return faceHit.point.clone();
+        if (kind >= 2) return this.applyObjectSnapOnSurface(faceHit.point.clone(), fid, e);
 
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);
         if (Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)) {
@@ -3896,7 +4020,10 @@ export class ToolManager {
       );
       if (tangentNormal !== null) {
         normal = new THREE.Vector3(tangentNormal[0], tangentNormal[1], tangentNormal[2]);
-        surfaceAwareOrigin = hit.point.clone();
+        // The curved-face tools take their point from this origin (a circle's
+        // centre, a rect's first corner), so the snap belongs here too — on the
+        // surface, by the same invariant as the plane path.
+        surfaceAwareOrigin = this.applyObjectSnapOnSurface(hit.point.clone(), fid, e);
       } else {
         // Fallback: graceful degradation to DCEL face normal (legacy chord plane)
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);

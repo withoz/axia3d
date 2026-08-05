@@ -7582,6 +7582,41 @@ LOCKED #44 (Complete Meaning per Merge) · #61 (identity vs dispatch) ·
 (반대 순서는 됨) / 타원이 무엇과든 겹치는 경우. `a_refusal_says_which_overlap_it_was` 가
 그 메시지를 고정하고 있으므로, 되기 시작하면 그 단언이 먼저 알려준다.
 
+### 104. 어느 방향에서든 그리는 환경 — 곡면 스냅 · Alt 평면 · 3점 작업평면 (2026-08-05) ✅
+
+**측정이 먼저 뒤집은 전제 (재-오진 방지)** — 아래는 *배선 공백이 아니라 이미 되어 있거나,
+기하적으로 불가능한 것*이다. 다시 결함으로 올리지 말 것.
+
+| 오해하기 쉬운 것 | 실측 |
+|---|---|
+| 엔진이 cardinal 평면만 안다 | ❌ 법선 (0.577,0.577,0.577) 에 rect·circle **0 violations** |
+| 곡면 위 **면** 그리기가 없다 | ❌ Rect·Polygon·Circle·Ellipse·Freehand·Bezier **6도구 배선 완료** (ADR-284) |
+| 곡면 위 **선**은 배선만 하면 된다 | ❌ **기하적으로 불가** — 아래 |
+
+- **곡면 위 2-클릭 직선은 반구를 나눌 수 없다.** 적도 위 두 점의 측지선은 **적도 그 자체**라
+  경계를 따라가 아무것도 나누지 못하고, 내부 두 점을 이으면 경계에 닿지 못한다. 현(chord)
+  중간점을 표면에 투영해도 여전히 적도에 남는다(실측 3단계). ADR-284 가 자유곡선·베지어로
+  안내한 것이 옳다. 회귀 `a_straight_line_between_rim_points_cannot_divide_a_hemisphere`.
+- ⚠ `drawPolylineOnCurved(..., closed=false)` 는 **열린 seam 이 아니다** — 스트로크를 닫아
+  슬리버를 만든다(반구 한가운데 슬릿이 넓이 2412 면 생성). 열린 seam 은 `drawOpenSeamOnCurved`
+  (Freehand·Bezier 가 이미 사용).
+
+**이번에 추가된 것**
+
+- `AnalyticSurface::project_world_pos` + WASM `projectPointToFaceSurface` — 네 곡면의 투영을
+  하나로. 엔진 안에만 있어 도구가 못 쓰던 것.
+- **곡면 위 OSNAP** — ADR-292 의 "스냅은 활성 대상을 벗어나지 않는다" 를 평면 → **표면** 으로
+  일반화. 이전엔 곡면에서 스냅이 통째로 꺼져 있었다(코드가 스스로 적어둔 gap).
+- **Alt = 접평면에 납작하게** (6도구). Alt 는 DrawLine 과 반대로 읽히지만 둘 다 **"기본값의
+  반대"** — 결정으로 기록됨.
+- **3점 작업평면** (`tool-workplane`) + **평면 띄우기/기울이기** (`sketch-offset`/`sketch-tilt`).
+  `enterSketch` 는 원래 임의 평면을 받았고 `getDrawPlane`·`get3DPoint` 도 sketch 를 face hit
+  보다 먼저 봤다 — **없던 건 진입로뿐**.
+
+**아직 남은 것**: 곡면 위 선은 rim→내부→rim **3-클릭 폴리라인**이면 가능(실측). DrawLine 이
+세그먼트마다 커밋해서 지금은 못 하고, 체인 전체를 모으는 상태기계 변경이 필요하다. 그리고
+계획 C(입체 위에서 coplanar arrangement 가 통째로 꺼져 특수 경로 36개가 메우는 구조)는
+사용자 결재로 **다음 계획**.
 ### 변경 시 필수 절차
 이 정책들 중 하나라도 변경하려면:
 1. 사용자에게 **명시적 확인** 요청 ("이 불변 정책을 변경하시겠습니까?")
