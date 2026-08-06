@@ -610,3 +610,58 @@ fn a_shape_drawn_right_around_a_solids_face_is_accepted() {
         "the T-junctions are the only complaint"
     );
 }
+
+/// THE SAME GRID, ASKING WHETHER THE MODEL IS STILL SOUND.
+///
+/// `requirement_1` above passes 24 of 24, and it passes because `clean()`
+/// deliberately does not consult invariants — its comment says so: "drawing
+/// past a solid's edge opens it, and an opened solid has non-manifold shared
+/// edges — that is the consequence of what was asked for". It prints
+/// "✗ 5 violations in 8 faces" and asserts nothing about it.
+///
+/// The user's requirement is SketchUp's: a shape crossing a face's edge splits
+/// the face where it lands and continues past it as a sheet — and the solid
+/// stays closed. So this grid asks the second half of that question. It is a
+/// report, not a gate: pinning numbers here before the behaviour is decided
+/// would only lock in today's damage.
+#[test]
+fn the_same_grid_but_asking_whether_the_model_is_still_sound() {
+    println!("\n성함 격자 — 그려진 뒤에도 모델이 성한가\n");
+    println!("  {:<18} {:<14} {:<8} {:<8} {:<7} {:<6} {:<5}",
+        "면", "위치", "도형", "결과", "면수", "닫힘", "위반");
+    for host in [Host::GroundSheet, Host::BoxTopDrawn, Host::BoxTopPrim, Host::BoxSidePrim] {
+        for place in [Place::Inside, Place::Crossing, Place::Straddling] {
+            for shape in ["사각형", "원", "타원"] {
+                let mut s = prod();
+                let (o, n, u, v) = host.build(&mut s);
+                let before = faces(&s);
+                let ((du, dv), half) = place.geom();
+                let c = o + u * du + v * dv;
+                let r = match shape {
+                    "사각형" => s.execute(Command::DrawRectAsShape {
+                        center: c, normal: n, up: v, width: half * 2.0, height: half * 2.0 }),
+                    "원" => s.execute(Command::DrawCircleAsCurve {
+                        center: c, normal: n, radius: half }),
+                    _ => s.execute(Command::DrawEllipseAsCurve {
+                        center: c, ref_dir: u, normal: n, radius_x: half, radius_y: half * 0.55 }),
+                };
+                let ok = !matches!(r, CommandResult::Error(_));
+                let all: Vec<FaceId> = s.mesh.faces.iter()
+                    .filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+                let sealed = all.iter().filter(|&&f| s.mesh.is_face_in_volume(f)).count();
+                let viol = s.mesh.verify_face_invariants().violations.len();
+                // A solid host starts with every face sealed; if that count
+                // drops the solid was opened.
+                let closed = match host {
+                    Host::GroundSheet => "-".to_string(),
+                    _ => if sealed >= 6 { "예".into() } else { format!("아니오({sealed})") },
+                };
+                println!("  {:<18} {:<14} {:<8} {:<8} {:>3}→{:<3} {:<6} {:<5}",
+                    host.name(), place.name(), shape,
+                    if ok { "수락" } else { "거부" },
+                    before, all.len(), closed, viol);
+            }
+        }
+    }
+    println!();
+}
