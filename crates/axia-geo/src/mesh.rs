@@ -9122,6 +9122,15 @@ impl Mesh {
                     .partial_cmp(&(*q - a).length_squared())
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            // A TANGENT line touches the rim once, and the quadratic says so by
+            // handing back its double root twice. Splitting the same place twice
+            // puts the point into the neighbouring face's loop TWICE — measured
+            // 2026-08-06, a circle of r=40 centred 60 from the middle of a top
+            // spanning ±100 left the wall's loop reading
+            // `… (-100,0,100) (-100,0,100) …` and the solid open along three
+            // edges, while moving the circle two millimetres in closed it
+            // perfectly. Sorted above, so equal roots are adjacent.
+            crossings.dedup_by(|p, q| (*p - *q).length() <= TOL);
             let mut cur = edge_id;
             for cpt in crossings {
                 match self.split_edge(cur, cpt) {
