@@ -23,6 +23,21 @@
 //! coplanar face from the newly drawn one instead of leaving both.
 //!
 //! Kept so the next attempt does not spend a day on the same ideas.
+//!
+//! **2026-08-06 — the question stopped applying.** Its last line was right:
+//! stop the extra face being made rather than clean it up afterwards. That is
+//! what turning the coplanar arrangement back on for solids does — it used to
+//! early-return whenever the affected region touched one, which is why the
+//! drawn rectangle was left lying on the face for the repair to sort out.
+//! Now the plane is tiled and there is no second covering to repair: the
+//! overlap count on both hosts is ZERO where it was one. `repaired == 0` still
+//! holds, but for the opposite reason — nothing is offered to the split
+//! because nothing is doubled.
+//!
+//! What this path still leaves (`Command::DrawRect`, the unguarded tool route)
+//! is 2 non-manifold edges and 4 open ones on the box top. That is the T-junction
+//! where the drawn shape crosses the face's rim, and it is a separate question
+//! from the one this file asked.
 use axia_core::{Command, Scene, FORM_MATERIAL};
 use axia_geo::FaceId;
 use glam::DVec3;
@@ -63,7 +78,11 @@ fn the_existing_coplanar_split_cannot_repair_the_tool_output() {
             s.mesh.verify_face_invariants().is_valid());
         assert_eq!(repaired, 0,
             "ADR-101's split now handles this pair — the repair route is open              after all, and the shape tool could be fixed by calling it");
-        assert_eq!(after.count(), 1, "and the overlap is still there");
+        assert_eq!(
+            after.count(),
+            0,
+            "the arrangement tiles the plane now, so there is no doubled region left to repair"
+        );
     }
 }
 

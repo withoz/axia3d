@@ -4985,6 +4985,40 @@ impl Scene {
         self.solid_overlap_pairs().len()
     }
 
+    /// Non-manifold edges where every face on them lies on ONE plane.
+    ///
+    /// Three faces on an edge is normal where a drawn sheet meets a solid's rim
+    /// — the wall, the cap and the sheet, no two of them in the same place.
+    /// SketchUp makes that shape and this guard has always let it through; the
+    /// existing check does so by accepting any new non-manifold edge whose only
+    /// complaint is itself.
+    ///
+    /// Three faces on the SAME plane is the other thing. They are covering each
+    /// other's ground, and no draw asks for that. The distinction is the plane,
+    /// not the shape: measured 2026-08-06, a rect and an ellipse overlapping
+    /// well inside a box top divided into nine faces and left THREE coplanar
+    /// edges bearing three faces each, and the "it is only a T-junction" rule
+    /// waved it through.
+    fn coplanar_non_manifold_edges(&self) -> Vec<axia_geo::EdgeId> {
+        self.mesh
+            .collect_non_manifold_edges()
+            .into_iter()
+            .filter(|&e| {
+                let (faces, _) = self.mesh.get_faces_sharing_edge(e);
+                let mut normals = faces
+                    .iter()
+                    .filter_map(|&f| self.mesh.faces.get(f))
+                    .map(|f| f.normal().normalize_or_zero());
+                let Some(n0) = normals.next() else { return false };
+                normals.all(|n| n.dot(n0).abs() > 0.999)
+            })
+            .collect()
+    }
+
+    fn coplanar_non_manifold_count(&self) -> usize {
+        self.coplanar_non_manifold_edges().len()
+    }
+
     /// How many active faces are sealed inside a volume (every edge of every
     /// loop has a neighbouring face). Drawing must never make this go DOWN.
     ///
@@ -5113,6 +5147,7 @@ impl Scene {
         // overlapping blobs are deliberately left as they are, and that is not
         // this guard's call to override.
         let si_before = self.solid_overlap_count();
+        let coplanar_nm_before = self.coplanar_non_manifold_count();
         let pre_pairs: std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)> = self
             .mesh
             .detect_self_intersections()
@@ -5152,6 +5187,26 @@ impl Scene {
             // WHICH kind of overlap it was, because for most of them there is
             // something the user can actually do.
             let why = self.describe_overlap(&after_pairs);
+            return reject(self, &why);
+        }
+        if self.coplanar_non_manifold_count() > coplanar_nm_before {
+            // Name the shapes if we can. The faces stacked on those edges are
+            // the ones that could not be divided, so `describe_overlap` reads
+            // them the same way it reads an overlap pair — a user who drew an
+            // ellipse should still be told it is the ellipse.
+            let stacked: Vec<(FaceId, FaceId)> = self
+                .coplanar_non_manifold_edges()
+                .iter()
+                .filter_map(|&e| {
+                    let (fs, _) = self.mesh.get_faces_sharing_edge(e);
+                    (fs.len() >= 2).then(|| (fs[0], fs[1]))
+                })
+                .collect();
+            let why = if stacked.is_empty() {
+                "겹친 자리에서 면 세 장이 같은 평면에 포개졌습니다 — 그리기를 되돌렸습니다".to_string()
+            } else {
+                self.describe_overlap(&stacked)
+            };
             return reject(self, &why);
         }
         if nm_after > nm_before {

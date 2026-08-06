@@ -1292,47 +1292,6 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     };
     let scope_edges: Option<&HashSet<EdgeId>> = scope.as_ref().map(|(_, e)| e);
 
-    // ── Draw-onto-solid guard (2026-06-09) — skip the re-derive when the
-    //    affected coplanar region overlaps a solid. A solid face on this plane
-    //    (an on-plane face sharing an edge with an off-plane wall) is protected
-    //    from face removal (`part_of_solid`), but re-deriving the surrounding
-    //    free region removes/re-arranges the cut edges it shares with that solid
-    //    face — dangling the solid's loop (an "Entity HeId not found" panic that
-    //    leaked the wasm-bindgen borrow → "recursive use" spam) or making those
-    //    edges 3-way non-manifold. The draw itself already produced a valid mesh;
-    //    leave it as-is. This is also what drawing a footprint onto an existing
-    //    wall wants (a new sheet to extrude, not an annulus in the wall's face).
-    //    No-op without a solid on this plane (`volume_edges` empty), so the
-    //    flat-sheet annulus/containment rederive cases are unchanged.
-    if !volume_edges.is_empty() {
-        let region_touches_solid = match &scope {
-            Some((affected_faces, _)) => affected_faces.iter().any(|&f| {
-                mesh.face_outer_edges(f)
-                    .ok()
-                    .map_or(false, |es| es.iter().any(|e| volume_edges.contains(e)))
-            }),
-            // full-plane rederive with a solid present → conservatively skip.
-            None => true,
-        };
-        if region_touches_solid {
-            return Ok(RebuildReport::default());
-        }
-    }
-
-    // ── Phase 0.5 (B4b-1, gated) — freeform-freeform overlap detection +
-    //    owner-id + source-curve storage (B4a map). Detection-only: face
-    //    topology UNCHANGED (no feeding / A1 override / split — those are
-    //    B4b-2). Runs before reconstruct so B4b-2 can consume the owner-id.
-    if enable_freeform_overlap {
-        detect_freeform_overlaps(mesh, plane_origin, n_unit, tol, scope_edges);
-    }
-
-    // ── Phase 1 — InputCurve 재구성 (4-β) + dirty 면 + 제거할 coplanar edge.
-    //    B6 — reconstruct also restores overlap freeform sources by owner-id
-    //    (Phase 0.5 sets them when gate on), so feeding is unified into
-    //    reconstruct (the separate B4b-2a collect step is removed). The
-    //    `enable_freeform_overlap` gate now controls only Phase 0.5 detection;
-    //    reconstruct / A1 override are gate-implicit (owner-id presence).
     // ADR-281 β-1 — solid-top boundary = on-plane `volume_edges` (the top's outer
     // square, shared with the walls). Feeding these to the arrange lets it net-tile
     // the FULL solid-top face (de-risk sim ADR-280), so a crossing shape splits the
@@ -1432,6 +1391,59 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             .map(|(_, &e)| e)
             .collect()
     };
+
+    // ── Draw-onto-solid guard (2026-06-09) — skip the re-derive when the
+    //    affected coplanar region overlaps a solid. A solid face on this plane
+    //    (an on-plane face sharing an edge with an off-plane wall) is protected
+    //    from face removal (`part_of_solid`), but re-deriving the surrounding
+    //    free region removes/re-arranges the cut edges it shares with that solid
+    //    face — dangling the solid's loop (an "Entity HeId not found" panic that
+    //    leaked the wasm-bindgen borrow → "recursive use" spam) or making those
+    //    edges 3-way non-manifold. The draw itself already produced a valid mesh;
+    //    leave it as-is. This is also what drawing a footprint onto an existing
+    //    wall wants (a new sheet to extrude, not an annulus in the wall's face).
+    //    No-op without a solid on this plane (`volume_edges` empty), so the
+    //    flat-sheet annulus/containment rederive cases are unchanged.
+    //    2026-08-06 — and it only applies when the re-tile has no way to keep
+    //    the solid whole. ADR-281 β-1 built that way: feed the solid's on-plane
+    //    perimeter to the arrange as input and do NOT remove it, so the arrange
+    //    net-tiles the full face and the walls keep the edges they stand on.
+    //    `solid_top_boundary` non-empty is exactly the condition for that, and
+    //    the note above it already says as much — "β-1 solid-top re-tile is
+    //    active for this plane; Level 1 (guard_imprint) is the fail-closed
+    //    backstop". Bailing regardless is what left drawing on a solid to the
+    //    post-draw repair, which reads the overlap as surplus and carves it out
+    //    of the face: measured 2026-08-06, one of eighteen boundary cases came
+    //    out sound, while the same draws on a sheet are nine of nine.
+    if !volume_edges.is_empty() && solid_top_boundary.is_empty() {
+        let region_touches_solid = match &scope {
+            Some((affected_faces, _)) => affected_faces.iter().any(|&f| {
+                mesh.face_outer_edges(f)
+                    .ok()
+                    .map_or(false, |es| es.iter().any(|e| volume_edges.contains(e)))
+            }),
+            // full-plane rederive with a solid present → conservatively skip.
+            None => true,
+        };
+        if region_touches_solid {
+            return Ok(RebuildReport::default());
+        }
+    }
+
+    // ── Phase 0.5 (B4b-1, gated) — freeform-freeform overlap detection +
+    //    owner-id + source-curve storage (B4a map). Detection-only: face
+    //    topology UNCHANGED (no feeding / A1 override / split — those are
+    //    B4b-2). Runs before reconstruct so B4b-2 can consume the owner-id.
+    if enable_freeform_overlap {
+        detect_freeform_overlaps(mesh, plane_origin, n_unit, tol, scope_edges);
+    }
+
+    // ── Phase 1 — InputCurve 재구성 (4-β) + dirty 면 + 제거할 coplanar edge.
+    //    B6 — reconstruct also restores overlap freeform sources by owner-id
+    //    (Phase 0.5 sets them when gate on), so feeding is unified into
+    //    reconstruct (the separate B4b-2a collect step is removed). The
+    //    `enable_freeform_overlap` gate now controls only Phase 0.5 detection;
+    //    reconstruct / A1 override are gate-implicit (owner-id presence).
     let input_curves = reconstruct_input_curves(
         mesh,
         plane_origin,

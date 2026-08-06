@@ -11,10 +11,19 @@
 //!   anything with an ellipse in it REFUSED, in either order
 //! ```
 //!
-//! So there is exactly one workaround left and it applies to circles: draw the
-//! round shape first and the angular one cuts it. Saying that is worth more than
-//! repeating "don't overlap"; and for a freeform curve, where no order works,
-//! saying THAT is worth more than sending someone round in circles trying.
+//! **2026-08-06 — the circle row closed.** Turning the coplanar arrangement
+//! back on for solids (it used to early-return whenever the affected region
+//! touched one) makes `rect then circle` divide the same way `circle then rect`
+//! always did: nine faces, every one sealed, no open boundary, no non-manifold
+//! edge, no invariant violation. So there is no order to advise any more — both
+//! work — and that assertion has become the one below.
+//!
+//! An ellipse still refuses, in every order, and now for a reason worth
+//! recording: it DIVIDES (nine faces, all sealed, no open boundary) but leaves
+//! three edges with three coplanar faces stacked on them. Three faces on one
+//! edge is normal where a sheet meets a solid's rim — different planes, nothing
+//! covering anything — so the guard used to wave any T-junction through. Three
+//! faces on the SAME plane is the other thing, and that is now what gets caught.
 //!
 //! This file is the message, not the geometry. When one of these cases starts
 //! working, its assertion here is what will say so.
@@ -70,14 +79,42 @@ fn refusal(r: CommandResult) -> String {
     }
 }
 
-/// A round shape and an angular one: there IS an order that works, so say it.
+/// A round shape and an angular one divide each other, in EITHER order.
+///
+/// This used to assert a refusal that named the order to try. There is no order
+/// to name now, and the file said this is where that would show up.
 #[test]
-fn a_circle_meeting_a_rectangle_is_told_the_order_that_works() {
-    let mut s = boxed();
-    rect(&mut s, 0.0);
-    let msg = refusal(circle(&mut s, 30.0));
-    assert!(msg.contains("원을 먼저"), "the message must name the workaround: {msg}");
-    assert!(!msg.contains("겹치지 않게 그려주세요"), "that advice is now wrong: {msg}");
+fn a_circle_and_a_rectangle_divide_each_other_either_way() {
+    for reversed in [false, true] {
+        let mut s = boxed();
+        let r = if reversed {
+            circle(&mut s, 30.0);
+            rect(&mut s, 0.0)
+        } else {
+            rect(&mut s, 0.0);
+            circle(&mut s, 30.0)
+        };
+        let order = if reversed { "circle then rect" } else { "rect then circle" };
+        assert!(!matches!(r, CommandResult::Error(_)), "{order}: {r:?}");
+
+        let all: Vec<axia_geo::FaceId> =
+            s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        assert_eq!(all.len(), 9, "{order}: box 6 + the top cut into three");
+        let mi = s.mesh.face_set_manifold_info(&all);
+        assert!(mi.is_closed_solid, "{order}: the solid stays closed");
+        assert_eq!(mi.boundary_edge_count, 0, "{order}: nothing left open");
+        assert_eq!(mi.non_manifold_edge_count, 0, "{order}: no edge bears three faces");
+        assert!(
+            s.mesh.verify_face_invariants().violations.is_empty(),
+            "{order}: {:?}",
+            s.mesh.verify_face_invariants().violations
+        );
+        assert_eq!(
+            all.iter().filter(|&&f| s.mesh.is_face_in_volume(f)).count(),
+            9,
+            "{order}: every face still sealed inside the volume"
+        );
+    }
 }
 
 /// And the order it names really is the one that works — otherwise this is a
