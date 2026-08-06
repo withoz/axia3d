@@ -2522,7 +2522,17 @@ impl Scene {
         self.move_face_owner(fb, b_gets);
     }
 
-    fn subtract_double_covered_faces(&mut self) -> usize {
+    /// `already_overlapping` are the pairs that were overlapping BEFORE the
+    /// draw. They are left alone: two solids may sit inside each other quite
+    /// legitimately, and carving them because the user drew something else
+    /// entirely is not a repair. Measured 2026-08-06 — two interpenetrating
+    /// boxes plus a rectangle drawn 900 mm away lost half their sealed faces
+    /// (12 → 6) to this function, and nothing was watching, because the draw
+    /// itself had been clean (12 → 12).
+    fn subtract_double_covered_faces(
+        &mut self,
+        already_overlapping: &std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)>,
+    ) -> usize {
         use axia_geo::operations::coplanar as cop;
         let pairs = self.mesh.detect_self_intersections().intersecting_pairs;
         if pairs.is_empty() {
@@ -2530,6 +2540,9 @@ impl Scene {
         }
         let mut repaired = 0usize;
         for (fa, fb) in pairs {
+            if already_overlapping.contains(&(fa, fb)) || already_overlapping.contains(&(fb, fa)) {
+                continue;
+            }
             let alive = |m: &axia_geo::Mesh, f: axia_geo::FaceId| {
                 m.faces.get(f).map_or(false, |x| x.is_active())
             };
@@ -4972,6 +4985,25 @@ impl Scene {
         self.solid_overlap_pairs().len()
     }
 
+    /// How many active faces are sealed inside a volume (every edge of every
+    /// loop has a neighbouring face). Drawing must never make this go DOWN.
+    ///
+    /// Measured 2026-08-06 on a box top, sweeping where the second shape sits:
+    /// every outcome that divided correctly held this steady or raised it
+    /// (7→7, 7→8, 7→9 — one face becomes two and both stay sealed), and every
+    /// outcome that left the solid open dropped it (7→5, 7→4, 7→1). The two
+    /// sets do not overlap, which is why this is the metric and not
+    /// `is_closed_solid`: that reads false the moment any sheet exists anywhere
+    /// in the scene, so it cannot tell "the box broke" from "there is also a
+    /// rectangle lying on the ground".
+    fn volume_face_count(&self) -> usize {
+        self.mesh
+            .faces
+            .iter()
+            .filter(|(id, f)| f.is_active() && self.mesh.is_face_in_volume(*id))
+            .count()
+    }
+
     /// What to tell the user when an overlap on a solid could not be divided.
     ///
     /// The old line — "면이 겹치지 않게 그려주세요" — is now advice that is
@@ -5081,6 +5113,12 @@ impl Scene {
         // overlapping blobs are deliberately left as they are, and that is not
         // this guard's call to override.
         let si_before = self.solid_overlap_count();
+        let pre_pairs: std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)> = self
+            .mesh
+            .detect_self_intersections()
+            .intersecting_pairs
+            .into_iter()
+            .collect();
         // ADR-282 — reject ONLY genuine corruption (a NEW non-manifold edge, i.e.
         // an edge that ends up bearing ≥3 faces). The former ADR-280
         // `opened_solid` check (reject if a closed solid merely OPENS) was
@@ -5100,7 +5138,7 @@ impl Scene {
         // part covered twice. That is repairable and the repair is the point of
         // the draw, so do it before judging rather than rolling the draw back
         // for a state the engine can fix.
-        self.subtract_double_covered_faces();
+        self.subtract_double_covered_faces(&pre_pairs);
         let nm_after = self.mesh.collect_non_manifold_edges().len();
         let after_pairs = self.solid_overlap_pairs();
         let si_after = after_pairs.len();
@@ -15192,6 +15230,44 @@ mod tests {
         assert_eq!(nm1, 0, "ADR-283: contained split is manifold");
     }
 
+    /// Two solids may sit inside each other quite legitimately, and a draw
+    /// somewhere else entirely must not carve them.
+    ///
+    /// The repair that runs after every draw — it subtracts the part of a face
+    /// that ends up covered twice, which is the whole point when a shape is
+    /// drawn past the edge of the face it lands on — used to sweep EVERY
+    /// overlapping pair in the scene, not just the ones the draw had made.
+    /// Measured 2026-08-06: two interpenetrating boxes plus a 100 mm rectangle
+    /// drawn 900 mm away lost half their sealed faces, 12 down to 6, and
+    /// nothing was watching. The draw itself had been clean (12 → 12); the
+    /// repair did all of it.
+    ///
+    /// `a_scene_that_already_self_intersects_can_still_be_drawn_in` covers the
+    /// same fixture but only counts faces, which the carving left intact — the
+    /// damage was in which faces were still sealed.
+    #[test]
+    fn a_draw_elsewhere_does_not_carve_solids_that_already_overlap() {
+        let mut s = prod_scene();
+        let _ = s.mesh.create_box(DVec3::new(100.0, 100.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        let _ = s.mesh.create_box(DVec3::new(150.0, 150.0, 50.0), 200.0, 100.0, 200.0, crate::FORM_MATERIAL);
+        assert!(s.mesh.detect_self_intersections().count() > 0, "the fixture must already overlap");
+        let sealed_before = s.volume_face_count();
+        assert_eq!(sealed_before, 12, "two boxes, every face sealed");
+
+        let r = s.execute(Command::DrawRectAsShape {
+            center: DVec3::new(900.0, 900.0, 0.0),
+            normal: DVec3::Z,
+            up: DVec3::Y,
+            width: 100.0,
+            height: 100.0,
+        });
+        assert!(!matches!(r, CommandResult::Error(_)), "an unrelated draw must not be blocked: {r:?}");
+        assert_eq!(
+            s.volume_face_count(),
+            sealed_before,
+            "the boxes were 900 mm away and must still be sealed"
+        );
+    }
     /// ADR-280 Level 1 — a crossing shape on a solid top must NEVER open the
     /// solid (fail-closed): box + circle, then a rect that CROSSES the circle →
     /// the solid stays closed (the rect is left un-split rather than opening the
