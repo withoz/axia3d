@@ -1415,7 +1415,25 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     //    post-draw repair, which reads the overlap as surplus and carves it out
     //    of the face: measured 2026-08-06, one of eighteen boundary cases came
     //    out sound, while the same draws on a sheet are nine of nine.
-    if !volume_edges.is_empty() && solid_top_boundary.is_empty() {
+    // A sphere's two hemispheres also share an on-plane closed curve — its
+    // equator — and feeding THAT to the arrange re-tiles them out of existence
+    // (measured 2026-08-06: hemispheres 2 → 0). The re-tile is a planar
+    // operation, so it may only stand in for a planar face; a curved one keeps
+    // the guard.
+    let retile_is_planar = !solid_top_boundary.is_empty()
+        && solid_top_boundary.iter().all(|&e| {
+            let (faces, _) = mesh.get_faces_sharing_edge(e);
+            faces.iter().all(|&f| {
+                mesh.faces.get(f).map_or(true, |face| {
+                    !face.is_active()
+                        || matches!(
+                            face.surface(),
+                            None | Some(crate::surfaces::AnalyticSurface::Plane { .. })
+                        )
+                })
+            })
+        });
+    if !volume_edges.is_empty() && !retile_is_planar {
         let region_touches_solid = match &scope {
             Some((affected_faces, _)) => affected_faces.iter().any(|&f| {
                 mesh.face_outer_edges(f)

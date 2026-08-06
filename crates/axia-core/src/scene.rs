@@ -3295,6 +3295,175 @@ impl Scene {
     ///   - 비활성된(제거된) face 의 XIA 링크 제거
     ///   - 새 face 를 drawn 의 공통 XIA(selected) 로 등록 (intersect_faces_inner
     ///     의 selected_xia 휴리스틱 답습). 모호하면 face-only.
+    /// The ground each owner covers on this plane, captured BEFORE a re-derive
+    /// consumes it.
+    ///
+    /// A re-tile removes the faces it is about to replace and reports only
+    /// counts, so the pieces it puts back arrive owned by nobody — measured
+    /// 2026-08-06, `face FaceId(11) belongs to nobody` after two circles on a
+    /// box top. The special path adopted them (`adopt_circle_overlap_split`);
+    /// the general one had nothing to adopt them into.
+    ///
+    /// Ownership is not adjacency. "Shares an edge with an owned face" would
+    /// drag a sheet drawn BESIDE a solid into that solid, and a shape drawn past
+    /// a face's rim leaves a piece OUTSIDE the solid that is not the solid's. So
+    /// what is captured is the AREA: a piece born on ground an owner covered
+    /// belongs to that owner, and a piece outside all of it belongs to nobody,
+    /// which is the right answer for the overhang.
+    fn capture_coplanar_owners(
+        &self,
+        origin: DVec3,
+        normal: DVec3,
+    ) -> Vec<(Option<crate::ShapeId>, Option<XiaId>, Vec<(f64, f64)>)> {
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return Vec::new();
+        }
+        let (u, v) = Self::plane_basis(n);
+        self.mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .filter_map(|(fid, f)| {
+                let os = self.face_to_shape.get(&fid).copied();
+                let ox = self.face_to_xia.get(&fid).copied();
+                if os.is_none() && ox.is_none() {
+                    return None;
+                }
+                let verts = self.mesh.collect_loop_verts(f.outer().start).ok()?;
+                let poly: Vec<(f64, f64)> = verts
+                    .iter()
+                    .filter_map(|vt| self.mesh.vertex_pos(*vt).ok())
+                    .filter(|p| (*p - origin).dot(n).abs() <= 1e-3)
+                    .map(|p| ((p - origin).dot(u), (p - origin).dot(v)))
+                    .collect();
+                // Needs a polygon to test against. A Path B circle is a single
+                // anchor vertex and has none; the face that holds it as a hole
+                // does, and that is the one covering the ground.
+                (poly.len() >= 3).then_some((os, ox, poly))
+            })
+            .collect()
+    }
+
+    /// Give each face the re-derive just made to whoever owned the ground it
+    /// sits on. See [`Self::capture_coplanar_owners`].
+    fn adopt_retiled_faces(
+        &mut self,
+        captured: &[(Option<crate::ShapeId>, Option<XiaId>, Vec<(f64, f64)>)],
+        before: &std::collections::HashSet<FaceId>,
+        origin: DVec3,
+        normal: DVec3,
+    ) {
+        if captured.is_empty() {
+            return;
+        }
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return;
+        }
+        let (u, v) = Self::plane_basis(n);
+        let fresh: Vec<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && !before.contains(fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        for f in fresh {
+            if self.face_to_shape.contains_key(&f) || self.face_to_xia.contains_key(&f) {
+                continue;
+            }
+            let Some(c) = self.face_centroid_on_plane(f, origin, u, v) else {
+                continue;
+            };
+            // Smallest enclosing owner wins, so a piece inside a ring goes to the
+            // ring and not to whatever also happens to contain it.
+            let mut best: Option<(f64, Option<crate::ShapeId>, Option<XiaId>)> = None;
+            for (os, ox, poly) in captured {
+                if !Self::point_in_poly_2d(c, poly) {
+                    continue;
+                }
+                let area = Self::poly_area_2d(poly);
+                if best.as_ref().map_or(true, |(a, _, _)| area < *a) {
+                    best = Some((area, *os, *ox));
+                }
+            }
+            if let Some((_, os, ox)) = best {
+                if let Some(sid) = os {
+                    if let Some(shape) = self.shapes.get_mut(&sid) {
+                        if !shape.face_ids.contains(&f) {
+                            shape.face_ids.push(f);
+                        }
+                    }
+                    self.face_to_shape.insert(f, sid);
+                }
+                if let Some(xid) = ox {
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        if !xia.face_ids.contains(&f) {
+                            xia.face_ids.push(f);
+                        }
+                    }
+                    self.face_to_xia.insert(f, xid);
+                }
+            }
+        }
+    }
+
+    fn plane_basis(n: DVec3) -> (DVec3, DVec3) {
+        let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let u = seed.cross(n).normalize_or_zero();
+        (u, n.cross(u).normalize_or_zero())
+    }
+
+    fn face_centroid_on_plane(
+        &self,
+        f: FaceId,
+        origin: DVec3,
+        u: DVec3,
+        v: DVec3,
+    ) -> Option<(f64, f64)> {
+        let face = self.mesh.faces.get(f)?;
+        let verts = self.mesh.collect_loop_verts(face.outer().start).ok()?;
+        let pts: Vec<DVec3> = verts
+            .iter()
+            .filter_map(|x| self.mesh.vertex_pos(*x).ok())
+            .collect();
+        if pts.is_empty() {
+            return None;
+        }
+        let c = pts.iter().fold(DVec3::ZERO, |a, b| a + *b) / pts.len() as f64;
+        Some(((c - origin).dot(u), (c - origin).dot(v)))
+    }
+
+    fn point_in_poly_2d(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+        if poly.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = poly.len() - 1;
+        for i in 0..poly.len() {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            if (yi > p.1) != (yj > p.1)
+                && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi + f64::EPSILON) + xi
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    fn poly_area_2d(poly: &[(f64, f64)]) -> f64 {
+        let mut a = 0.0;
+        let mut j = poly.len() - 1;
+        for i in 0..poly.len() {
+            a += (poly[j].0 + poly[i].0) * (poly[j].1 - poly[i].1);
+            j = i;
+        }
+        (a * 0.5).abs()
+    }
+
     fn rederive_coplanar_on_draw(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() {
             return Ok(0);
@@ -3358,6 +3527,14 @@ impl Scene {
         // `face_ids` (the just-drawn faces) seed a connected-component (by 2D
         // AABB) re-derive; disjoint coplanar faces stay untouched, turning the
         // O(N²) arrange into O(affected²) (사용자 "도구 작동이 매우 느림").
+        let owner_ground = self.capture_coplanar_owners(origin, normal);
+        let faces_before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| fid)
+            .collect();
         let report = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
             &mut self.mesh,
             origin,
@@ -3366,6 +3543,7 @@ impl Scene {
             freeform_overlap,
             Some(face_ids),
         )?;
+        self.adopt_retiled_faces(&owner_ground, &faces_before, origin, normal);
 
         // δ-Path B — Path B 곡선(원/호) containment 처리. boundary kernel(polygon)
         // 은 self-loop 곡선 edge 를 미처리(skip) → 원은 rebuild 가 보존(미제거)하나
