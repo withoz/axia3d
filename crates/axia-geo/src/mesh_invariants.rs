@@ -402,17 +402,49 @@ impl Mesh {
             }
         }
 
-        // I5: 각 edge는 최대 2개 active face와 공유
+        // I5: an edge may carry more than two faces — but only when no two of
+        //     them lie on the same plane.
+        //
+        // 사용자 결정 2026-08-06. Three faces on one edge is what a sheet
+        // hanging off a solid looks like: the wall, the cap, and the plate —
+        // the solid is still closed, there is simply something attached to it.
+        // SketchUp builds exactly that, and refusing to call it valid is our
+        // checker's definition, not a law of geometry. Measured the same day:
+        // a rectangle drawn across a box's rim produced 8 faces and ONE
+        // violation, the rim edge with its three faces, and that alone dropped
+        // `is_closed_solid` to false although no boundary edge had opened.
+        //
+        // What is genuinely wrong is two faces covering the same ground. So
+        // the test is the PLANE, not the count: among the faces on an edge, if
+        // any two are coplanar they are lying on top of each other and that is
+        // damage. Different planes meeting on a line enclose nothing between
+        // them and are fine at any number.
         for (eid, edge) in self.edges.iter() {
             if !edge.is_active() { continue; }
             let (faces, _) = self.get_faces_sharing_edge(eid);
             let active_faces: Vec<_> = faces.iter()
-                .filter(|&&f| self.faces.get(f).map(|face| face.is_active()).unwrap_or(false))
+                .copied()
+                .filter(|&f| self.faces.get(f).map(|face| face.is_active()).unwrap_or(false))
                 .collect();
-            if active_faces.len() > 2 {
+            if active_faces.len() <= 2 { continue; }
+            let normals: Vec<_> = active_faces
+                .iter()
+                .filter_map(|&f| self.faces.get(f))
+                .map(|f| f.normal().normalize_or_zero())
+                .collect();
+            let mut stacked = None;
+            'pair: for i in 0..normals.len() {
+                for j in (i + 1)..normals.len() {
+                    if normals[i].dot(normals[j]).abs() > 0.999 {
+                        stacked = Some((active_faces[i], active_faces[j]));
+                        break 'pair;
+                    }
+                }
+            }
+            if let Some((a, b)) = stacked {
                 violations.push(format!(
-                    "edge {:?}: shared by {} active faces (non-manifold)",
-                    eid, active_faces.len(),
+                    "edge {:?}: shared by {} active faces (non-manifold) — {:?} / {:?} are coplanar (stacked)",
+                    eid, active_faces.len(), a, b,
                 ));
             }
         }

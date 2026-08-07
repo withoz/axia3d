@@ -10791,11 +10791,33 @@ impl Mesh {
         let mut interior = 0usize;
         let mut boundary = 0usize;
         let mut non_manifold = 0usize;
-        for &cnt in edge_counts.values() {
+        // An edge carrying three or more faces is only non-manifold when two of
+        // them lie on the SAME plane — that is two faces covering one patch of
+        // ground. A sheet hanging off a solid puts the wall, the cap and the
+        // plate on one edge, no two of them in the same place, and the solid is
+        // still closed with something attached to it (사용자 결정 2026-08-06;
+        // SketchUp builds exactly this). Counting it here was what dropped
+        // `is_closed_solid` to false for a rectangle drawn across a box's rim.
+        let stacked_on = |e: EdgeId| -> bool {
+            let (faces, _) = self.get_faces_sharing_edge(e);
+            let ns: Vec<_> = faces
+                .iter()
+                .filter_map(|&f| self.faces.get(f).filter(|x| x.is_active()))
+                .map(|f| f.normal().normalize_or_zero())
+                .collect();
+            (0..ns.len()).any(|i| ((i + 1)..ns.len()).any(|j| ns[i].dot(ns[j]).abs() > 0.999))
+        };
+        for (&eid, &cnt) in edge_counts.iter() {
             match cnt {
                 1 => boundary += 1,
                 2 => interior += 1,
-                _ => non_manifold += 1,
+                _ => {
+                    if stacked_on(eid) {
+                        non_manifold += 1;
+                    } else {
+                        interior += 1;
+                    }
+                }
             }
         }
         // 최소 closed solid = tetrahedron (4 faces). 1~3 face로는 closed 불가.
