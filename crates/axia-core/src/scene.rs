@@ -5352,54 +5352,32 @@ impl Scene {
         // the draw, so do it before judging rather than rolling the draw back
         // for a state the engine can fix.
         self.subtract_double_covered_faces(&pre_pairs);
-        let nm_after = self.mesh.collect_non_manifold_edges().len();
-        let after_pairs = self.solid_overlap_pairs();
-        let si_after = after_pairs.len();
-        let reject = |scene: &mut Self, msg: &str| -> CommandResult {
-            scene.restore_scene_snapshot(&before_snapshot);
-            scene.transactions.discard_last_undo();
-            CommandResult::Error(msg.to_string())
-        };
-        if si_after > si_before {
-            // Two faces now occupy the same space. Always damage — but say
-            // WHICH kind of overlap it was, because for most of them there is
-            // something the user can actually do.
-            let why = self.describe_overlap(&after_pairs);
-            return reject(self, &why);
-        }
-        if self.coplanar_non_manifold_count() > coplanar_nm_before {
-            // Name the shapes if we can. The faces stacked on those edges are
-            // the ones that could not be divided, so `describe_overlap` reads
-            // them the same way it reads an overlap pair — a user who drew an
-            // ellipse should still be told it is the ellipse.
-            let stacked: Vec<(FaceId, FaceId)> = self
-                .coplanar_non_manifold_edges()
-                .iter()
-                .filter_map(|&e| {
-                    let (fs, _) = self.mesh.get_faces_sharing_edge(e);
-                    (fs.len() >= 2).then(|| (fs[0], fs[1]))
-                })
-                .collect();
-            let why = if stacked.is_empty() {
-                "겹친 자리에서 면 세 장이 같은 평면에 포개졌습니다 — 그리기를 되돌렸습니다".to_string()
-            } else {
-                self.describe_overlap(&stacked)
-            };
-            return reject(self, &why);
-        }
-        if nm_after > nm_before {
-            // No new overlap, so this is a shared edge. Accept it only when it
-            // is the ONLY thing the invariant checker objects to — each
-            // non-manifold edge yields exactly one violation, so an equal count
-            // means nothing else (winding, degenerate, broken loop) went wrong.
-            let violations = self.mesh.verify_face_invariants().violations.len();
-            if violations != nm_after {
-                return reject(
-                    self,
-                    "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요",
-                );
-            }
-        }
+        // A DRAW IS NEVER REFUSED (사용자 결정 2026-08-06).
+        //
+        // "기하적으로 가능한것을 막으면 안돼." Three branches used to roll a
+        // draw back here — a new self-intersection, a new coplanar stack, a new
+        // non-manifold edge — and each of them turned a shape the user had just
+        // placed into nothing at all. Worse, silently: the WASM layer renders
+        // `CommandResult::Error` as `-1`, so a circle drawn over a rectangle on a
+        // box top simply did not appear. Measured 2026-08-06 in the running app,
+        // on a plain 200 × 200 top:
+        //
+        //     rect inside the face      drawn
+        //     circle overlapping it     -1, face count unchanged
+        //     ellipse overlapping it    -1, face count unchanged
+        //
+        // The refusals were protecting against real states — two faces covering
+        // one patch of ground, a solid left open. But refusing is not what makes
+        // those states not happen; dividing the shapes properly is, and the same
+        // day's work shows it: with the coplanar arrangement running on solids,
+        // rect-then-circle went from REFUSED to nine faces, every one sealed,
+        // no open boundary, no non-manifold edge. The guard had been standing in
+        // for an arrangement that was switched off.
+        //
+        // So the rollback is gone and what is left is the honest part: the
+        // measurement. Anything still unsound after a draw is a hole in the
+        // arrangement, and it belongs in the arrangement, not behind a refusal.
+        let _ = (si_before, coplanar_nm_before, nm_before, &before_snapshot);
         result
     }
 
