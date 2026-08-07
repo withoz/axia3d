@@ -8193,6 +8193,92 @@ impl Mesh {
         }
     }
 
+    /// SIMULATION — a sphere defined by its AXIS, as one face.
+    ///
+    /// The shipped `create_sphere_kernel_native` puts the EQUATOR in the DCEL:
+    /// one anchor on it, one self-loop edge carrying it, and the sphere split
+    /// into two hemispheres by `v_range`. The equator is a drawing aid, not part
+    /// of the sphere, and the two halves then need patching up to read as one
+    /// object — the seam is marked SOFT so it does not render, and both faces get
+    /// a shared `surface_owner_id` so a click selects the whole sphere.
+    ///
+    /// This builds the other shape, for measurement:
+    ///
+    /// - 2 vertices, both ON THE AXIS (north pole, south pole)
+    /// - 1 seam edge between them (a meridian — it lies in a plane through the
+    ///   axis, so it belongs to the axis definition rather than cutting across it)
+    /// - 1 face whose boundary walks that seam out and back, with the FULL
+    ///   sphere as its surface (`v_range` = -π/2 .. π/2)
+    ///
+    /// This is what IFC/STEP write (`IfcSeamCurve` + `IfcVertexLoop`) and what
+    /// ADR-310 deferred. Nothing calls it yet; it exists so the two definitions
+    /// can be measured side by side before either is adopted.
+    pub fn sim_create_sphere_axis_native(
+        &mut self,
+        center: DVec3,
+        radius: f64,
+        axis: DVec3,
+        material: MaterialId,
+    ) -> Result<FaceId> {
+        ensure!(radius > 0.0, "sim sphere: radius must be positive");
+        ensure!(center.is_finite(), "sim sphere: center must be finite");
+        let axis_dir = axis.normalize_or_zero();
+        ensure!(axis_dir.length() > 0.5, "sim sphere: axis must be a direction");
+        // A reference direction perpendicular to the axis — where the seam sits.
+        let a = if axis_dir.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let ref_dir = (a - axis_dir * a.dot(axis_dir)).normalize();
+
+        let north = self.add_vertex(center + axis_dir * radius);
+        let south = self.add_vertex(center - axis_dir * radius);
+        let (eid, _) = self.add_edge(north, south)?;
+
+        let he_fwd = self.edges[eid].any_he();
+        ensure!(!he_fwd.is_null(), "sim sphere: seam edge has no half-edge");
+        let he_bwd = self.hes[he_fwd].next_rad();
+        ensure!(
+            !he_bwd.is_null() && he_bwd != he_fwd,
+            "sim sphere: seam edge has no twin"
+        );
+
+        let face = self.faces.insert(Face::new(
+            LoopRef::default(),
+            axis_dir, // legacy field; the surface is the truth
+            FACE_TOLERANCE,
+            material,
+        ));
+        // The boundary walks out along the seam and back along its twin, so the
+        // one face is bounded without any curve being invented for it.
+        self.hes[he_fwd].set_next(he_bwd);
+        self.hes[he_bwd].set_next(he_fwd);
+        self.hes[he_fwd].set_prev(he_bwd);
+        self.hes[he_bwd].set_prev(he_fwd);
+        self.hes[he_fwd].set_face(face);
+        self.hes[he_bwd].set_face(face);
+        self.hes[he_fwd].set_outer(true);
+        self.hes[he_bwd].set_outer(true);
+        self.faces[face].set_outer(LoopRef::new(he_fwd, true));
+
+        self.faces[face].set_surface(Some(crate::surfaces::AnalyticSurface::Sphere {
+            center,
+            radius,
+            axis_dir,
+            ref_dir,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (
+                -std::f64::consts::FRAC_PI_2,
+                std::f64::consts::FRAC_PI_2,
+            ),
+        }));
+
+        // The seam is smooth surface, not a feature edge — same reason the
+        // equator is hidden today.
+        for he in [he_fwd, he_bwd] {
+            let f = self.hes[he].flags() | HeFlags::SOFT;
+            self.hes[he].set_flags(f);
+        }
+        Ok(face)
+    }
+
     /// ADR-104 β-2-β — Kernel-native cone creation (Path B, mirror of
     /// β-1-β `create_sphere_kernel_native`, ~92% memory reduction vs
     /// Path A polygonal cone).
