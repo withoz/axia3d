@@ -127,26 +127,63 @@ fn drawing_the_circle_first_really_does_work() {
     assert!(!matches!(r, CommandResult::Error(_)), "the advised order: {r:?}");
 }
 
-/// A freeform curve: no order works, so it must not suggest one.
+/// An ellipse overlap DIVIDES now — and still leaves faces stacked.
+///
+/// This used to assert a refusal naming the curve kind. Refusals are gone
+/// (a draw is never refused), so what is left to pin is what the draw
+/// actually produces. Measured 2026-08-06, on a box top, all three orders:
+///
+/// ```text
+///   ellipse then rect    9 faces, 0 open edges, 5 coplanar stacks
+///   rect then ellipse    9 faces, 0 open edges, 3
+///   ellipse then ellipse 9 faces, 0 open edges, 6
+/// ```
+///
+/// So the solid is not opened and the regions ARE cut — the overlap is
+/// simply covered twice where the ellipse meets what it crosses. A circle in
+/// the same place leaves none of this, which is the whole gap: the analytic
+/// path that exists for circles does not exist for ellipses.
+///
+/// Pinned as it stands, not as it should be. When the ellipse gets that path
+/// these numbers go to zero and this test is what will say so.
 #[test]
-fn an_ellipse_overlap_is_not_told_to_try_another_order() {
-    for (first, second) in [("ellipse-rect", true), ("rect-ellipse", false)] {
+fn an_ellipse_overlap_divides_but_still_stacks_faces() {
+    for (name, reversed, both) in [
+        ("ellipse then rect", false, false),
+        ("rect then ellipse", true, false),
+        ("ellipse then ellipse", false, true),
+    ] {
         let mut s = boxed();
-        let msg = if second {
+        let r = if both {
             ellipse(&mut s, -20.0);
-            refusal(rect(&mut s, 30.0))
-        } else {
+            ellipse(&mut s, 20.0)
+        } else if reversed {
             rect(&mut s, 0.0);
-            refusal(ellipse(&mut s, 30.0))
+            ellipse(&mut s, 30.0)
+        } else {
+            ellipse(&mut s, -20.0);
+            rect(&mut s, 30.0)
         };
-        assert!(msg.contains("타원"), "{first}: must name the curve kind: {msg}");
-        assert!(!msg.contains("먼저"), "{first}: must not suggest an order that fails: {msg}");
+        assert!(!matches!(r, CommandResult::Error(_)), "{name}: a draw is never refused, got {r:?}");
+
+        let all: Vec<axia_geo::FaceId> =
+            s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+        let mi = s.mesh.face_set_manifold_info(&all);
+        assert_eq!(all.len(), 9, "{name}: the top is cut into regions");
+        assert_eq!(mi.boundary_edge_count, 0, "{name}: nothing is left open");
+
+        // The gap, recorded rather than tolerated: where the ellipse meets what
+        // it crosses, two faces still hold the same ground.
+        let stacks = s.mesh.verify_face_invariants().violations;
+        assert!(
+            !stacks.is_empty(),
+            "{name}: if this is now empty the ellipse path landed — drop the              assertion and tighten the two above"
+        );
+        assert!(
+            stacks.iter().all(|v| v.contains("coplanar")),
+            "{name}: only stacked faces are expected here, got {stacks:?}"
+        );
     }
-    // Two of them, likewise.
-    let mut s = boxed();
-    ellipse(&mut s, -20.0);
-    let msg = refusal(ellipse(&mut s, 20.0));
-    assert!(msg.contains("타원"), "{msg}");
 }
 
 /// The cases that no longer refuse at all — the message must not be reachable
