@@ -1384,12 +1384,56 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             .filter(|(_, a)| affected_aabbs.iter().any(|aa| aa.overlaps(a, scope_margin)))
             .map(|(&r, _)| r)
             .collect();
-        onp_ve
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| active.contains(&comp_of[*i]))
-            .map(|(_, &e)| e)
-            .collect()
+        // Two solids sharing this plane: the re-tile cannot keep both whole.
+        //
+        // ADR-281 β-1 feeds a solid's on-plane perimeter so the arrange net-tiles
+        // that face and the walls keep the edges they stand on. It works for ONE
+        // solid. When the drawn region reaches the perimeters of two, the arrange
+        // divides the shared ground and there is no way to give each solid the
+        // pieces it needs — a face belongs to one owner. Measured 2026-08-07, two
+        // 120³ boxes at (0,0,60) and (80,80,60) sharing z=0:
+        //
+        //     re-tile off, autoIntersect on   24 faces  14 violations
+        //     autoIntersect off, re-tile on   13 faces   8 boundary edges
+        //     both off                        12 faces   0, closed ✓
+        //
+        // Each solid is only whole with the re-tile out of the way. The 12 self-
+        // intersections there are correct — the boxes really do interpenetrate,
+        // and that is the input Boolean is meant to receive.
+        //
+        // The test is the SHELL, not the number of components: a solid whose top
+        // has a hole also yields two components (outer rim + hole rim) and must
+        // keep working. Those two are reachable from each other across shared
+        // edges; two interpenetrating boxes share no edge at all. Measured the
+        // same day — ring: both components root to one face; two boxes: two roots.
+        let spans_two_shells = active.len() >= 2 && {
+            let shells = mesh.face_shell_ids();
+            // FaceId derives no Ord (see this module's header note on VertId), so
+            // a hash set rather than a btree one.
+            let mut roots: HashSet<FaceId> = HashSet::new();
+            for &r in &active {
+                if let Some((i, _)) = onp_ve.iter().enumerate().find(|(i, _)| comp_of[*i] == r) {
+                    for &f in mesh.get_faces_sharing_edge(onp_ve[i]).0.iter() {
+                        if let Some(&root) = shells.get(&f) {
+                            roots.insert(root);
+                        }
+                    }
+                }
+            }
+            roots.len() >= 2
+        };
+        if spans_two_shells {
+            // empty ⇒ `retile_is_planar` is false ⇒ the draw-onto-solid guard
+            // below skips this re-derive. No new branch needed there.
+            HashSet::new()
+        } else {
+            onp_ve
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| active.contains(&comp_of[*i]))
+                .map(|(_, &e)| e)
+                .collect()
+        }
     };
 
     // ── Draw-onto-solid guard (2026-06-09) — skip the re-derive when the
