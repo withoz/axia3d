@@ -39,18 +39,30 @@ test.describe('ADR-278 follow-up — Path B sphere/cone/torus subtract cuts', ()
       bridge.setSpherePathBDefault?.(true);
       bridge.setConePathBDefault?.(true);
       bridge.setTorusPathBDefault?.(true);
+      // Read the live face ids rather than predicting them: measured 2026-08-07,
+      // a fresh scene's first box is FaceId 1..6, not 0..5, so `booleanSolid` was
+      // handed FaceId(0) and answered "face not found" — the subtract never ran.
+      const liveFaces = (): number[] => {
+        const out: number[] = [];
+        for (let f = 0; f < 400; f++) {
+          try {
+            if (bridge.faceSurfaceKind(f) >= 0) out.push(f);
+          } catch {
+            /* not a live face */
+          }
+        }
+        return out;
+      };
       // Box spans z∈[0,120] (create_box center z=60, height 120... use center 50/120).
       bridge.create_box(0, 0, 50, 120, 120, 120);
-      const boxN = bridge.getStats().faces; // 6
-      const boxFaces = Array.from({ length: boxN }, (_, i) => i);
+      const boxFaces = liveFaces();
       if (k === 'sph') bridge.create_sphere(40, 40, 110, 40, 16, 12);
       else if (k === 'con') bridge.create_cone(30, 30, 60, 40, 160, 24);
       // torus THROUGH the box middle (z=50) — a clean toroidal cut. (z=110
       // grazing the top face is tangential → self-intersects → gate rejects.)
       else bridge.create_torus(0, 0, 50, 40, 15);
-      const totalN = bridge.getStats().faces;
-      const curvedFaces = Array.from({ length: totalN - boxN }, (_, i) => boxN + i);
-      const before = totalN;
+      const curvedFaces = liveFaces().filter((f) => !boxFaces.includes(f));
+      const before = bridge.getStats().faces;
       bridge.booleanSolid(new Uint32Array(boxFaces), new Uint32Array(curvedFaces), 'subtract');
       const after = bridge.getStats().faces;
       const outward = bridge.verifyOutwardNormals();

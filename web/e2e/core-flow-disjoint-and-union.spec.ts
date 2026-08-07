@@ -127,17 +127,33 @@ test.describe('core modeling flow — disjoint-after-box + solid union', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const bridge = w.__axia!.get<any>('bridge');
 
-      // box A: 120^3 centered (0,0,60). Face ids 0..5 in a fresh scene.
+      // Which faces are live? This used to assume ids 0..n-1, and they are not:
+      // measured 2026-08-07, a fresh scene's first box is FaceId 1..6, so
+      // `booleanSolid` was handed FaceId(0) and answered "face not found".
+      // Reading the ids instead of predicting them is what makes this test
+      // about the union rather than about id allocation.
+      const liveFaces = (): number[] => {
+        const out: number[] = [];
+        for (let f = 0; f < 200; f++) {
+          try {
+            if (bridge.faceSurfaceKind(f) >= 0) out.push(f);
+          } catch {
+            /* not a live face */
+          }
+        }
+        return out;
+      };
+
+      // box A: 120^3 centered (0,0,60).
       bridge.create_box(0, 0, 60, 120, 120, 120);
-      const nA = bridge.getStats().faces;
-      const facesA = Array.from({ length: nA }, (_, i) => i);
+      const facesA = liveFaces();
+      const nA = facesA.length;
 
       // box B: 120^3 centered (80,80,60) — OVERLAPS A (offset 80 < 120).
       bridge.create_box(80, 80, 60, 120, 120, 120);
-      const nAll = bridge.getStats().faces;
-      const facesB = Array.from({ length: nAll - nA }, (_, i) => nA + i);
+      const facesB = liveFaces().filter((f) => !facesA.includes(f));
 
-      const before = nAll;
+      const before = bridge.getStats().faces;
       const res = bridge.booleanSolid(new Uint32Array(facesA), new Uint32Array(facesB), 'union');
       const after = bridge.getStats().faces;
       const outward = bridge.verifyOutwardNormals();
