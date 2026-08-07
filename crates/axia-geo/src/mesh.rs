@@ -11592,65 +11592,6 @@ impl Mesh {
         (faces, hes)
     }
 
-    /// Group active faces into shells: every active face maps to a
-    /// representative of the connected group it belongs to.
-    ///
-    /// Two faces are in one shell when a walk across shared edges reaches from
-    /// one to the other. That is what separates "one solid" from "two solids in
-    /// the same place":
-    ///
-    /// - Two boxes that merely interpenetrate are **two** shells — overlapping
-    ///   in space shares no edge.
-    /// - A box whose top has a hole is **one** shell: the hole's rim is reached
-    ///   from the outer rim through the tube's walls.
-    ///
-    /// Measured 2026-08-07 — two 120³ boxes sharing z=0 gave two roots, a drilled
-    /// box's outer and hole rims gave one. Inner (hole) loops are walked as well
-    /// as outer ones, so the connection does not depend on which face happens to
-    /// carry a rim as its outer boundary.
-    pub fn face_shell_ids(&self) -> rustc_hash::FxHashMap<FaceId, FaceId> {
-        use rustc_hash::FxHashMap;
-        let active: Vec<FaceId> = self
-            .faces
-            .iter()
-            .filter(|(_, f)| f.is_active())
-            .map(|(f, _)| f)
-            .collect();
-        let mut parent: FxHashMap<FaceId, FaceId> = active.iter().map(|&f| (f, f)).collect();
-        fn root(m: &FxHashMap<FaceId, FaceId>, x: FaceId) -> FaceId {
-            let mut r = x;
-            while let Some(&p) = m.get(&r) {
-                if p == r {
-                    break;
-                }
-                r = p;
-            }
-            r
-        }
-        for &f in &active {
-            let mut edges = self.face_outer_edges(f).unwrap_or_default();
-            if let Some(face) = self.faces.get(f) {
-                for inner in face.inners() {
-                    if let Ok(hes) = self.collect_loop_hes(inner.start) {
-                        edges.extend(hes.into_iter().map(|h| self.hes[h].edge()));
-                    }
-                }
-            }
-            for e in edges {
-                for &g in self.get_faces_sharing_edge(e).0.iter() {
-                    if g == f || !parent.contains_key(&g) {
-                        continue;
-                    }
-                    let (ra, rb) = (root(&parent, f), root(&parent, g));
-                    if ra != rb {
-                        parent.insert(ra, rb);
-                    }
-                }
-            }
-        }
-        active.iter().map(|&f| (f, root(&parent, f))).collect()
-    }
-
     /// Two faces on this edge that cover the SAME ground — or `None`.
     ///
     /// An edge with three or more faces is the ordinary shape of a sheet meeting

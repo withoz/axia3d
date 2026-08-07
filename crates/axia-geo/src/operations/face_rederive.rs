@@ -1401,28 +1401,25 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
         // intersections there are correct — the boxes really do interpenetrate,
         // and that is the input Boolean is meant to receive.
         //
-        // The test is the SHELL, not the number of components: a solid whose top
-        // has a hole also yields two components (outer rim + hole rim) and must
-        // keep working. Those two are reachable from each other across shared
-        // edges; two interpenetrating boxes share no edge at all. Measured the
-        // same day — ring: both components root to one face; two boxes: two roots.
-        let spans_two_shells = active.len() >= 2 && {
-            let shells = mesh.face_shell_ids();
-            // FaceId derives no Ord (see this module's header note on VertId), so
-            // a hash set rather than a btree one.
-            let mut roots: HashSet<FaceId> = HashSet::new();
-            for &r in &active {
-                if let Some((i, _)) = onp_ve.iter().enumerate().find(|(i, _)| comp_of[*i] == r) {
-                    for &f in mesh.get_faces_sharing_edge(onp_ve[i]).0.iter() {
-                        if let Some(&root) = shells.get(&f) {
-                            roots.insert(root);
-                        }
-                    }
-                }
-            }
-            roots.len() >= 2
-        };
-        if spans_two_shells {
+        // ONE perimeter is what β-1 can carry, so the rule is the count.
+        //
+        // A solid whose top has a hole reaches two components as well (outer rim
+        // + hole rim, one solid), and the obvious worry was that a plain count
+        // would skip a case that works. It was worth measuring rather than
+        // reasoning about: a shell-reachability test was written first — two
+        // interpenetrating boxes share no edge, a drilled box's hole rim is
+        // reached from its outer rim through the tube — and it is the WORSE of
+        // the two. Drawing across a hole's rim on a ring top:
+        //
+        //     by shell (two solids only)   13 faces  5 nm  5 violations  open
+        //     by count (any two)           11 faces  0     0             closed
+        //
+        // The count fixes that case too; the shell test left it damaged. Its one
+        // self-intersection is the drawn shape passing over the hole, which is
+        // real geometry and may be what was wanted. So the simpler rule stands
+        // and the shell helper is gone — measure, then simplify.
+        let feeds_more_than_one_perimeter = active.len() >= 2;
+        if feeds_more_than_one_perimeter {
             // empty ⇒ `retile_is_planar` is false ⇒ the draw-onto-solid guard
             // below skips this re-derive. No new branch needed there.
             HashSet::new()

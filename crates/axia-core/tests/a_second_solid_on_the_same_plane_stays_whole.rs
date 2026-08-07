@@ -19,11 +19,18 @@
 //! Asserting `si == 0` here would be asserting that two overlapping solids may
 //! not exist.
 //!
-//! The fix asks whether the perimeters being fed belong to two different SHELLS
-//! (`Mesh::face_shell_ids`), not whether there are two of them — a solid with a
-//! hole in its top has two perimeter components and must keep working. That side
-//! is guarded in `axia-geo/tests/two_solids_on_one_plane_are_two_shells.rs` and
-//! by the ring case below.
+//! The fix is that β-1 can carry ONE perimeter, so it stands down when the drawn
+//! region reaches two. A solid whose top has a hole reaches two as well (outer
+//! rim + hole rim, one solid), and the worry was that this would skip a case that
+//! works. Measured instead of reasoned about — a shell-reachability rule ("two
+//! different solids only") was written first and is the WORSE of the two:
+//!
+//! ```text
+//!   drawing across a hole's rim, by shell   13 faces  5 nm  5 violations  open
+//!   drawing across a hole's rim, by count   11 faces  0     0             closed
+//! ```
+//!
+//! The count fixes the ring case too. Both are pinned below.
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use glam::DVec3;
 
@@ -101,8 +108,7 @@ fn drawing_on_a_solid_top_with_a_hole_is_unchanged() {
     assert_eq!(drilled.faces, 10, "box 6 − top + ring + 4 tube walls");
     assert!(drilled.closed);
 
-    // a rect on the ring, clear of the hole — this is the case a component count
-    // would have skipped, and it still divides the ring and stays closed
+    // a rect on the ring, clear of the hole
     let r = s.execute(Command::DrawRectAsShape {
         center: DVec3::new(65.0, 0.0, 120.0),
         normal: DVec3::Z,
@@ -116,4 +122,41 @@ fn drawing_on_a_solid_top_with_a_hole_is_unchanged() {
     assert!(h.closed, "the solid stays closed");
     assert_eq!(h.boundary, 0);
     assert_eq!(h.violations, 0);
+}
+
+/// And the case that decided the rule: a rect drawn ACROSS the hole's rim. Under
+/// a shell-reachability rule the re-tile ran here and left 5 non-manifold edges
+/// with the solid open; standing down on any second perimeter keeps it closed.
+#[test]
+fn drawing_across_a_hole_rim_keeps_the_solid_closed() {
+    let mut s = prod();
+    let f = s.mesh.create_box(DVec3::new(0.0, 0.0, 60.0), 200.0, 120.0, 200.0, FORM_MATERIAL).unwrap();
+    s.create_xia_with_faces("box".into(), DVec3::ZERO, f);
+    s.drill_rect_through_hole(
+        DVec3::new(-30.0, -30.0, 120.0),
+        DVec3::new(30.0, 30.0, 120.0),
+        DVec3::Z,
+    )
+    .expect("the drill must succeed for this fixture to mean anything");
+    assert_eq!(health(&s).faces, 10);
+
+    // x ∈ [0,60] — the hole's rim is at x = 30, so this straddles it
+    let r = s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(30.0, 0.0, 120.0),
+        normal: DVec3::Z,
+        up: DVec3::Y,
+        width: 60.0,
+        height: 30.0,
+    });
+    assert!(!matches!(r, CommandResult::Error(_)), "{r:?}");
+
+    let h = health(&s);
+    assert_eq!(h.faces, 11, "the drawn rect is one face on the ring");
+    assert!(h.closed, "the solid must not be opened by drawing on it");
+    assert_eq!(h.boundary, 0, "no free edge is left behind");
+    assert_eq!(h.non_manifold, 0, "was 5 when the re-tile ran here");
+    assert_eq!(h.violations, 0, "was 5 when the re-tile ran here");
+    // Deliberately NOT asserting si == 0: the rect passes over the hole, so it
+    // does cross the tube. That is real geometry and may be what was wanted —
+    // asserting it away would be asserting that you may not draw over a hole.
 }
