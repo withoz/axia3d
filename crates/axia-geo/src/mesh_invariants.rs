@@ -617,7 +617,7 @@ mod seam_boundary_tests {
     /// seam-bounded face; without one it encloses nothing.
     fn seam_face(with_surface: bool) -> Mesh {
         let mut m = Mesh::new();
-        m.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, MaterialId::new(0)).unwrap();
+        m.create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, MaterialId::new(0)).unwrap();
         if !with_surface {
             let fid = m.faces.iter().find(|(_, f)| f.is_active()).map(|(f, _)| f).unwrap();
             m.set_face_surface(fid, None);

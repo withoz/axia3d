@@ -94,7 +94,7 @@ fn both_sphere_definitions_agree_on_the_volume() {
     let va = axia_core::promote::face_set_volume(&a.mesh, &fa);
 
     let mut b = Scene::new();
-    let fb = b.mesh.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
+    let fb = b.mesh.create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
     let vb = axia_core::promote::face_set_volume(&b.mesh, &[fb]);
 
     assert!((va - vb).abs() < 1e-6, "equator def {va:.6} vs axis def {vb:.6}");

@@ -68,8 +68,10 @@ test.describe('ADR-202 — circle sketching on a sphere', () => {
         valid: inv.valid, viol: inv.violationCount, capKind, annKind, onCircle,
       };
     });
-    expect(r.before).toBe(2); // Path B sphere = 2 hemispheres
-    expect(r.after).toBe(3); // cap + annulus(host) + other hemisphere
+    // A Path B sphere is ONE face since the axis definition landed (poles +
+    // a meridian seam) — it used to be two hemispheres split by the equator.
+    expect(r.before).toBe(1);
+    expect(r.after).toBe(2); // cap + the rest of the sphere (host)
     expect(r.capKind).toBe(3); // Sphere
     expect(r.annKind).toBe(3); // Sphere (host keeps its sphere surface)
     expect(r.valid).toBe(true);
@@ -100,7 +102,7 @@ test.describe('ADR-202 — circle sketching on a sphere', () => {
       }
       return { faces: stats.faces, valid: inv.valid, viol: inv.violationCount, host, cap2: r2.cap, zmin, zmax };
     });
-    expect(r.faces).toBe(4); // 2 hemispheres + 2 caps
+    expect(r.faces).toBe(3); // the sphere + 2 caps (was 4 when it was 2 hemispheres)
     expect(r.valid).toBe(true);
     expect(r.viol).toBe(0);
     // host renders the FULL 3D sphere (multi-clip did not empty/flatten it).

@@ -29,13 +29,14 @@ fn closed(s: &Scene, faces: &[axia_geo::FaceId]) -> bool {
 
 #[test]
 fn path_b_primitives_are_closed_solids() {
-    for (name, expect_faces) in [("sphere", 2usize), ("cone", 2), ("cylinder", 3)] {
+    for (name, expect_faces) in [("sphere", 1usize), ("cone", 2), ("cylinder", 3)] {
         let mut s = pathb();
         let f = match name {
             "sphere" => s.mesh.create_sphere(DVec3::ZERO, 50.0, 16, 12, FORM_MATERIAL).unwrap(),
             "cone" => s.mesh.create_cone(DVec3::ZERO, 50.0, 100.0, 24, FORM_MATERIAL).unwrap(),
             _ => s.mesh.create_cylinder(DVec3::ZERO, 50.0, 100.0, 24, FORM_MATERIAL).unwrap(),
         };
+        // sphere = 1 (axis definition), cone = 2 (base + side), cylinder = 3
         assert_eq!(f.len(), expect_faces, "{name}: Path B face count");
         let mi = s.mesh.face_set_manifold_info(&f);
         assert_eq!(mi.boundary_edge_count, 0, "{name}: nothing open");
@@ -94,7 +95,7 @@ fn a_flat_pillow_closes_but_cannot_become_a_xia() {
 #[test]
 fn a_seam_bounded_face_satisfies_the_invariants() {
     let mut s = Scene::new();
-    let f = s.mesh.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
+    let f = s.mesh.create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
     let r = s.mesh.verify_face_invariants();
     assert!(r.is_valid(), "a seam is a boundary: {:?}", r.violations);
     let mi = s.mesh.face_set_manifold_info(&[f]);

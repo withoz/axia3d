@@ -61,7 +61,8 @@ test.describe('object snap on a curved face', () => {
       tm.setTool('line');
       return { circle: res, faces: bridge.getStats().faces };
     }, R);
-    expect(setup.faces).toBeGreaterThan(2); // the circle really split the sphere
+    // the circle really split the sphere: 1 (axis-definition sphere) + 1 cap
+    expect(setup.faces).toBeGreaterThan(1);
 
     // The snap cache refreshes on an idle callback — wait for it to be warm
     // rather than betting on a fixed sleep.

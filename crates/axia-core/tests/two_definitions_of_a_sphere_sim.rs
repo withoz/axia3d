@@ -77,7 +77,7 @@ fn sim_compare_two_sphere_definitions() {
     report(&s, "A — SHIPPED: equator in the DCEL, 2 hemispheres");
 
     let mut s = Scene::new();
-    s.mesh.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
+    s.mesh.create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
     report(&s, "B — SIM: poles on the axis, one seam, ONE face");
 }
 
@@ -109,7 +109,7 @@ fn sim_volume_from_the_surface() {
     println!("analytic 4/3πr³ straight from the radius = {truth:.1}  (exact, no boundary needed)");
     for tol in [0.5, 0.1, 0.05, 0.01] {
         let mut s = Scene::new();
-        s.mesh.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
+        s.mesh.create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, FORM_MATERIAL).unwrap();
         let v = volume_from_surface(&s, tol);
         println!("  tessellation chord_tol={tol:<5} → {v:>12.1}   error {:>7.3}%",
             (v - truth).abs() / truth * 100.0);

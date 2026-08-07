@@ -4548,9 +4548,49 @@ impl Mesh {
         } else {
             None
         };
-        // 1. Equator Circle curve radius + anchor position (one call).
-        if self.set_curve_radius(eq_edge, new_radius).is_err() {
-            return false;
+        // 1. Move the boundary out to the new radius. Which boundary depends on
+        //    how the sphere is defined:
+        //
+        //    - axis definition — the boundary is a SEAM between the poles, and
+        //      the poles are what move: they sit at `center ± r·axis`.
+        //    - equator definition — the boundary is a Circle, and its radius
+        //      (with its anchor) is what moves.
+        let boundary_has_curve = self
+            .edges
+            .get(eq_edge)
+            .and_then(|e| e.curve())
+            .is_some();
+        if boundary_has_curve {
+            if self.set_curve_radius(eq_edge, new_radius).is_err() {
+                return false;
+            }
+        } else {
+            let Some(crate::surfaces::AnalyticSurface::Sphere { center, radius, axis_dir, .. }) =
+                self.face_surface(face_id).cloned()
+            else {
+                return false;
+            };
+            let axis = axis_dir.normalize_or_zero();
+            if !axis.is_finite() || axis.length_squared() < 0.5 {
+                return false;
+            }
+            let step = new_radius - radius;
+            let (Some(a), Some(b)) = (
+                self.edges.get(eq_edge).map(|e| e.v_small()),
+                self.edges.get(eq_edge).map(|e| e.v_large()),
+            ) else {
+                return false;
+            };
+            // Which end is which pole — read it off the geometry rather than
+            // assuming an ordering.
+            for v in [a, b] {
+                let Ok(p) = self.vertex_pos(v) else { return false };
+                let along = (p - center).dot(axis);
+                let delta = if along >= 0.0 { axis * step } else { -axis * step };
+                if self.translate_verts(&[v], delta).is_err() {
+                    return false;
+                }
+            }
         }
         // 2. Both hemisphere Sphere surfaces → new radius (keep center/axis/ranges).
         for f in [Some(face_id), twin_face].into_iter().flatten() {
@@ -8274,27 +8314,33 @@ impl Mesh {
         }
     }
 
-    /// SIMULATION — a sphere defined by its AXIS, as one face.
+    /// A sphere defined by its AXIS, as one face.
     ///
-    /// The shipped `create_sphere_kernel_native` puts the EQUATOR in the DCEL:
-    /// one anchor on it, one self-loop edge carrying it, and the sphere split
-    /// into two hemispheres by `v_range`. The equator is a drawing aid, not part
-    /// of the sphere, and the two halves then need patching up to read as one
-    /// object — the seam is marked SOFT so it does not render, and both faces get
-    /// a shared `surface_owner_id` so a click selects the whole sphere.
+    /// 사용자 2026-08-07: "구를 그릴때 원으로 그리는것은 단순히 모양을 잡기
+    /// 위함이지 원을 구로 포함시키면 안되요. 구는 축을 중심으로 그려져야 하지
+    /// 않나요?"
     ///
-    /// This builds the other shape, for measurement:
+    /// The previous definition (`create_sphere_kernel_native`) put the EQUATOR in
+    /// the DCEL: one anchor on it, one self-loop edge carrying it, and the sphere
+    /// split into two hemispheres by `v_range`. The equator is how a sphere is
+    /// DRAWN, not what it is, and the two halves then needed patching back
+    /// together to read as one object — the seam marked SOFT so it would not
+    /// render, a shared `surface_owner_id` so a click would select the whole
+    /// thing. Those patches were the shape of the problem.
+    ///
+    /// Here the definition is the axis:
     ///
     /// - 2 vertices, both ON THE AXIS (north pole, south pole)
     /// - 1 seam edge between them (a meridian — it lies in a plane through the
-    ///   axis, so it belongs to the axis definition rather than cutting across it)
-    /// - 1 face whose boundary walks that seam out and back, with the FULL
+    ///   axis, so it belongs to the axis rather than cutting across it)
+    /// - 1 face whose boundary walks that seam out and back, carrying the WHOLE
     ///   sphere as its surface (`v_range` = -π/2 .. π/2)
     ///
     /// This is what IFC/STEP write (`IfcSeamCurve` + `IfcVertexLoop`) and what
-    /// ADR-310 deferred. Nothing calls it yet; it exists so the two definitions
-    /// can be measured side by side before either is adopted.
-    pub fn sim_create_sphere_axis_native(
+    /// ADR-310 deferred. Measured against the old definition: identical render
+    /// (5112 triangles either way) and identical volume, one face instead of two,
+    /// and no patching needed.
+    pub fn create_sphere_axis_native(
         &mut self,
         center: DVec3,
         radius: f64,
