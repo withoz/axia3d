@@ -402,17 +402,31 @@ impl Mesh {
             }
         }
 
-        // I5: 각 edge는 최대 2개 active face와 공유
+        // I5: an edge may carry more than two faces — but not two that cover the
+        //     same ground.
+        //
+        // 사용자 결정 2026-08-06. Three faces on one edge is what a sheet
+        // hanging off a solid looks like: the wall, the cap, and the plate —
+        // the solid is still closed, there is simply something attached to it.
+        // SketchUp builds exactly that, and refusing to call it valid is our
+        // checker's definition, not a law of geometry. Measured the same day:
+        // a rectangle drawn across a box's rim produced 8 faces and ONE
+        // violation, the rim edge with its three faces, and that alone dropped
+        // `is_closed_solid` to false although no boundary edge had opened.
+        //
+        // What is genuinely wrong is two faces covering the same ground —
+        // which is NOT the same question as whether two of them are coplanar,
+        // because an edge dividing one plane into two regions carries two
+        // coplanar faces by construction. `edge_stacked_face_pair` holds that
+        // judgement (side of the edge, not plane alone) for this check and for
+        // `face_set_manifold_info` both.
         for (eid, edge) in self.edges.iter() {
             if !edge.is_active() { continue; }
-            let (faces, _) = self.get_faces_sharing_edge(eid);
-            let active_faces: Vec<_> = faces.iter()
-                .filter(|&&f| self.faces.get(f).map(|face| face.is_active()).unwrap_or(false))
-                .collect();
-            if active_faces.len() > 2 {
+            if let Some((a, b)) = self.edge_stacked_face_pair(eid) {
+                let (faces, _) = self.get_faces_sharing_edge(eid);
                 violations.push(format!(
-                    "edge {:?}: shared by {} active faces (non-manifold)",
-                    eid, active_faces.len(),
+                    "edge {:?}: shared by {} active faces (non-manifold) — {:?} / {:?} cover the same ground (stacked)",
+                    eid, faces.len(), a, b,
                 ));
             }
         }
@@ -568,6 +582,98 @@ impl Mesh {
                 eprintln!("[ADR-007] Invariant violations:\n{}", report.summary());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod edge_occupancy_tests {
+    use crate::mesh::Mesh;
+    use crate::{FaceId, MaterialId, VertId};
+    use glam::DVec3;
+
+    /// Three faces on one edge. The two flat ones are given by their far
+    /// vertex: on opposite sides of the edge they are two halves of one plane,
+    /// on the same side they cover the same ground. The third stands upright,
+    /// so the count is always three and only the plane occupancy differs.
+    fn three_on_one_edge(far_a: (f64, f64), far_b: (f64, f64)) -> (Mesh, FaceId, FaceId) {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let mut v = |x: f64, y: f64, z: f64| -> VertId { m.add_vertex(DVec3::new(x, y, z)) };
+        let (o, e) = (v(0.0, 0.0, 0.0), v(100.0, 0.0, 0.0));
+        let a = v(far_a.0, far_a.1, 0.0);
+        let b = v(far_b.0, far_b.1, 0.0);
+        let up = v(0.0, 0.0, 100.0);
+        let fa = m.add_face(&[o, e, a], mat).unwrap();
+        let fb = m.add_face(&[o, e, b], mat).unwrap();
+        m.add_face(&[o, e, up], mat).unwrap();
+        (m, fa, fb)
+    }
+
+    fn shared_edge(m: &Mesh) -> crate::EdgeId {
+        m.edges
+            .iter()
+            .find(|(eid, e)| e.is_active() && m.get_faces_sharing_edge(*eid).0.len() >= 3)
+            .map(|(eid, _)| eid)
+            .expect("the fixture puts three faces on one edge")
+    }
+
+    /// Two halves of one plane meeting at their border, plus a wall. This is a
+    /// rectangle drawn across a solid's rim, and it is not damage.
+    #[test]
+    fn faces_on_opposite_sides_of_an_edge_are_adjacent() {
+        let (m, _, _) = three_on_one_edge((0.0, 100.0), (0.0, -100.0));
+        let e = shared_edge(&m);
+        assert_eq!(m.get_faces_sharing_edge(e).0.len(), 3, "fixture: three faces");
+        assert_eq!(
+            m.edge_stacked_face_pair(e),
+            None,
+            "opposite sides of the edge cover different ground"
+        );
+        let r = m.verify_face_invariants();
+        assert!(
+            !r.violations.iter().any(|v| v.contains("stacked")),
+            "no stacking to report: {:?}",
+            r.violations
+        );
+    }
+
+    /// The same three faces, but the two flat ones reach out the same way.
+    #[test]
+    fn faces_on_the_same_side_of_an_edge_are_stacked() {
+        let (m, fa, fb) = three_on_one_edge((0.0, 100.0), (100.0, 100.0));
+        let e = shared_edge(&m);
+        let pair = m.edge_stacked_face_pair(e).expect("same side is stacked");
+        assert!(
+            (pair == (fa, fb)) || (pair == (fb, fa)),
+            "the two flat faces are the stacked ones, got {pair:?}"
+        );
+        let r = m.verify_face_invariants();
+        assert!(
+            r.violations.iter().any(|v| v.contains("stacked")),
+            "stacking must be reported: {:?}",
+            r.violations
+        );
+    }
+
+    /// Two faces on an edge is the ordinary case and never stacked, whichever
+    /// way they lie — the check must not start reading pairs of two.
+    #[test]
+    fn two_faces_on_an_edge_are_never_stacked() {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let o = m.add_vertex(DVec3::ZERO);
+        let e = m.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let a = m.add_vertex(DVec3::new(0.0, 100.0, 0.0));
+        let b = m.add_vertex(DVec3::new(100.0, 100.0, 0.0));
+        m.add_face(&[o, e, a], mat).unwrap();
+        m.add_face(&[o, e, b], mat).unwrap();
+        let eid = m
+            .edges
+            .iter()
+            .find(|(eid, ed)| ed.is_active() && m.get_faces_sharing_edge(*eid).0.len() == 2)
+            .map(|(eid, _)| eid)
+            .unwrap();
+        assert_eq!(m.edge_stacked_face_pair(eid), None);
     }
 }
 

@@ -23,11 +23,30 @@
  */
 import { test, expect } from '@playwright/test';
 
+/**
+ * ⚠ 2026-08-07 — measured all four through the production bridge, one per fresh
+ * page. Only the CYLINDER is corrupted by the repeat sketch:
+ *
+ *     cylinder  2nd circle REFUSED   59→59 rolled back, valid  ← real overlap
+ *     sphere    2nd circle ok        26→27  valid, bnd 0, nm 0, si 0, closed
+ *     cone      2nd circle ok        50→51  valid, bnd 0, nm 0, si 0, closed
+ *     torus     2nd circle ok        49→50  valid, nm 0, si 0 (its seam boundary
+ *                                            edge is there from creation)
+ *
+ * The three had been added to the same loop as the cylinder, but this file's own
+ * header only ever cited the cylinder measurement. On those three the second
+ * sketch damages nothing, so the gate letting it through is the correct answer
+ * and asserting a refusal was asserting a defect that is not there.
+ *
+ * `corrupts` says which behaviour is expected. This is not a weaker guard: the
+ * three still have to come out healthy, so if one of them ever starts stacking
+ * faces the `valid` assertion fails and says so.
+ */
 const SURFACES = [
-  { name: 'cylinder', kind: 2, centre: [200, 0, 200], rim: [200, 0, 260] },
-  { name: 'sphere', kind: 3, centre: [200, 0, 0], rim: [190, 0, 60] },
-  { name: 'cone', kind: 4, centre: [100, 0, 200], rim: [110, 0, 240] },
-  { name: 'torus', kind: 5, centre: [380, 0, 0], rim: [380, 0, 50] },
+  { name: 'cylinder', kind: 2, centre: [200, 0, 200], rim: [200, 0, 260], corrupts: true },
+  { name: 'sphere', kind: 3, centre: [200, 0, 0], rim: [190, 0, 60], corrupts: false },
+  { name: 'cone', kind: 4, centre: [100, 0, 200], rim: [110, 0, 240], corrupts: false },
+  { name: 'torus', kind: 5, centre: [380, 0, 0], rim: [380, 0, 50], corrupts: false },
 ] as const;
 
 test.describe('ADR-267 γ — curved sketch-split integrity gate', () => {
@@ -47,7 +66,10 @@ test.describe('ADR-267 γ — curved sketch-split integrity gate', () => {
   // ids collide and produced a confidently wrong reading during this audit
   // (the same trap ADR-293 §7 records).
   for (const s of SURFACES) {
-    test(`${s.name}: a sketch that would corrupt is refused and rolled back`, async ({ page }) => {
+    const title = s.corrupts
+      ? `${s.name}: a sketch that would corrupt is refused and rolled back`
+      : `${s.name}: the repeat sketch damages nothing, so it is allowed through`;
+    test(title, async ({ page }) => {
       const r = await page.evaluate((cfg) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const ax = (window as any).__axia;
@@ -79,6 +101,7 @@ test.describe('ADR-267 γ — curved sketch-split integrity gate', () => {
           host, walls, midValid: mid.valid, second,
           facesBefore, facesAfter: bridge.getStats().faces,
           valid: after.valid, viol: after.violationCount,
+          si: bridge.detectSelfIntersections().count,
         };
       }, s);
 
@@ -87,13 +110,24 @@ test.describe('ADR-267 γ — curved sketch-split integrity gate', () => {
       expect(r.walls, 'the pocket must exist for the repro to mean anything').toBeGreaterThan(0);
       expect(r.midValid).toBe(true);
 
-      // the gate refuses instead of silently corrupting
-      expect(r.second, 'the corrupting sketch must be refused').toContain('error');
-      expect(r.second).toContain('무결성');
-      // ...and leaves the model exactly as it was
-      expect(r.facesAfter, 'rolled back — no face survives the refusal').toBe(r.facesBefore);
+      if (s.corrupts) {
+        // the gate refuses instead of silently corrupting
+        expect(r.second, 'the corrupting sketch must be refused').toContain('error');
+        expect(r.second).toContain('무결성');
+        // ...and leaves the model exactly as it was
+        expect(r.facesAfter, 'rolled back — no face survives the refusal').toBe(r.facesBefore);
+      } else {
+        // nothing is damaged here, so refusing would be the defect
+        expect(r.second, 'a sketch that damages nothing must go through').toContain('cap');
+        expect(r.second).not.toContain('error');
+        expect(r.facesAfter, 'the sketch adds its face').toBeGreaterThan(r.facesBefore);
+      }
+      // either way the model must come out healthy — this is what would catch a
+      // future regression on the three that pass, and a bad rollback on the one
+      // that refuses
       expect(r.valid, 'the model must still be valid').toBe(true);
       expect(r.viol).toBe(0);
+      expect(r.si, 'no two faces may end up in the same place').toBe(0);
     });
   }
 

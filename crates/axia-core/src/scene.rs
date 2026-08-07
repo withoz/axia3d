@@ -3295,6 +3295,175 @@ impl Scene {
     ///   - 비활성된(제거된) face 의 XIA 링크 제거
     ///   - 새 face 를 drawn 의 공통 XIA(selected) 로 등록 (intersect_faces_inner
     ///     의 selected_xia 휴리스틱 답습). 모호하면 face-only.
+    /// The ground each owner covers on this plane, captured BEFORE a re-derive
+    /// consumes it.
+    ///
+    /// A re-tile removes the faces it is about to replace and reports only
+    /// counts, so the pieces it puts back arrive owned by nobody — measured
+    /// 2026-08-06, `face FaceId(11) belongs to nobody` after two circles on a
+    /// box top. The special path adopted them (`adopt_circle_overlap_split`);
+    /// the general one had nothing to adopt them into.
+    ///
+    /// Ownership is not adjacency. "Shares an edge with an owned face" would
+    /// drag a sheet drawn BESIDE a solid into that solid, and a shape drawn past
+    /// a face's rim leaves a piece OUTSIDE the solid that is not the solid's. So
+    /// what is captured is the AREA: a piece born on ground an owner covered
+    /// belongs to that owner, and a piece outside all of it belongs to nobody,
+    /// which is the right answer for the overhang.
+    fn capture_coplanar_owners(
+        &self,
+        origin: DVec3,
+        normal: DVec3,
+    ) -> Vec<(Option<crate::ShapeId>, Option<XiaId>, Vec<(f64, f64)>)> {
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return Vec::new();
+        }
+        let (u, v) = Self::plane_basis(n);
+        self.mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .filter_map(|(fid, f)| {
+                let os = self.face_to_shape.get(&fid).copied();
+                let ox = self.face_to_xia.get(&fid).copied();
+                if os.is_none() && ox.is_none() {
+                    return None;
+                }
+                let verts = self.mesh.collect_loop_verts(f.outer().start).ok()?;
+                let poly: Vec<(f64, f64)> = verts
+                    .iter()
+                    .filter_map(|vt| self.mesh.vertex_pos(*vt).ok())
+                    .filter(|p| (*p - origin).dot(n).abs() <= 1e-3)
+                    .map(|p| ((p - origin).dot(u), (p - origin).dot(v)))
+                    .collect();
+                // Needs a polygon to test against. A Path B circle is a single
+                // anchor vertex and has none; the face that holds it as a hole
+                // does, and that is the one covering the ground.
+                (poly.len() >= 3).then_some((os, ox, poly))
+            })
+            .collect()
+    }
+
+    /// Give each face the re-derive just made to whoever owned the ground it
+    /// sits on. See [`Self::capture_coplanar_owners`].
+    fn adopt_retiled_faces(
+        &mut self,
+        captured: &[(Option<crate::ShapeId>, Option<XiaId>, Vec<(f64, f64)>)],
+        before: &std::collections::HashSet<FaceId>,
+        origin: DVec3,
+        normal: DVec3,
+    ) {
+        if captured.is_empty() {
+            return;
+        }
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return;
+        }
+        let (u, v) = Self::plane_basis(n);
+        let fresh: Vec<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && !before.contains(fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        for f in fresh {
+            if self.face_to_shape.contains_key(&f) || self.face_to_xia.contains_key(&f) {
+                continue;
+            }
+            let Some(c) = self.face_centroid_on_plane(f, origin, u, v) else {
+                continue;
+            };
+            // Smallest enclosing owner wins, so a piece inside a ring goes to the
+            // ring and not to whatever also happens to contain it.
+            let mut best: Option<(f64, Option<crate::ShapeId>, Option<XiaId>)> = None;
+            for (os, ox, poly) in captured {
+                if !Self::point_in_poly_2d(c, poly) {
+                    continue;
+                }
+                let area = Self::poly_area_2d(poly);
+                if best.as_ref().map_or(true, |(a, _, _)| area < *a) {
+                    best = Some((area, *os, *ox));
+                }
+            }
+            if let Some((_, os, ox)) = best {
+                if let Some(sid) = os {
+                    if let Some(shape) = self.shapes.get_mut(&sid) {
+                        if !shape.face_ids.contains(&f) {
+                            shape.face_ids.push(f);
+                        }
+                    }
+                    self.face_to_shape.insert(f, sid);
+                }
+                if let Some(xid) = ox {
+                    if let Some(xia) = self.xias.get_mut(&xid) {
+                        if !xia.face_ids.contains(&f) {
+                            xia.face_ids.push(f);
+                        }
+                    }
+                    self.face_to_xia.insert(f, xid);
+                }
+            }
+        }
+    }
+
+    fn plane_basis(n: DVec3) -> (DVec3, DVec3) {
+        let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let u = seed.cross(n).normalize_or_zero();
+        (u, n.cross(u).normalize_or_zero())
+    }
+
+    fn face_centroid_on_plane(
+        &self,
+        f: FaceId,
+        origin: DVec3,
+        u: DVec3,
+        v: DVec3,
+    ) -> Option<(f64, f64)> {
+        let face = self.mesh.faces.get(f)?;
+        let verts = self.mesh.collect_loop_verts(face.outer().start).ok()?;
+        let pts: Vec<DVec3> = verts
+            .iter()
+            .filter_map(|x| self.mesh.vertex_pos(*x).ok())
+            .collect();
+        if pts.is_empty() {
+            return None;
+        }
+        let c = pts.iter().fold(DVec3::ZERO, |a, b| a + *b) / pts.len() as f64;
+        Some(((c - origin).dot(u), (c - origin).dot(v)))
+    }
+
+    fn point_in_poly_2d(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+        if poly.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = poly.len() - 1;
+        for i in 0..poly.len() {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            if (yi > p.1) != (yj > p.1)
+                && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi + f64::EPSILON) + xi
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    fn poly_area_2d(poly: &[(f64, f64)]) -> f64 {
+        let mut a = 0.0;
+        let mut j = poly.len() - 1;
+        for i in 0..poly.len() {
+            a += (poly[j].0 + poly[i].0) * (poly[j].1 - poly[i].1);
+            j = i;
+        }
+        (a * 0.5).abs()
+    }
+
     fn rederive_coplanar_on_draw(&mut self, face_ids: &[FaceId]) -> anyhow::Result<usize> {
         if face_ids.is_empty() {
             return Ok(0);
@@ -3358,6 +3527,14 @@ impl Scene {
         // `face_ids` (the just-drawn faces) seed a connected-component (by 2D
         // AABB) re-derive; disjoint coplanar faces stay untouched, turning the
         // O(N²) arrange into O(affected²) (사용자 "도구 작동이 매우 느림").
+        let owner_ground = self.capture_coplanar_owners(origin, normal);
+        let faces_before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| fid)
+            .collect();
         let report = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
             &mut self.mesh,
             origin,
@@ -3366,6 +3543,7 @@ impl Scene {
             freeform_overlap,
             Some(face_ids),
         )?;
+        self.adopt_retiled_faces(&owner_ground, &faces_before, origin, normal);
 
         // δ-Path B — Path B 곡선(원/호) containment 처리. boundary kernel(polygon)
         // 은 self-loop 곡선 edge 를 미처리(skip) → 원은 rebuild 가 보존(미제거)하나
@@ -4985,6 +5163,40 @@ impl Scene {
         self.solid_overlap_pairs().len()
     }
 
+    /// Non-manifold edges where every face on them lies on ONE plane.
+    ///
+    /// Three faces on an edge is normal where a drawn sheet meets a solid's rim
+    /// — the wall, the cap and the sheet, no two of them in the same place.
+    /// SketchUp makes that shape and this guard has always let it through; the
+    /// existing check does so by accepting any new non-manifold edge whose only
+    /// complaint is itself.
+    ///
+    /// Three faces on the SAME plane is the other thing. They are covering each
+    /// other's ground, and no draw asks for that. The distinction is the plane,
+    /// not the shape: measured 2026-08-06, a rect and an ellipse overlapping
+    /// well inside a box top divided into nine faces and left THREE coplanar
+    /// edges bearing three faces each, and the "it is only a T-junction" rule
+    /// waved it through.
+    fn coplanar_non_manifold_edges(&self) -> Vec<axia_geo::EdgeId> {
+        self.mesh
+            .collect_non_manifold_edges()
+            .into_iter()
+            .filter(|&e| {
+                let (faces, _) = self.mesh.get_faces_sharing_edge(e);
+                let mut normals = faces
+                    .iter()
+                    .filter_map(|&f| self.mesh.faces.get(f))
+                    .map(|f| f.normal().normalize_or_zero());
+                let Some(n0) = normals.next() else { return false };
+                normals.all(|n| n.dot(n0).abs() > 0.999)
+            })
+            .collect()
+    }
+
+    fn coplanar_non_manifold_count(&self) -> usize {
+        self.coplanar_non_manifold_edges().len()
+    }
+
     /// How many active faces are sealed inside a volume (every edge of every
     /// loop has a neighbouring face). Drawing must never make this go DOWN.
     ///
@@ -5113,6 +5325,7 @@ impl Scene {
         // overlapping blobs are deliberately left as they are, and that is not
         // this guard's call to override.
         let si_before = self.solid_overlap_count();
+        let coplanar_nm_before = self.coplanar_non_manifold_count();
         let pre_pairs: std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)> = self
             .mesh
             .detect_self_intersections()
@@ -5139,34 +5352,32 @@ impl Scene {
         // the draw, so do it before judging rather than rolling the draw back
         // for a state the engine can fix.
         self.subtract_double_covered_faces(&pre_pairs);
-        let nm_after = self.mesh.collect_non_manifold_edges().len();
-        let after_pairs = self.solid_overlap_pairs();
-        let si_after = after_pairs.len();
-        let reject = |scene: &mut Self, msg: &str| -> CommandResult {
-            scene.restore_scene_snapshot(&before_snapshot);
-            scene.transactions.discard_last_undo();
-            CommandResult::Error(msg.to_string())
-        };
-        if si_after > si_before {
-            // Two faces now occupy the same space. Always damage — but say
-            // WHICH kind of overlap it was, because for most of them there is
-            // something the user can actually do.
-            let why = self.describe_overlap(&after_pairs);
-            return reject(self, &why);
-        }
-        if nm_after > nm_before {
-            // No new overlap, so this is a shared edge. Accept it only when it
-            // is the ONLY thing the invariant checker objects to — each
-            // non-manifold edge yields exactly one violation, so an equal count
-            // means nothing else (winding, degenerate, broken loop) went wrong.
-            let violations = self.mesh.verify_face_invariants().violations.len();
-            if violations != nm_after {
-                return reject(
-                    self,
-                    "도형이 면 경계를 넘어 비-manifold(겹친 면)를 만듭니다 — 면 안쪽에 그려주세요",
-                );
-            }
-        }
+        // A DRAW IS NEVER REFUSED (사용자 결정 2026-08-06).
+        //
+        // "기하적으로 가능한것을 막으면 안돼." Three branches used to roll a
+        // draw back here — a new self-intersection, a new coplanar stack, a new
+        // non-manifold edge — and each of them turned a shape the user had just
+        // placed into nothing at all. Worse, silently: the WASM layer renders
+        // `CommandResult::Error` as `-1`, so a circle drawn over a rectangle on a
+        // box top simply did not appear. Measured 2026-08-06 in the running app,
+        // on a plain 200 × 200 top:
+        //
+        //     rect inside the face      drawn
+        //     circle overlapping it     -1, face count unchanged
+        //     ellipse overlapping it    -1, face count unchanged
+        //
+        // The refusals were protecting against real states — two faces covering
+        // one patch of ground, a solid left open. But refusing is not what makes
+        // those states not happen; dividing the shapes properly is, and the same
+        // day's work shows it: with the coplanar arrangement running on solids,
+        // rect-then-circle went from REFUSED to nine faces, every one sealed,
+        // no open boundary, no non-manifold edge. The guard had been standing in
+        // for an arrangement that was switched off.
+        //
+        // So the rollback is gone and what is left is the honest part: the
+        // measurement. Anything still unsound after a draw is a hole in the
+        // arrangement, and it belongs in the arrangement, not behind a refusal.
+        let _ = (si_before, coplanar_nm_before, nm_before, &before_snapshot);
         result
     }
 
@@ -24167,15 +24378,26 @@ mod tests {
             "a sheet abutting a solid must be allowed, got {r:?}"
         );
         assert!(active_faces(&scene) > n, "the draw must actually add geometry");
+        // `collect_non_manifold_edges` counts every edge with three or more
+        // faces — it is the render hint that outlines them (LOCKED #1 P7), not a
+        // damage report, so the T-junction still shows up here.
         let nm = scene.mesh.collect_non_manifold_edges().len();
         assert!(nm > 0, "this fixture is meant to produce a T-junction, got nm={nm}");
         // Allowed only because the shared edges are the ONLY thing wrong: nothing
         // overlaps, and the invariant checker objects to nothing else.
+        //
+        // This used to read `violations.len() == nm`, which held while I5 still
+        // reported every shared edge. It does not any more: a T-junction is not
+        // damage (사용자 결정 2026-08-06) and two faces divided by an edge are
+        // neighbours rather than a stack (2026-08-07). Asserting emptiness is the
+        // stronger form of the same intent — the shared edges are not a
+        // complaint, so there is no complaint left.
         assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
-        assert_eq!(
-            scene.mesh.verify_face_invariants().violations.len(),
-            nm,
-            "a T-junction is allowed only when the shared edges are the sole complaint"
+        let report = scene.mesh.verify_face_invariants();
+        assert!(
+            report.is_valid(),
+            "a T-junction is allowed only when nothing else objects: {:?}",
+            report.violations
         );
     }
 
@@ -24455,10 +24677,17 @@ mod tests {
             "the part over the face belongs to one face, not two");
         // The shared edge carries three faces — wall, cap, new sheet. That is the
         // T-junction this engine permits, and it must be the ONLY complaint.
+        // `collect_non_manifold_edges` is the render hint for those edges
+        // (LOCKED #1 P7), so it still counts them; the invariant checker no
+        // longer calls them damage (사용자 결정 2026-08-06, refined 2026-08-07 —
+        // two faces divided by an edge are neighbours, not a stack). Was
+        // `violations.len() == nm`; emptiness is the stronger form of the same
+        // intent.
         let nm = scene.mesh.collect_non_manifold_edges().len();
         assert!(nm > 0, "a sheet meeting a solid shares an edge with it");
-        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), nm,
-            "the shared edges must be the sole objection");
+        let report = scene.mesh.verify_face_invariants();
+        assert!(report.is_valid(),
+            "the shared edges must be the sole objection: {:?}", report.violations);
     }
 
     /// ADR-258 β-1 — a coplanar rect fully CONTAINED in a solid face does NOT

@@ -9122,6 +9122,15 @@ impl Mesh {
                     .partial_cmp(&(*q - a).length_squared())
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            // A TANGENT line touches the rim once, and the quadratic says so by
+            // handing back its double root twice. Splitting the same place twice
+            // puts the point into the neighbouring face's loop TWICE — measured
+            // 2026-08-06, a circle of r=40 centred 60 from the middle of a top
+            // spanning ±100 left the wall's loop reading
+            // `… (-100,0,100) (-100,0,100) …` and the solid open along three
+            // edges, while moving the circle two millimetres in closed it
+            // perfectly. Sorted above, so equal roots are adjacent.
+            crossings.dedup_by(|p, q| (*p - *q).length() <= TOL);
             let mut cur = edge_id;
             for cpt in crossings {
                 match self.split_edge(cur, cpt) {
@@ -10782,11 +10791,25 @@ impl Mesh {
         let mut interior = 0usize;
         let mut boundary = 0usize;
         let mut non_manifold = 0usize;
-        for &cnt in edge_counts.values() {
+        // An edge carrying three or more faces is only non-manifold when two of
+        // them cover the same ground. A sheet hanging off a solid puts the wall,
+        // the cap and the plate on one edge, no two of them in the same place,
+        // and the solid is still closed with something attached to it (사용자
+        // 결정 2026-08-06; SketchUp builds exactly this). Counting it here was
+        // what dropped `is_closed_solid` to false for a rectangle drawn across a
+        // box's rim. `edge_stacked_face_pair` is the single place that judgement
+        // lives — see it for why coplanarity alone does not decide this.
+        for (&eid, &cnt) in edge_counts.iter() {
             match cnt {
                 1 => boundary += 1,
                 2 => interior += 1,
-                _ => non_manifold += 1,
+                _ => {
+                    if self.edge_stacked_face_pair(eid).is_some() {
+                        non_manifold += 1;
+                    } else {
+                        interior += 1;
+                    }
+                }
             }
         }
         // 최소 closed solid = tetrahedron (4 faces). 1~3 face로는 closed 불가.
@@ -11567,6 +11590,72 @@ impl Mesh {
             }
         }
         (faces, hes)
+    }
+
+    /// Two faces on this edge that cover the SAME ground — or `None`.
+    ///
+    /// An edge with three or more faces is the ordinary shape of a sheet meeting
+    /// a solid's rim: wall, cap and plate lie on three planes and enclose
+    /// nothing between them (사용자 결정 2026-08-06). What is damage is two
+    /// faces lying on top of each other. Asking only whether two of the faces
+    /// are COPLANAR does not separate those two things: an edge that divides one
+    /// plane into two regions carries two coplanar faces by construction.
+    ///
+    /// So the question is which SIDE of the edge each face occupies. Right at
+    /// the edge a face lies to the left of its own half-edge (CCW loop), i.e.
+    /// along `normal × direction` — true however concave the face is further
+    /// away. Same side ⇒ same ground ⇒ stacked; opposite sides ⇒ two halves of
+    /// one plane meeting at their border ⇒ fine.
+    ///
+    /// Measured 2026-08-07, `side·side` on the shared edge:
+    ///
+    /// ```text
+    ///   rect straddling a box rim   -1.000   two halves, adjacent
+    ///   ellipse overlapping a rect  +1.000   the overlap covered twice
+    /// ```
+    ///
+    /// Returns the first stacked pair found, for the caller to name.
+    pub fn edge_stacked_face_pair(&self, edge_id: EdgeId) -> Option<(FaceId, FaceId)> {
+        let (faces, hes) = self.get_faces_sharing_edge(edge_id);
+        if faces.len() <= 2 {
+            return None;
+        }
+        // (face, plane normal, in-plane direction the face occupies at this edge)
+        let mut occupancy: Vec<(FaceId, DVec3, DVec3)> = Vec::with_capacity(faces.len());
+        for (&f, &he) in faces.iter().zip(hes.iter()) {
+            let Some(face) = self.faces.get(f) else { continue };
+            if !face.is_active() {
+                continue;
+            }
+            let n = face.normal().normalize_or_zero();
+            let Ok(src) = self.he_src(he) else { continue };
+            let dst = self.hes[he].dst();
+            let (Ok(p0), Ok(p1)) = (self.vertex_pos(src), self.vertex_pos(dst)) else {
+                continue;
+            };
+            let dir = (p1 - p0).normalize_or_zero();
+            occupancy.push((f, n, n.cross(dir)));
+        }
+        for i in 0..occupancy.len() {
+            for j in (i + 1)..occupancy.len() {
+                let (fa, na, side_a) = occupancy[i];
+                let (fb, nb, side_b) = occupancy[j];
+                if na.dot(nb).abs() <= 0.999 {
+                    continue; // different planes — they enclose nothing
+                }
+                // Both sides are unit in-plane normals to the same edge, so this
+                // is ±1 whenever it can be read at all. Anything in between (a
+                // zero-length edge, a degenerate normal, NaN) is unreadable —
+                // report it as stacked, which is the conservative answer and
+                // what this check did before it could tell the two apart.
+                // NaN must be caught explicitly: `NaN > 0.0` is false (ADR-304).
+                let d = side_a.dot(side_b);
+                if !d.is_finite() || d > -0.5 {
+                    return Some((fa, fb));
+                }
+            }
+        }
+        None
     }
 
     /// ADR-021 P7 — Group simple inner faces by connected component.

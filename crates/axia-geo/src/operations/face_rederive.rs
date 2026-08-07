@@ -1292,47 +1292,6 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     };
     let scope_edges: Option<&HashSet<EdgeId>> = scope.as_ref().map(|(_, e)| e);
 
-    // ── Draw-onto-solid guard (2026-06-09) — skip the re-derive when the
-    //    affected coplanar region overlaps a solid. A solid face on this plane
-    //    (an on-plane face sharing an edge with an off-plane wall) is protected
-    //    from face removal (`part_of_solid`), but re-deriving the surrounding
-    //    free region removes/re-arranges the cut edges it shares with that solid
-    //    face — dangling the solid's loop (an "Entity HeId not found" panic that
-    //    leaked the wasm-bindgen borrow → "recursive use" spam) or making those
-    //    edges 3-way non-manifold. The draw itself already produced a valid mesh;
-    //    leave it as-is. This is also what drawing a footprint onto an existing
-    //    wall wants (a new sheet to extrude, not an annulus in the wall's face).
-    //    No-op without a solid on this plane (`volume_edges` empty), so the
-    //    flat-sheet annulus/containment rederive cases are unchanged.
-    if !volume_edges.is_empty() {
-        let region_touches_solid = match &scope {
-            Some((affected_faces, _)) => affected_faces.iter().any(|&f| {
-                mesh.face_outer_edges(f)
-                    .ok()
-                    .map_or(false, |es| es.iter().any(|e| volume_edges.contains(e)))
-            }),
-            // full-plane rederive with a solid present → conservatively skip.
-            None => true,
-        };
-        if region_touches_solid {
-            return Ok(RebuildReport::default());
-        }
-    }
-
-    // ── Phase 0.5 (B4b-1, gated) — freeform-freeform overlap detection +
-    //    owner-id + source-curve storage (B4a map). Detection-only: face
-    //    topology UNCHANGED (no feeding / A1 override / split — those are
-    //    B4b-2). Runs before reconstruct so B4b-2 can consume the owner-id.
-    if enable_freeform_overlap {
-        detect_freeform_overlaps(mesh, plane_origin, n_unit, tol, scope_edges);
-    }
-
-    // ── Phase 1 — InputCurve 재구성 (4-β) + dirty 면 + 제거할 coplanar edge.
-    //    B6 — reconstruct also restores overlap freeform sources by owner-id
-    //    (Phase 0.5 sets them when gate on), so feeding is unified into
-    //    reconstruct (the separate B4b-2a collect step is removed). The
-    //    `enable_freeform_overlap` gate now controls only Phase 0.5 detection;
-    //    reconstruct / A1 override are gate-implicit (owner-id presence).
     // ADR-281 β-1 — solid-top boundary = on-plane `volume_edges` (the top's outer
     // square, shared with the walls). Feeding these to the arrange lets it net-tile
     // the FULL solid-top face (de-risk sim ADR-280), so a crossing shape splits the
@@ -1425,13 +1384,125 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             .filter(|(_, a)| affected_aabbs.iter().any(|aa| aa.overlaps(a, scope_margin)))
             .map(|(&r, _)| r)
             .collect();
-        onp_ve
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| active.contains(&comp_of[*i]))
-            .map(|(_, &e)| e)
-            .collect()
+        // Two solids sharing this plane: the re-tile cannot keep both whole.
+        //
+        // ADR-281 β-1 feeds a solid's on-plane perimeter so the arrange net-tiles
+        // that face and the walls keep the edges they stand on. It works for ONE
+        // solid. When the drawn region reaches the perimeters of two, the arrange
+        // divides the shared ground and there is no way to give each solid the
+        // pieces it needs — a face belongs to one owner. Measured 2026-08-07, two
+        // 120³ boxes at (0,0,60) and (80,80,60) sharing z=0:
+        //
+        //     re-tile off, autoIntersect on   24 faces  14 violations
+        //     autoIntersect off, re-tile on   13 faces   8 boundary edges
+        //     both off                        12 faces   0, closed ✓
+        //
+        // Each solid is only whole with the re-tile out of the way. The 12 self-
+        // intersections there are correct — the boxes really do interpenetrate,
+        // and that is the input Boolean is meant to receive.
+        //
+        // ONE perimeter is what β-1 can carry, so the rule is the count.
+        //
+        // A solid whose top has a hole reaches two components as well (outer rim
+        // + hole rim, one solid), and the obvious worry was that a plain count
+        // would skip a case that works. It was worth measuring rather than
+        // reasoning about: a shell-reachability test was written first — two
+        // interpenetrating boxes share no edge, a drilled box's hole rim is
+        // reached from its outer rim through the tube — and it is the WORSE of
+        // the two. Drawing across a hole's rim on a ring top:
+        //
+        //     by shell (two solids only)   13 faces  5 nm  5 violations  open
+        //     by count (any two)           11 faces  0     0             closed
+        //
+        // The count fixes that case too; the shell test left it damaged. Its one
+        // self-intersection is the drawn shape passing over the hole, which is
+        // real geometry and may be what was wanted. So the simpler rule stands
+        // and the shell helper is gone — measure, then simplify.
+        let feeds_more_than_one_perimeter = active.len() >= 2;
+        if feeds_more_than_one_perimeter {
+            // empty ⇒ `retile_is_planar` is false ⇒ the draw-onto-solid guard
+            // below skips this re-derive. No new branch needed there.
+            HashSet::new()
+        } else {
+            onp_ve
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| active.contains(&comp_of[*i]))
+                .map(|(_, &e)| e)
+                .collect()
+        }
     };
+
+    // ── Draw-onto-solid guard (2026-06-09) — skip the re-derive when the
+    //    affected coplanar region overlaps a solid. A solid face on this plane
+    //    (an on-plane face sharing an edge with an off-plane wall) is protected
+    //    from face removal (`part_of_solid`), but re-deriving the surrounding
+    //    free region removes/re-arranges the cut edges it shares with that solid
+    //    face — dangling the solid's loop (an "Entity HeId not found" panic that
+    //    leaked the wasm-bindgen borrow → "recursive use" spam) or making those
+    //    edges 3-way non-manifold. The draw itself already produced a valid mesh;
+    //    leave it as-is. This is also what drawing a footprint onto an existing
+    //    wall wants (a new sheet to extrude, not an annulus in the wall's face).
+    //    No-op without a solid on this plane (`volume_edges` empty), so the
+    //    flat-sheet annulus/containment rederive cases are unchanged.
+    //    2026-08-06 — and it only applies when the re-tile has no way to keep
+    //    the solid whole. ADR-281 β-1 built that way: feed the solid's on-plane
+    //    perimeter to the arrange as input and do NOT remove it, so the arrange
+    //    net-tiles the full face and the walls keep the edges they stand on.
+    //    `solid_top_boundary` non-empty is exactly the condition for that, and
+    //    the note above it already says as much — "β-1 solid-top re-tile is
+    //    active for this plane; Level 1 (guard_imprint) is the fail-closed
+    //    backstop". Bailing regardless is what left drawing on a solid to the
+    //    post-draw repair, which reads the overlap as surplus and carves it out
+    //    of the face: measured 2026-08-06, one of eighteen boundary cases came
+    //    out sound, while the same draws on a sheet are nine of nine.
+    // A sphere's two hemispheres also share an on-plane closed curve — its
+    // equator — and feeding THAT to the arrange re-tiles them out of existence
+    // (measured 2026-08-06: hemispheres 2 → 0). The re-tile is a planar
+    // operation, so it may only stand in for a planar face; a curved one keeps
+    // the guard.
+    let retile_is_planar = !solid_top_boundary.is_empty()
+        && solid_top_boundary.iter().all(|&e| {
+            let (faces, _) = mesh.get_faces_sharing_edge(e);
+            faces.iter().all(|&f| {
+                mesh.faces.get(f).map_or(true, |face| {
+                    !face.is_active()
+                        || matches!(
+                            face.surface(),
+                            None | Some(crate::surfaces::AnalyticSurface::Plane { .. })
+                        )
+                })
+            })
+        });
+    if !volume_edges.is_empty() && !retile_is_planar {
+        let region_touches_solid = match &scope {
+            Some((affected_faces, _)) => affected_faces.iter().any(|&f| {
+                mesh.face_outer_edges(f)
+                    .ok()
+                    .map_or(false, |es| es.iter().any(|e| volume_edges.contains(e)))
+            }),
+            // full-plane rederive with a solid present → conservatively skip.
+            None => true,
+        };
+        if region_touches_solid {
+            return Ok(RebuildReport::default());
+        }
+    }
+
+    // ── Phase 0.5 (B4b-1, gated) — freeform-freeform overlap detection +
+    //    owner-id + source-curve storage (B4a map). Detection-only: face
+    //    topology UNCHANGED (no feeding / A1 override / split — those are
+    //    B4b-2). Runs before reconstruct so B4b-2 can consume the owner-id.
+    if enable_freeform_overlap {
+        detect_freeform_overlaps(mesh, plane_origin, n_unit, tol, scope_edges);
+    }
+
+    // ── Phase 1 — InputCurve 재구성 (4-β) + dirty 면 + 제거할 coplanar edge.
+    //    B6 — reconstruct also restores overlap freeform sources by owner-id
+    //    (Phase 0.5 sets them when gate on), so feeding is unified into
+    //    reconstruct (the separate B4b-2a collect step is removed). The
+    //    `enable_freeform_overlap` gate now controls only Phase 0.5 detection;
+    //    reconstruct / A1 override are gate-implicit (owner-id presence).
     let input_curves = reconstruct_input_curves(
         mesh,
         plane_origin,

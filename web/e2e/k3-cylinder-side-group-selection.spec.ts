@@ -216,8 +216,15 @@ test.describe('K3 시나리오 3 hotfix — Cylinder 측면 group full-selection
         return { ok: false, stage: 'create_sphere', result: sphereResult };
       }
 
-      // 2) Cylinder 생성 (Path B, owner_id_B) — sphere 와 교차 위치
-      const cylinderShapeId = bridge.drawCircleAsCurve?.(0, 0, 0, 0, 1, 0, 3);
+      // 2) Cylinder 생성 (Path B, owner_id_B) — 프로필은 구 밖(y = -10)에 두고
+      //    구 쪽으로 밀어 관통시킨다. 프로필을 구 중심에 두면 원이 구와 만나
+      //    face 2개로 갈라지고, 둘 다 Path B 닫힌 곡선(anchor 1개 + self-loop,
+      //    ADR-089)이라 `createSolidExtrude` 가 "Face needs at least 3 verts" 로
+      //    거부한다 — 2026-08-07 실측. 그러면 실린더 자체가 만들어지지 않아
+      //    이 테스트가 검증하려는 "두 solid 의 owner group 분리" 가 성립조차
+      //    하지 않는다. (구 안에 그린 원을 밀어내지 못하는 것은 별개 결함이며,
+      //    Path B + 교차 + extrude 영역이다.)
+      const cylinderShapeId = bridge.drawCircleAsCurve?.(0, -10, 0, 0, 1, 0, 3);
       if (cylinderShapeId == null || cylinderShapeId < 0) {
         return { ok: false, stage: 'drawCircleAsCurve(cylinder profile)' };
       }
@@ -225,7 +232,8 @@ test.describe('K3 시나리오 3 hotfix — Cylinder 측면 group full-selection
       if (cylFaceIds.length === 0) return { ok: false, stage: 'getShapeFaceIds(cylinder)' };
       const cylProfileFaceId = cylFaceIds[0];
 
-      const okExtrude = bridge.createSolidExtrude?.(cylProfileFaceId, 10);
+      // 14 → y ∈ [-10, 4], 구(y ∈ [-5, 5]) 를 관통한다
+      const okExtrude = bridge.createSolidExtrude?.(cylProfileFaceId, 14);
       if (!okExtrude) return { ok: false, stage: 'createSolidExtrude' };
 
       // 3) Inventory owner_ids → 두 그룹 분리 검증
