@@ -8193,6 +8193,87 @@ impl Mesh {
         }
     }
 
+    /// The outward flux `∬ p·n dA` over one face — three times that face's
+    /// share of the volume it helps enclose (divergence theorem).
+    ///
+    /// Read from the SURFACE PARAMETERS wherever they determine it, because a
+    /// tessellated answer stays an approximation however far it is pushed
+    /// (measured on a 50 mm sphere: 0.656% at chord 0.1, 0.320% at 0.05, 0.066%
+    /// at 0.01) and a quantity take-off cannot carry that. 사용자 2026-08-07:
+    /// "구의 부피는 지름 치수만 있으면 되지".
+    ///
+    /// - **Plane** — `p·n` is constant over the face, so the flux is that times
+    ///   the area the BOUNDARY encloses. `face_area` already reads a circular
+    ///   boundary exactly (πr², measured) and deducts holes, which the surface's
+    ///   own `u_range × v_range` rectangle does not.
+    /// - **Sphere** — `p = c + r·n̂`, so `p·n̂ = c·n̂ + r` and the integral is
+    ///   closed-form over the parameter box. Exact.
+    /// - **Cylinder** — same shape of argument: `p·n̂ = axis_origin·n̂ + r`.
+    /// - anything else (Cone, Torus, the NURBS family) returns `None`; the
+    ///   caller falls back to tessellating, which those measured well on
+    ///   (cone 0.030%).
+    pub fn analytic_face_flux(&self, face_id: FaceId) -> Option<f64> {
+        use crate::surfaces::AnalyticSurface as S;
+        let surface = self.faces.get(face_id)?.surface()?.clone();
+        match surface {
+            S::Plane { origin, normal, .. } => {
+                let n = normal.normalize_or_zero();
+                if !n.is_finite() || n.length_squared() < 0.5 {
+                    return None;
+                }
+                let area = self.face_area(face_id);
+                if !area.is_finite() {
+                    return None;
+                }
+                // The face's own winding decides the sign, not the stored
+                // surface normal — a cap's surface may be stored either way.
+                let sign = {
+                    let cached = self.faces.get(face_id)?.normal().normalize_or_zero();
+                    if cached.dot(n) < 0.0 { -1.0 } else { 1.0 }
+                };
+                Some(sign * origin.dot(n) * area)
+            }
+            S::Sphere { center, radius, axis_dir, ref_dir, u_range, v_range } => {
+                let axis = axis_dir.normalize_or_zero();
+                let e1 = ref_dir.normalize_or_zero();
+                if !axis.is_finite() || !e1.is_finite() {
+                    return None;
+                }
+                let e2 = axis.cross(e1);
+                let (u0, u1) = u_range;
+                let (v0, v1) = v_range;
+                // ∬ (c·n̂ + r) · r² cos v du dv
+                let s_u = u1.sin() - u0.sin(); // ∫cos u
+                let c_u = u0.cos() - u1.cos(); // ∫sin u
+                let cos2 = |v: f64| v / 2.0 + (2.0 * v).sin() / 4.0; // ∫cos²v
+                let sincos = |v: f64| v.sin() * v.sin() / 2.0; // ∫sin v cos v
+                let c_term = center.dot(e1) * s_u * (cos2(v1) - cos2(v0))
+                    + center.dot(e2) * c_u * (cos2(v1) - cos2(v0))
+                    + center.dot(axis) * (u1 - u0) * (sincos(v1) - sincos(v0));
+                let r_term = radius * (u1 - u0) * (v1.sin() - v0.sin());
+                Some(radius * radius * (c_term + r_term))
+            }
+            S::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_range, v_range } => {
+                let axis = axis_dir.normalize_or_zero();
+                let e1 = ref_dir.normalize_or_zero();
+                if !axis.is_finite() || !e1.is_finite() {
+                    return None;
+                }
+                let e2 = axis.cross(e1);
+                let (u0, u1) = u_range;
+                let (v0, v1) = v_range;
+                // p·n̂ = axis_origin·n̂ + r, dA = r du dv
+                let s_u = u1.sin() - u0.sin();
+                let c_u = u0.cos() - u1.cos();
+                let o_term =
+                    (axis_origin.dot(e1) * s_u + axis_origin.dot(e2) * c_u) * (v1 - v0);
+                let r_term = radius * (u1 - u0) * (v1 - v0);
+                Some(radius * (o_term + r_term))
+            }
+            _ => None,
+        }
+    }
+
     /// SIMULATION — a sphere defined by its AXIS, as one face.
     ///
     /// The shipped `create_sphere_kernel_native` puts the EQUATOR in the DCEL:
