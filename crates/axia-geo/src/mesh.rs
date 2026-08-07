@@ -8253,6 +8253,64 @@ impl Mesh {
         }
     }
 
+    /// Chord tolerance for the tessellated fall-back in [`Mesh::face_outward_flux`].
+    /// 0.01 mm measured at 0.066% on a 50 mm sphere.
+    pub const VOLUME_CHORD_TOL: f64 = 0.01;
+
+    /// The outward flux `∬ p·n dA` over one face, by whichever route is exact
+    /// enough — three times that face's share of the volume it encloses.
+    ///
+    /// Three ways, in order:
+    ///
+    /// 1. the boundary polygon, when the face has one (exact for flat faces);
+    /// 2. the surface parameters, when they settle it ([`Mesh::analytic_face_flux`]);
+    /// 3. the surface, tessellated, when they do not.
+    ///
+    /// This lives here rather than beside the promotion code so that every
+    /// volume in the engine reads the same thing. It did not, and that cost a
+    /// second bug: `face_set_volume` was taught to read curved faces while
+    /// `mesh_volume` — the one the WASM boundary exposes — was left summing
+    /// boundary polygons and answering **0** for a Path B sphere.
+    pub fn face_outward_flux(&self, fid: FaceId) -> Option<f64> {
+        let face = self.faces.get(fid)?;
+        if !face.is_active() {
+            return None;
+        }
+        let start = face.outer().start;
+        if !start.is_null() {
+            if let Ok(verts) = self.collect_loop_verts(start) {
+                if verts.len() >= 3 {
+                    let p0 = self.vertex_pos(verts[0]).ok()?;
+                    let mut sum = 0.0;
+                    for i in 1..verts.len() - 1 {
+                        let (Ok(pa), Ok(pb)) =
+                            (self.vertex_pos(verts[i]), self.vertex_pos(verts[i + 1]))
+                        else {
+                            continue;
+                        };
+                        sum += p0.dot(pa.cross(pb));
+                    }
+                    // Σ p0·(pa×pb) is 6V for the fan; the flux is 3V.
+                    return Some(sum / 2.0);
+                }
+            }
+        }
+        if let Some(flux) = self.analytic_face_flux(fid) {
+            return Some(flux);
+        }
+        let tess = self.tessellate_face_surface(fid, Self::VOLUME_CHORD_TOL)?;
+        let mut sum = 0.0;
+        for tri in &tess.triangles {
+            let (a, b, c) = (
+                *tess.vertices.get(tri[0] as usize)?,
+                *tess.vertices.get(tri[1] as usize)?,
+                *tess.vertices.get(tri[2] as usize)?,
+            );
+            sum += a.dot(b.cross(c));
+        }
+        Some(sum / 2.0)
+    }
+
     /// The outward flux `∬ p·n dA` over one face — three times that face's
     /// share of the volume it helps enclose (divergence theorem).
     ///
@@ -13667,30 +13725,22 @@ impl Mesh {
     /// the rough "enclosed" volume relative to the origin — useful as
     /// an estimate but not authoritative. Units: length³.
     pub fn mesh_volume(&self) -> f64 {
-        let mut total = 0.0;
-        for (fid, face) in self.faces.iter() {
-            if !face.is_active() { continue; }
-            let start = face.outer().start;
-            if start.is_null() { continue; }
-            let verts = match self.collect_loop_verts(start) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if verts.len() < 3 { continue; }
-            // Fan-triangulate around verts[0]. For each triangle
-            // (v0, vi, vi+1) add the signed tetrahedron volume
-            // (v0 · (vi × vi+1)) / 6. Summed across all faces of a
-            // closed solid this gives the enclosed volume with sign
-            // determined by the outward winding (ADR-007 CCW → positive).
-            let p0 = match self.vertex_pos(verts[0]) { Ok(p) => p, Err(_) => continue };
-            for i in 1..verts.len() - 1 {
-                let pa = match self.vertex_pos(verts[i]) { Ok(p) => p, Err(_) => continue };
-                let pb = match self.vertex_pos(verts[i + 1]) { Ok(p) => p, Err(_) => continue };
-                total += p0.dot(pa.cross(pb));
-            }
-            let _ = fid;
-        }
-        total / 6.0
+        // Outward flux per face, divided by three (divergence theorem). Reading
+        // it through `face_outward_flux` is what lets a curved face contribute:
+        // this used to sum boundary polygons and `continue` past anything with
+        // fewer than three vertices, which is every Path B primitive, so a
+        // sphere measured 0 here while `face_set_volume` — taught the same
+        // lesson separately — measured it correctly. One reader now.
+        //
+        // Signed, as before: the caller decides whether a signed or absolute
+        // answer is wanted, and ADR-007's outward winding makes a closed solid
+        // positive.
+        self.faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .filter_map(|(fid, _)| self.face_outward_flux(fid))
+            .sum::<f64>()
+            / 3.0
     }
 
     /// Compute face area (polygon Newell + ADR-121 β analytic fallback).

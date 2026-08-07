@@ -148,83 +148,23 @@ pub struct PromoteOk {
     pub kind: XiaKind,
 }
 
-/// Chord tolerance for the tessellated fall-back below. 0.01 mm measured at
-/// 0.066% on a 50 mm sphere — see `face_set_volume`.
-const VOLUME_CHORD_TOL: f64 = 0.01;
-
-/// The outward flux `∬ p·n dA` over one face, which the divergence theorem
-/// turns into three times that face's share of the enclosed volume.
+/// Volume enclosed by a face set — outward flux per face, divided by three
+/// (divergence theorem).
 ///
-/// Three ways to get it, in order of exactness:
+/// The reading itself lives in the engine ([`Mesh::face_outward_flux`]) so that
+/// this and `Mesh::mesh_volume` cannot drift: it reads the boundary polygon
+/// where there is one, the surface parameters where they settle it, and a
+/// tessellation where they do not. This used to sum boundary polygons here and
+/// skip anything with fewer than three vertices, which is every Path B
+/// primitive — so a sphere measured 0 and could not be promoted
+/// (사용자 2026-08-07: "구의 부피는 지름 치수만 있으면 되지").
 ///
-/// 1. the face's boundary polygon, when it has one (exact for flat faces);
-/// 2. the face's own surface, tessellated, when the boundary is a closed curve
-///    or a seam and there is no polygon to sum;
-/// 3. nothing, if neither is available.
-fn face_outward_flux(mesh: &Mesh, fid: axia_geo::FaceId) -> Option<f64> {
-    let face = mesh.faces.get(fid)?;
-    if !face.is_active() {
-        return None;
-    }
-    let start = face.outer().start;
-    if !start.is_null() {
-        if let Ok(verts) = mesh.collect_loop_verts(start) {
-            if verts.len() >= 3 {
-                let p0 = mesh.vertex_pos(verts[0]).ok()?;
-                let mut sum = 0.0;
-                for i in 1..verts.len() - 1 {
-                    let (Ok(pa), Ok(pb)) =
-                        (mesh.vertex_pos(verts[i]), mesh.vertex_pos(verts[i + 1]))
-                    else {
-                        continue;
-                    };
-                    sum += p0.dot(pa.cross(pb));
-                }
-                // Σ p0·(pa×pb) is 6V for the polygon fan; the flux is 3V.
-                return Some(sum / 2.0);
-            }
-        }
-    }
-    // A Path B boundary — one anchor on a closed curve, or two poles and a seam
-    // — has no polygon to sum. The surface is what bounds the volume, so read it:
-    // from the parameters where they settle it exactly, and by tessellating
-    // where they do not.
-    if let Some(flux) = mesh.analytic_face_flux(fid) {
-        return Some(flux);
-    }
-    let tess = mesh.tessellate_face_surface(fid, VOLUME_CHORD_TOL)?;
-    let mut sum = 0.0;
-    for tri in &tess.triangles {
-        let (a, b, c) = (
-            *tess.vertices.get(tri[0] as usize)?,
-            *tess.vertices.get(tri[1] as usize)?,
-            *tess.vertices.get(tri[2] as usize)?,
-        );
-        sum += a.dot(b.cross(c));
-    }
-    Some(sum / 2.0)
-}
-
-/// Volume enclosed by a face set, by the divergence theorem.
-///
-/// This used to sum `p0·(pa×pb)` over each face's boundary polygon and `continue`
-/// past anything with fewer than three vertices. Every Path B primitive has
-/// exactly that shape — a sphere's boundary is one anchor on a closed curve —
-/// so every one of them measured **0**, and `promote_shape_to_xia` refused them
-/// with `ZeroVolume` even once the closure requirement was fixed
-/// (사용자 2026-08-07: "구의 부피는 지름 치수만 있으면 되지 원이 있어야 하지
-/// 않습니다").
-///
-/// A face with no boundary polygon still bounds volume — its SURFACE does. So
-/// the sum is over outward flux per face (`face_outward_flux`), which reads the
-/// polygon where there is one and the surface where there is not. Flat faces are
-/// byte-identical to before; the change is that curved ones now contribute.
-///
-/// Caller should pre-check closure — an open shell's flux sum means nothing.
+/// Absolute — the caller has already checked closure, and an open shell's flux
+/// sum means nothing either way.
 pub fn face_set_volume(mesh: &Mesh, face_ids: &[axia_geo::FaceId]) -> f64 {
     let total: f64 = face_ids
         .iter()
-        .filter_map(|&fid| face_outward_flux(mesh, fid))
+        .filter_map(|&fid| mesh.face_outward_flux(fid))
         .sum();
     (total / 3.0).abs()
 }
