@@ -10898,8 +10898,26 @@ impl Mesh {
                 }
             }
         }
-        // 최소 closed solid = tetrahedron (4 faces). 1~3 face로는 closed 불가.
-        let is_closed = active_faces >= 4 && boundary == 0 && non_manifold == 0;
+        // A closed solid needs every edge shared by exactly two faces. It does
+        // NOT need four of them.
+        //
+        // This used to read `active_faces >= 4`, with the note "최소 closed solid
+        // = tetrahedron". That is true only while every face is FLAT — a curved
+        // face can close space on its own, which is what the whole Path B family
+        // is. Measured 2026-08-07: sphere (2 faces), cone (2) and cylinder (3)
+        // all had boundary 0 and non-manifold 0 and were still reported open,
+        // and `promote_shape_to_xia` refused every one of them with
+        // `NotWatertight{boundary_edges: 0}`. A Path B primitive could not become
+        // a XIA at all (사용자: "요건이 잘못된것이 아닐까?").
+        //
+        // Dropping the count closes nothing that should stay open — the boundary
+        // count already does that work. Measured the same day: a lone triangle
+        // (3 boundary edges) and a lidless box (4) stay open, and a zero-volume
+        // pillow — two triangles over the same three edges — does close here but
+        // is refused downstream by `ZeroVolume`, which is the check that belongs
+        // to it. The floor was redundant where it was right and wrong where it
+        // was not.
+        let is_closed = active_faces >= 1 && boundary == 0 && non_manifold == 0;
         ManifoldInfo {
             face_count: active_faces,
             interior_edge_count: interior,

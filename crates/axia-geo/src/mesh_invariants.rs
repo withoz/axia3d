@@ -248,6 +248,25 @@ impl Mesh {
             // to it too. That is ADR-306's asymmetry one face class over, and
             // "correct when we build it" is not a reason for a verifier to look
             // away.
+            // The second shape of analytic boundary: a SEAM. Two half-edges,
+            // twins of one edge, walked out and back, so the face is bounded
+            // without a closed curve being invented for it. That is how a sphere
+            // is written when its definition is the AXIS — the poles are the two
+            // vertices and the meridian between them is the seam (IFC/STEP's
+            // `IfcSeamCurve` + `IfcVertexLoop`).
+            //
+            // Gated on the face carrying an analytic surface. Without one, two
+            // vertices and one edge enclose nothing — that is a degenerate face
+            // and I1 should still say so.
+            let is_seam = outer_verts.len() == 2
+                && self.faces.get(fid).and_then(|f| f.surface()).is_some()
+                && self
+                    .collect_loop_hes(outer_start)
+                    .map(|hes| {
+                        hes.len() == 2 && self.hes[hes[0]].edge() == self.hes[hes[1]].edge()
+                    })
+                    .unwrap_or(false);
+
             let mut is_closed_curve = false;
             if outer_verts.len() < 3 {
                 is_closed_curve = outer_verts.len() == 1
@@ -260,7 +279,7 @@ impl Mesh {
                                 .is_some()
                         }
                     }).unwrap_or(false);
-                if !is_closed_curve {
+                if !is_closed_curve && !is_seam {
                     violations.push(format!("face {:?}: outer loop has {} verts (< 3)",
                         fid, outer_verts.len()));
                     continue;
@@ -295,8 +314,10 @@ impl Mesh {
             // I2: cached normal이 실제 winding과 일치 (반대 방향이면 위반).
             // `!is_closed_curve` — a 1-vertex loop has no winding to compute,
             // and the curve's analytic normal is the truth source. This is the
-            // one check the closed-curve exemption actually buys.
-            if !is_closed_curve && cached.length_squared() > 1e-10 {
+            // one check the closed-curve exemption actually buys. A seam loop is
+            // the same case: two points on an axis have no winding either, and
+            // the surface is what says which way the face faces.
+            if !is_closed_curve && !is_seam && cached.length_squared() > 1e-10 {
                 if let Ok(computed) = self.compute_normal(&outer_verts) {
                     let cn = cached.normalize_or_zero();
                     let gn = computed.normalize_or_zero();
@@ -582,6 +603,69 @@ impl Mesh {
                 eprintln!("[ADR-007] Invariant violations:\n{}", report.summary());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod seam_boundary_tests {
+    use crate::mesh::Mesh;
+    use crate::surfaces::AnalyticSurface;
+    use crate::{MaterialId, VertId};
+    use glam::DVec3;
+
+    /// Two vertices and one edge, walked out and back. With a surface that is a
+    /// seam-bounded face; without one it encloses nothing.
+    fn seam_face(with_surface: bool) -> Mesh {
+        let mut m = Mesh::new();
+        m.sim_create_sphere_axis_native(DVec3::ZERO, 50.0, DVec3::Z, MaterialId::new(0)).unwrap();
+        if !with_surface {
+            let fid = m.faces.iter().find(|(_, f)| f.is_active()).map(|(f, _)| f).unwrap();
+            m.set_face_surface(fid, None);
+        }
+        m
+    }
+
+    #[test]
+    fn a_seam_with_a_surface_is_a_boundary() {
+        let m = seam_face(true);
+        let r = m.verify_face_invariants();
+        assert!(r.is_valid(), "a seam bounds the face: {:?}", r.violations);
+    }
+
+    /// The gate on the exemption. Two points and one edge with no surface behind
+    /// them enclose nothing, and I1 must keep saying so — otherwise the
+    /// exemption would wave through a genuinely degenerate face.
+    #[test]
+    fn a_seam_without_a_surface_is_still_degenerate() {
+        let m = seam_face(false);
+        let r = m.verify_face_invariants();
+        assert!(
+            r.violations.iter().any(|v| v.contains("< 3")),
+            "no surface ⇒ nothing is enclosed, expected the I1 complaint, got {:?}",
+            r.violations
+        );
+    }
+
+    /// Control: an ordinary polygon face with a surface is unaffected. Without
+    /// it the two tests above could both pass on a verifier that had stopped
+    /// looking at faces altogether.
+    #[test]
+    fn an_ordinary_triangle_is_unaffected() {
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        let a: VertId = m.add_vertex(DVec3::ZERO);
+        let b = m.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let c = m.add_vertex(DVec3::new(0.0, 100.0, 0.0));
+        let f = m.add_face(&[a, b, c], mat).unwrap();
+        // give it a surface so only the vertex count differs from the seam case
+        m.set_face_surface(f, Some(AnalyticSurface::Plane {
+            origin: DVec3::ZERO,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+            u_range: (0.0, 100.0),
+            v_range: (0.0, 100.0),
+        }));
+        assert!(m.verify_face_invariants().is_valid(), "a triangle is fine");
     }
 }
 
