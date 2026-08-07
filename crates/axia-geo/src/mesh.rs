@@ -4583,12 +4583,32 @@ impl Mesh {
             };
             // Which end is which pole — read it off the geometry rather than
             // assuming an ordering.
+            //
+            // ⚠ The poles move in OPPOSITE directions, so they cannot go in one
+            // `translate_verts` call, and one at a time trips ADR-060 Phase O's
+            // all-or-none rule: a face whose boundary is only PARTLY moved has
+            // its surface dropped to `None` as a safe fallback. With a two-vertex
+            // seam boundary, moving one pole is always "partly", so the sphere
+            // lost its surface on the first call and the update below — which
+            // reads `if let Some(Sphere)` — then skipped in silence. Hold the
+            // surface across the moves and put it back with the new radius.
+            let saved: Vec<(FaceId, crate::surfaces::AnalyticSurface)> =
+                [Some(face_id), twin_face]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| self.face_surface(f).cloned().map(|s| (f, s)))
+                    .collect();
             for v in [a, b] {
                 let Ok(p) = self.vertex_pos(v) else { return false };
                 let along = (p - center).dot(axis);
                 let delta = if along >= 0.0 { axis * step } else { -axis * step };
                 if self.translate_verts(&[v], delta).is_err() {
                     return false;
+                }
+            }
+            for (f, s) in saved {
+                if self.face_surface(f).is_none() {
+                    self.set_face_surface(f, Some(s));
                 }
             }
         }
