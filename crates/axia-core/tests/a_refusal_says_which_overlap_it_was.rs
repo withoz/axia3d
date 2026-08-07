@@ -174,13 +174,20 @@ fn an_ellipse_overlap_divides_but_still_stacks_faces() {
 
         // The gap, recorded rather than tolerated: where the ellipse meets what
         // it crosses, two faces still hold the same ground.
+        //
+        // These counts were 5 / 3 / 6 when this was written, over an I5 that
+        // called any two coplanar faces on an edge a stack. On 2026-08-07 that
+        // was narrowed to faces on the SAME SIDE of the edge — two halves of a
+        // plane meeting at their border are neighbours — and the ellipse's
+        // overlap still reports every one of these, unchanged. Pinning "stacked"
+        // rather than the wording of the reason: the reason is free to improve.
         let stacks = s.mesh.verify_face_invariants().violations;
         assert!(
             !stacks.is_empty(),
             "{name}: if this is now empty the ellipse path landed — drop the              assertion and tighten the two above"
         );
         assert!(
-            stacks.iter().all(|v| v.contains("coplanar")),
+            stacks.iter().all(|v| v.contains("stacked")),
             "{name}: only stacked faces are expected here, got {stacks:?}"
         );
     }

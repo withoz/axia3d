@@ -24378,15 +24378,26 @@ mod tests {
             "a sheet abutting a solid must be allowed, got {r:?}"
         );
         assert!(active_faces(&scene) > n, "the draw must actually add geometry");
+        // `collect_non_manifold_edges` counts every edge with three or more
+        // faces — it is the render hint that outlines them (LOCKED #1 P7), not a
+        // damage report, so the T-junction still shows up here.
         let nm = scene.mesh.collect_non_manifold_edges().len();
         assert!(nm > 0, "this fixture is meant to produce a T-junction, got nm={nm}");
         // Allowed only because the shared edges are the ONLY thing wrong: nothing
         // overlaps, and the invariant checker objects to nothing else.
+        //
+        // This used to read `violations.len() == nm`, which held while I5 still
+        // reported every shared edge. It does not any more: a T-junction is not
+        // damage (사용자 결정 2026-08-06) and two faces divided by an edge are
+        // neighbours rather than a stack (2026-08-07). Asserting emptiness is the
+        // stronger form of the same intent — the shared edges are not a
+        // complaint, so there is no complaint left.
         assert_eq!(scene.mesh.detect_self_intersections().count(), 0);
-        assert_eq!(
-            scene.mesh.verify_face_invariants().violations.len(),
-            nm,
-            "a T-junction is allowed only when the shared edges are the sole complaint"
+        let report = scene.mesh.verify_face_invariants();
+        assert!(
+            report.is_valid(),
+            "a T-junction is allowed only when nothing else objects: {:?}",
+            report.violations
         );
     }
 
@@ -24666,10 +24677,17 @@ mod tests {
             "the part over the face belongs to one face, not two");
         // The shared edge carries three faces — wall, cap, new sheet. That is the
         // T-junction this engine permits, and it must be the ONLY complaint.
+        // `collect_non_manifold_edges` is the render hint for those edges
+        // (LOCKED #1 P7), so it still counts them; the invariant checker no
+        // longer calls them damage (사용자 결정 2026-08-06, refined 2026-08-07 —
+        // two faces divided by an edge are neighbours, not a stack). Was
+        // `violations.len() == nm`; emptiness is the stronger form of the same
+        // intent.
         let nm = scene.mesh.collect_non_manifold_edges().len();
         assert!(nm > 0, "a sheet meeting a solid shares an edge with it");
-        assert_eq!(scene.mesh.verify_face_invariants().violations.len(), nm,
-            "the shared edges must be the sole objection");
+        let report = scene.mesh.verify_face_invariants();
+        assert!(report.is_valid(),
+            "the shared edges must be the sole objection: {:?}", report.violations);
     }
 
     /// ADR-258 β-1 — a coplanar rect fully CONTAINED in a solid face does NOT
