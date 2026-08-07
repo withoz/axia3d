@@ -140,7 +140,8 @@ pub(crate) fn emit_advanced_geometry(
         let surface = emit_surface(w, &f.surface, scale)
             .map_err(|e| format!("face[{}]: {}", i, e))?;
 
-        let outer_loop = emit_edge_loop(w, &f.outer, scale)
+        let face_is_curved = !matches!(f.surface, AnalyticSurface::Plane { .. });
+        let outer_loop = emit_edge_loop(w, &f.outer, scale, face_is_curved)
             .map_err(|e| format!("face[{}] outer: {}", i, e))?;
         let outer_bound = w.add(
             "IFCFACEOUTERBOUND",
@@ -148,7 +149,7 @@ pub(crate) fn emit_advanced_geometry(
         );
         let mut bounds = vec![StepValue::Ref(outer_bound)];
         for (j, inner) in f.inners.iter().enumerate() {
-            let inner_loop = emit_edge_loop(w, inner, scale)
+            let inner_loop = emit_edge_loop(w, inner, scale, face_is_curved)
                 .map_err(|e| format!("face[{}] inner[{}]: {}", i, j, e))?;
             let inner_bound = w.add(
                 "IFCFACEBOUND",
@@ -716,12 +717,36 @@ fn emit_bspline_surface(
 /// `scale`). Straight edges emit `IFCLINE`; circular edges emit `IFCCIRCLE`
 /// (the edge vertices trim it — a self-loop is a whole rim). A single closed
 /// circular edge is a valid loop; an all-straight loop needs ≥ 3 edges.
-fn emit_edge_loop(w: &mut StepWriter, edges: &[IfcEdge], scale: f64) -> Result<EntityRef, String> {
+fn emit_edge_loop(
+    w: &mut StepWriter,
+    edges: &[IfcEdge],
+    scale: f64,
+    face_is_curved: bool,
+) -> Result<EntityRef, String> {
     if edges.is_empty() {
         return Err("empty loop".into());
     }
     let all_line = edges.iter().all(|e| matches!(e.curve, EdgeCurve::Line));
-    if all_line && edges.len() < 3 {
+    // A SEAM loop — two edges walking one edge out and back — bounds a CURVED
+    // face. Its two straight edges enclose no area in any plane, which is
+    // exactly why the check below rejects two straight edges, but here the face
+    // between them is the surface: a sphere written by its axis is two poles and
+    // a meridian seam (IFC's own `IfcSeamCurve` + `IfcVertexLoop` shape).
+    //
+    // Measured 2026-08-07: without this the export of an axis-defined sphere
+    // failed here, fell through to the faceted fallback, and that refused the
+    // same loop for the same reason — so `curved.ifc` came out **0 bytes** and
+    // the external web-ifc check could not even open it.
+    // Gated on the face being CURVED. Two straight edges walking out and back
+    // enclose no area, so on a PLANE that is a degenerate sliver and must stay
+    // rejected — `degenerate_loop_rejected` is the guard that says so, and it
+    // caught this exemption when it was ungated (a collapsed planar loop reduces
+    // to the same two edges once duplicate vertices are dropped).
+    let is_seam = face_is_curved
+        && edges.len() == 2
+        && (edges[0].start - edges[1].end).length() < 1e-9
+        && (edges[0].end - edges[1].start).length() < 1e-9;
+    if all_line && edges.len() < 3 && !is_seam {
         return Err(format!("degenerate straight loop ({} edges)", edges.len()));
     }
     let n = edges.len();
@@ -1082,6 +1107,32 @@ mod tests {
             true,
         )];
         assert!(emit_advanced_brep(&faces, 0.001, "d").is_err());
+    }
+
+    /// An axis-defined sphere — poles and one meridian seam — must export. Its
+    /// boundary is two straight edges walking one edge out and back, which
+    /// `degenerate_loop_rejected` above is right to refuse on a PLANE and wrong
+    /// to refuse here: the face between them is the sphere.
+    ///
+    /// Measured 2026-08-07 before the exemption: the advanced-brep emit failed
+    /// here, fell through to the faceted fallback, and that refused the same loop
+    /// for the same reason — so `curved.ifc` came out **0 bytes** and the
+    /// external web-ifc check could not open it. `npm run validate:ifc` is the
+    /// end-to-end form of this test.
+    #[test]
+    fn an_axis_defined_sphere_exports() {
+        let mut mesh = axia_geo::Mesh::new();
+        mesh.set_sphere_path_b_default(true);
+        let f = mesh
+            .create_sphere(DVec3::ZERO, 1000.0, 16, 12, axia_geo::entities::MaterialId::new(0))
+            .unwrap();
+        assert_eq!(f.len(), 1, "the axis definition is one face");
+        let faces = crate::ifc_advancedbrep::advanced_faces_filtered(&mesh, None)
+            .expect("a seam-bounded sphere must survive face collection");
+        let s = emit_advanced_brep(&faces, 0.001, "sphere")
+            .expect("and must emit — 0 bytes here is the regression this pins");
+        assert!(s.contains("IFCSPHERICALSURFACE"), "it carries its surface");
+        assert!(s.len() > 1000, "a real file, not a stub: {} bytes", s.len());
     }
 
     #[test]
