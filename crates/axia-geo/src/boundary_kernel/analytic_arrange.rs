@@ -951,6 +951,37 @@ fn is_reverse_twin(a: &SubCurve, b: &SubCurve, tol: f64) -> bool {
             let mb = circle_pt(*cb, *rb, (a0b + a1b) * 0.5);
             ma.dist(mb) < tol
         }
+        // A freeform shared between two neighbouring regions is the same edge
+        // walked both ways, exactly as a line or an arc is. Without this arm two
+        // regions that meet along an ellipse could not cancel their shared
+        // boundary, `union_outline` returned None, and the caller fell back to
+        // one hole per region — which puts three faces on the edges where those
+        // regions meet (measured 2026-08-09: an ellipse overlapping a rectangle
+        // on a solid's top gave 4 stacked-pair violations where a circle in the
+        // same place gave none).
+        (
+            SubCurve::Freeform { f2d: fa, t0: t0a, t1: t1a },
+            SubCurve::Freeform { f2d: fb, t0: t0b, t1: t1b },
+        ) => {
+            // Same curve. An owner-id is the source curve's identity when both
+            // carry one (ADR-088 space); otherwise compare the control polygon.
+            let same_curve = match (fa.owner_id, fb.owner_id) {
+                (Some(x), Some(y)) => x == y,
+                _ => {
+                    fa.ctrl.len() == fb.ctrl.len()
+                        && fa.degree == fb.degree
+                        && fa.ctrl.iter().zip(fb.ctrl.iter()).all(|(p, q)| p.dist(*q) < tol)
+                }
+            };
+            if !same_curve {
+                return false;
+            }
+            // Same portion — the midpoint distinguishes the piece inside the
+            // lens from the piece around it, the same job it does for an arc.
+            let ma = fa.eval((t0a + t1a) * 0.5);
+            let mb = fb.eval((t0b + t1b) * 0.5);
+            ma.dist(mb) < tol
+        }
         _ => false,
     }
 }
@@ -1164,6 +1195,130 @@ fn signed_area(poly: &[Vec2]) -> f64 {
         s += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
     }
     s * 0.5
+}
+
+#[cfg(test)]
+mod freeform_twin_tests {
+    use super::*;
+
+    /// A closed freeform, so the two halves share BOTH endpoints. A Bezier whose
+    /// last control point IS its first closes by construction (ADR-089 A-ω's
+    /// Type A closure); a ring of B-spline control points does NOT — the first
+    /// attempt here used one and the premise assertion below caught it.
+    fn closed_ellipse() -> Freeform2D {
+        Freeform2D::bezier(vec![
+            Vec2::new(40.0, 0.0),
+            Vec2::new(20.0, 40.0),
+            Vec2::new(-20.0, 40.0),
+            Vec2::new(-40.0, 0.0),
+            Vec2::new(-20.0, -40.0),
+            Vec2::new(20.0, -40.0),
+            Vec2::new(40.0, 0.0),
+        ])
+    }
+
+    /// The shared boundary between two neighbouring regions is one edge walked
+    /// both ways, so it must cancel. Without this the union of the regions
+    /// cannot be built and each becomes its own hole — three coplanar faces on
+    /// the edges where they meet.
+    #[test]
+    fn a_freeform_walked_both_ways_is_the_same_edge() {
+        let f = closed_ellipse();
+        let (lo, hi) = (0.3_f64, 0.6_f64);
+        let a = SubCurve::Freeform { f2d: f.clone(), t0: lo, t1: hi };
+        let b = SubCurve::Freeform { f2d: f, t0: hi, t1: lo };
+        assert!(
+            is_reverse_twin(&a, &b, 1e-6),
+            "the same portion, opposite directions, must cancel"
+        );
+    }
+
+    /// ★THE CASE THE MIDPOINT CHECK EXISTS FOR, and it is not hypothetical:
+    /// on a CLOSED curve the two halves share both endpoints, so the endpoint
+    /// test alone says "twin" for two pieces that are not the same edge at all.
+    /// Cancelling them would delete real boundary.
+    ///
+    /// Written after a mutation showed the check was holding nothing: replacing
+    /// it with `true` left the whole workspace green, because no existing test
+    /// puts two halves of one closed curve in front of it.
+    #[test]
+    fn the_two_halves_of_a_closed_curve_are_not_twins() {
+        let f = closed_ellipse();
+        let (t_min, t_max) = f.param_range();
+        let mid = (t_min + t_max) * 0.5;
+        let first = SubCurve::Freeform { f2d: f.clone(), t0: t_min, t1: mid };
+        let second = SubCurve::Freeform { f2d: f.clone(), t0: mid, t1: t_max };
+
+        // The premise: their endpoints DO look reversed-equal, which is why the
+        // endpoint test cannot settle this on its own.
+        assert!(
+            first.start_pt().dist(second.end_pt()) < 1e-6
+                && first.end_pt().dist(second.start_pt()) < 1e-6,
+            "premise: a closed curve's halves share both endpoints — \
+             if this fails the fixture stopped closing and the test proves nothing"
+        );
+        assert!(
+            !is_reverse_twin(&first, &second, 1e-6),
+            "two different halves of one curve are not the same edge"
+        );
+    }
+
+    /// Two different curves that happen to meet end-to-end are not one edge.
+    #[test]
+    fn different_curves_are_not_twins() {
+        let f = closed_ellipse();
+        let mut g = closed_ellipse();
+        g.ctrl = g.ctrl.iter().map(|p| Vec2::new(p.x + 7.0, p.y)).collect();
+        let a = SubCurve::Freeform { f2d: f, t0: 0.3, t1: 0.6 };
+        let b = SubCurve::Freeform { f2d: g, t0: 0.6, t1: 0.3 };
+        assert!(!is_reverse_twin(&a, &b, 1e-6));
+    }
+
+    /// ★THE CASE THE SAME-CURVE CHECK EXISTS FOR. Two curves can share both
+    /// endpoints AND their midpoint and still be different curves — a quadratic
+    /// and a cubic fitted through the same three points bulge differently in
+    /// between, so there is real area between them. Neither the endpoint test
+    /// nor the midpoint test can tell them apart; only asking whether it is the
+    /// same curve can.
+    ///
+    /// Written after a mutation showed the same-curve check was holding nothing:
+    /// removing it left the workspace green, because every existing case differs
+    /// at the midpoint too. Two curves through the same three points are not
+    /// exotic — they are what two different tools draw over one span.
+    #[test]
+    fn same_endpoints_and_same_midpoint_is_still_not_the_same_curve() {
+        // Both pass through (0,0), (5,5) at t=0.5, and (10,0).
+        let quad = Freeform2D::bezier(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(5.0, 10.0),
+            Vec2::new(10.0, 0.0),
+        ]);
+        let cubic = Freeform2D::bezier(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(3.0, 6.0),
+            Vec2::new(7.0, 22.0 / 3.0),
+            Vec2::new(10.0, 0.0),
+        ]);
+        // The premise, asserted so the test cannot pass for the wrong reason.
+        for (a, b) in [
+            (quad.eval(0.0), cubic.eval(0.0)),
+            (quad.eval(1.0), cubic.eval(1.0)),
+            (quad.eval(0.5), cubic.eval(0.5)),
+        ] {
+            assert!(
+                a.dist(b) < 1e-9,
+                "premise: the two curves must agree at start, end and midpoint \
+                 ({a:?} vs {b:?}) — otherwise the midpoint check would settle it \
+                 and this proves nothing about the same-curve check"
+            );
+        }
+        let a = SubCurve::Freeform { f2d: quad, t0: 0.0, t1: 1.0 };
+        let b = SubCurve::Freeform { f2d: cubic, t0: 1.0, t1: 0.0 };
+        assert!(
+            !is_reverse_twin(&a, &b, 1e-6),
+            "different curves through the same three points are not one edge"
+        );
+    }
 }
 
 #[cfg(test)]

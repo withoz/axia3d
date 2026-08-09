@@ -18,15 +18,20 @@
 //! edge, no invariant violation. So there is no order to advise any more — both
 //! work — and that assertion has become the one below.
 //!
-//! An ellipse still refuses, in every order, and now for a reason worth
-//! recording: it DIVIDES (nine faces, all sealed, no open boundary) but leaves
-//! three edges with three coplanar faces stacked on them. Three faces on one
-//! edge is normal where a sheet meets a solid's rim — different planes, nothing
-//! covering anything — so the guard used to wave any T-junction through. Three
-//! faces on the SAME plane is the other thing, and that is now what gets caught.
+//! **2026-08-09 — the ellipse row closed too, and the file said where.** The
+//! ellipse used to DIVIDE (nine faces, all sealed) while leaving edges with
+//! three coplanar faces stacked on them. The cause was one match arm:
+//! `is_reverse_twin` recognised a shared boundary between two neighbouring
+//! regions when it was a line or an arc and never when it was a freeform, so
+//! `union_outline` could not cancel the shared edge, returned None, and the
+//! caller fell back to one hole per region — which is what put three faces on
+//! the edges where those regions meet. With the freeform arm the union is built
+//! (`[FLLLLF]`) and every count is zero.
 //!
 //! This file is the message, not the geometry. When one of these cases starts
-//! working, its assertion here is what will say so.
+//! working, its assertion here is what will say so — and that is exactly how
+//! this row closed: the assertion below carried the instruction ("drop the
+//! assertion and tighten the two above") and it was followed.
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use glam::DVec3;
 
@@ -127,27 +132,22 @@ fn drawing_the_circle_first_really_does_work() {
     assert!(!matches!(r, CommandResult::Error(_)), "the advised order: {r:?}");
 }
 
-/// An ellipse overlap DIVIDES now — and still leaves faces stacked.
+/// An ellipse overlap divides CLEANLY — nothing stacked, nothing open.
 ///
-/// This used to assert a refusal naming the curve kind. Refusals are gone
-/// (a draw is never refused), so what is left to pin is what the draw
-/// actually produces. Measured 2026-08-06, on a box top, all three orders:
+/// The three orders below used to leave 5 / 3 / 6 stacked pairs (measured
+/// 2026-08-06). What was missing had nothing to do with ellipses as such:
+/// `is_reverse_twin` decided whether two sub-curves were the same edge walked
+/// both ways, and its match had an arm for line-vs-line and arc-vs-arc and
+/// `_ => false` for everything else. So where two regions met along the
+/// ellipse the shared edge was never cancelled, `union_outline` returned None,
+/// and the caller fell back to one hole per region — putting three coplanar
+/// faces on those edges. A circle in the same place was clean because its
+/// shared boundary is an arc.
 ///
-/// ```text
-///   ellipse then rect    9 faces, 0 open edges, 5 coplanar stacks
-///   rect then ellipse    9 faces, 0 open edges, 3
-///   ellipse then ellipse 9 faces, 0 open edges, 6
-/// ```
-///
-/// So the solid is not opened and the regions ARE cut — the overlap is
-/// simply covered twice where the ellipse meets what it crosses. A circle in
-/// the same place leaves none of this, which is the whole gap: the analytic
-/// path that exists for circles does not exist for ellipses.
-///
-/// Pinned as it stands, not as it should be. When the ellipse gets that path
-/// these numbers go to zero and this test is what will say so.
+/// The counts are asserted at zero now. If they come back, the union stopped
+/// being built and the fallback is running again.
 #[test]
-fn an_ellipse_overlap_divides_but_still_stacks_faces() {
+fn an_ellipse_overlap_divides_cleanly() {
     for (name, reversed, both) in [
         ("ellipse then rect", false, false),
         ("rect then ellipse", true, false),
@@ -172,23 +172,18 @@ fn an_ellipse_overlap_divides_but_still_stacks_faces() {
         assert_eq!(all.len(), 9, "{name}: the top is cut into regions");
         assert_eq!(mi.boundary_edge_count, 0, "{name}: nothing is left open");
 
-        // The gap, recorded rather than tolerated: where the ellipse meets what
-        // it crosses, two faces still hold the same ground.
-        //
-        // These counts were 5 / 3 / 6 when this was written, over an I5 that
-        // called any two coplanar faces on an edge a stack. On 2026-08-07 that
-        // was narrowed to faces on the SAME SIDE of the edge — two halves of a
-        // plane meeting at their border are neighbours — and the ellipse's
-        // overlap still reports every one of these, unchanged. Pinning "stacked"
-        // rather than the wording of the reason: the reason is free to improve.
+        // Nothing covers the same ground twice. These were 5 / 3 / 6.
         let stacks = s.mesh.verify_face_invariants().violations;
         assert!(
-            !stacks.is_empty(),
-            "{name}: if this is now empty the ellipse path landed — drop the              assertion and tighten the two above"
+            stacks.is_empty(),
+            "{name}: the overlap is covered twice again — {stacks:?}"
         );
-        assert!(
-            stacks.iter().all(|v| v.contains("stacked")),
-            "{name}: only stacked faces are expected here, got {stacks:?}"
+        // And the solid is whole, which is what those stacks used to cost.
+        assert!(mi.is_closed_solid, "{name}: the solid must stay closed");
+        assert_eq!(
+            s.mesh.detect_self_intersections().intersecting_pairs.len(),
+            0,
+            "{name}: no face intersects another"
         );
     }
 }
