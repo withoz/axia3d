@@ -8276,6 +8276,37 @@ impl Mesh {
         if !face.is_active() {
             return None;
         }
+        // A CURVED face's boundary polygon is not its shape, so read the surface
+        // first. This is not a fall-back ordering question: a flat face's polygon
+        // is exact and cheaper, but on a curved one the polygon is a chord net
+        // that says nothing about the bulge.
+        //
+        // Measured 2026-08-07 — drawing a circle inside a sphere leaves the
+        // sphere whole (it is not cut) but adds vertices to its boundary, so the
+        // polygon branch caught it: four points on a sphere give a Newell sum of
+        // ~0, and the WHOLE volume collapsed from 523.60 to 0.00. The surface
+        // said 1570.796 (= 4πr³) the entire time.
+        let curved = !matches!(
+            face.surface(),
+            None | Some(crate::surfaces::AnalyticSurface::Plane { .. })
+        );
+        if curved {
+            if let Some(flux) = self.analytic_face_flux(fid) {
+                return Some(flux);
+            }
+            if let Some(tess) = self.tessellate_face_surface(fid, Self::VOLUME_CHORD_TOL) {
+                let mut sum = 0.0;
+                for tri in &tess.triangles {
+                    let (a, b, c) = (
+                        *tess.vertices.get(tri[0] as usize)?,
+                        *tess.vertices.get(tri[1] as usize)?,
+                        *tess.vertices.get(tri[2] as usize)?,
+                    );
+                    sum += a.dot(b.cross(c));
+                }
+                return Some(sum / 2.0);
+            }
+        }
         let start = face.outer().start;
         if !start.is_null() {
             if let Ok(verts) = self.collect_loop_verts(start) {
