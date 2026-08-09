@@ -148,29 +148,25 @@ pub struct PromoteOk {
     pub kind: XiaKind,
 }
 
-/// Compute volume of a face-id set via signed-tetrahedron sum (same
-/// formulation as `Mesh::mesh_volume` but scoped). Result is divided by
-/// 6 and absolute-valued — caller should pre-check via
-/// `is_face_set_closed_solid` to ensure the sum is meaningful.
+/// Volume enclosed by a face set — outward flux per face, divided by three
+/// (divergence theorem).
+///
+/// The reading itself lives in the engine ([`Mesh::face_outward_flux`]) so that
+/// this and `Mesh::mesh_volume` cannot drift: it reads the boundary polygon
+/// where there is one, the surface parameters where they settle it, and a
+/// tessellation where they do not. This used to sum boundary polygons here and
+/// skip anything with fewer than three vertices, which is every Path B
+/// primitive — so a sphere measured 0 and could not be promoted
+/// (사용자 2026-08-07: "구의 부피는 지름 치수만 있으면 되지").
+///
+/// Absolute — the caller has already checked closure, and an open shell's flux
+/// sum means nothing either way.
 pub fn face_set_volume(mesh: &Mesh, face_ids: &[axia_geo::FaceId]) -> f64 {
-    let mut total = 0.0_f64;
-    for &fid in face_ids {
-        let Some(face) = mesh.faces.get(fid) else { continue };
-        if !face.is_active() { continue; }
-        let start = face.outer().start;
-        if start.is_null() { continue; }
-        let verts = match mesh.collect_loop_verts(start) {
-            Ok(v) => v, Err(_) => continue,
-        };
-        if verts.len() < 3 { continue; }
-        let p0 = match mesh.vertex_pos(verts[0]) { Ok(p) => p, Err(_) => continue };
-        for i in 1..verts.len() - 1 {
-            let pa = match mesh.vertex_pos(verts[i])     { Ok(p) => p, Err(_) => continue };
-            let pb = match mesh.vertex_pos(verts[i + 1]) { Ok(p) => p, Err(_) => continue };
-            total += p0.dot(pa.cross(pb));
-        }
-    }
-    (total / 6.0).abs()
+    let total: f64 = face_ids
+        .iter()
+        .filter_map(|&fid| mesh.face_outward_flux(fid))
+        .sum();
+    (total / 3.0).abs()
 }
 
 /// Helper: validate the supplied material id is non-default.

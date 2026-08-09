@@ -4548,9 +4548,69 @@ impl Mesh {
         } else {
             None
         };
-        // 1. Equator Circle curve radius + anchor position (one call).
-        if self.set_curve_radius(eq_edge, new_radius).is_err() {
-            return false;
+        // 1. Move the boundary out to the new radius. Which boundary depends on
+        //    how the sphere is defined:
+        //
+        //    - axis definition — the boundary is a SEAM between the poles, and
+        //      the poles are what move: they sit at `center ± r·axis`.
+        //    - equator definition — the boundary is a Circle, and its radius
+        //      (with its anchor) is what moves.
+        let boundary_has_curve = self
+            .edges
+            .get(eq_edge)
+            .and_then(|e| e.curve())
+            .is_some();
+        if boundary_has_curve {
+            if self.set_curve_radius(eq_edge, new_radius).is_err() {
+                return false;
+            }
+        } else {
+            let Some(crate::surfaces::AnalyticSurface::Sphere { center, radius, axis_dir, .. }) =
+                self.face_surface(face_id).cloned()
+            else {
+                return false;
+            };
+            let axis = axis_dir.normalize_or_zero();
+            if !axis.is_finite() || axis.length_squared() < 0.5 {
+                return false;
+            }
+            let step = new_radius - radius;
+            let (Some(a), Some(b)) = (
+                self.edges.get(eq_edge).map(|e| e.v_small()),
+                self.edges.get(eq_edge).map(|e| e.v_large()),
+            ) else {
+                return false;
+            };
+            // Which end is which pole — read it off the geometry rather than
+            // assuming an ordering.
+            //
+            // ⚠ The poles move in OPPOSITE directions, so they cannot go in one
+            // `translate_verts` call, and one at a time trips ADR-060 Phase O's
+            // all-or-none rule: a face whose boundary is only PARTLY moved has
+            // its surface dropped to `None` as a safe fallback. With a two-vertex
+            // seam boundary, moving one pole is always "partly", so the sphere
+            // lost its surface on the first call and the update below — which
+            // reads `if let Some(Sphere)` — then skipped in silence. Hold the
+            // surface across the moves and put it back with the new radius.
+            let saved: Vec<(FaceId, crate::surfaces::AnalyticSurface)> =
+                [Some(face_id), twin_face]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| self.face_surface(f).cloned().map(|s| (f, s)))
+                    .collect();
+            for v in [a, b] {
+                let Ok(p) = self.vertex_pos(v) else { return false };
+                let along = (p - center).dot(axis);
+                let delta = if along >= 0.0 { axis * step } else { -axis * step };
+                if self.translate_verts(&[v], delta).is_err() {
+                    return false;
+                }
+            }
+            for (f, s) in saved {
+                if self.face_surface(f).is_none() {
+                    self.set_face_surface(f, Some(s));
+                }
+            }
         }
         // 2. Both hemisphere Sphere surfaces → new radius (keep center/axis/ranges).
         for f in [Some(face_id), twin_face].into_iter().flatten() {
@@ -8193,6 +8253,268 @@ impl Mesh {
         }
     }
 
+    /// Chord tolerance for the tessellated fall-back in [`Mesh::face_outward_flux`].
+    /// 0.01 mm measured at 0.066% on a 50 mm sphere.
+    pub const VOLUME_CHORD_TOL: f64 = 0.01;
+
+    /// The outward flux `∬ p·n dA` over one face, by whichever route is exact
+    /// enough — three times that face's share of the volume it encloses.
+    ///
+    /// Three ways, in order:
+    ///
+    /// 1. the boundary polygon, when the face has one (exact for flat faces);
+    /// 2. the surface parameters, when they settle it ([`Mesh::analytic_face_flux`]);
+    /// 3. the surface, tessellated, when they do not.
+    ///
+    /// This lives here rather than beside the promotion code so that every
+    /// volume in the engine reads the same thing. It did not, and that cost a
+    /// second bug: `face_set_volume` was taught to read curved faces while
+    /// `mesh_volume` — the one the WASM boundary exposes — was left summing
+    /// boundary polygons and answering **0** for a Path B sphere.
+    pub fn face_outward_flux(&self, fid: FaceId) -> Option<f64> {
+        let face = self.faces.get(fid)?;
+        if !face.is_active() {
+            return None;
+        }
+        // A CURVED face's boundary polygon is not its shape, so read the surface
+        // first. This is not a fall-back ordering question: a flat face's polygon
+        // is exact and cheaper, but on a curved one the polygon is a chord net
+        // that says nothing about the bulge.
+        //
+        // Measured 2026-08-07 — drawing a circle inside a sphere leaves the
+        // sphere whole (it is not cut) but adds vertices to its boundary, so the
+        // polygon branch caught it: four points on a sphere give a Newell sum of
+        // ~0, and the WHOLE volume collapsed from 523.60 to 0.00. The surface
+        // said 1570.796 (= 4πr³) the entire time.
+        let curved = !matches!(
+            face.surface(),
+            None | Some(crate::surfaces::AnalyticSurface::Plane { .. })
+        );
+        if curved {
+            if let Some(flux) = self.analytic_face_flux(fid) {
+                return Some(flux);
+            }
+            if let Some(tess) = self.tessellate_face_surface(fid, Self::VOLUME_CHORD_TOL) {
+                let mut sum = 0.0;
+                for tri in &tess.triangles {
+                    let (a, b, c) = (
+                        *tess.vertices.get(tri[0] as usize)?,
+                        *tess.vertices.get(tri[1] as usize)?,
+                        *tess.vertices.get(tri[2] as usize)?,
+                    );
+                    sum += a.dot(b.cross(c));
+                }
+                return Some(sum / 2.0);
+            }
+        }
+        let start = face.outer().start;
+        if !start.is_null() {
+            if let Ok(verts) = self.collect_loop_verts(start) {
+                if verts.len() >= 3 {
+                    let p0 = self.vertex_pos(verts[0]).ok()?;
+                    let mut sum = 0.0;
+                    for i in 1..verts.len() - 1 {
+                        let (Ok(pa), Ok(pb)) =
+                            (self.vertex_pos(verts[i]), self.vertex_pos(verts[i + 1]))
+                        else {
+                            continue;
+                        };
+                        sum += p0.dot(pa.cross(pb));
+                    }
+                    // Σ p0·(pa×pb) is 6V for the fan; the flux is 3V.
+                    return Some(sum / 2.0);
+                }
+            }
+        }
+        if let Some(flux) = self.analytic_face_flux(fid) {
+            return Some(flux);
+        }
+        let tess = self.tessellate_face_surface(fid, Self::VOLUME_CHORD_TOL)?;
+        let mut sum = 0.0;
+        for tri in &tess.triangles {
+            let (a, b, c) = (
+                *tess.vertices.get(tri[0] as usize)?,
+                *tess.vertices.get(tri[1] as usize)?,
+                *tess.vertices.get(tri[2] as usize)?,
+            );
+            sum += a.dot(b.cross(c));
+        }
+        Some(sum / 2.0)
+    }
+
+    /// The outward flux `∬ p·n dA` over one face — three times that face's
+    /// share of the volume it helps enclose (divergence theorem).
+    ///
+    /// Read from the SURFACE PARAMETERS wherever they determine it, because a
+    /// tessellated answer stays an approximation however far it is pushed
+    /// (measured on a 50 mm sphere: 0.656% at chord 0.1, 0.320% at 0.05, 0.066%
+    /// at 0.01) and a quantity take-off cannot carry that. 사용자 2026-08-07:
+    /// "구의 부피는 지름 치수만 있으면 되지".
+    ///
+    /// - **Plane** — `p·n` is constant over the face, so the flux is that times
+    ///   the area the BOUNDARY encloses. `face_area` already reads a circular
+    ///   boundary exactly (πr², measured) and deducts holes, which the surface's
+    ///   own `u_range × v_range` rectangle does not.
+    /// - **Sphere** — `p = c + r·n̂`, so `p·n̂ = c·n̂ + r` and the integral is
+    ///   closed-form over the parameter box. Exact.
+    /// - **Cylinder** — same shape of argument: `p·n̂ = axis_origin·n̂ + r`.
+    /// - anything else (Cone, Torus, the NURBS family) returns `None`; the
+    ///   caller falls back to tessellating, which those measured well on
+    ///   (cone 0.030%).
+    pub fn analytic_face_flux(&self, face_id: FaceId) -> Option<f64> {
+        use crate::surfaces::AnalyticSurface as S;
+        let surface = self.faces.get(face_id)?.surface()?.clone();
+        match surface {
+            S::Plane { origin, normal, .. } => {
+                let n = normal.normalize_or_zero();
+                if !n.is_finite() || n.length_squared() < 0.5 {
+                    return None;
+                }
+                let area = self.face_area(face_id);
+                if !area.is_finite() {
+                    return None;
+                }
+                // The face's own winding decides the sign, not the stored
+                // surface normal — a cap's surface may be stored either way.
+                let sign = {
+                    let cached = self.faces.get(face_id)?.normal().normalize_or_zero();
+                    if cached.dot(n) < 0.0 { -1.0 } else { 1.0 }
+                };
+                Some(sign * origin.dot(n) * area)
+            }
+            S::Sphere { center, radius, axis_dir, ref_dir, u_range, v_range } => {
+                let axis = axis_dir.normalize_or_zero();
+                let e1 = ref_dir.normalize_or_zero();
+                if !axis.is_finite() || !e1.is_finite() {
+                    return None;
+                }
+                let e2 = axis.cross(e1);
+                let (u0, u1) = u_range;
+                let (v0, v1) = v_range;
+                // ∬ (c·n̂ + r) · r² cos v du dv
+                let s_u = u1.sin() - u0.sin(); // ∫cos u
+                let c_u = u0.cos() - u1.cos(); // ∫sin u
+                let cos2 = |v: f64| v / 2.0 + (2.0 * v).sin() / 4.0; // ∫cos²v
+                let sincos = |v: f64| v.sin() * v.sin() / 2.0; // ∫sin v cos v
+                let c_term = center.dot(e1) * s_u * (cos2(v1) - cos2(v0))
+                    + center.dot(e2) * c_u * (cos2(v1) - cos2(v0))
+                    + center.dot(axis) * (u1 - u0) * (sincos(v1) - sincos(v0));
+                let r_term = radius * (u1 - u0) * (v1.sin() - v0.sin());
+                Some(radius * radius * (c_term + r_term))
+            }
+            S::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_range, v_range } => {
+                let axis = axis_dir.normalize_or_zero();
+                let e1 = ref_dir.normalize_or_zero();
+                if !axis.is_finite() || !e1.is_finite() {
+                    return None;
+                }
+                let e2 = axis.cross(e1);
+                let (u0, u1) = u_range;
+                let (v0, v1) = v_range;
+                // p·n̂ = axis_origin·n̂ + r, dA = r du dv
+                let s_u = u1.sin() - u0.sin();
+                let c_u = u0.cos() - u1.cos();
+                let o_term =
+                    (axis_origin.dot(e1) * s_u + axis_origin.dot(e2) * c_u) * (v1 - v0);
+                let r_term = radius * (u1 - u0) * (v1 - v0);
+                Some(radius * (o_term + r_term))
+            }
+            _ => None,
+        }
+    }
+
+    /// A sphere defined by its AXIS, as one face.
+    ///
+    /// 사용자 2026-08-07: "구를 그릴때 원으로 그리는것은 단순히 모양을 잡기
+    /// 위함이지 원을 구로 포함시키면 안되요. 구는 축을 중심으로 그려져야 하지
+    /// 않나요?"
+    ///
+    /// The previous definition (`create_sphere_kernel_native`) put the EQUATOR in
+    /// the DCEL: one anchor on it, one self-loop edge carrying it, and the sphere
+    /// split into two hemispheres by `v_range`. The equator is how a sphere is
+    /// DRAWN, not what it is, and the two halves then needed patching back
+    /// together to read as one object — the seam marked SOFT so it would not
+    /// render, a shared `surface_owner_id` so a click would select the whole
+    /// thing. Those patches were the shape of the problem.
+    ///
+    /// Here the definition is the axis:
+    ///
+    /// - 2 vertices, both ON THE AXIS (north pole, south pole)
+    /// - 1 seam edge between them (a meridian — it lies in a plane through the
+    ///   axis, so it belongs to the axis rather than cutting across it)
+    /// - 1 face whose boundary walks that seam out and back, carrying the WHOLE
+    ///   sphere as its surface (`v_range` = -π/2 .. π/2)
+    ///
+    /// This is what IFC/STEP write (`IfcSeamCurve` + `IfcVertexLoop`) and what
+    /// ADR-310 deferred. Measured against the old definition: identical render
+    /// (5112 triangles either way) and identical volume, one face instead of two,
+    /// and no patching needed.
+    pub fn create_sphere_axis_native(
+        &mut self,
+        center: DVec3,
+        radius: f64,
+        axis: DVec3,
+        material: MaterialId,
+    ) -> Result<FaceId> {
+        ensure!(radius > 0.0, "sim sphere: radius must be positive");
+        ensure!(center.is_finite(), "sim sphere: center must be finite");
+        let axis_dir = axis.normalize_or_zero();
+        ensure!(axis_dir.length() > 0.5, "sim sphere: axis must be a direction");
+        // A reference direction perpendicular to the axis — where the seam sits.
+        let a = if axis_dir.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+        let ref_dir = (a - axis_dir * a.dot(axis_dir)).normalize();
+
+        let north = self.add_vertex(center + axis_dir * radius);
+        let south = self.add_vertex(center - axis_dir * radius);
+        let (eid, _) = self.add_edge(north, south)?;
+
+        let he_fwd = self.edges[eid].any_he();
+        ensure!(!he_fwd.is_null(), "sim sphere: seam edge has no half-edge");
+        let he_bwd = self.hes[he_fwd].next_rad();
+        ensure!(
+            !he_bwd.is_null() && he_bwd != he_fwd,
+            "sim sphere: seam edge has no twin"
+        );
+
+        let face = self.faces.insert(Face::new(
+            LoopRef::default(),
+            axis_dir, // legacy field; the surface is the truth
+            FACE_TOLERANCE,
+            material,
+        ));
+        // The boundary walks out along the seam and back along its twin, so the
+        // one face is bounded without any curve being invented for it.
+        self.hes[he_fwd].set_next(he_bwd);
+        self.hes[he_bwd].set_next(he_fwd);
+        self.hes[he_fwd].set_prev(he_bwd);
+        self.hes[he_bwd].set_prev(he_fwd);
+        self.hes[he_fwd].set_face(face);
+        self.hes[he_bwd].set_face(face);
+        self.hes[he_fwd].set_outer(true);
+        self.hes[he_bwd].set_outer(true);
+        self.faces[face].set_outer(LoopRef::new(he_fwd, true));
+
+        self.faces[face].set_surface(Some(crate::surfaces::AnalyticSurface::Sphere {
+            center,
+            radius,
+            axis_dir,
+            ref_dir,
+            u_range: (0.0, std::f64::consts::TAU),
+            v_range: (
+                -std::f64::consts::FRAC_PI_2,
+                std::f64::consts::FRAC_PI_2,
+            ),
+        }));
+
+        // The seam is smooth surface, not a feature edge — same reason the
+        // equator is hidden today.
+        for he in [he_fwd, he_bwd] {
+            let f = self.hes[he].flags() | HeFlags::SOFT;
+            self.hes[he].set_flags(f);
+        }
+        Ok(face)
+    }
+
     /// ADR-104 β-2-β — Kernel-native cone creation (Path B, mirror of
     /// β-1-β `create_sphere_kernel_native`, ~92% memory reduction vs
     /// Path A polygonal cone).
@@ -10812,8 +11134,26 @@ impl Mesh {
                 }
             }
         }
-        // 최소 closed solid = tetrahedron (4 faces). 1~3 face로는 closed 불가.
-        let is_closed = active_faces >= 4 && boundary == 0 && non_manifold == 0;
+        // A closed solid needs every edge shared by exactly two faces. It does
+        // NOT need four of them.
+        //
+        // This used to read `active_faces >= 4`, with the note "최소 closed solid
+        // = tetrahedron". That is true only while every face is FLAT — a curved
+        // face can close space on its own, which is what the whole Path B family
+        // is. Measured 2026-08-07: sphere (2 faces), cone (2) and cylinder (3)
+        // all had boundary 0 and non-manifold 0 and were still reported open,
+        // and `promote_shape_to_xia` refused every one of them with
+        // `NotWatertight{boundary_edges: 0}`. A Path B primitive could not become
+        // a XIA at all (사용자: "요건이 잘못된것이 아닐까?").
+        //
+        // Dropping the count closes nothing that should stay open — the boundary
+        // count already does that work. Measured the same day: a lone triangle
+        // (3 boundary edges) and a lidless box (4) stay open, and a zero-volume
+        // pillow — two triangles over the same three edges — does close here but
+        // is refused downstream by `ZeroVolume`, which is the check that belongs
+        // to it. The floor was redundant where it was right and wrong where it
+        // was not.
+        let is_closed = active_faces >= 1 && boundary == 0 && non_manifold == 0;
         ManifoldInfo {
             face_count: active_faces,
             interior_edge_count: interior,
@@ -13416,30 +13756,22 @@ impl Mesh {
     /// the rough "enclosed" volume relative to the origin — useful as
     /// an estimate but not authoritative. Units: length³.
     pub fn mesh_volume(&self) -> f64 {
-        let mut total = 0.0;
-        for (fid, face) in self.faces.iter() {
-            if !face.is_active() { continue; }
-            let start = face.outer().start;
-            if start.is_null() { continue; }
-            let verts = match self.collect_loop_verts(start) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if verts.len() < 3 { continue; }
-            // Fan-triangulate around verts[0]. For each triangle
-            // (v0, vi, vi+1) add the signed tetrahedron volume
-            // (v0 · (vi × vi+1)) / 6. Summed across all faces of a
-            // closed solid this gives the enclosed volume with sign
-            // determined by the outward winding (ADR-007 CCW → positive).
-            let p0 = match self.vertex_pos(verts[0]) { Ok(p) => p, Err(_) => continue };
-            for i in 1..verts.len() - 1 {
-                let pa = match self.vertex_pos(verts[i]) { Ok(p) => p, Err(_) => continue };
-                let pb = match self.vertex_pos(verts[i + 1]) { Ok(p) => p, Err(_) => continue };
-                total += p0.dot(pa.cross(pb));
-            }
-            let _ = fid;
-        }
-        total / 6.0
+        // Outward flux per face, divided by three (divergence theorem). Reading
+        // it through `face_outward_flux` is what lets a curved face contribute:
+        // this used to sum boundary polygons and `continue` past anything with
+        // fewer than three vertices, which is every Path B primitive, so a
+        // sphere measured 0 here while `face_set_volume` — taught the same
+        // lesson separately — measured it correctly. One reader now.
+        //
+        // Signed, as before: the caller decides whether a signed or absolute
+        // answer is wanted, and ADR-007's outward winding makes a closed solid
+        // positive.
+        self.faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .filter_map(|(fid, _)| self.face_outward_flux(fid))
+            .sum::<f64>()
+            / 3.0
     }
 
     /// Compute face area (polygon Newell + ADR-121 β analytic fallback).

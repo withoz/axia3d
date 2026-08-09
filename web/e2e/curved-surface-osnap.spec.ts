@@ -61,7 +61,8 @@ test.describe('object snap on a curved face', () => {
       tm.setTool('line');
       return { circle: res, faces: bridge.getStats().faces };
     }, R);
-    expect(setup.faces).toBeGreaterThan(2); // the circle really split the sphere
+    // the circle really split the sphere: 1 (axis-definition sphere) + 1 cap
+    expect(setup.faces).toBeGreaterThan(1);
 
     // The snap cache refreshes on an idle callback — wait for it to be warm
     // rather than betting on a fixed sleep.
@@ -96,23 +97,38 @@ test.describe('object snap on a curved face', () => {
       // Well away from anything, but still over the sphere.
       const far = tm.get3DPoint({ clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 });
 
+      // How far is a result from the NEAREST snap candidate? A point that
+      // landed on a vertex sits exactly on one; a raw ray-surface hit does not
+      // (the chance of coinciding is nil). That is what separates "snapped"
+      // from "not snapped" without naming which vertex won — the rim's spacing
+      // is ~1 mm here, so a 7 px offset may well fall closer to a neighbour
+      // than to the one this test picked out, and either is a snap.
+      const distToNearestVertex = (q: { x: number; y: number; z: number } | null) =>
+        q == null
+          ? Infinity
+          : Math.min(...verts.map((v) => Math.hypot(v.x - q.x, v.y - q.y, v.z - q.z)));
+
       return {
         canvasOk: rect.width > 10 && rect.height > 10,
         target: [target.x, target.y, target.z],
         near: near ? [near.x, near.y, near.z] : null,
         far: far ? [far.x, far.y, far.z] : null,
+        nearSnapDist: distToNearestVertex(near),
+        farSnapDist: distToNearestVertex(far),
       };
     }, R);
 
     expect(r.noTarget).toBeFalsy();
     expect(r.canvasOk).toBe(true);
 
-    // (1) the 7 px offset is erased — the point lands ON the existing vertex.
+    // (1) the 7 px offset is erased — the point lands ON a vertex, not at the
+    // raw ray hit. Which vertex is not the claim: the rim's spacing is ~1 mm,
+    // so the offset can fall nearer a neighbour than the one picked above, and
+    // that is still a snap. Measured 2026-08-07 after the sphere became one
+    // axis-defined face: it landed 1.115 from `target` and 0.000 from its
+    // neighbour, with z identical to 14 decimals.
     expect(r.near).not.toBeNull();
-    const d = Math.hypot(
-      r.near![0] - r.target![0], r.near![1] - r.target![1], r.near![2] - r.target![2],
-    );
-    expect(d).toBeLessThan(0.5);
+    expect(r.nearSnapDist).toBeLessThan(1e-6);
 
     // (2) and it is ON the sphere — the invariant, restated for a surface.
     expect(Math.abs(Math.hypot(r.near![0], r.near![1], r.near![2]) - R)).toBeLessThan(0.01);
@@ -129,6 +145,10 @@ test.describe('object snap on a curved face', () => {
     expect(
       Math.hypot(r.far![0] - r.target![0], r.far![1] - r.target![1], r.far![2] - r.target![2]),
     ).toBeGreaterThan(5);
+    // The control for (1): away from everything the point is NOT on a vertex.
+    // Without this, "landed on a vertex" would also pass on a snap that dragged
+    // every click to the nearest one.
+    expect(r.farSnapDist).toBeGreaterThan(1e-6);
   });
 
   test('the engine tells where a point lands on each curved surface', async ({ page }) => {

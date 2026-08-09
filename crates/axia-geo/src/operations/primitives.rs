@@ -406,7 +406,12 @@ impl Mesh {
         // ADR-104 β-1-ζ — Path B dispatch (engine OFF, production ON via
         // localStorage). Returns 2 hemisphere FaceIds.
         if self.sphere_path_b_default {
-            return self.create_sphere_kernel_native(center, radius, material);
+            // The axis definition (poles + one meridian seam, one face). Z-up
+            // canonical per LOCKED #43, same as the equator definition it
+            // replaces.
+            return self
+                .create_sphere_axis_native(center, radius, glam::DVec3::Z, material)
+                .map(|f| vec![f]);
         }
 
         // ADR-007 — polar singularity 문제 해결:
@@ -1540,20 +1545,28 @@ mod tests {
 
     #[test]
     fn adr104_b1_zeta_path_b_active_after_flag_flip() {
-        // After set_sphere_path_b_default(true), create_sphere routes
-        // to Path B (2 hemisphere faces).
+        // After set_sphere_path_b_default(true), create_sphere routes to Path B.
+        // That used to be two hemispheres split by the equator; since the axis
+        // definition landed it is ONE face carrying the whole sphere, bounded by
+        // a meridian seam between the poles.
         let mut mesh = Mesh::new();
         mesh.set_sphere_path_b_default(true);
         assert!(mesh.sphere_path_b_default());
 
         let mat = MaterialId::new(0);
         let faces = mesh.create_sphere(DVec3::ZERO, 50.0, 16, 12, mat).unwrap();
-        // Path B = 2 hemisphere faces.
-        assert_eq!(faces.len(), 2,
-            "Path B flip → 2 hemisphere faces (not 289 polygonal quads)");
-        // Active face count = 2 (no other geometry).
+        assert_eq!(faces.len(), 1,
+            "Path B flip → one face for the whole sphere (not 289 polygonal quads)");
         let active_faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
-        assert_eq!(active_faces, 2, "Path B sphere = 2 face total");
+        assert_eq!(active_faces, 1, "Path B sphere = 1 face total");
+        // and the two vertices are the poles, on the axis
+        let verts: Vec<_> = mesh.verts.iter().filter(|(_, v)| v.is_active()).map(|(_, v)| v.pos()).collect();
+        assert_eq!(verts.len(), 2, "the poles, and nothing on the equator");
+        for p in &verts {
+            assert!((p.x).abs() < 1e-9 && (p.y).abs() < 1e-9,
+                "a pole sits on the axis, got {p:?}");
+            assert!((p.z.abs() - 50.0).abs() < 1e-9, "at ±radius along it, got {p:?}");
+        }
     }
 
     #[test]
@@ -1763,7 +1776,7 @@ mod tests {
 
     #[test]
     fn adr104_b1_zeta_path_b_dispatch_memory_reduction() {
-        // Path A (default 24×12) vs Path B canonical (2 faces).
+        // Path A (default 24×12) vs Path B canonical (one face, axis definition).
         // Demonstrates ~99% face count reduction matching ADR-104 §1.1
         // memory matrix prediction.
         let mut mesh_a = Mesh::new();
@@ -1781,7 +1794,7 @@ mod tests {
             "Path B vs Path A face reduction expected >95%, got {:.1}% \
              (Path A = {} faces, Path B = {} faces)",
             reduction_pct, faces_a.len(), faces_b.len());
-        assert_eq!(faces_b.len(), 2,
-            "Path B sphere = exactly 2 hemisphere faces");
+        assert_eq!(faces_b.len(), 1,
+            "Path B sphere = one face carrying the whole sphere");
     }
 }

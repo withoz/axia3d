@@ -1917,15 +1917,24 @@ impl Mesh {
         let mut sph: Option<(DVec3, f64)> = None; // (center, radius)
         let mut cone: Option<(DVec3, DVec3, f64)> = None; // (apex, axis_dir, half_angle)
         let mut tor: Option<(DVec3, DVec3, DVec3, f64, f64)> = None; // (center, axis, ref, major, minor)
-        let mut has_self_loop = false;
+        // Is this a Path B operand — a curved primitive whose boundary is not a
+        // polygon? It used to ask specifically for a SELF-LOOP, which is one of
+        // the two shapes such a boundary takes: an anchor on a closed curve.
+        // The other is a seam, two half-edges of one edge walked out and back,
+        // which is how a sphere is written when its definition is the axis. Ask
+        // the question that covers both — fewer than three boundary vertices
+        // means there is no polygon here to imprint against.
+        let mut has_curve_boundary = false;
         for &fid in faces {
             let Some(face) = self.faces.get(fid) else { continue };
             let start = face.outer().start;
-            if !start.is_null() {
-                let eid = self.hes[start].edge();
-                if self.edges.get(eid).map(|e| e.is_self_loop()).unwrap_or(false) {
-                    has_self_loop = true;
-                }
+            if !start.is_null()
+                && self
+                    .collect_loop_verts(start)
+                    .map(|v| v.len() < 3)
+                    .unwrap_or(false)
+            {
+                has_curve_boundary = true;
             }
             match face.surface() {
                 Some(S::Cylinder { axis_origin, axis_dir, radius, .. }) => {
@@ -1943,8 +1952,8 @@ impl Mesh {
                 _ => {}
             }
         }
-        // Only Path B (self-loop) operands are polygonalized here.
-        if !has_self_loop { return faces.to_vec(); }
+        // Only Path B (non-polygon boundary) operands are polygonalized here.
+        if !has_curve_boundary { return faces.to_vec(); }
 
         // ── Path B CYLINDER (ADR-278 β + rotated follow-up) — ANY axis via the
         // axis-agnostic builder. Axial extent = operand verts projected onto the
