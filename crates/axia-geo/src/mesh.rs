@@ -8361,6 +8361,67 @@ impl Mesh {
     /// - anything else (Cone, Torus, the NURBS family) returns `None`; the
     ///   caller falls back to tessellating, which those measured well on
     ///   (cone 0.030%).
+    /// `-1.0` when a curved face's own winding opposes its surface's outward
+    /// normal, `+1.0` otherwise.
+    ///
+    /// The Plane arm of [`Mesh::analytic_face_flux`] has always asked this —
+    /// "the face's own winding decides the sign, not the stored surface normal".
+    /// The curved arms did not, so a curved face that looks INWARD contributed
+    /// its volume with the wrong sign. Measured on a bore wall quad (200³ box,
+    /// r = 40 bore) after attaching a Cylinder: the polygon gives −62428.90 and
+    /// the surface **+**62831.85, the magnitudes differing only by the
+    /// arc-vs-chord gain of 1.0065.
+    ///
+    /// Nothing in the engine is affected today — every curved face currently
+    /// looks outward, and all five primitives measure true volume. A bore wall
+    /// would be the first inward-facing curved face, which is why this is here
+    /// before that work rather than after it.
+    ///
+    /// Two things decide whether a face gets a vote, and the second is the one
+    /// carrying the weight:
+    ///
+    /// - **3+ distinct vertices on the outer loop.** Structural, not a
+    ///   tolerance: a Path B face carries its shape in its surface and has one
+    ///   anchor vertex (a self-loop rim) or two (the axis-native sphere's seam),
+    ///   so there is no winding to read.
+    /// - **A decisive vote (`< -0.5`).** This is the real guard, because a
+    ///   curved face CAN have a polygon that says nothing useful — a circle
+    ///   drawn inside a sphere leaves a face with vertices whose chord plane is
+    ///   unrelated to the radial direction. Measured on exactly that case
+    ///   (r = 50 sphere, disc drawn on it): the 3-vertex polar triangles vote
+    ///   +0.9996, the 4-vertex facets +0.9998..+1.0000, and the drawn 23-vertex
+    ///   face +1.0000 — nothing near the boundary. An ambiguous face keeps
+    ///   today's answer instead of guessing, because guessing wrong here flips a
+    ///   whole sphere's volume.
+    fn curved_flux_winding_sign(&self, face_id: FaceId) -> f64 {
+        const NO_FLIP: f64 = 1.0;
+        let Some(face) = self.faces.get(face_id) else { return NO_FLIP };
+        let Some(surface) = face.surface() else { return NO_FLIP };
+        let Ok(verts) = self.collect_loop_verts(face.outer().start) else { return NO_FLIP };
+        let mut pts: Vec<DVec3> = Vec::with_capacity(verts.len());
+        for vid in verts {
+            let Some(p) = self.verts.get(vid).map(|v| v.pos()) else { return NO_FLIP };
+            if pts.iter().all(|q: &DVec3| (*q - p).length_squared() > 1e-8) {
+                pts.push(p);
+            }
+        }
+        if pts.len() < 3 {
+            return NO_FLIP; // a rim or a seam — no polygon to read
+        }
+        // Newell, so a non-planar facet still votes.
+        let mut newell = DVec3::ZERO;
+        for i in 0..pts.len() {
+            newell += pts[i].cross(pts[(i + 1) % pts.len()]);
+        }
+        let newell = newell.normalize_or_zero();
+        if newell.length_squared() < 0.5 {
+            return NO_FLIP; // degenerate outline
+        }
+        let centroid = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
+        let vote = newell.dot(surface.normal_at_world_pos(centroid));
+        if vote < -0.5 { -1.0 } else { NO_FLIP }
+    }
+
     pub fn analytic_face_flux(&self, face_id: FaceId) -> Option<f64> {
         use crate::surfaces::AnalyticSurface as S;
         let surface = self.faces.get(face_id)?.surface()?.clone();
@@ -8400,7 +8461,8 @@ impl Mesh {
                     + center.dot(e2) * c_u * (cos2(v1) - cos2(v0))
                     + center.dot(axis) * (u1 - u0) * (sincos(v1) - sincos(v0));
                 let r_term = radius * (u1 - u0) * (v1.sin() - v0.sin());
-                Some(radius * radius * (c_term + r_term))
+                let sign = self.curved_flux_winding_sign(face_id);
+                Some(sign * radius * radius * (c_term + r_term))
             }
             S::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_range, v_range } => {
                 let axis = axis_dir.normalize_or_zero();
@@ -8417,7 +8479,8 @@ impl Mesh {
                 let o_term =
                     (axis_origin.dot(e1) * s_u + axis_origin.dot(e2) * c_u) * (v1 - v0);
                 let r_term = radius * (u1 - u0) * (v1 - v0);
-                Some(radius * (o_term + r_term))
+                let sign = self.curved_flux_winding_sign(face_id);
+                Some(sign * radius * (o_term + r_term))
             }
             _ => None,
         }
