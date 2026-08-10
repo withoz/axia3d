@@ -17,6 +17,57 @@
  *
  * The four dispatchers are matched to their DOM containers, because an id
  * handled by ContextMenu does nothing for a #menubar item.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * THE WIRING MAP — what connects to what, and which check holds each link.
+ *
+ * A click travels six layers. Only TWO of them can break silently; the rest
+ * are held by a compiler, which is why the guards cluster where they do.
+ *
+ *   index.html            data-action / data-tool   ← A STRING. no type.
+ *     │  A                                            #menubar 170
+ *     │                                                #toolbar 75
+ *     │                                                #context-menu 54
+ *     │                                                #statusbar 7
+ *     ▼
+ *   dispatcher            MenuBar / ContextMenu / StatusBar switch,
+ *     │  B                and main.ts dispatchToolbarAction (a FOURTH one —
+ *     │                   the toolbar does not use the other three)
+ *     ▼
+ *   ToolManager           dispatchAction · tools registry
+ *     │  C                (TypeScript from here down)
+ *     ▼
+ *   WasmBridge            354 public wrappers
+ *     │  D                `this.engine.X?.()`  ← OPTIONAL. no type either.
+ *     ▼
+ *   WASM export           axia_wasm.d.ts, 834 declarations
+ *     │  E
+ *     ▼
+ *   engine (Rust)         cargo
+ *
+ *   A  string → handler   THIS FILE (all four containers) +
+ *                         e2e/toolbar-items-reach-a-handler.spec.ts (clicks them)
+ *   B  container → owner  THIS FILE (`CONTAINERS` below names the owner)
+ *   C  id → tool          THIS FILE ('every registered tool is reachable')
+ *   D  bridge → export    THIS FILE ('every engine call the bridge makes exists')
+ *   E  export → engine    wasm-pack; a missing fn does not compile
+ *
+ *   Other consumers of the same engine, deliberately NOT in this file:
+ *     packages/axia-mcp-server        capability → export   (its own tests)
+ *     packages/axia-action-catalog    identity SSOT         (CatalogConsistency)
+ *
+ * Two links are unguarded ANYWHERE, and both are held by tsc rather than by a
+ * test: ToolManager → bridge (C→D) and every call inside a tool. A rename
+ * there fails the build, so a guard would only repeat the compiler.
+ *
+ * ⚠ HOW THIS MAP FAILED ONCE (2026-08-10): link A was checked for three
+ * containers and the toolbar was not one of them, because the toolbar has its
+ * own dispatcher and nobody noticed there were four. 75 entry points sat
+ * outside every guard in the repo, and the SKETCH PLANE dropdown's
+ * "📐 작업 평면 · 세 점" did nothing for however long. `CONTAINERS` now drives
+ * the checks, and a fifth container appearing in index.html fails a test
+ * instead of quietly joining the blind spot.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -47,11 +98,89 @@ function idsInContainer(containerId: string): string[] {
     .filter(Boolean);
 }
 
+/** Every element in index.html that carries a data-action or a data-tool. */
+function allEntryPointOwners(): { containers: Set<string>; loose: string[] } {
+  const doc = new DOMParser().parseFromString(read('index.html'), 'text/html');
+  const containers = new Set<string>();
+  const loose: string[] = [];
+  for (const el of doc.querySelectorAll('[data-action], [data-tool]')) {
+    // Walk up to the nearest ancestor that has an id — that is the unit a
+    // dispatcher owns.
+    let node: Element | null = el;
+    let owner: string | null = null;
+    while (node) {
+      if (node.id) {
+        owner = node.id;
+        break;
+      }
+      node = node.parentElement;
+    }
+    if (owner) containers.add(owner);
+    else loose.push(el.getAttribute('data-action') ?? el.getAttribute('data-tool') ?? '?');
+  }
+  return { containers, loose };
+}
+
 describe('action wiring — every data-action reaches a handler', () => {
   const MENU = switchCases('src/ui/MenuBar.ts');
   const CONTEXT = switchCases('src/ui/ContextMenu.ts');
   const STATUS = switchCases('src/ui/StatusBar.ts');
   const DISPATCH = dispatchIds('src/tools/ToolManagerRefactored.ts');
+  const MAIN = read('src/main.ts');
+  const TM_SRC = read('src/tools/ToolManagerRefactored.ts');
+  const REGISTERED = new Set(
+    [...TM_SRC.matchAll(/tools\.set\('([^']+)'/g)].map((m) => m[1]),
+  );
+
+  /**
+   * ★THE MAP, AS DATA. Link B of the header diagram: every DOM container that
+   * holds entry points, and who dispatches for it. The checks below are driven
+   * by this list, so the way the toolbar was forgotten in 2026-08-10 — three
+   * hand-written `it()` blocks and a fourth container nobody enumerated —
+   * cannot recur silently: `every entry point belongs to a known container`
+   * fails the moment a fifth appears.
+   */
+  const CONTAINERS: Array<{
+    id: string;
+    owner: string;
+    min: number;
+    /** ids this container's own dispatcher handles before executeAction. */
+    handled: (id: string) => boolean;
+  }> = [
+    {
+      id: 'menubar',
+      owner: 'src/ui/MenuBar.ts switch',
+      min: 150,
+      handled: (id) => MENU.has(id),
+    },
+    {
+      id: 'context-menu',
+      owner: 'src/ui/ContextMenu.ts switch',
+      min: 20,
+      handled: (id) => CONTEXT.has(id),
+    },
+    {
+      id: 'statusbar',
+      owner: 'src/ui/StatusBar.ts switch',
+      min: 3,
+      handled: (id) => STATUS.has(id),
+    },
+    {
+      id: 'toolbar',
+      owner: 'src/main.ts dispatchToolbarAction',
+      min: 20,
+      handled: (id) => {
+        if (new Set([...MAIN.matchAll(/action === '([^']+)'/g)].map((m) => m[1])).has(id)) {
+          return true;
+        }
+        // `tool-<x>` activates tool <x>. Requires BOTH the branch and what it
+        // does — matching only `action.slice(5)` let `if (false)` pass once.
+        const forwards =
+          /action\.startsWith\('tool-'\)/.test(MAIN) && /setTool\(bare\)/.test(MAIN);
+        return forwards && id.startsWith('tool-') && REGISTERED.has(id.slice(5));
+      },
+    },
+  ];
 
   it('the dispatchers were actually parsed', () => {
     // Guards the guard: a regex that silently matches nothing would make every
@@ -60,81 +189,72 @@ describe('action wiring — every data-action reaches a handler', () => {
     expect(CONTEXT.size).toBeGreaterThan(30);
     expect(STATUS.size).toBeGreaterThan(3);
     expect(DISPATCH.size).toBeGreaterThan(50);
+    expect(REGISTERED.size).toBeGreaterThan(30);
   });
 
-  it('#menubar: every item is handled by MenuBar or executeAction', () => {
-    const ids = idsInContainer('menubar');
-    expect(ids.length).toBeGreaterThan(150);
-    const dead = [...new Set(ids)].filter((id) => !MENU.has(id) && !DISPATCH.has(id));
-    expect(
-      dead,
-      'Dead menu items: clicking does nothing, and the palette/Explorer record ' +
-        'them as successful (main.ts dispatchMenuAction returns true on element ' +
-        'existence). Add a `case` in MenuBar.ts or a branch in dispatchAction.',
-    ).toEqual([]);
-  });
-
-  it('#context-menu: every item is handled by ContextMenu or executeAction', () => {
-    const ids = idsInContainer('context-menu');
-    expect(ids.length).toBeGreaterThan(20);
-    const dead = [...new Set(ids)].filter((id) => !CONTEXT.has(id) && !DISPATCH.has(id));
-    expect(dead, 'Dead context-menu items').toEqual([]);
-  });
-
-  it('#statusbar: every item is handled by StatusBar or executeAction', () => {
-    const ids = idsInContainer('statusbar');
-    expect(ids.length).toBeGreaterThan(3);
-    const dead = [...new Set(ids)].filter((id) => !STATUS.has(id) && !DISPATCH.has(id));
-    expect(dead, 'Dead statusbar items').toEqual([]);
-  });
-
-  it('#toolbar: every data-action reaches a handler', () => {
-    // ★THE CONTAINER THIS FILE DID NOT CHECK. menubar / context-menu /
-    // statusbar each dispatch through their own switch, and those three are
-    // asserted above. The toolbar goes somewhere else entirely — main.ts's
-    // `dispatchToolbarAction`, which handles a couple of ids itself and passes
-    // the rest to `executeAction`. Nothing compared the two, so a toolbar
-    // button could point at an id ToolManager has never heard of and the only
-    // sign was a Toast at runtime.
-    //
-    // Measured 2026-08-10 in real Chromium, before this guard existed: the
-    // SKETCH PLANE dropdown's "📐 작업 평면 · 세 점" ran
-    // `executeAction('tool-plane')` → no branch matched → "알 수 없는
-    // 명령입니다: tool-plane". The same item in the MENU worked, because
-    // MenuBar's switch has `case 'tool-plane'`. PR #97 repointed both entries
-    // and only one of the two paths knew the id.
-    const ids = [...new Set(idsInContainer('toolbar'))];
-    expect(ids.length).toBeGreaterThan(20);
-    const MAIN = read('src/main.ts');
-    const TOOLBAR_OWN = new Set(
-      [...MAIN.matchAll(/action === '([^']+)'/g)].map((m) => m[1]),
-    );
-    // `tool-<x>` is activation: main.ts turns it into setTool('<x>'), so the
-    // requirement is that <x> is a registered tool.
-    const TM = read('src/tools/ToolManagerRefactored.ts');
-    const registered = new Set(
-      [...TM.matchAll(/tools\.set\('([^']+)'/g)].map((m) => m[1]),
-    );
-    expect(registered.size).toBeGreaterThan(30);
-    // Ask for the branch AND what it does. Matching only `action.slice(5)`
-    // let `if (false) { const bare = action.slice(5); … }` pass — the line
-    // survives, so the guard saw code that can never run (the ADR-299 shape:
-    // presence mistaken for behaviour). Even so, source text cannot prove
-    // execution; the runtime proof is
-    // `web/e2e/toolbar-items-reach-a-handler.spec.ts`.
-    const forwardsToolIds =
-      /action\.startsWith\('tool-'\)/.test(MAIN) &&
-      /setTool\(bare\)/.test(MAIN);
-
-    const dead = ids.filter((id) => {
-      if (TOOLBAR_OWN.has(id) || DISPATCH.has(id)) return false;
-      if (forwardsToolIds && id.startsWith('tool-') && registered.has(id.slice(5))) return false;
-      return true;
+  it('every entry point belongs to a known container', () => {
+    // The check that would have caught the toolbar. An id inside a container
+    // nobody listed reaches no dispatcher and no guard — it is invisible twice.
+    const { containers, loose } = allEntryPointOwners();
+    const known = new Set(CONTAINERS.map((c) => c.id));
+    // Nested ids (e.g. #statusbar's own #sb-snap) resolve to themselves, so
+    // accept any container that SITS INSIDE a known one.
+    const doc = new DOMParser().parseFromString(read('index.html'), 'text/html');
+    const orphans = [...containers].filter((cid) => {
+      if (known.has(cid)) return false;
+      const el = doc.getElementById(cid);
+      return ![...known].some((k) => doc.getElementById(k)?.contains(el!));
     });
     expect(
-      dead,
-      'Toolbar items that reach no handler — clicking them shows ' +
-        '"알 수 없는 명령입니다".',
+      orphans,
+      'Containers holding data-action/data-tool that no dispatcher owns. Add ' +
+        'them to CONTAINERS above (with their dispatcher) or nest them inside ' +
+        'an existing one.',
+    ).toEqual([]);
+    expect(loose, 'Entry points with no id anywhere above them').toEqual([]);
+  });
+
+  for (const c of CONTAINERS) {
+    it(`#${c.id}: every item is handled by ${c.owner} or executeAction`, () => {
+      const ids = [...new Set(idsInContainer(c.id))];
+      expect(ids.length, `#${c.id} was read at all`).toBeGreaterThan(c.min);
+      const dead = ids.filter((id) => !c.handled(id) && !DISPATCH.has(id));
+      expect(
+        dead,
+        `Dead #${c.id} items: clicking does nothing. The palette/Explorer even ` +
+          `record them as successful (main.ts dispatchMenuAction returns true on ` +
+          `element existence). Handle them in ${c.owner} or in dispatchAction.`,
+      ).toEqual([]);
+    });
+  }
+
+  it('every engine call the bridge makes exists in the WASM export', () => {
+    // Link D. `this.engine.X?.()` is optional by design (a legacy build may not
+    // have X), which means a typo or a removed export is a SILENT no-op — tsc
+    // cannot see it, because the interface above the class declares X optional
+    // too. Measured by hand on 2026-08-10 (253 calls, 0 missing); this keeps it
+    // measured.
+    const dts = read('src/wasm/axia_wasm.d.ts');
+    const exported = new Set([
+      ...[...dts.matchAll(/^ +(\w+)\s*\(/gm)].map((m) => m[1]),
+      ...[...dts.matchAll(/^ +readonly\s+(\w+)/gm)].map((m) => m[1]),
+    ]);
+    // PREMISE: the .d.ts was parsed. Indentation is 4 spaces, not 2 — a `\s{2}`
+    // pattern found nothing here and made the whole check vacuous once.
+    for (const known of ['create_box', 'get_stats', 'drawEllipseAsCurve']) {
+      expect(exported, `.d.ts parser must find ${known}`).toContain(known);
+    }
+    const bridge = read('src/bridge/WasmBridge.ts');
+    const called = new Set(
+      [...bridge.matchAll(/this\.engine\.(\w+)\s*[?!]?\.?\s*\(/g)].map((m) => m[1]),
+    );
+    expect(called.size).toBeGreaterThan(200);
+    const missing = [...called].filter((m) => !exported.has(m));
+    expect(
+      missing,
+      'Bridge methods calling an engine function that is not exported — the ' +
+        'optional-call syntax makes these silent no-ops at runtime. Either ' +
+        'export them from crates/axia-wasm or delete the wrapper.',
     ).toEqual([]);
   });
 

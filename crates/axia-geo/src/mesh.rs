@@ -13859,7 +13859,33 @@ impl Mesh {
             Err(_) => return 0.0,
         };
 
-        // Try polygon Newell first (≥3 verts).
+        // A CURVED face is read from its surface, never from its boundary.
+        //
+        // The polygon came first here, and a self-loop boundary was the only
+        // thing that reached the analytic branch below. That held exactly as
+        // long as a curved face kept its 1-vertex rim: draw a circle inside a
+        // sphere (the disc floats within it, nothing is cut) and the sphere
+        // face acquires four boundary vertices, whose Newell sum is ~0 — the
+        // Inspector then showed 면적 0.00 m² for a whole sphere. Measured
+        // 2026-08-10: 314.159 before the circle, 0.000 after, while
+        // `analytic_face_area` said 314.159 (= 4πr²) throughout.
+        //
+        // Same correction as `face_outward_flux` (volume) received the same
+        // day, and for the same reason: on a plane the boundary IS the shape,
+        // on a sphere it is a chord net that says nothing about the bulge.
+        // Every `analytic_face_area` arm integrates over u_range × v_range, so
+        // a face that covers part of its surface is measured, not assumed.
+        //
+        // A PLANE keeps the polygon: its `u_range × v_range` is an AABB
+        // rectangle, which over-reports a disk (ADR-253 P1, below).
+        use crate::surfaces::AnalyticSurface as Surf;
+        if let Some(surface) = f.surface() {
+            if !matches!(surface, Surf::Plane { .. }) {
+                return Self::analytic_face_area(surface);
+            }
+        }
+
+        // Try polygon Newell first (≥3 verts) — exact on a planar face.
         if verts.len() >= 3 {
             if let Some(n) = self.newell_raw(&verts) {
                 return n.length() * 0.5;
