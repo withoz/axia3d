@@ -651,6 +651,22 @@ async function main() {
       });
       return;
     }
+    // `tool-<x>` means "activate that tool". Every one of them lives in
+    // MenuBar's switch as `case 'tool-<x>': setActiveTool('<x>')`, and nothing
+    // taught THIS path the same thing — so a toolbar dropdown item pointing at
+    // one reached `executeAction`, matched no branch, and said "알 수 없는
+    // 명령입니다" (measured: the SKETCH PLANE dropdown's tool-plane, which
+    // worked from the menu). Handled by rule rather than case by case, because
+    // the next such item would arrive with the same gap.
+    if (action.startsWith('tool-')) {
+      const bare = action.slice(5);
+      if (toolManager.hasTool(bare)) {
+        toolManager.setTool(bare);
+        const label = document.getElementById('tool-label');
+        if (label) label.textContent = toolDisplayName(bare);
+        return;
+      }
+    }
     toolManager.executeAction(action);
   };
 

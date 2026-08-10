@@ -88,6 +88,56 @@ describe('action wiring — every data-action reaches a handler', () => {
     expect(dead, 'Dead statusbar items').toEqual([]);
   });
 
+  it('#toolbar: every data-action reaches a handler', () => {
+    // ★THE CONTAINER THIS FILE DID NOT CHECK. menubar / context-menu /
+    // statusbar each dispatch through their own switch, and those three are
+    // asserted above. The toolbar goes somewhere else entirely — main.ts's
+    // `dispatchToolbarAction`, which handles a couple of ids itself and passes
+    // the rest to `executeAction`. Nothing compared the two, so a toolbar
+    // button could point at an id ToolManager has never heard of and the only
+    // sign was a Toast at runtime.
+    //
+    // Measured 2026-08-10 in real Chromium, before this guard existed: the
+    // SKETCH PLANE dropdown's "📐 작업 평면 · 세 점" ran
+    // `executeAction('tool-plane')` → no branch matched → "알 수 없는
+    // 명령입니다: tool-plane". The same item in the MENU worked, because
+    // MenuBar's switch has `case 'tool-plane'`. PR #97 repointed both entries
+    // and only one of the two paths knew the id.
+    const ids = [...new Set(idsInContainer('toolbar'))];
+    expect(ids.length).toBeGreaterThan(20);
+    const MAIN = read('src/main.ts');
+    const TOOLBAR_OWN = new Set(
+      [...MAIN.matchAll(/action === '([^']+)'/g)].map((m) => m[1]),
+    );
+    // `tool-<x>` is activation: main.ts turns it into setTool('<x>'), so the
+    // requirement is that <x> is a registered tool.
+    const TM = read('src/tools/ToolManagerRefactored.ts');
+    const registered = new Set(
+      [...TM.matchAll(/tools\.set\('([^']+)'/g)].map((m) => m[1]),
+    );
+    expect(registered.size).toBeGreaterThan(30);
+    // Ask for the branch AND what it does. Matching only `action.slice(5)`
+    // let `if (false) { const bare = action.slice(5); … }` pass — the line
+    // survives, so the guard saw code that can never run (the ADR-299 shape:
+    // presence mistaken for behaviour). Even so, source text cannot prove
+    // execution; the runtime proof is
+    // `web/e2e/toolbar-items-reach-a-handler.spec.ts`.
+    const forwardsToolIds =
+      /action\.startsWith\('tool-'\)/.test(MAIN) &&
+      /setTool\(bare\)/.test(MAIN);
+
+    const dead = ids.filter((id) => {
+      if (TOOLBAR_OWN.has(id) || DISPATCH.has(id)) return false;
+      if (forwardsToolIds && id.startsWith('tool-') && registered.has(id.slice(5))) return false;
+      return true;
+    });
+    expect(
+      dead,
+      'Toolbar items that reach no handler — clicking them shows ' +
+        '"알 수 없는 명령입니다".',
+    ).toEqual([]);
+  });
+
   it('every registered tool has a display name', () => {
     // toolDisplayName falls back to the raw id, so a missing entry does not
     // throw — it just shows the user "nurbs-edit" where a name belongs. That
