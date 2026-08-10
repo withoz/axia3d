@@ -78,6 +78,12 @@ pub struct PocketResult {
 
 /// Ray/plane numeric epsilon.
 const CARVE_EPS: f64 = 1e-6;
+
+/// How close to a face's boundary still counts as hitting it, for the
+/// cross-drill guard only (`point_in_face_or_on_edge`). Well above the 0.15 μm
+/// dedup floor (LOCKED #5) and far below any real wall, so it absorbs a
+/// vertex-grazing axis without reaching a neighbouring face.
+const XD_EDGE_TOL: f64 = 1e-3;
 /// Two planes are the SAME plane (skip the source's coplanar siblings, e.g. the
 /// ring around a punched hole): `|n·n'| > DOT` AND offset within `OFFSET`.
 ///
@@ -252,6 +258,25 @@ impl Mesh {
         let center = profile_pts.iter().copied().sum::<DVec3>() / profile_pts.len() as f64;
         let dir = -n;
         let mut best: Option<(f64, DVec3, Vec<DVec3>)> = None; // (t, fn, poly)
+        // ★A BOUNDARY HIT COUNTS. The test itself was right — a tiny interior
+        // tube wall cannot contain the projected profile, a real outer wall (or
+        // the far wall of a stacked solid) can. What failed was FINDING that
+        // wall: the even-odd test excludes boundaries, so an axis crossing it
+        // exactly at a quad vertex was reported as missing it. Measured
+        // 2026-08-10 on a 200³ box bored along Z, then drilled across:
+        //
+        //   segments 12·24·48·64·96   nearest = tube wall t=60   -> refused
+        //   segments 16               nearest = far shell t=200  -> allowed, si  88
+        //   segments 32               nearest = far shell t=200  -> allowed, si 184
+        //
+        // Identical geometry; only the vertex positions moved.
+        //
+        // ⚠ TWO OTHER FIXES WERE TRIED AND DROPPED, both by measurement:
+        //   · counting crossings (>2 = interior structure) — a legitimate drill
+        //     through two stacked solids meets four shells, breaking
+        //     `adr251_p6_multisolid_sequential_drill_works`;
+        //   · shooting five rays (centre + rim) — mutation showed it held
+        //     nothing once the tolerance was in place.
         for (fid, f) in self.faces.iter() {
             if fid == FaceId::new(u32::MAX) || !f.is_active() {
                 continue;
@@ -271,17 +296,18 @@ impl Mesh {
             if t < CARVE_EPS {
                 continue;
             }
-            if point_in_face(center + dir * t, &poly, fn_)
+            if point_in_face_or_on_edge(center + dir * t, &poly, fn_, XD_EDGE_TOL)
                 && best.as_ref().map_or(true, |(bt, ..)| t < *bt)
             {
                 best = Some((t, fn_, poly));
             }
         }
         let Some((t, fn_, poly)) = best else { return false };
-        // Project every profile point onto the exit plane along the drill axis and
-        // require the nearest opposite face to contain them all. A tiny interior
-        // tube wall fails this; a full outer / stacked-solid wall passes.
-        profile_pts.iter().any(|&p| !point_in_face(p + dir * t, &poly, fn_))
+        // Project every profile point onto that plane and require it to contain
+        // them all. A tube wall fails; a full outer / stacked-solid wall passes.
+        profile_pts
+            .iter()
+            .any(|&p| !point_in_face_or_on_edge(p + dir * t, &poly, fn_, XD_EDGE_TOL))
     }
 
     /// ADR-194 β-2 — drill a circular **through-hole** (A "dedicated bridge").
@@ -2015,6 +2041,42 @@ impl Mesh {
 /// Even-odd point-in-polygon test for `p` against a planar `poly` (normal `n`),
 /// after projecting both to the face's 2D basis. Self-contained MVP test — the
 /// carve ray strikes opposite walls near their interior, well off any edge.
+/// `point_in_face`, but a point sitting ON the boundary counts as inside.
+///
+/// The even-odd test excludes boundaries, which is right almost everywhere and
+/// wrong for the cross-drill guard: a drill axis that grazes a tube wall exactly
+/// at a quad vertex was reported as MISSING that wall, so the guard looked past
+/// it to a shell 200 mm behind and allowed a drill that left two tube walls
+/// intersecting (measured 2026-08-10: segments 16 -> si 88, segments 32 -> 184).
+/// Whether the axis clips a wall at a vertex or a hair inside it is the same
+/// physical situation, so the guard must treat them the same.
+fn point_in_face_or_on_edge(p: DVec3, poly: &[DVec3], n: DVec3, tol: f64) -> bool {
+    if point_in_face(p, poly, n) {
+        return true;
+    }
+    // Distance from p to the polygon boundary, in the face's plane.
+    let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+    let u = (seed - n * seed.dot(n)).normalize_or_zero();
+    if u.length_squared() < 0.5 {
+        return false;
+    }
+    let v = n.cross(u);
+    let to2 = |q: DVec3| DVec2::new(q.dot(u), q.dot(v));
+    let p2 = to2(p);
+    let m = poly.len();
+    for i in 0..m {
+        let a = to2(poly[i]);
+        let b = to2(poly[(i + 1) % m]);
+        let ab = b - a;
+        let len2 = ab.length_squared();
+        let t = if len2 > 1e-18 { ((p2 - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        if (p2 - (a + ab * t)).length() <= tol {
+            return true;
+        }
+    }
+    false
+}
+
 fn point_in_face(p: DVec3, poly: &[DVec3], n: DVec3) -> bool {
     // In-plane orthonormal basis (u, v).
     let seed = if n.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
