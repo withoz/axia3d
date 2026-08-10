@@ -161,6 +161,46 @@ fn an_inside_out_sphere_encloses_its_volume_the_other_way() {
 }
 
 #[test]
+fn a_face_whose_polygon_says_nothing_is_left_alone() {
+    // The decisive-vote guard, pinned. A curved face can carry a polygon that
+    // tells you nothing about which way it looks: four points spread around a
+    // sphere's equator have a chord plane through the poles and a centroid AT
+    // the centre, where there is no radial direction at all. The vote lands at
+    // ~0, and an ambiguous face must keep the answer it already had rather than
+    // be guessed at — guessing wrong on a sphere flips its whole volume.
+    let radius = 50.0;
+    let mut mesh = Mesh::new();
+    let ring: Vec<_> = (0..4)
+        .map(|i| {
+            let a = TAU * (i as f64) / 4.0;
+            mesh.add_vertex(DVec3::new(radius * a.cos(), radius * a.sin(), 0.0))
+        })
+        .collect();
+    let fid = mesh.add_face(&ring, Default::default()).expect("great-circle face");
+    assert!(
+        mesh.set_face_surface(
+            fid,
+            Some(AnalyticSurface::Sphere {
+                center: DVec3::ZERO,
+                radius,
+                axis_dir: DVec3::Z,
+                ref_dir: DVec3::X,
+                u_range: (0.0, TAU),
+                v_range: (0.0, PI / 2.0),
+            })
+        ),
+        "attach"
+    );
+    let flux = mesh.analytic_face_flux(fid).expect("analytic flux");
+    // Unflipped, the northern cap's flux is +r^3 * u_extent = 50^3 * 2pi.
+    let unflipped = radius.powi(3) * TAU;
+    assert!(
+        (flux / unflipped - 1.0).abs() < 1e-9,
+        "an ambiguous face must keep its unflipped value: got {flux:.4}, want {unflipped:.4}"
+    );
+}
+
+#[test]
 fn an_outward_curved_face_is_left_alone() {
     // The control. If the sign were applied blindly — or inverted — these would
     // move; they are the faces that were always right.

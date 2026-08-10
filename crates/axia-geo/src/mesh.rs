@@ -8377,22 +8377,29 @@ impl Mesh {
     /// would be the first inward-facing curved face, which is why this is here
     /// before that work rather than after it.
     ///
-    /// Two things decide whether a face gets a vote, and the second is the one
-    /// carrying the weight:
+    /// **Only a decisive disagreement flips**, and that one test is the whole
+    /// guard. A curved face can carry a polygon that says nothing useful: four
+    /// points around a sphere's equator have a chord plane through the poles
+    /// and a centroid at the centre, where there is no radial direction at all.
+    /// Such a face keeps the answer it already had rather than being guessed
+    /// at, because guessing wrong there flips a whole sphere's volume.
     ///
-    /// - **3+ distinct vertices on the outer loop.** Structural, not a
-    ///   tolerance: a Path B face carries its shape in its surface and has one
-    ///   anchor vertex (a self-loop rim) or two (the axis-native sphere's seam),
-    ///   so there is no winding to read.
-    /// - **A decisive vote (`< -0.5`).** This is the real guard, because a
-    ///   curved face CAN have a polygon that says nothing useful — a circle
-    ///   drawn inside a sphere leaves a face with vertices whose chord plane is
-    ///   unrelated to the radial direction. Measured on exactly that case
-    ///   (r = 50 sphere, disc drawn on it): the 3-vertex polar triangles vote
-    ///   +0.9996, the 4-vertex facets +0.9998..+1.0000, and the drawn 23-vertex
-    ///   face +1.0000 — nothing near the boundary. An ambiguous face keeps
-    ///   today's answer instead of guessing, because guessing wrong here flips a
-    ///   whole sphere's volume.
+    /// A Path B face — which carries its shape in its surface and has one
+    /// anchor vertex (a self-loop rim) or two (the axis-native sphere's seam) —
+    /// needs no test of its own: a loop of fewer than three points has a Newell
+    /// sum of exactly zero by construction (`p₀×p₁ + p₁×p₀ = 0`), so its vote
+    /// is 0 and lands on the same side. A vertex-count guard and a
+    /// zero-Newell guard were both written first and both removed: mutation
+    /// showed nothing held either, because nothing could.
+    ///
+    /// Measured on the case that worried me most (r = 50 sphere with a disc
+    /// drawn on it): the 3-vertex polar triangles vote +0.9996, the 4-vertex
+    /// facets +0.9998..+1.0000, and the drawn 23-vertex face +1.0000 — nothing
+    /// near the boundary.
+    ///
+    /// ⚠ A NaN vote compares false and so does NOT flip. That is deliberate and
+    /// is the safe direction — see the NaN traps in ADR-304, where `NaN > eps`
+    /// silently skipped a protection.
     fn curved_flux_winding_sign(&self, face_id: FaceId) -> f64 {
         const NO_FLIP: f64 = 1.0;
         let Some(face) = self.faces.get(face_id) else { return NO_FLIP };
@@ -8401,24 +8408,20 @@ impl Mesh {
         let mut pts: Vec<DVec3> = Vec::with_capacity(verts.len());
         for vid in verts {
             let Some(p) = self.verts.get(vid).map(|v| v.pos()) else { return NO_FLIP };
-            if pts.iter().all(|q: &DVec3| (*q - p).length_squared() > 1e-8) {
-                pts.push(p);
-            }
+            pts.push(p);
         }
-        if pts.len() < 3 {
-            return NO_FLIP; // a rim or a seam — no polygon to read
+        if pts.is_empty() {
+            return NO_FLIP; // nothing to average — keep the centroid finite
         }
         // Newell, so a non-planar facet still votes.
         let mut newell = DVec3::ZERO;
         for i in 0..pts.len() {
             newell += pts[i].cross(pts[(i + 1) % pts.len()]);
         }
-        let newell = newell.normalize_or_zero();
-        if newell.length_squared() < 0.5 {
-            return NO_FLIP; // degenerate outline
-        }
         let centroid = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
-        let vote = newell.dot(surface.normal_at_world_pos(centroid));
+        let vote = newell
+            .normalize_or_zero()
+            .dot(surface.normal_at_world_pos(centroid));
         if vote < -0.5 { -1.0 } else { NO_FLIP }
     }
 
