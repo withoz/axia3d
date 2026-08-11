@@ -8322,7 +8322,33 @@ impl Mesh {
                         sum += p0.dot(pa.cross(pb));
                     }
                     // Σ p0·(pa×pb) is 6V for the fan; the flux is 3V.
-                    return Some(sum / 2.0);
+                    let fan = sum / 2.0;
+                    // A HOLE is not material, and this fan only ever walked the
+                    // outer loop — so a wall with a window through it, or the
+                    // two caps of a drilled solid, each handed over the flux of
+                    // a face that was never there. Measured on a 200³ box with
+                    // a 60×60 through-hole: 7,520,000 reported against a truth
+                    // of 7,280,000, the excess 240,000.0 matching the two caps'
+                    // 2·(|p·n|·hole area)/3 = 240,000.0 to the last digit.
+                    //
+                    // On a plane `p·n` is constant, so the fan is that times the
+                    // area the boundary encloses, and taking the holes out is
+                    // just a ratio of areas. Read through `face_area` rather
+                    // than by fanning the inner loops directly: that reader
+                    // already knows which inner loops are holes at all — on a
+                    // Path B cylinder the two "inner" loops are the tube's RIMS
+                    // (ADR-094) and deducting them took 2πrh down to 2πrh − πr².
+                    // Curved faces never reach this branch, but agreeing with
+                    // the one hole-aware reader in the engine costs nothing and
+                    // keeps them from drifting apart.
+                    if face.inners().is_empty() {
+                        return Some(fan);
+                    }
+                    let outer_area = self.face_outer_area(fid);
+                    if !(outer_area > 0.0) {
+                        return Some(fan);
+                    }
+                    return Some(fan * (self.face_area(fid) / outer_area));
                 }
             }
         }
