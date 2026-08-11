@@ -13917,13 +13917,132 @@ impl Mesh {
         ) {
             return outer;
         }
+        // A hole cut by a drill is a CIRCLE, and the loop is only the polygon the
+        // drill's vertices traced. Ask the other side: if the loop is the rim of
+        // a cylinder standing square to this face, deduct πr² and the two ends of
+        // the bore finally agree with each other.
+        let plane_normal = self.face_outer_newell(face_id);
         let holes: f64 = f
             .inners()
             .iter()
             .filter(|lr| !lr.start.is_null())
-            .map(|lr| self.loop_enclosed_area(lr.start))
+            .map(|lr| {
+                plane_normal
+                    .and_then(|n| self.loop_rim_circle_radius(lr.start, face_id, n))
+                    .map(|r| std::f64::consts::PI * r * r)
+                    .unwrap_or_else(|| self.loop_enclosed_area(lr.start))
+            })
             .sum();
         (outer - holes).max(0.0)
+    }
+
+    /// The unit normal of a face's outer loop by Newell, or `None` if it has no
+    /// usable polygon.
+    fn face_outer_newell(&self, face_id: FaceId) -> Option<DVec3> {
+        let face = self.faces.get(face_id)?;
+        let verts = self.collect_loop_verts(face.outer().start).ok()?;
+        if verts.len() < 3 {
+            return None;
+        }
+        let mut newell = DVec3::ZERO;
+        for i in 0..verts.len() {
+            let a = self.vertex_pos(verts[i]).ok()?;
+            let b = self.vertex_pos(verts[(i + 1) % verts.len()]).ok()?;
+            newell += a.cross(b);
+        }
+        let n = newell.normalize_or_zero();
+        (n.length_squared() > 0.5).then_some(n)
+    }
+
+    /// The radius of the circle this inner loop really is — `None` unless it is
+    /// the rim of a cylinder standing square to `plane_normal`.
+    ///
+    /// The question is answered by asking the FACES ON THE OTHER SIDE of the
+    /// loop's edges what surface they carry, not by looking at the loop's shape.
+    /// A drilled bore's wall says `Cylinder` (since #105), and its rim is that
+    /// cylinder's cross-section; a rectangular bore's wall says nothing and the
+    /// polygon stands.
+    ///
+    /// Three things must hold, and none of them is a guess:
+    ///
+    /// - every edge of the loop backs onto a cylinder of the same radius with a
+    ///   parallel axis — one wall would not be enough, a loop can border more
+    ///   than one thing;
+    /// - that axis is perpendicular to this face, or the section is an ELLIPSE
+    ///   and πr² is the wrong number;
+    /// - every vertex of the loop actually lies at that radius from the axis, so
+    ///   a surface attached with the wrong parameters cannot quietly change an
+    ///   area.
+    fn loop_rim_circle_radius(
+        &self,
+        start: HeId,
+        owner: FaceId,
+        plane_normal: DVec3,
+    ) -> Option<f64> {
+        use crate::surfaces::AnalyticSurface as S;
+        let hes = self.collect_loop_hes(start).ok()?;
+        if hes.is_empty() {
+            return None;
+        }
+
+        let mut cylinder: Option<(DVec3, DVec3, f64)> = None; // origin, axis, radius
+        for &he_id in &hes {
+            // The face across this edge, via the radial chain (self-loop safe).
+            let mut across = None;
+            let mut cur = self.hes.get(he_id)?.next_rad();
+            let mut guard = 0;
+            while !cur.is_null() && cur != he_id && guard < 1000 {
+                if let Some(h) = self.hes.get(cur) {
+                    if h.is_active() {
+                        let fid = h.face();
+                        if fid != owner
+                            && !fid.is_null()
+                            && self.faces.get(fid).is_some_and(|tf| tf.is_active())
+                        {
+                            across = Some(fid);
+                            break;
+                        }
+                    }
+                }
+                cur = self.hes.get(cur)?.next_rad();
+                guard += 1;
+            }
+            let Some(S::Cylinder { axis_origin, axis_dir, radius, .. }) =
+                self.face_surface(across?)
+            else {
+                return None; // a wall that is not a cylinder — keep the polygon
+            };
+            let axis = axis_dir.normalize_or_zero();
+            let radius = *radius;
+            if axis.length_squared() < 0.5 || !(radius > 0.0) {
+                return None;
+            }
+            match cylinder {
+                None => cylinder = Some((*axis_origin, axis, radius)),
+                Some((_, a0, r0)) => {
+                    if (radius - r0).abs() > crate::plane::EPS_PLANE_OFFSET
+                        || a0.dot(axis).abs() < 1.0 - crate::plane::EPS_PLANE_NORMAL
+                    {
+                        return None; // the loop borders more than one cylinder
+                    }
+                }
+            }
+        }
+
+        let (axis_origin, axis, radius) = cylinder?;
+        // Square to this face, or the section is an ellipse.
+        if plane_normal.dot(axis).abs() < 1.0 - crate::plane::EPS_PLANE_NORMAL {
+            return None;
+        }
+        // And the loop must really sit at that radius.
+        for &vid in &self.collect_loop_verts(start).ok()? {
+            let d = self.vertex_pos(vid).ok()? - axis_origin;
+            let radial = (d - axis * d.dot(axis)).length();
+            if (radial - radius).abs() > crate::plane::EPS_PLANE_OFFSET {
+                return None;
+            }
+        }
+        Some(radius)
     }
 
     /// The area the OUTER boundary encloses, with holes NOT deducted.
