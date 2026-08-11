@@ -8660,25 +8660,25 @@ impl AxiaEngine {
             surface_area += mesh.face_area(fid);
         }
 
-        // ── 3. 부피 계산 (signed volume via divergence theorem) ──
-        // 닫힌 메시의 경우만 정확, 열린 메시는 근사치
-        let mut volume = 0.0_f64;
-        for &fid in &face_ids {
-            let outer_start = mesh.faces[fid].outer().start;
-            if outer_start.is_null() { continue; }
-            if let Ok(verts) = mesh.collect_loop_verts(outer_start) {
-                if verts.len() >= 3 {
-                    let p0 = mesh.vertex_pos(verts[0]).unwrap_or(DVec3::ZERO);
-                    for i in 1..verts.len() - 1 {
-                        let p1 = mesh.vertex_pos(verts[i]).unwrap_or(DVec3::ZERO);
-                        let p2 = mesh.vertex_pos(verts[i + 1]).unwrap_or(DVec3::ZERO);
-                        // Signed volume of tetrahedron with origin
-                        volume += p0.dot(p1.cross(p2));
-                    }
-                }
-            }
-        }
-        volume = (volume / 6.0).abs();
+        // ── 3. 부피 — 엔진의 리더로 (ADR-306 계열, 2026-08-11) ──
+        // This used to fan each face's OUTER loop here, inline. That is the
+        // third place the engine wrote this sum, and the only one that never
+        // learned what the other two did:
+        //
+        //   · a fan needs three vertices, and a Path B face has ONE anchor
+        //     (ADR-089), so every kernel-native primitive contributed NOTHING.
+        //     Measured: a Path B sphere, cylinder and torus each reported
+        //     volume 0.0000 here while `mesh_volume` reported 523598.7756 /
+        //     502654.8246 / 473350.7070. Path B is the production default
+        //     (LOCKED #47-#49), so this is what the Inspector showed for a
+        //     sphere someone had just drawn.
+        //   · the outer loop is not the face, so a hole was never taken out —
+        //     a bored 200³ box read 7,334,091 against 6,994,690 (+4.8%).
+        //
+        // `face_set_volume` sums `face_outward_flux`, which reads a curved face
+        // from its SURFACE, honours the face's winding, and deducts holes. One
+        // reader, so this cannot drift from `meshVolume` again.
+        let volume = axia_core::promote::face_set_volume(mesh, &face_ids);
 
         // ── 4. Boundary Extraction — manifold 분석 (axia-geo 공통 유틸) ──
         // 모든 edge가 정확히 2개의 선택된 face를 공유하면 닫힌 2-manifold 솔리드.
