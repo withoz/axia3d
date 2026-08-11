@@ -2211,3 +2211,49 @@ fn get_face_vertices_includes_inner_loops() {
         "a malformed hole loop should be skipped, not abandon the whole result"
     );
 }
+
+// ── The Inspector's volume is the engine's volume ─────────────────────
+//
+// `get_xia_info` used to fan each face's OUTER loop inline — a third copy of a
+// sum the engine already had, and the only one that never learned what the
+// other two did. A fan needs three vertices and a Path B face has ONE anchor
+// (ADR-089), so every kernel-native primitive contributed nothing: measured
+// 2026-08-11, a Path B sphere / cylinder / torus each read volume 0.0000 there
+// while `mesh_volume` read 523598.7756 / 502654.8246 / 473350.7070. Path B is
+// the production default (LOCKED #47-#49), so that 0 is what someone saw after
+// drawing a sphere. The same loop never took a hole out either — a bored 200³
+// box read 7,334,091 against 6,994,690.
+//
+// The numbers themselves are held in axia-geo, where a mesh can be built. What
+// belongs here is the wiring: this file exists because calling AxiaEngine
+// natively panics in the wasm-bindgen layer, so the call site is checked as
+// source.
+#[test]
+fn the_inspectors_volume_reads_the_engine_not_its_own_fan() {
+    let l = lib_src();
+    let start = l
+        .find("pub fn get_xia_info")
+        .expect("get_xia_info must exist — the Inspector reads it");
+    // Bound the window at the next item rather than by a magic length — the
+    // function is long, and the source has Korean comments, so a byte slice of
+    // a guessed size can also land inside a code point.
+    let rest = &l[start + "pub fn get_xia_info".len()..];
+    let end = rest.find("
+    pub fn ").unwrap_or(rest.len());
+    let body = &rest[..end];
+
+    assert!(
+        body.contains("face_set_volume"),
+        "get_xia_info must take its volume from the engine's reader \
+         (`face_set_volume` sums `face_outward_flux`), not from a local fan"
+    );
+    assert!(
+        !body.contains("volume += "),
+        "an inline volume accumulator is back in get_xia_info — that is the \
+         copy that reported 0 for every Path B primitive"
+    );
+    assert!(
+        body.contains("mesh.face_area(fid)"),
+        "and its surfaceArea must stay on the hole-aware area reader"
+    );
+}
