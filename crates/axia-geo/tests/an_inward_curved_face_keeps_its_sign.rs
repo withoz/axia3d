@@ -27,6 +27,13 @@ const SEGMENTS: u32 = 32;
 /// at the entry plane's far side and `v` runs 0..200 along it.
 const AXIS_ORIGIN: DVec3 = DVec3::new(0.0, 0.0, -100.0);
 
+/// A bored box whose tube walls are BARE.
+///
+/// The drill attaches a Cylinder to each tube quad itself now — that is the
+/// point of `a_bore_carries_the_cylinder_it_stands_on`. This file is about what
+/// happens to a face when a curved surface arrives on it, so it strips them off
+/// again and puts one back deliberately, keeping the before/after comparison
+/// the tests below are actually making.
 fn box_with_a_bore() -> (Mesh, Vec<FaceId>) {
     let mut mesh = Mesh::new();
     mesh.create_box(DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
@@ -34,6 +41,9 @@ fn box_with_a_bore() -> (Mesh, Vec<FaceId>) {
     let res = mesh
         .drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, R, SEGMENTS)
         .expect("bore");
+    for &fid in &res.tube_faces {
+        assert!(mesh.set_face_surface(fid, None), "strip");
+    }
     (mesh, res.tube_faces)
 }
 

@@ -388,7 +388,84 @@ impl Mesh {
         // 4-5) Reverse + rotationally align the exit loop, bridge one quad per
         //      segment, verify manifold — shared with the rectangular drill
         //      (ADR-249; mesh.rs:10358 "common helper" follow-up realized).
-        self.bridge_through_loops(entry_face, exit_face, e_loop, b_loop, n, depth)
+        let result = self.bridge_through_loops(entry_face, exit_face, e_loop, b_loop, n, depth)?;
+
+        // 6) The bore IS a cylinder — say so. Each tube quad gets the same
+        //    Cylinder over its own angular slice, exactly as a Path A cylinder's
+        //    side facets do (ADR-032 P17). Only the CIRCULAR drill: the rect and
+        //    polygon drills share the tube builder above but are not cylinders.
+        self.attach_bore_cylinder(&result.tube_faces, exit_center, n, radius, bu);
+
+        Ok(result)
+    }
+
+    /// Give each quad of a drilled tube the Cylinder it stands on, over its own
+    /// angular slice.
+    ///
+    /// Mirrors what `create_cylinder` does for a Path A barrel (ADR-032 P17):
+    /// one surface per facet, `u_range` the facet's own slice, `v_range` its
+    /// axial span. The engine then reads the bore from its surface rather than
+    /// from a 32-gon chord net — its area, its volume, and (the reason this is
+    /// here) its intersection with a second bore.
+    ///
+    /// ⚠ The slice is read off each quad's OWN corners, not from a loop index.
+    /// `bridge_through_loops` rotationally aligns the exit loop to the entry
+    /// loop before pairing them, so the quad order is its business, not ours.
+    /// Angles are unwrapped relative to the quad's first corner, which is exact
+    /// for any quad spanning less than half a turn — true for `segments >= 3`.
+    fn attach_bore_cylinder(
+        &mut self,
+        tube_faces: &[FaceId],
+        axis_origin: DVec3,
+        axis_dir: DVec3,
+        radius: f64,
+        ref_dir: DVec3,
+    ) {
+        let axis = axis_dir.normalize_or_zero();
+        let e1 = ref_dir.normalize_or_zero();
+        if axis.length_squared() < 0.5 || e1.length_squared() < 0.5 || !(radius > 0.0) {
+            return;
+        }
+        let e2 = axis.cross(e1);
+        let angle_of = |p: DVec3| {
+            let d = p - axis_origin;
+            let radial = d - axis * d.dot(axis);
+            radial.dot(e2).atan2(radial.dot(e1))
+        };
+        for &fid in tube_faces {
+            let Some(pts) = self.face_outline_points(fid) else { continue };
+            if pts.len() < 3 {
+                continue;
+            }
+            let base = angle_of(pts[0]);
+            let (mut u_lo, mut u_hi) = (0.0_f64, 0.0_f64);
+            let (mut v_lo, mut v_hi) = (f64::MAX, f64::MIN);
+            for &p in &pts {
+                // Unwrap onto (-π, π] around the first corner — seam-safe.
+                let mut d = angle_of(p) - base;
+                while d > std::f64::consts::PI { d -= std::f64::consts::TAU; }
+                while d <= -std::f64::consts::PI { d += std::f64::consts::TAU; }
+                u_lo = u_lo.min(d);
+                u_hi = u_hi.max(d);
+                let v = (p - axis_origin).dot(axis);
+                v_lo = v_lo.min(v);
+                v_hi = v_hi.max(v);
+            }
+            if !(u_hi > u_lo) || !(v_hi > v_lo) {
+                continue; // a degenerate quad describes no patch
+            }
+            self.set_face_surface(
+                fid,
+                Some(AnalyticSurface::Cylinder {
+                    axis_origin,
+                    axis_dir: axis,
+                    radius,
+                    ref_dir: e1,
+                    u_range: (base + u_lo, base + u_hi),
+                    v_range: (v_lo, v_hi),
+                }),
+            );
+        }
     }
 
     /// ADR-249 (P1) — drill a **rectangular** through-hole. The rect analog of
