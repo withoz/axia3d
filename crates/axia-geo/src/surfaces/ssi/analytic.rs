@@ -405,7 +405,7 @@ fn ssi_deferred() -> SurfaceIntersection {
 
 /// The point where two non-parallel axes meet, or `None` if they are skew by
 /// more than `tol`.
-fn axes_meeting_point(
+pub fn axes_meeting_point(
     origin_a: DVec3, dir_a: DVec3,
     origin_b: DVec3, dir_b: DVec3,
     tol: f64,

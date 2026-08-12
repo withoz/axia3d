@@ -288,12 +288,157 @@ impl crate::Mesh {
                     continue;
                 }
                 let new_fid = self.add_face(&ids, material)?;
-                if let Some(surf) = surface.clone() {
+                // ⚠ Narrow the surface to the piece. Cloning it unchanged
+                // leaves BOTH halves claiming the whole barrel, and each is then
+                // read as the whole barrel: measured, two crossing Ø80 bores in a
+                // 200³ box took out 3,351,032 where the two cylinders' union is
+                // 1,669,286 — the crossing region removed twice. The volume also
+                // stopped depending on the segment count, which is what gave it
+                // away, and I nearly read that as a good sign.
+                if let Some(mut surf) = surface.clone() {
+                    if let crate::surfaces::AnalyticSurface::Cylinder {
+                        axis_origin, axis_dir, ref mut v_range, ..
+                    } = surf
+                    {
+                        let axis_u = axis_dir.normalize_or_zero();
+                        let lo = piece.iter().map(|p| (*p - axis_origin).dot(axis_u)).fold(f64::MAX, f64::min);
+                        let hi = piece.iter().map(|p| (*p - axis_origin).dot(axis_u)).fold(f64::MIN, f64::max);
+                        if hi > lo {
+                            *v_range = (lo, hi);
+                        }
+                    }
                     self.set_face_surface(new_fid, Some(surf));
                 }
                 survivors.push(new_fid);
             }
         }
         Ok(survivors)
+    }
+
+    /// Drill a bore that CROSSES an existing one, so the two open into each
+    /// other with nothing standing in between.
+    ///
+    /// The ordinary drill refuses this: its straight tube cannot bridge the void
+    /// the first bore left, and it would leave two walls running through each
+    /// other. This builds that straight tube anyway and then cuts BOTH walls
+    /// back to the curve where they cross — after which neither is standing
+    /// inside the other, and the two cuts weld because they were made at the
+    /// same points (`add_vertex` dedups by position).
+    ///
+    /// Only the case [`crossing_bore_trim`] accepts: equal radii, axes meeting
+    /// at right angles, and stations that land on the same points of the
+    /// crossing curve. Anything else is refused with the mesh untouched — the
+    /// caller should fall back to the ordinary refusal, or to Boolean.
+    pub fn drill_crossing_bore(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<Vec<FaceId>> {
+        use anyhow::bail;
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 || !(radius > 0.0) || segments < 3 {
+            bail!("crossing bore: degenerate normal, radius or segment count");
+        }
+
+        // Which existing bore does this one cross? The wall says: it carries the
+        // cylinder it stands on (#105).
+        let mut existing: Option<(DVec3, DVec3, f64)> = None; // axis_origin, axis, radius
+        for (fid, f) in self.faces.iter() {
+            if !f.is_active() {
+                continue;
+            }
+            let Some(crate::surfaces::AnalyticSurface::Cylinder {
+                axis_origin, axis_dir, radius: r, ..
+            }) = self.face_surface(fid)
+            else {
+                continue;
+            };
+            let axis = axis_dir.normalize_or_zero();
+            if axis.dot(n).abs() > EPS_PLANE_NORMAL {
+                continue; // parallel-ish bores do not cross
+            }
+            match existing {
+                None => existing = Some((*axis_origin, axis, *r)),
+                Some((_, a0, r0)) => {
+                    if (r - r0).abs() > EPS_PLANE_OFFSET
+                        || a0.dot(axis).abs() < 1.0 - EPS_PLANE_NORMAL
+                    {
+                        bail!("crossing bore: more than one bore lies across this one");
+                    }
+                }
+            }
+        }
+        let Some((other_origin, other_axis, other_radius)) = existing else {
+            bail!("crossing bore: nothing here to cross");
+        };
+
+        // Where the two axes meet, and whether the walls can be sewn there.
+        let Some(meet) =
+            crate::surfaces::ssi::analytic::axes_meeting_point(
+                center, n, other_origin, other_axis, EPS_PLANE_OFFSET,
+            )
+        else {
+            bail!("crossing bore: the axes are skew, so they do not cross at a point");
+        };
+        let drill_ref = |axis: DVec3| {
+            let mut t = DVec3::X;
+            if t.cross(axis).length_squared() < 1e-6 {
+                t = DVec3::Y;
+            }
+            (t - axis * t.dot(axis)).normalize_or_zero()
+        };
+        if crossing_bore_trim(
+            meet,
+            n,
+            drill_ref(n),
+            other_axis,
+            drill_ref(other_axis),
+            radius,
+            other_radius,
+            segments,
+        )
+        .is_none()
+        {
+            bail!(
+                "crossing bore: these two bores do not cut each other at shared \
+                 points — equal radii, right angles and a segment count that lands \
+                 on the crossing curve are all needed"
+            );
+        }
+
+        // ⚠ Cut the EXISTING wall first, then drill.
+        //
+        // The other order fails, and not always: the drill measures its depth by
+        // raycasting for the nearest opposite face, and with the crossed bore's
+        // wall still whole that ray hits the WALL rather than the far shell. It
+        // then tries to punch the exit inside the bore and finds no host. Whether
+        // it does depends on where the wall's vertices happen to fall, which is
+        // the same density-dependence the cross-drill guard was fixed for —
+        // measured here at 8 segments failing while 16 and 32 went through.
+        //
+        // Cutting first opens the band the new bore passes through, so the ray
+        // meets nothing until the shell and the depth is right at any density.
+        let others: Vec<FaceId> = self
+            .faces
+            .iter()
+            .filter(|(fid, f)| {
+                f.is_active()
+                    && matches!(
+                        self.face_surface(*fid),
+                        Some(crate::surfaces::AnalyticSurface::Cylinder { axis_dir, .. })
+                            if axis_dir.normalize_or_zero().dot(other_axis).abs()
+                                > 1.0 - EPS_PLANE_NORMAL
+                    )
+            })
+            .map(|(fid, _)| fid)
+            .collect();
+        let mut kept =
+            self.trim_bore_wall_for_crossing(&others, meet, other_axis, n, other_radius)?;
+
+        let drilled = self.drill_circular_through_hole_inner(center, n, radius, segments, true)?;
+        kept.extend(self.trim_bore_wall_for_crossing(&drilled.tube_faces, meet, n, other_axis, radius)?);
+        Ok(kept)
     }
 }

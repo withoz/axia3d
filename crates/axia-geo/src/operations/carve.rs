@@ -331,6 +331,24 @@ impl Mesh {
         radius: f64,
         segments: u32,
     ) -> Result<DrillThroughResult> {
+        self.drill_circular_through_hole_inner(center, normal, radius, segments, false)
+    }
+
+    /// The body of [`Mesh::drill_circular_through_hole`], with the cross-drill
+    /// refusal made optional.
+    ///
+    /// `allow_crossing` is for the one caller that knows what it is doing:
+    /// [`Mesh::drill_crossing_bore`] builds the full tube ON PURPOSE and then
+    /// trims both walls back to the crossing curve. Everyone else gets the
+    /// refusal, because a straight tube cannot bridge a void.
+    pub(crate) fn drill_circular_through_hole_inner(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+        allow_crossing: bool,
+    ) -> Result<DrillThroughResult> {
         if !(radius > 0.0) {
             bail!("drill: radius must be positive, got {radius}");
         }
@@ -365,7 +383,7 @@ impl Mesh {
             center + bu * radius, center - bu * radius,
             center + bv * radius, center - bv * radius,
         ];
-        if self.carve_drill_is_cross_drill(&rim, n) {
+        if !allow_crossing && self.carve_drill_is_cross_drill(&rim, n) {
             bail!(
                 "관통 축이 기존 구멍과 교차합니다 — 구멍 위치를 옮겨 주세요 \
                  (cross-drilling through an existing hole is not supported)"
