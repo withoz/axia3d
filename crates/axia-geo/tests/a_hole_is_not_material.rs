@@ -13,33 +13,26 @@
 use axia_geo::mesh::Mesh;
 use axia_geo::surfaces::AnalyticSurface;
 use glam::DVec3;
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 /// The area of the regular n-gon a drill of `radius` actually cuts.
 fn ngon_area(radius: f64, segments: u32) -> f64 {
     0.5 * (segments as f64) * radius * radius * (2.0 * PI / segments as f64).sin()
 }
 
-/// What one circular bore takes out of a 200³ box — which is NOT the prism the
-/// drill's vertices trace, and not the ideal cylinder either.
+/// What one circular bore takes out of a 200³ box: the cylinder, exactly.
 ///
-/// The two ends of the same bore are read by different rules, and both rules are
-/// the engine's own. The caps are PLANAR, so their hole is the n-gon the drill
-/// actually cut. The barrel is CURVED, so since #105 it reads its `Cylinder` and
-/// measures as an arc. The removed volume is therefore
+/// It was not always. The barrel has read its `Cylinder` as an arc since #105
+/// while the caps still deducted the n-gon the drill's vertices traced, so the
+/// two ends of the same bore answered differently and the removed volume landed
+/// between the two models — 1,003,160 against an ideal 1,005,310 at r=40, h=200,
+/// 32 segments. A cap now asks the wall across its hole what surface it carries;
+/// a drilled bore says `Cylinder`, so the cap deducts πr² and both ends agree.
 ///
-///     [ 2·|p·n|_cap·A_ngon  +  2πr²h ] / 3
-///
-/// ⚠ This is a seam, not a law. Measured at r=40, h=200, 32 segments: the ideal
-/// cylinder removes 1,005,310, this removes 1,003,160 (−0.21%), and the pure
-/// prism removed 998,862 (−0.64%) — so it is three times closer than before and
-/// still not exact. Closing it means letting a planar cap deduct the CIRCLE when
-/// its hole loop is the rim of a cylinder standing perpendicular to it, at which
-/// point this helper becomes `PI * r * r * h` and these tests say so by failing.
-fn bore_removes(radius: f64, segments: u32, half_height: f64, depth: f64) -> f64 {
-    let caps = 2.0 * half_height * ngon_area(radius, segments);
-    let barrel = 2.0 * PI * radius * radius * depth;
-    (caps + barrel) / 3.0
+/// `segments` is deliberately still a parameter: the answer must NOT depend on
+/// it any more, and a test that stopped passing it would stop saying so.
+fn bore_removes(radius: f64, _segments: u32, _half_height: f64, depth: f64) -> f64 {
+    PI * radius * radius * depth
 }
 
 fn boxed() -> Mesh {
@@ -80,12 +73,12 @@ fn a_circular_through_hole_comes_out_at_every_density() {
             (got / want - 1.0).abs() < 1e-9,
             "segments={segments}: got {got:.4}, want {want:.4}"
         );
-        // And it must sit between the two models it is made of.
+        // The n-gon the drill traced is now beside the point — the answer is the
+        // same at every density, which is the whole claim.
         let prism = 8.0e6 - ngon_area(40.0, segments) * 200.0;
-        let ideal = 8.0e6 - PI * 40.0 * 40.0 * 200.0;
         assert!(
-            got < prism && got > ideal,
-            "segments={segments}: {got:.4} should lie between the prism {prism:.4}              and the ideal cylinder {ideal:.4}"
+            got < prism,
+            "segments={segments}: {got:.4} must remove MORE than the prism {prism:.4}"
         );
     }
 }
@@ -201,5 +194,223 @@ fn a_window_in_a_curved_wall_still_over_reports() {
     assert!(
         (mesh.mesh_volume() - before).abs() < 1e-9,
         "unchanged today — the curved arm does not see the hole"
+    );
+}
+
+#[test]
+fn a_cap_only_deducts_the_circle_when_the_wall_says_cylinder() {
+    // The refusals matter more than the acceptance: this reads a NEIGHBOUR's
+    // declared surface to change a number on THIS face, so every way that
+    // reading can be wrong has to end at the polygon instead.
+
+    // 1. A rectangular bore's walls carry no surface at all.
+    let mut mesh = boxed();
+    mesh.drill_rect_through_hole(
+        DVec3::new(-30.0, -30.0, 100.0),
+        DVec3::new(30.0, 30.0, 100.0),
+        DVec3::Z,
+    )
+    .expect("rect bore");
+    let truth = 8.0e6 - 60.0 * 60.0 * 200.0;
+    assert!(
+        (mesh.mesh_volume() - truth).abs() < 1e-6,
+        "a square hole is a square hole"
+    );
+
+    // 2. A cylinder whose radius does not match the loop it is attached to.
+    //    Nothing stops someone attaching one; the loop's own vertices do.
+    let mut mesh = boxed();
+    let res = mesh
+        .drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, 40.0, 32)
+        .expect("bore");
+    let honest = mesh.mesh_volume();
+    {
+        // the acceptance, stated before the refusal
+        let d = mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
+            .map(|(fid, _)| mesh.face_outer_area(fid) - mesh.face_area(fid))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (d - PI * 1600.0).abs() / (PI * 1600.0) < 1e-9,
+            "an honest drilled cap deducts πr² = {:.4}, got {d:.4}",
+            PI * 1600.0
+        );
+    }
+    for &fid in &res.tube_faces {
+        let Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, ref_dir, u_range, v_range, .. }) =
+            mesh.face_surface(fid).cloned()
+        else {
+            panic!("the drill attaches a cylinder")
+        };
+        assert!(
+            mesh.set_face_surface(
+                fid,
+                Some(AnalyticSurface::Cylinder {
+                    axis_origin,
+                    axis_dir,
+                    radius: 41.0, // a lie
+                    ref_dir,
+                    u_range,
+                    v_range,
+                })
+            ),
+            "re-attach"
+        );
+    }
+    // Look at the CAP's deduction, not at the whole volume: inflating the
+    // radius also inflates the barrel's own flux, and the two move opposite
+    // ways. My first version of this asserted on `mesh_volume` and read the
+    // barrel's change as the cap refusing.
+    let deducted = |m: &Mesh| -> f64 {
+        m.faces
+            .iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
+            .map(|(fid, _)| m.face_outer_area(fid) - m.face_area(fid))
+            .fold(f64::NAN, |acc, d| if acc.is_nan() { d } else { acc.max(d) })
+    };
+    let with_the_lie = deducted(&mesh);
+    let polygon = ngon_area(40.0, 32);
+    assert!(
+        (with_the_lie - polygon).abs() / polygon < 1e-9,
+        "a radius the loop does not sit on must be refused, leaving the polygon          {polygon:.4} — got {with_the_lie:.4} (πr² for the lie would be {:.4})",
+        PI * 41.0 * 41.0
+    );
+    assert!(honest > 0.0, "the honest bore measured");
+}
+
+#[test]
+fn one_bare_wall_is_enough_to_keep_the_polygon() {
+    // A loop can border more than one thing. Strip the surface off a SINGLE
+    // tube quad and the cap must stop claiming to know what its hole is —
+    // 31 cylinders and one unknown is not a circle.
+    let mut mesh = boxed();
+    let res = mesh
+        .drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, 40.0, 32)
+        .expect("bore");
+    assert!(mesh.set_face_surface(res.tube_faces[0], None), "strip one wall");
+
+    let deducted = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
+        .map(|(fid, _)| mesh.face_outer_area(fid) - mesh.face_area(fid))
+        .fold(0.0_f64, f64::max);
+    let polygon = ngon_area(40.0, 32);
+    assert!(
+        (deducted - polygon).abs() / polygon < 1e-9,
+        "one wall that says nothing sends the cap back to the polygon          {polygon:.4} — got {deducted:.4} (πr² would be {:.4})",
+        PI * 1600.0
+    );
+}
+
+#[test]
+fn an_oblique_section_keeps_its_polygon() {
+    // An oblique cut of a cylinder is an ELLIPSE, and πr² is not its area.
+    //
+    // ⚠ The first version of this asked the drill for an oblique bore and
+    // returned early when it refused — so it asserted NOTHING, and dropping the
+    // perpendicularity check left it passing. Built by hand instead: a face in a
+    // 45° plane whose hole is a genuine section of a Z-axis cylinder, with walls
+    // across that loop carrying the cylinder. Every vertex of the loop really is
+    // at radius r from the axis, so only the perpendicularity test can refuse.
+    let r = 40.0;
+    let n: u32 = 32;
+    let mut mesh = Mesh::new();
+    // the 45° plane z = y, with normal (0,-1,1)/√2
+    let normal = DVec3::new(0.0, -1.0, 1.0).normalize();
+    let ellipse: Vec<_> = (0..n)
+        .map(|i| {
+            let a = TAU * (i as f64) / (n as f64);
+            let (x, y) = (r * a.cos(), r * a.sin());
+            mesh.add_vertex(DVec3::new(x, y, y)) // on the cylinder AND on z = y
+        })
+        .collect();
+    let outer: Vec<_> = [(-150.0, -150.0), (150.0, -150.0), (150.0, 150.0), (-150.0, 150.0)]
+        .iter()
+        .map(|&(x, y)| mesh.add_vertex(DVec3::new(x, y, y)))
+        .collect();
+    let host = mesh
+        .add_face_with_holes(&outer, &[&ellipse], Default::default())
+        .expect("oblique face with an elliptical hole");
+
+    // Walls across the loop, each carrying the cylinder the loop sits on.
+    let surface = AnalyticSurface::Cylinder {
+        axis_origin: DVec3::ZERO,
+        axis_dir: DVec3::Z,
+        radius: r,
+        ref_dir: DVec3::X,
+        u_range: (0.0, TAU),
+        v_range: (-200.0, 200.0),
+    };
+    for i in 0..n as usize {
+        let j = (i + 1) % n as usize;
+        let a = mesh.vertex_pos(ellipse[i]).unwrap();
+        let b = mesh.vertex_pos(ellipse[j]).unwrap();
+        let down_a = mesh.add_vertex(a - DVec3::Z * 200.0);
+        let down_b = mesh.add_vertex(b - DVec3::Z * 200.0);
+        let wall = mesh
+            .add_face(&[ellipse[i], ellipse[j], down_b, down_a], Default::default())
+            .expect("wall");
+        assert!(mesh.set_face_surface(wall, Some(surface.clone())), "attach");
+    }
+
+    let deducted = mesh.face_outer_area(host) - mesh.face_area(host);
+    assert!(
+        (deducted - PI * r * r).abs() > 1.0,
+        "an oblique section is an ellipse — πr² = {:.4} must NOT be what is          deducted, got {deducted:.4}",
+        PI * r * r
+    );
+    // What it should be: the loop's own polygon, which for a 45° cut is the
+    // circle's polygon stretched by √2 in one direction.
+    let polygon = ngon_area(r, n) * 2f64.sqrt();
+    assert!(
+        (deducted - polygon).abs() / polygon < 1e-6,
+        "got {deducted:.4}, the loop's polygon is {polygon:.4}"
+    );
+}
+
+#[test]
+fn walls_that_disagree_about_their_cylinder_keep_the_polygon() {
+    // The walls must agree they are ONE cylinder. Give a single tube quad a
+    // different radius and the cap must stop claiming to know its hole, even
+    // though every other wall still says 40 and the loop still sits at 40.
+    let mut mesh = boxed();
+    let res = mesh
+        .drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, 40.0, 32)
+        .expect("bore");
+    let odd = res.tube_faces[7];
+    let Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, ref_dir, u_range, v_range, .. }) =
+        mesh.face_surface(odd).cloned()
+    else {
+        panic!("the drill attaches a cylinder")
+    };
+    assert!(
+        mesh.set_face_surface(
+            odd,
+            Some(AnalyticSurface::Cylinder {
+                axis_origin,
+                axis_dir,
+                radius: 45.0, // one wall out of thirty-two disagrees
+                ref_dir,
+                u_range,
+                v_range,
+            })
+        ),
+        "re-attach"
+    );
+
+    let deducted = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
+        .map(|(fid, _)| mesh.face_outer_area(fid) - mesh.face_area(fid))
+        .fold(0.0_f64, f64::max);
+    let polygon = ngon_area(40.0, 32);
+    assert!(
+        (deducted - polygon).abs() / polygon < 1e-9,
+        "one disagreeing wall sends the cap back to the polygon {polygon:.4} — \
+         got {deducted:.4}"
     );
 }
