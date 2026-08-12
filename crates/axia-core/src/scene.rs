@@ -4061,6 +4061,47 @@ impl Scene {
     /// Adopt every face that became active since `before` into the given owner
     /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
     /// carve/drill opening ops. No-op if the host had no owner (demo/script).
+    /// Whether a face is still something the mesh has and still draws.
+    ///
+    /// Both deaths count: `faces.remove` (the re-derive paths) leaves the id
+    /// absent, `set_active(false)` leaves it present but dark.
+    fn face_is_live(&self, f: FaceId) -> bool {
+        self.mesh.faces.get(f).is_some_and(|fc| fc.is_active())
+    }
+
+    /// Drop ids the owner still names but the mesh no longer has.
+    fn prune_dead_owner_faces(
+        &mut self,
+        owning_shape: Option<crate::ShapeId>,
+        owning_xia: Option<XiaId>,
+    ) {
+        if let Some(sid) = owning_shape {
+            let dead: Vec<FaceId> = self
+                .shapes
+                .get(&sid)
+                .map(|s| s.face_ids.iter().copied().filter(|f| !self.face_is_live(*f)).collect())
+                .unwrap_or_default();
+            if let Some(shape) = self.shapes.get_mut(&sid) {
+                shape.face_ids.retain(|f| !dead.contains(f));
+            }
+            for f in dead {
+                self.face_to_shape.remove(&f);
+            }
+        } else if let Some(xid) = owning_xia {
+            let dead: Vec<FaceId> = self
+                .xias
+                .get(&xid)
+                .map(|x| x.face_ids.iter().copied().filter(|f| !self.face_is_live(*f)).collect())
+                .unwrap_or_default();
+            if let Some(xia) = self.xias.get_mut(&xid) {
+                xia.face_ids.retain(|f| !dead.contains(f));
+            }
+            for f in dead {
+                self.face_to_xia.remove(&f);
+            }
+        }
+    }
+
     fn adopt_new_active_faces(
         &mut self,
         owning_shape: Option<crate::ShapeId>,
@@ -4070,6 +4111,20 @@ impl Scene {
         if owning_shape.is_none() && owning_xia.is_none() {
             return;
         }
+
+        // An op that re-derives a face kills the old one. Adopting the new
+        // without dropping the dead leaves the owner naming faces that are gone,
+        // and `slice`/`trim` abort on the first one they cannot find — measured
+        // 2026-08-11, a drilled box answering
+        // `{"ok":false,"error":"slice: face FaceId(4) not found"}` where a clean
+        // box slices fine. It also accumulates: 6/6 → 24/22 → 42/38 → 60/54
+        // (listed/active) over three bores, and rides into every `.axia` file.
+        //
+        // Safe to drop by liveness because a face never comes back: nothing
+        // anywhere calls `set_active(true)` on one. Undo restores the whole
+        // snapshot, list included.
+        self.prune_dead_owner_faces(owning_shape, owning_xia);
+
         let new_faces: Vec<FaceId> = self
             .mesh
             .faces
