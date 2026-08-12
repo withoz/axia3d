@@ -187,6 +187,23 @@ export class DrawWindowTool implements ITool {
       return;
     }
 
+    // 1b) A CROSSING is not a sheet. The drill refuses one deliberately, and the
+    //     punch below would not: the rect fits its host face perfectly — it is
+    //     the FAR side that is missing — so it succeeds, opens the closed solid,
+    //     and reports "창을 냈습니다". Measured 2026-08-11 on a Ø80-bored 200³ box:
+    //     drill −1 (crossing), punch 41, closed true → false. Ask the engine
+    //     with the same points the drill got, and take its refusal seriously.
+    if (
+      this.ctx.bridge.drillProfileWouldCross(
+        [[a.x, a.y, a.z], [b.x, b.y, b.z]],
+        [n.x, n.y, n.z],
+      )
+    ) {
+      debugLog('[Window] Refused — the opening crosses an existing hole');
+      Toast.warning(t('기존 구멍과 교차해 창을 낼 수 없습니다 — 위치를 옮겨 주세요'));
+      return;
+    }
+
     // 2) Fallback — 2D face window (ring-with-hole on the single host face).
     const faceId = this.ctx.bridge.punchRectHole(
       [a.x, a.y, a.z],
