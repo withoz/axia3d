@@ -31,6 +31,8 @@
 
 use glam::DVec3;
 
+use crate::{FaceId, VertId};
+
 use crate::plane::{EPS_PLANE_NORMAL, EPS_PLANE_OFFSET};
 
 /// One angular station of a tube, and what the crossing bore takes out there.
@@ -160,4 +162,138 @@ pub fn crossing_bore_trim(
     }
 
     Some(CrossBore { a: ta, b: tb })
+}
+
+/// How much of a bore's wall stands inside a crossing bore, at the point whose
+/// radial direction is `radial` (unit, ⟂ the wall's own axis).
+///
+/// This is `r|cos θ|` with θ measured from the other axis — the same band the
+/// module header derives, asked one point at a time.
+pub fn band_at(radial: DVec3, other_axis: DVec3, radius: f64) -> f64 {
+    radius * radial.dot(other_axis).abs()
+}
+
+impl crate::Mesh {
+    /// Cut a bore's wall where a crossing bore passes through it, and take the
+    /// piece that was standing inside the other bore away.
+    ///
+    /// Each wall quad spans the whole bore, so each becomes two: one above the
+    /// band and one below it, with the band itself — the part inside the other
+    /// bore — gone. The new corners land ON the crossing curve, which is what
+    /// lets the other bore's wall weld to them later: `add_vertex` dedups by
+    /// position, so the two walls share these vertices without being told to.
+    ///
+    /// The quads keep their winding (a bore wall faces the void) and their
+    /// `Cylinder`, narrowed to the piece that survives.
+    ///
+    /// Returns the surviving faces. The solid is OPEN afterwards along the two
+    /// crossing curves — closing it is the other wall's job.
+    pub fn trim_bore_wall_for_crossing(
+        &mut self,
+        tube_faces: &[FaceId],
+        meet: DVec3,
+        axis: DVec3,
+        other_axis: DVec3,
+        radius: f64,
+    ) -> anyhow::Result<Vec<FaceId>> {
+        use anyhow::bail;
+        let a = axis.normalize_or_zero();
+        let b = other_axis.normalize_or_zero();
+        if a.length_squared() < 0.5 || b.length_squared() < 0.5 || !(radius > 0.0) {
+            bail!("trim bore wall: degenerate axis or radius");
+        }
+
+        let mut survivors = Vec::with_capacity(tube_faces.len() * 2);
+        for &fid in tube_faces {
+            let Some(face) = self.faces.get(fid).filter(|f| f.is_active()) else {
+                continue;
+            };
+            let surface = face.surface().cloned();
+            let material = face.material();
+            let verts = self.collect_loop_verts(face.outer().start)?;
+            if verts.len() != 4 {
+                bail!("trim bore wall: expected a quad, got {} corners", verts.len());
+            }
+            let pts: Vec<DVec3> = verts
+                .iter()
+                .map(|&v| self.vertex_pos(v))
+                .collect::<anyhow::Result<_>>()?;
+
+            // Split the corners into the two axial ends. A tube quad runs the
+            // whole bore, so two corners sit at each end.
+            let s: Vec<f64> = pts.iter().map(|p| (*p - meet).dot(a)).collect();
+            let mid = (s.iter().sum::<f64>()) / 4.0;
+            let high: Vec<usize> = (0..4).filter(|&i| s[i] > mid).collect();
+            let low: Vec<usize> = (0..4).filter(|&i| s[i] <= mid).collect();
+            if high.len() != 2 || low.len() != 2 {
+                bail!("trim bore wall: a quad that does not span the bore");
+            }
+
+            // `meet` has to be ON this wall's axis, or every radial direction
+            // below is measured from the wrong place and the band comes out
+            // plausible but wrong. The wall itself says whether it is: every
+            // corner of a bore wall stands at exactly `radius` from its axis.
+            for (i, p) in pts.iter().enumerate() {
+                let d = *p - meet;
+                let radial = (d - a * d.dot(a)).length();
+                if (radial - radius).abs() > crate::plane::EPS_PLANE_OFFSET {
+                    bail!(
+                        "trim bore wall: corner {i} stands {radial} from the axis                          through the meeting point, not {radius} — the meeting                          point is not on this wall's axis"
+                    );
+                }
+            }
+
+            // The band, per corner, from that corner's own radial direction.
+            let band = |i: usize| -> f64 {
+                let d = pts[i] - meet;
+                let radial = (d - a * d.dot(a)).normalize_or_zero();
+                band_at(radial, b, radius)
+            };
+            // A quad clear of the band keeps its shape. The quad SPANS the
+            // bore, so the question is whether its axial range overlaps the
+            // band — not whether a corner sits in it, which is never true for a
+            // wall that runs the whole depth.
+            let widest = (0..4).map(band).fold(0.0_f64, f64::max);
+            let s_min = s.iter().cloned().fold(f64::MAX, f64::min);
+            let s_max = s.iter().cloned().fold(f64::MIN, f64::max);
+            let overlaps = s_min < widest && s_max > -widest;
+            if !overlaps {
+                survivors.push(fid);
+                continue;
+            }
+
+            // Walk the loop and rebuild it twice, swapping the far end's corners
+            // for points on the crossing curve. Same order, so same winding.
+            let cut = |i: usize, up: bool| -> DVec3 {
+                let d = pts[i] - meet;
+                let ring = d - a * d.dot(a);
+                meet + ring + a * (if up { band(i) } else { -band(i) })
+            };
+            let upper: Vec<DVec3> = (0..4)
+                .map(|i| if high.contains(&i) { pts[i] } else { cut(i, true) })
+                .collect();
+            let lower: Vec<DVec3> = (0..4)
+                .map(|i| if low.contains(&i) { pts[i] } else { cut(i, false) })
+                .collect();
+
+            self.remove_face(fid)?;
+            for piece in [upper, lower] {
+                // A piece with no height left is the pinch, where the two
+                // crossing curves touch — nothing to add there.
+                let ids: Vec<VertId> = piece.iter().map(|&p| self.add_vertex(p)).collect();
+                let mut dedup = ids.clone();
+                dedup.sort_by_key(|v| v.raw());
+                dedup.dedup();
+                if dedup.len() < 3 {
+                    continue;
+                }
+                let new_fid = self.add_face(&ids, material)?;
+                if let Some(surf) = surface.clone() {
+                    self.set_face_surface(new_fid, Some(surf));
+                }
+                survivors.push(new_fid);
+            }
+        }
+        Ok(survivors)
+    }
 }
