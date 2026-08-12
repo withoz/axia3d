@@ -9574,7 +9574,7 @@ impl AxiaEngine {
         let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
-        match self.scene.mesh.punch_circular_hole(center, normal, radius, segments) {
+        match self.scene.punch_circular_hole(center, normal, radius, segments) {
             Ok(new_face) => {
                 if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch", true) {
                     return -1;
@@ -9634,7 +9634,6 @@ impl AxiaEngine {
         self.scene.transactions.set_before_snapshot(before.clone());
         match self
             .scene
-            .mesh
             .drill_circular_through_hole(center, normal, radius, segments)
         {
             Ok(res) => {
@@ -9645,7 +9644,7 @@ impl AxiaEngine {
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
                 self.invalidate_cache();
-                res.tube_faces.len() as i32
+                res as i32
             }
             Err(e) => {
                 self.scene.restore_scene_snapshot(&before);
@@ -9719,7 +9718,6 @@ impl AxiaEngine {
         self.scene.transactions.set_before_snapshot(before.clone());
         match self
             .scene
-            .mesh
             .drill_crossing_bore(center, normal, radius, segments)
         {
             Ok(kept) => {
@@ -9730,7 +9728,7 @@ impl AxiaEngine {
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
                 self.invalidate_cache();
-                kept.len() as i32
+                kept as i32
             }
             Err(e) => {
                 self.scene.restore_scene_snapshot(&before);
@@ -9922,7 +9920,7 @@ impl AxiaEngine {
         let integrity_snapshot = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(integrity_snapshot.clone());
-        match self.scene.mesh.punch_polygon_hole(&loop_pts, normal) {
+        match self.scene.punch_polygon_hole(&loop_pts, normal) {
             Ok(new_face) => {
                 if !self.integrity_gate_passed(integrity_before, &integrity_snapshot, "punch polygon", true) {
                     return -1;
@@ -9983,7 +9981,7 @@ impl AxiaEngine {
         let before = self.scene.scene_snapshot();
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(before.clone());
-        match self.scene.mesh.drill_polygon_through_hole(&loop_pts, normal) {
+        match self.scene.drill_polygon_through_hole(&loop_pts, normal) {
             Ok(res) => {
                 if !self.integrity_gate_passed(integrity_before, &before, "drill polygon", true) {
                     return -1;
@@ -9992,7 +9990,7 @@ impl AxiaEngine {
                 self.scene.transactions.commit();
                 self.mark_topology_changed();
                 self.invalidate_cache();
-                res.tube_faces.len() as i32
+                res as i32
             }
             Err(e) => {
                 self.scene.restore_scene_snapshot(&before);
