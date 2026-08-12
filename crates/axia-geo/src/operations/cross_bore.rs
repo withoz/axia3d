@@ -164,6 +164,20 @@ pub fn crossing_bore_trim(
     Some(CrossBore { a: ta, b: tb })
 }
 
+/// What a crossing bore would cut, and against what — the answer
+/// [`crate::Mesh::crossing_bore_plan`] gives before anything is touched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CrossBorePlan {
+    /// Where the two axes meet.
+    pub meet: DVec3,
+    /// The new bore's axis.
+    pub axis: DVec3,
+    /// The axis of the bore it crosses.
+    pub other_axis: DVec3,
+    /// That bore's radius — equal to the new one's, or the plan is refused.
+    pub other_radius: f64,
+}
+
 /// How much of a bore's wall stands inside a crossing bore, at the point whose
 /// radial direction is `radial` (unit, ⟂ the wall's own axis).
 ///
@@ -329,22 +343,22 @@ impl crate::Mesh {
     /// at right angles, and stations that land on the same points of the
     /// crossing curve. Anything else is refused with the mesh untouched — the
     /// caller should fall back to the ordinary refusal, or to Boolean.
-    pub fn drill_crossing_bore(
-        &mut self,
-        center: DVec3,
-        normal: DVec3,
-        radius: f64,
-        segments: u32,
-    ) -> anyhow::Result<Vec<FaceId>> {
+    /// The bore already lying ACROSS `axis`, if there is exactly one.
+    ///
+    /// A wall says which cylinder it stands on (#105), so this is a read of what
+    /// the mesh already knows rather than a search for geometry. `Ok(None)` means
+    /// nothing crosses; `Err` means more than one does, which is a different
+    /// problem than this op solves.
+    pub fn bore_across_axis(
+        &self,
+        axis: DVec3,
+    ) -> anyhow::Result<Option<(DVec3, DVec3, f64)>> {
         use anyhow::bail;
-        let n = normal.normalize_or_zero();
-        if n.length_squared() < 0.5 || !(radius > 0.0) || segments < 3 {
-            bail!("crossing bore: degenerate normal, radius or segment count");
+        let n = axis.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return Ok(None);
         }
-
-        // Which existing bore does this one cross? The wall says: it carries the
-        // cylinder it stands on (#105).
-        let mut existing: Option<(DVec3, DVec3, f64)> = None; // axis_origin, axis, radius
+        let mut found: Option<(DVec3, DVec3, f64)> = None;
         for (fid, f) in self.faces.iter() {
             if !f.is_active() {
                 continue;
@@ -355,22 +369,49 @@ impl crate::Mesh {
             else {
                 continue;
             };
-            let axis = axis_dir.normalize_or_zero();
-            if axis.dot(n).abs() > EPS_PLANE_NORMAL {
+            let a = axis_dir.normalize_or_zero();
+            if a.dot(n).abs() > EPS_PLANE_NORMAL {
                 continue; // parallel-ish bores do not cross
             }
-            match existing {
-                None => existing = Some((*axis_origin, axis, *r)),
+            match found {
+                None => found = Some((*axis_origin, a, *r)),
                 Some((_, a0, r0)) => {
                     if (r - r0).abs() > EPS_PLANE_OFFSET
-                        || a0.dot(axis).abs() < 1.0 - EPS_PLANE_NORMAL
+                        || a0.dot(a).abs() < 1.0 - EPS_PLANE_NORMAL
                     {
                         bail!("crossing bore: more than one bore lies across this one");
                     }
                 }
             }
         }
-        let Some((other_origin, other_axis, other_radius)) = existing else {
+        Ok(found)
+    }
+
+    /// What a crossing bore would need, worked out WITHOUT touching anything.
+    ///
+    /// The same checks [`Mesh::drill_crossing_bore`] makes before it cuts, asked
+    /// on their own so a caller can find out whether the kernel can do this
+    /// crossing before offering it to anyone. The `Err` is the reason, in the
+    /// words the user will see.
+    pub fn crossing_bore_plan(
+        &self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<CrossBorePlan> {
+        use anyhow::bail;
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 || !(radius > 0.0) || segments < 3 {
+            bail!("crossing bore: degenerate normal, radius or segment count");
+        }
+
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 || !(radius > 0.0) || segments < 3 {
+            bail!("crossing bore: degenerate normal, radius or segment count");
+        }
+
+        let Some((other_origin, other_axis, other_radius)) = self.bore_across_axis(n)? else {
             bail!("crossing bore: nothing here to cross");
         };
 
@@ -407,6 +448,32 @@ impl crate::Mesh {
                  on the crossing curve are all needed"
             );
         }
+
+        Ok(CrossBorePlan { meet, axis: n, other_axis, other_radius })
+    }
+
+    /// Drill a bore that CROSSES an existing one, so the two open into each
+    /// other with nothing standing in between.
+    ///
+    /// The ordinary drill refuses this: its straight tube cannot bridge the void
+    /// the first bore left, and it would leave two walls running through each
+    /// other. This builds that straight tube anyway and then cuts BOTH walls
+    /// back to the curve where they cross — after which neither is standing
+    /// inside the other, and the two cuts weld because they were made at the
+    /// same points (`add_vertex` dedups by position).
+    ///
+    /// Only the case [`Mesh::crossing_bore_plan`] accepts. Anything else is
+    /// refused with the mesh untouched — the caller should fall back to the
+    /// ordinary refusal, or to Boolean.
+    pub fn drill_crossing_bore(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<Vec<FaceId>> {
+        let CrossBorePlan { meet, axis: n, other_axis, other_radius } =
+            self.crossing_bore_plan(center, normal, radius, segments)?;
 
         // ⚠ Cut the EXISTING wall first, then drill.
         //

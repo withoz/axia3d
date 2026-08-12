@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { Toast } from '../ui/Toast';
+import { showCrossingBoreChoiceDialog } from '../ui/CrossingBoreChoiceDialog';
 import { debugLog } from '../utils/debug';
 import { t } from '../i18n';
 
@@ -171,6 +172,25 @@ export class DrawHoleTool implements ITool {
       return;
     }
 
+    // 1b) A CROSSING is not a sheet, and must not fall through to a face hole.
+    //
+    // The drill refuses a crossing because a straight tube cannot bridge the
+    // void the first bore left. Falling through to `punchHole` then SUCCEEDS —
+    // measured in the real app: the solid went from closed to open and the user
+    // was told "면 구멍을 뚫었습니다". A refusal the engine made carefully was
+    // thrown away and replaced by a worse result reported as a success.
+    //
+    // So ask rather than guess (메타-원칙 #16). `crossing` and `ok` are separate
+    // answers: the first says the face-hole fallback is wrong here at all, the
+    // second says whether the kernel can do this particular crossing.
+    const crossing = this.ctx.bridge.canDrillCrossingBore(
+      center, normal, radius, HOLE_SEGMENTS,
+    );
+    if (crossing.crossing) {
+      void this.offerCrossingChoice(center, normal, radius, crossing);
+      return;
+    }
+
     // 2) Fallback — 2D face hole (ring-with-hole on the single host face).
     const faceId = this.ctx.bridge.punchHole(center, normal, radius, HOLE_SEGMENTS);
     if (faceId < 0) {
@@ -182,6 +202,43 @@ export class DrawHoleTool implements ITool {
     }
     debugLog(`[Hole] Punched 2D face hole R=${radius.toFixed(2)} → ring face ${faceId}`);
     Toast.success(t('면 구멍을 뚫었습니다'));
+    this.ctx.syncMesh();
+  }
+
+  /**
+   * Offer the crossing the engine will not guess at.
+   *
+   * The kernel button appears only when the engine says this crossing is one it
+   * can do — an option that would fail is not an option. When it cannot, the
+   * dialog still opens and says why, because the alternative (silently punching
+   * a face hole that opens the solid) is what this exists to stop.
+   */
+  private async offerCrossingChoice(
+    center: [number, number, number],
+    normal: [number, number, number],
+    radius: number,
+    plan: { ok: boolean; reason?: string },
+  ): Promise<void> {
+    const reason = plan.ok
+      ? t('이 구멍은 기존 구멍과 교차합니다. 커널로 교차 관통을 만들 수 있습니다.')
+      : plan.reason ?? t('이 구멍은 기존 구멍과 교차합니다.');
+
+    const choice = await showCrossingBoreChoiceDialog({
+      reason,
+      kernelAvailable: plan.ok,
+    });
+    if (choice !== 'kernel') {
+      Toast.info(t('취소했습니다 — 모델은 그대로입니다'), 2500);
+      return;
+    }
+
+    const kept = this.ctx.bridge.drillCrossingBore(center, normal, radius, HOLE_SEGMENTS);
+    if (kept <= 0) {
+      Toast.fromBridgeError(this.ctx.bridge, t('교차 관통에 실패했습니다'));
+      return;
+    }
+    debugLog(`[Hole] Crossing bore R=${radius.toFixed(2)} -> ${kept} walls`);
+    Toast.success(t('교차 관통을 만들었습니다'));
     this.ctx.syncMesh();
   }
 

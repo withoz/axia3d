@@ -496,6 +496,16 @@ type AxiaEngineExtended = AxiaEngine & {
     nx: number, ny: number, nz: number,
   ): number;
   /** ADR-194 β-2 — drill a circular through-hole (explicit op). Returns tube-quad count or -1. */
+  canDrillCrossingBore?(
+    cx: number, cy: number, cz: number,
+    nx: number, ny: number, nz: number,
+    radius: number, segments: number,
+  ): string;
+  drillCrossingBore?(
+    cx: number, cy: number, cz: number,
+    nx: number, ny: number, nz: number,
+    radius: number, segments: number,
+  ): number;
   drillThroughHole?(
     cx: number, cy: number, cz: number,
     nx: number, ny: number, nz: number,
@@ -4522,6 +4532,72 @@ export class WasmBridge {
       ) ?? -1;
     } catch (e) {
       this.recordBridgeError('drillThroughHole', e);
+      return -1;
+    }
+  }
+
+  /**
+   * Can the kernel drill a bore that CROSSES the one already here? Read-only.
+   *
+   * Two separate answers, because the caller needs both:
+   *
+   * - `crossing` — whether a bore lies across this axis AT ALL. When it does,
+   *   falling back to punching a 2D face hole is wrong, whatever else is true.
+   * - `ok` — whether the kernel can do THIS crossing (equal radii, right
+   *   angles, a segment count that lands on the crossing curve), with `reason`
+   *   in the words the user should see when it cannot.
+   *
+   * An engine without the export answers `{ ok: false, crossing: false }`, which
+   * leaves every caller on its old path.
+   */
+  canDrillCrossingBore(
+    center: [number, number, number],
+    normal: [number, number, number],
+    radius: number,
+    segments = 24,
+  ): { ok: boolean; crossing: boolean; reason?: string } {
+    if (!this.engine?.canDrillCrossingBore) return { ok: false, crossing: false };
+    try {
+      const json = this.engine.canDrillCrossingBore(
+        center[0], center[1], center[2],
+        normal[0], normal[1], normal[2],
+        radius, segments,
+      );
+      const parsed = JSON.parse(json) as { ok?: boolean; crossing?: boolean; reason?: string };
+      return {
+        ok: parsed.ok === true,
+        crossing: parsed.crossing === true,
+        reason: parsed.reason,
+      };
+    } catch (e) {
+      this.recordBridgeError('canDrillCrossingBore', e);
+      return { ok: false, crossing: false };
+    }
+  }
+
+  /**
+   * Drill a bore that CROSSES an existing one, so the two open into each other.
+   *
+   * The explicit op — `drillThroughHole` still refuses a crossing. Returns the
+   * surviving wall count (> 0), or -1 with the reason in `lastError()` and the
+   * mesh restored. Graceful -1 when the engine lacks the export.
+   */
+  drillCrossingBore(
+    center: [number, number, number],
+    normal: [number, number, number],
+    radius: number,
+    segments = 24,
+  ): number {
+    if (!this.engine?.drillCrossingBore) return -1;
+    this.markDirty();
+    try {
+      return this.engine.drillCrossingBore(
+        center[0], center[1], center[2],
+        normal[0], normal[1], normal[2],
+        radius, segments,
+      ) ?? -1;
+    } catch (e) {
+      this.recordBridgeError('drillCrossingBore', e);
       return -1;
     }
   }

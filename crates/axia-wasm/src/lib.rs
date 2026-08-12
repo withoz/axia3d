@@ -9657,6 +9657,91 @@ impl AxiaEngine {
         }
     }
 
+    /// Can the kernel drill a bore that CROSSES the one already here?
+    ///
+    /// Read-only. Returns `{"ok":true}`, or `{"ok":false,"reason":"…"}` with the
+    /// reason in the words the user should see. The tool asks this before
+    /// offering the choice, so it never offers something that will fail.
+    #[wasm_bindgen(js_name = "canDrillCrossingBore")]
+    pub fn can_drill_crossing_bore(
+        &self,
+        cx: f64, cy: f64, cz: f64,
+        nx: f64, ny: f64, nz: f64,
+        radius: f64,
+        segments: u32,
+    ) -> String {
+        let normal = DVec3::new(nx, ny, nz);
+        // `crossing` answers a different question from `ok`, and the tool needs
+        // both: whether a bore lies across this axis AT ALL decides whether the
+        // ordinary "no opposite wall → punch a face hole" fallback is right,
+        // while `ok` decides whether the kernel can do THIS crossing. Reported
+        // as a flag rather than left for the caller to read out of the Korean
+        // prose.
+        let crossing = matches!(self.scene.mesh.bore_across_axis(normal), Ok(Some(_)));
+        match self.scene.mesh.crossing_bore_plan(
+            DVec3::new(cx, cy, cz),
+            normal,
+            radius,
+            segments,
+        ) {
+            Ok(_) => format!(r#"{{"ok":true,"crossing":{crossing}}}"#),
+            Err(e) => format!(
+                r#"{{"ok":false,"crossing":{crossing},"reason":{}}}"#,
+                serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"\"".into())
+            ),
+        }
+    }
+
+    /// Drill a bore that CROSSES an existing one, cutting both walls back to the
+    /// curve where they meet so the two open into each other.
+    ///
+    /// The explicit op — the ordinary `drillThroughHole` still refuses a
+    /// crossing, because a straight tube cannot bridge a void. Returns the
+    /// surviving wall count (> 0), or -1 with the reason in `lastError` and the
+    /// mesh restored.
+    #[wasm_bindgen(js_name = "drillCrossingBore")]
+    pub fn drill_crossing_bore(
+        &mut self,
+        cx: f64, cy: f64, cz: f64,
+        nx: f64, ny: f64, nz: f64,
+        radius: f64,
+        segments: u32,
+    ) -> i32 {
+        let center = DVec3::new(cx, cy, cz);
+        let normal = DVec3::new(nx, ny, nz);
+        let integrity_before = self
+            .scene
+            .mesh
+            .verify_volume_integrity(axia_geo::IntegrityScope::OpenMesh)
+            .damage_count();
+        let before = self.scene.scene_snapshot();
+        self.scene.transactions.begin();
+        self.scene.transactions.set_before_snapshot(before.clone());
+        match self
+            .scene
+            .mesh
+            .drill_crossing_bore(center, normal, radius, segments)
+        {
+            Ok(kept) => {
+                if !self.integrity_gate_passed(integrity_before, &before, "crossing bore", true) {
+                    return -1;
+                }
+                self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
+                self.scene.transactions.commit();
+                self.mark_topology_changed();
+                self.invalidate_cache();
+                kept.len() as i32
+            }
+            Err(e) => {
+                self.scene.restore_scene_snapshot(&before);
+                self.scene.transactions.cancel();
+                self.set_error(e.to_string());
+                self.invalidate_cache();
+                -1
+            }
+        }
+    }
+
     /// Punch an axis-aligned rectangular hole (a window) into the face under the
     /// midpoint of corners (ax,ay,az)–(bx,by,bz); `(nx,ny,nz)` is the host normal
     /// hint. Returns the new ring-with-hole face id, or -1 on failure (transaction
