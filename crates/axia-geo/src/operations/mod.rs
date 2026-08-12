@@ -48,5 +48,6 @@ pub mod circle_overlap;
 pub mod cleave;
 pub mod plane_snap;  // ADR-168 β-1 — Face plane drift snap (Q1=a tessellation chord substitute, layered on ADR-167)
 pub mod boundary_input;  // ADR-171 β-1 — Engine absorb_boundary_input SSOT (Phase 2, 4-step routine pure helper)
-pub mod carve;  // ADR-194 β-1 — Push/Pull Phase 2 carve intent detection (read-only, no trigger)
+pub mod carve;
+pub mod cross_bore;  // where one bore crosses another, in each tube's own parameters (read-only)
 pub mod edit_2d;  // ADR-211 β-1 — 2D Sketch Editing: Trim + Extend (free wire edges, Pattern-12 composition)
