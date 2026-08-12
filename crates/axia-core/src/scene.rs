@@ -3970,6 +3970,94 @@ impl Scene {
         Ok(new_face)
     }
 
+    /// ADR-194 + §36-amendment — drill a CIRCULAR through-hole AND reconcile
+    /// ownership. The rect sibling above got this in §36; the circular one never
+    /// did, so the same gesture gave a different result. Measured 2026-08-11 on a
+    /// 200³ box: after a Ø80 circular bore the Xia still owned **6 of 38** faces,
+    /// the 32 tube walls owned by nobody — so IFC export emitted two elements
+    /// (`Box` + an orphan `Model`) where the rect drill emits one, and the Xia's
+    /// own volume read 5,333,333 against a true 6,994,690.
+    pub fn drill_circular_through_hole(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<usize> {
+        let (os, ox, before) = self.capture_host_owner(center, normal.normalize_or_zero());
+        let res = self.mesh.drill_circular_through_hole(center, normal, radius, segments)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(res.tube_faces.len())
+    }
+
+    /// ADR-194 + §36-amendment — punch a circular face hole AND reconcile
+    /// ownership. Returns the new (ring) face. Not self-transacted.
+    pub fn punch_circular_hole(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<FaceId> {
+        let (os, ox, before) = self.capture_host_owner(center, normal.normalize_or_zero());
+        let new_face = self.mesh.punch_circular_hole(center, normal, radius, segments)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(new_face)
+    }
+
+    /// ADR-249 (P5) + §36-amendment — drill an arbitrary-profile through-hole AND
+    /// reconcile ownership. The host is found at the loop's centroid, which is the
+    /// same point the puncher resolves its host from.
+    pub fn drill_polygon_through_hole(
+        &mut self,
+        loop_pts: &[DVec3],
+        normal: DVec3,
+    ) -> anyhow::Result<usize> {
+        let center = Self::loop_centroid(loop_pts);
+        let (os, ox, before) = self.capture_host_owner(center, normal.normalize_or_zero());
+        let res = self.mesh.drill_polygon_through_hole(loop_pts, normal)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(res.tube_faces.len())
+    }
+
+    /// ADR-249 (P5) + §36-amendment — punch an arbitrary-profile face hole AND
+    /// reconcile ownership. Returns the new (ring) face.
+    pub fn punch_polygon_hole(
+        &mut self,
+        loop_pts: &[DVec3],
+        normal: DVec3,
+    ) -> anyhow::Result<FaceId> {
+        let center = Self::loop_centroid(loop_pts);
+        let (os, ox, before) = self.capture_host_owner(center, normal.normalize_or_zero());
+        let new_face = self.mesh.punch_polygon_hole(loop_pts, normal)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(new_face)
+    }
+
+    /// Crossing bore + §36-amendment — the two bores open into each other, and the
+    /// surviving walls join the host's owner like any other carve.
+    pub fn drill_crossing_bore(
+        &mut self,
+        center: DVec3,
+        normal: DVec3,
+        radius: f64,
+        segments: u32,
+    ) -> anyhow::Result<usize> {
+        let (os, ox, before) = self.capture_host_owner(center, normal.normalize_or_zero());
+        let walls = self.mesh.drill_crossing_bore(center, normal, radius, segments)?;
+        self.adopt_new_active_faces(os, ox, &before);
+        Ok(walls.len())
+    }
+
+    /// Mean of a profile loop's points — where the polygon punchers look for their
+    /// host face, so the owner lookup asks about the same face they will edit.
+    fn loop_centroid(loop_pts: &[DVec3]) -> DVec3 {
+        if loop_pts.is_empty() {
+            return DVec3::ZERO;
+        }
+        loop_pts.iter().copied().sum::<DVec3>() / loop_pts.len() as f64
+    }
+
     /// Adopt every face that became active since `before` into the given owner
     /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
     /// carve/drill opening ops. No-op if the host had no owner (demo/script).
