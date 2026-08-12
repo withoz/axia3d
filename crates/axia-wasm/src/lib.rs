@@ -5866,13 +5866,28 @@ impl AxiaEngine {
         let mut claimed: HashSet<axia_geo::FaceId> = HashSet::new();
         let mut elements: Vec<axia_ifc::IfcElement> = Vec::new();
 
+        // An owner may still name faces the mesh no longer has — that is what
+        // the two `is_empty()` gates below are for, and they were reading the
+        // RAW list, so an owner whose faces had all died looked non-empty, was
+        // pushed as an element, and then failed to emit any geometry. That error
+        // propagates, so **one dead element took the whole file down**: measured
+        // 2026-08-11, splitting a box's top face and merging it back left a
+        // Shape with 2 listed / 0 live and `exportIfcModel` returned null.
+        //
+        // Every geometry emitter downstream already re-derives from `mesh.faces`
+        // filtered by `is_active`, so dropping the dead here changes nothing
+        // about what is drawn — only which elements are worth writing.
+        let live = |f: axia_geo::FaceId| {
+            scene.mesh.faces.get(f).is_some_and(|fc| fc.is_active())
+        };
+
         // Xias (sorted by id) → named wall + material.
         let mut xia_ids: Vec<u32> = scene.xias.keys().copied().collect();
         xia_ids.sort_unstable();
         for xid in xia_ids {
             let xia = &scene.xias[&xid];
             let faces: Vec<axia_geo::FaceId> =
-                xia.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
+                xia.face_ids.iter().copied().filter(|f| live(*f) && claimed.insert(*f)).collect();
             // A member made of a line owns no faces. It used to be dropped here
             // and never reached the file at all.
             let line = self.ifc_line_member(xia.standalone_edge_id);
@@ -5901,7 +5916,7 @@ impl AxiaEngine {
         for sid in shape_ids {
             let shape = &scene.shapes[&sid];
             let faces: Vec<axia_geo::FaceId> =
-                shape.face_ids.iter().copied().filter(|f| claimed.insert(*f)).collect();
+                shape.face_ids.iter().copied().filter(|f| live(*f) && claimed.insert(*f)).collect();
             let line = self.ifc_line_member(shape.standalone_edge_id);
             if faces.is_empty() && line.is_none() {
                 continue;
