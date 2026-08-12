@@ -8625,11 +8625,16 @@ impl AxiaEngine {
             if let Ok(verts) = mesh.collect_loop_verts(outer_start) {
                 for &vid in &verts {
                     all_verts.insert(vid);
-                    if let Ok(p) = mesh.vertex_pos(vid) {
-                        min_pt = DVec3::new(min_pt.x.min(p.x), min_pt.y.min(p.y), min_pt.z.min(p.z));
-                        max_pt = DVec3::new(max_pt.x.max(p.x), max_pt.y.max(p.y), max_pt.z.max(p.z));
-                    }
                 }
+            }
+            // The extent comes from `face_bounds`, not from the boundary verts:
+            // a curved face reaches past its own boundary, and a Path B
+            // primitive has almost no verts to reach with. Measured 2026-08-11 —
+            // a Path B sphere r=10 reported 20 x 0 x 0, a cone and a torus
+            // 0 x 0 x 0, while their area and volume were already exact.
+            if let Some((lo, hi)) = mesh.face_bounds(fid) {
+                min_pt = min_pt.min(lo);
+                max_pt = max_pt.max(hi);
             }
             if let Ok(hes) = mesh.collect_loop_hes(outer_start) {
                 for &he_id in &hes {

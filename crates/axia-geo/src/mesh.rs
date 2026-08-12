@@ -75,6 +75,14 @@ const COARSE_CELL: f64 = 10.0;
 /// bucket (`edge_pos_large`) instead of the cell hash.
 const EDGE_POS_MAX_CELLS: i64 = 64;
 
+/// Chord tolerance when sampling a curved surface for [`Mesh::face_bounds`].
+///
+/// Coarser than the render tolerance on purpose: an extent is quoted to the
+/// millimetre, and the error a chord can hide is bounded by the tolerance
+/// itself. 0.05 mm keeps a Ø10 000 mm sphere honest to well under a tenth of a
+/// millimetre while sampling far fewer points than the viewport does.
+const FACE_BOUNDS_CHORD_TOL: f64 = 0.05;
+
 /// Coarse cell key for the edge position hash.
 fn coarse_cell(pos: DVec3) -> (i64, i64, i64) {
     const INV: f64 = 1.0 / COARSE_CELL;
@@ -13887,6 +13895,163 @@ impl Mesh {
     ///
     /// Cross-link: ADR-104 family (Path B primitives), ADR-031 Phase D
     /// (AnalyticSurface infra), ADR-121 (Finding #1 closure).
+    /// The six points where a surface reaches furthest along ±x, ±y and ±z.
+    ///
+    /// Starts from the best vertex of an existing tessellation and walks the uv
+    /// parameters downhill with a shrinking step. Cheap (six short walks) and
+    /// safe by construction: every candidate comes from `evaluate`, so it lies
+    /// on the surface, and only points that improve are kept — the result can
+    /// tighten a bounding box toward the truth but never past it.
+    fn extreme_surface_points(
+        surface: &crate::surfaces::AnalyticSurface,
+        tess: &crate::surfaces::SurfaceTessellation,
+    ) -> Vec<DVec3> {
+        use crate::surfaces::SurfaceOps;
+        if tess.uv.len() != tess.vertices.len() || tess.uv.is_empty() {
+            return Vec::new();
+        }
+        let (u_range, v_range) = surface.parameter_range();
+        let (u_lo, u_hi) = u_range;
+        let (v_lo, v_hi) = v_range;
+        let u_span = u_hi - u_lo;
+        let v_span = v_hi - v_lo;
+        if !(u_span > 0.0) || !(v_span > 0.0) {
+            return Vec::new();
+        }
+
+        let axes = [
+            DVec3::X, -DVec3::X,
+            DVec3::Y, -DVec3::Y,
+            DVec3::Z, -DVec3::Z,
+        ];
+        let mut out = Vec::with_capacity(axes.len());
+        for axis in axes {
+            // Best vertex of the grid, and the uv it came from.
+            let mut best_i = 0usize;
+            let mut best = f64::NEG_INFINITY;
+            for (i, p) in tess.vertices.iter().enumerate() {
+                let d = p.dot(axis);
+                if d > best {
+                    best = d;
+                    best_i = i;
+                }
+            }
+            let [mut u, mut v] = tess.uv[best_i];
+            let mut step_u = u_span * 0.5;
+            let mut step_v = v_span * 0.5;
+
+            // Shrinking coordinate walk. 40 rounds takes the step below 1e-12 of
+            // the span, far under any tolerance a dimension is quoted at.
+            for _ in 0..40 {
+                let mut moved = false;
+                for (du, dv) in [
+                    (step_u, 0.0), (-step_u, 0.0),
+                    (0.0, step_v), (0.0, -step_v),
+                ] {
+                    let cu = (u + du).clamp(u_lo, u_hi);
+                    let cv = (v + dv).clamp(v_lo, v_hi);
+                    let d = surface.evaluate(cu, cv).dot(axis);
+                    if d > best {
+                        best = d;
+                        u = cu;
+                        v = cv;
+                        moved = true;
+                    }
+                }
+                if !moved {
+                    step_u *= 0.5;
+                    step_v *= 0.5;
+                }
+            }
+            out.push(surface.evaluate(u, v));
+        }
+        out
+    }
+
+    /// How far a face reaches in space — its world-space extent as
+    /// `(min, max)`, or `None` for an inactive / empty face.
+    ///
+    /// The third reader of the same rule its area and volume already follow: a
+    /// CURVED face is read from its SURFACE, a planar one from its boundary.
+    /// A Path B primitive carries almost no vertices — a sphere is two faces
+    /// sharing one equator anchor — so reading the boundary collapses it.
+    /// Measured 2026-08-11 in the Inspector, where area and volume were already
+    /// exact:
+    ///
+    /// ```text
+    ///   sphere   r=10      20 × 0 × 0     (should be 20 × 20 × 20)
+    ///   cylinder r=10 h=20 20 × 0 × 0     (should be 20 × 20 × 20)
+    ///   cone, torus         0 × 0 × 0
+    /// ```
+    ///
+    /// The surface is sampled rather than solved per primitive: these are the
+    /// same points the viewport draws, so the size reported is the size seen,
+    /// and no per-surface extent formula can be subtly wrong. A face whose
+    /// surface tessellates to nothing falls back to its boundary.
+    pub fn face_bounds(&self, face_id: FaceId) -> Option<(DVec3, DVec3)> {
+        let face = self.faces.get(face_id).filter(|f| f.is_active())?;
+
+        let mut pts: Vec<DVec3> = Vec::new();
+
+        // A curved face reaches past its own boundary — read the surface.
+        use crate::surfaces::AnalyticSurface as S;
+        let curved = matches!(
+            face.surface(),
+            Some(
+                S::Cylinder { .. }
+                    | S::Sphere { .. }
+                    | S::Cone { .. }
+                    | S::Torus { .. }
+                    | S::BezierPatch { .. }
+                    | S::BSplineSurface { .. }
+                    | S::NURBSSurface { .. }
+            )
+        );
+        if curved {
+            if let Some(tess) = self.tessellate_face_surface(face_id, FACE_BOUNDS_CHORD_TOL) {
+                pts.extend(tess.vertices.iter().copied());
+                // A uv grid rarely lands ON the extreme point — a cone r=10 h=20
+                // measured 19.89 where 20 is true, a torus 49.901 of 50. So walk
+                // the surface from the best sample toward each axis until it
+                // stops improving.
+                //
+                // This can only ever be right: every candidate is `evaluate`d, so
+                // every point is genuinely ON the surface and the box it builds
+                // is always contained by the true one. The walk tightens it or
+                // does nothing; it cannot overshoot.
+                if let Some(surface) = face.surface() {
+                    pts.extend(Self::extreme_surface_points(surface, &tess));
+                }
+            }
+        }
+
+        // Planar faces, and any curved face whose surface gave us nothing.
+        if pts.is_empty() {
+            let start = face.outer().start;
+            if !start.is_null() {
+                if let Ok(verts) = self.collect_loop_verts(start) {
+                    for vid in verts {
+                        if let Ok(p) = self.vertex_pos(vid) {
+                            pts.push(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut lo = DVec3::splat(f64::INFINITY);
+        let mut hi = DVec3::splat(f64::NEG_INFINITY);
+        let mut any = false;
+        for p in pts {
+            if p.is_finite() {
+                lo = lo.min(p);
+                hi = hi.max(p);
+                any = true;
+            }
+        }
+        any.then_some((lo, hi))
+    }
+
     pub fn face_area(&self, face_id: FaceId) -> f64 {
         let outer = self.face_outer_area(face_id);
         if outer <= 0.0 {
