@@ -2141,6 +2141,17 @@ export const EN: Record<string, string> = {
   '관통 구멍을 뚫었습니다': 'Hole cut all the way through',
   '구멍 뚫기 실패 — 면 경계 안에서 다시 시도하세요': 'Could not cut the hole — try again inside the face',
   '면 구멍을 뚫었습니다': 'Hole cut in the face',
+  // What the tools say when a hole would cross a hole that is already there.
+  '이 구멍은 기존 구멍과 교차합니다. 커널로 교차 관통을 만들 수 있습니다.':
+    'This hole crosses one that is already there. The kernel can open the two into each other.',
+  '이 구멍은 기존 구멍과 교차합니다.': 'This hole crosses one that is already there.',
+  '취소했습니다 — 모델은 그대로입니다': 'Cancelled — the model is unchanged',
+  '교차 관통을 만들었습니다': 'The two holes now open into each other',
+  '교차 관통에 실패했습니다': 'Could not open the two holes into each other',
+  '기존 구멍과 교차해 창을 낼 수 없습니다 — 위치를 옮겨 주세요':
+    'This window would cross an existing hole — move it',
+  '기존 구멍과 교차해 구멍을 뚫을 수 없습니다 — 위치를 옮겨 주세요':
+    'This hole would cross an existing one — move it',
   '구멍을 낼 면 위를 클릭해 윤곽 점을 찍으세요 (Enter/더블클릭/첫 점 클릭으로 닫기)': 'Click a face and place the outline points (Enter, double-click, or click the first point to close)',
   '다각형 구멍은 기존 면 위에 내야 합니다 — 면을 클릭하세요': 'A polygon hole has to go on an existing face — click one',
   '점이 3개 이상 필요합니다': 'At least 3 points are needed',

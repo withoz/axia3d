@@ -310,6 +310,30 @@ impl Mesh {
             .any(|&p| !point_in_face_or_on_edge(p + dir * t, &poly, fn_, XD_EDGE_TOL))
     }
 
+    /// Would a straight drill of this profile be refused as a cross-drill?
+    ///
+    /// The same question [`Self::carve_drill_is_cross_drill`] answers for the
+    /// drills themselves, asked without touching anything — so a caller can find
+    /// out BEFORE it starts, and cannot reach a different conclusion than the
+    /// drill will. That mattering is not hypothetical: the drills refuse a
+    /// crossing carefully, and every tool that then fell through to a 2D face
+    /// punch got a **success** out of it while opening the solid. Measured
+    /// 2026-08-11 on a Ø80-bored 200³ box, for all three profiles:
+    ///
+    /// ```text
+    ///   drill → −1 (crossing refused)   punch → 41 (succeeded)   closed → OPEN
+    /// ```
+    ///
+    /// Pass exactly what the drill would: the rim for a circle, the two corners
+    /// for a rect, the loop for a polygon.
+    pub fn drill_profile_would_cross(&self, profile_pts: &[DVec3], normal: DVec3) -> bool {
+        let n = normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return false;
+        }
+        self.carve_drill_is_cross_drill(profile_pts, n)
+    }
+
     /// ADR-194 β-2 — drill a circular **through-hole** (A "dedicated bridge").
     ///
     /// Explicit op (NOT auto-triggered — 메타-원칙 #16; the push-driven dispatch

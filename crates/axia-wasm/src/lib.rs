@@ -10004,6 +10004,36 @@ impl AxiaEngine {
         }
     }
 
+    /// Would a straight drill of this profile be refused because it crosses a
+    /// hole that is already there? Read-only — nothing is touched.
+    ///
+    /// A tool must be able to ask BEFORE it falls back. Every tool that punched a
+    /// 2D face hole after a refused drill turned a careful refusal into a worse
+    /// result reported as success: measured 2026-08-11 on a Ø80-bored 200³ box,
+    /// `drillRectThroughHole` → −1 and `punchRectHole` → 41, leaving the solid
+    /// **open** while the user was told "창을 냈습니다".
+    ///
+    /// This runs the drills' own guard, so the two cannot disagree. `points` =
+    /// flat [x0,y0,z0, …] — exactly what the drill would get: the two corners for
+    /// a rect, the loop for a polygon. A flag, not a sentence to parse.
+    #[wasm_bindgen(js_name = "drillProfileWouldCross")]
+    pub fn drill_profile_would_cross(
+        &self,
+        points: &[f64],
+        nx: f64, ny: f64, nz: f64,
+    ) -> bool {
+        if points.len() < 6 || points.len() % 3 != 0 {
+            return false;
+        }
+        let pts: Vec<DVec3> = points
+            .chunks_exact(3)
+            .map(|c| DVec3::new(c[0], c[1], c[2]))
+            .collect();
+        self.scene
+            .mesh
+            .drill_profile_would_cross(&pts, DVec3::new(nx, ny, nz))
+    }
+
     /// ADR-252 — carve a blind POCKET from a coplanar profile sheet drawn on a
     /// solid wall ("draw rect/polygon on a face → push in → pocket"). `source_face`
     /// = the drawn profile sheet; `depth` (> 0) = inward recess depth. Returns the

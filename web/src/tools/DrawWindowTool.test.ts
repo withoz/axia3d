@@ -25,6 +25,9 @@ function mockToolContext() {
       cutWallDoorOpening: vi.fn().mockReturnValue(-1),
       drillRectThroughHole: vi.fn().mockReturnValue(24), // through-window default
       punchRectHole: vi.fn().mockReturnValue(7),
+      // Default: nothing lies across the opening, so the face-window fallback
+      // is the right one — the crossing tests override it.
+      drillProfileWouldCross: vi.fn().mockReturnValue(false),
       recordRectOpening: vi.fn(),
       lastError: vi.fn().mockReturnValue(''),
     },
@@ -93,6 +96,39 @@ describe('DrawWindowTool — ADR-262 β-3 door/window routing', () => {
     expect(ctx.bridge.cutWallDoorOpening).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.drillRectThroughHole).toHaveBeenCalledTimes(1);
     expect(ctx.bridge.punchRectHole).toHaveBeenCalledTimes(1);
+  });
+
+  // ── A crossing is refused, not quietly punched ──────────────────
+  //
+  // Measured in the real app before this: on a Ø80-bored 200³ box the drill
+  // refused with the crossing reason, the tool fell through to `punchRectHole`,
+  // that SUCCEEDED (41), the solid went from closed to OPEN, and the user was
+  // told "창을 냈습니다". The punch has no reason to refuse — the rect fits
+  // its host face; it is the far side that is missing — so the tool has to ask.
+
+  it('does NOT punch a face window when the opening crosses an existing hole', () => {
+    ctx.bridge.drillRectThroughHole.mockReturnValue(-1);
+    ctx.bridge.drillProfileWouldCross.mockReturnValue(true);
+    drawOpening(tool);
+    expect(ctx.bridge.punchRectHole).not.toHaveBeenCalled();
+    expect(ctx.syncMesh).not.toHaveBeenCalled();
+    expect(ctx.bridge.recordRectOpening).not.toHaveBeenCalled();
+    expect(Toast.warning).toHaveBeenCalledWith(expect.stringContaining('교차'));
+    expect(Toast.success).not.toHaveBeenCalled();
+  });
+
+  it('asks with the same corners and normal the drill was given', () => {
+    ctx.bridge.drillRectThroughHole.mockReturnValue(-1);
+    drawOpening(tool);
+    const [points, normal] = ctx.bridge.drillProfileWouldCross.mock.calls[0];
+    const drillArgs = ctx.bridge.drillRectThroughHole.mock.calls[0];
+    expect(points).toEqual([drillArgs[0], drillArgs[1]]);
+    expect(normal).toEqual(drillArgs[2]);
+  });
+
+  it('only asks once the drill has refused — a successful drill asks nothing', () => {
+    drawOpening(tool); // drill 24 (default)
+    expect(ctx.bridge.drillProfileWouldCross).not.toHaveBeenCalled();
   });
 
   // ADR-203 opening round-trip  a successful opening is recorded so IFC export

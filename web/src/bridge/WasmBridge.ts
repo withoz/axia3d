@@ -506,6 +506,11 @@ type AxiaEngineExtended = AxiaEngine & {
     nx: number, ny: number, nz: number,
     radius: number, segments: number,
   ): number;
+  /** Would a straight drill of this profile be refused as a crossing? Read-only. */
+  drillProfileWouldCross?(
+    points: Float64Array,
+    nx: number, ny: number, nz: number,
+  ): boolean;
   drillThroughHole?(
     cx: number, cy: number, cz: number,
     nx: number, ny: number, nz: number,
@@ -4599,6 +4604,39 @@ export class WasmBridge {
     } catch (e) {
       this.recordBridgeError('drillCrossingBore', e);
       return -1;
+    }
+  }
+
+  /**
+   * Would a straight drill of this profile be refused because it crosses a hole
+   * that is already there? Read-only — nothing is touched.
+   *
+   * Ask this before falling back to a 2D face punch. The punch does NOT refuse a
+   * crossing — the profile fits its host face; it is the far side that is missing
+   * — so it succeeds and leaves the solid open. Measured 2026-08-11 for the rect
+   * and polygon profiles alike: drill −1, punch 41, closed → open.
+   *
+   * Pass exactly what the drill gets: the two corners for a rect, the loop for a
+   * polygon. An engine without the export answers `false`, leaving every caller
+   * on its old path.
+   */
+  drillProfileWouldCross(
+    points: [number, number, number][],
+    normal: [number, number, number],
+  ): boolean {
+    if (!this.engine?.drillProfileWouldCross) return false;
+    if (points.length < 2) return false;
+    try {
+      const arr = new Float64Array(points.length * 3);
+      points.forEach((p, i) => {
+        arr[i * 3] = p[0];
+        arr[i * 3 + 1] = p[1];
+        arr[i * 3 + 2] = p[2];
+      });
+      return this.engine.drillProfileWouldCross(arr, normal[0], normal[1], normal[2]) === true;
+    } catch (e) {
+      this.recordBridgeError('drillProfileWouldCross', e);
+      return false;
     }
   }
 
