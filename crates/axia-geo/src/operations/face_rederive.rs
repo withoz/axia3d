@@ -15,7 +15,11 @@
 //!
 //! ## 한계 (δ-2 proof scope)
 //! - polygon only (Path B 곡선 = δ-3)
-//! - XIA/material 상속 없음 — 새 면은 FORM_MATERIAL (δ-3 FaceLineage)
+//! - ~~XIA/material 상속 없음 — 새 면은 FORM_MATERIAL~~ → **δ-3 에서 추가됨**:
+//!   이 파일은 이제 `DirtyInfo { material, surface, .. }` 를 파괴 전에
+//!   스냅샷해 두고, 새 면마다 가장 작은 감싸는 이전 폴리곤(innermost parent)
+//!   에서 material + surface 를 **상속**한다. 소유권(Shape/Xia)은 여전히
+//!   Scene 층이 따로 재부착한다 — ADR-312 §2/§3 참조.
 //! - 3D solid 보호 미구현 (sheet only 가정) — δ-4
 //! - eps fixed 1e-6 (scale-aware = δ-4)
 
