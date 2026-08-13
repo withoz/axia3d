@@ -1289,6 +1289,85 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
                         }
                     }
                 }
+                // A HANGING BOUNDARY BELONGS TO THE REGION IT HANGS FROM.
+                //
+                // The boxes above are the affected FACES' boxes, so they stop
+                // at the host. A shape drawn past a corner leaves free edges
+                // beyond it — the far sides of the drawn rect — and those were
+                // excluded, so the arrangement was handed a truncated boundary
+                // and could only tile what lay inside. Measured on a 200-cube:
+                // the side at x = 150 never reached `arrange`, and the L-shaped
+                // outer region it bounds was never made, while `arrange` given
+                // the whole boundary produces it exactly (7,500).
+                //
+                // Follow free wires out from what is already in scope, by
+                // shared vertex. A wire bounding no face has no region of its
+                // own to place it in, so connectivity is the only handle there
+                // is — and it is the right one: a chain reachable from the
+                // affected region is part of that region's boundary. Faced
+                // edges are NOT followed, so this cannot creep into a
+                // neighbouring solid; it walks only the loose ends the draw
+                // itself left, and stops where they stop.
+                let free_coplanar: Vec<(EdgeId, VertId, VertId)> = mesh
+                    .edges
+                    .iter()
+                    .filter(|(eid, edge)| {
+                        edge.is_active()
+                            && !volume_edges.contains(eid)
+                            && !affected_edges.contains(eid)
+                    })
+                    .filter(|(eid, edge)| {
+                        let on = match (
+                            mesh.verts.get(edge.v_small()),
+                            mesh.verts.get(edge.v_large()),
+                        ) {
+                            (Some(a), Some(b)) => on_plane(a.pos()) && on_plane(b.pos()),
+                            _ => false,
+                        };
+                        on && {
+                            let (faces, _) = mesh.get_faces_sharing_edge(*eid);
+                            !faces.iter().any(|&f| {
+                                mesh.faces.get(f).map_or(false, |x| x.is_active())
+                            })
+                        }
+                    })
+                    .map(|(eid, edge)| (eid, edge.v_small(), edge.v_large()))
+                    .collect();
+                if !free_coplanar.is_empty() {
+                    let mut reached: HashSet<VertId> = HashSet::new();
+                    for &eid in &affected_edges {
+                        if let Some(e) = mesh.edges.get(eid) {
+                            reached.insert(e.v_small());
+                            reached.insert(e.v_large());
+                        }
+                    }
+                    for &f in &affected_faces {
+                        if let Some(face) = mesh.faces.get(f) {
+                            if let Ok(vv) = mesh.collect_loop_verts(face.outer().start) {
+                                reached.extend(vv);
+                            }
+                        }
+                    }
+                    // Grow until nothing new joins — a chain reaches the region
+                    // through its own links, not just at its first vertex.
+                    loop {
+                        let mut grew = false;
+                        for &(eid, a, b) in &free_coplanar {
+                            if affected_edges.contains(&eid) {
+                                continue;
+                            }
+                            if reached.contains(&a) || reached.contains(&b) {
+                                affected_edges.insert(eid);
+                                reached.insert(a);
+                                reached.insert(b);
+                                grew = true;
+                            }
+                        }
+                        if !grew {
+                            break;
+                        }
+                    }
+                }
                 Some((affected_faces, affected_edges))
             }
         }

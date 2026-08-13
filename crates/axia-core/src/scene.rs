@@ -7020,20 +7020,139 @@ impl Scene {
     /// (typically `epoch.new_edges` from the current closed-shape command).
     /// Pre-existing user-drawn standalone wires are NOT in `scope` and are
     /// preserved — fixes regression "rect commit erases free-floating lines".
+    ///
+    /// **DANGLING, not merely unfaced (2026-08-13)** — a closed boundary is
+    /// kept.
+    ///
+    /// This removed every scoped edge that bounded no active face, and a
+    /// boundary awaiting a face looks exactly like a residual by that test. A
+    /// rect straddling a solid top's CORNER is the case that showed it: the
+    /// synthesis cannot make its outer L (that cycle mixes free edges with the
+    /// solid's wall-shared rim), so the whole hanging boundary was deleted
+    /// here — before the re-derive, which CAN tile it, was ever called.
+    /// Measured: nothing of the rect survived past the host, not even a wire,
+    /// while the same four sides drawn as four LINES — which never reach this
+    /// call — kept theirs.
+    ///
+    /// So ask what "dangling" means rather than approximating it: peel edges
+    /// with a free END, repeatedly, the way one strips leaves off a graph.
+    /// What peels away is a strand with a loose end, which is what a residual
+    /// is and what this was written for (ADR-025 P11 Phase 7). What survives
+    /// the peeling is a closed cycle — a boundary, which 메타-원칙 #14 says a
+    /// face is derived FROM — and that is left for the arrangement to use.
+    ///
+    /// Valence counts every active edge at the vertex, not just scoped ones:
+    /// a strand ending on an existing wire is held by it, and pulling it out
+    /// from under would be the same mistake one layer down.
+    ///
+    /// ⚠ Only when the re-derive is going to run. Keeping a cycle is keeping it
+    /// FOR the arrangement; with `face_rederive_on_draw` off nothing will ever
+    /// turn it into a face, so it would just be an orphan — and ADR-025 P11
+    /// STRICT counts those. Measured: the 27-RECT stress goes 0 → 10 orphans if
+    /// this is preserved unconditionally. Production has the flag on (ADR-176),
+    /// the engine default has it off and keeps its old behaviour exactly — the
+    /// same split ADR-049 P-5e-α uses for this situation.
     fn cleanup_dangling_topological_edges(&mut self, scope: &[EdgeId]) {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
+        if !self.face_rederive_on_draw {
+            // No arrangement to hand a boundary to — Phase 7 as it was.
+            let scope_set: HashSet<EdgeId> = scope.iter().copied().collect();
+            let to_remove: Vec<EdgeId> = self
+                .mesh
+                .edges
+                .iter()
+                .filter_map(|(eid, e)| {
+                    if !e.is_active() || !e.class().is_topological() {
+                        return None;
+                    }
+                    if !scope_set.contains(&eid) {
+                        return None;
+                    }
+                    let (faces, _) = self.mesh.get_faces_sharing_edge(eid);
+                    let any_active = faces
+                        .iter()
+                        .any(|&f| self.mesh.faces.contains(f) && self.mesh.faces[f].is_active());
+                    if any_active {
+                        None
+                    } else {
+                        Some(eid)
+                    }
+                })
+                .collect();
+            for eid in to_remove {
+                let _ = self.mesh.remove_edge_and_halfedges(eid);
+            }
+            self.mesh.remove_isolated_verts();
+            return;
+        }
         let scope_set: HashSet<EdgeId> = scope.iter().copied().collect();
-        let to_remove: Vec<EdgeId> = self.mesh.edges.iter()
+        // Unfaced scoped edges — the candidates, as before.
+        let candidates: Vec<(EdgeId, VertId, VertId)> = self
+            .mesh
+            .edges
+            .iter()
             .filter_map(|(eid, e)| {
-                if !e.is_active() { return None; }
-                if !e.class().is_topological() { return None; }
-                if !scope_set.contains(&eid) { return None; }
+                if !e.is_active() || !e.class().is_topological() {
+                    return None;
+                }
+                if !scope_set.contains(&eid) {
+                    return None;
+                }
                 let (faces, _) = self.mesh.get_faces_sharing_edge(eid);
-                let any_active = faces.iter().any(|&f|
-                    self.mesh.faces.contains(f) && self.mesh.faces[f].is_active());
-                if any_active { None } else { Some(eid) }
+                let any_active = faces
+                    .iter()
+                    .any(|&f| self.mesh.faces.contains(f) && self.mesh.faces[f].is_active());
+                if any_active {
+                    None
+                } else {
+                    Some((eid, e.v_small(), e.v_large()))
+                }
             })
             .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // Valence over ALL active edges, so a strand anchored on geometry this
+        // command did not draw still counts as anchored.
+        let mut valence: HashMap<VertId, usize> = HashMap::new();
+        for (_, e) in self.mesh.edges.iter() {
+            if !e.is_active() {
+                continue;
+            }
+            *valence.entry(e.v_small()).or_insert(0) += 1;
+            if e.v_large() != e.v_small() {
+                *valence.entry(e.v_large()).or_insert(0) += 1;
+            }
+        }
+        // Peel: an edge with a loose end goes, and its other end may come loose.
+        let mut alive: HashSet<EdgeId> = candidates.iter().map(|&(e, _, _)| e).collect();
+        let ends: HashMap<EdgeId, (VertId, VertId)> =
+            candidates.iter().map(|&(e, a, b)| (e, (a, b))).collect();
+        let mut to_remove: Vec<EdgeId> = Vec::new();
+        loop {
+            let loose: Vec<EdgeId> = alive
+                .iter()
+                .copied()
+                .filter(|eid| {
+                    let (a, b) = ends[eid];
+                    valence.get(&a).copied().unwrap_or(0) <= 1
+                        || valence.get(&b).copied().unwrap_or(0) <= 1
+                })
+                .collect();
+            if loose.is_empty() {
+                break;
+            }
+            for eid in loose {
+                let (a, b) = ends[&eid];
+                for v in [a, b] {
+                    if let Some(n) = valence.get_mut(&v) {
+                        *n = n.saturating_sub(1);
+                    }
+                }
+                alive.remove(&eid);
+                to_remove.push(eid);
+            }
+        }
         for eid in to_remove {
             let _ = self.mesh.remove_edge_and_halfedges(eid);
         }
