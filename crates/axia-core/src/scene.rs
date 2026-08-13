@@ -4131,6 +4131,26 @@ impl Scene {
     /// Adopt every face that became active since `before` into the given owner
     /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
     /// carve/drill opening ops. No-op if the host had no owner (demo/script).
+    /// Does this owner's geometry form a closed solid right now?
+    ///
+    /// The test that separates "I drew inside a solid's face" (the shell must
+    /// stay whole, so the piece is the solid's) from "I drew inside a sheet"
+    /// (nothing to keep closed, so the piece is the drawn object's).
+    fn host_is_closed_solid(
+        &self,
+        host_shape: Option<crate::ShapeId>,
+        host_xia: Option<XiaId>,
+    ) -> bool {
+        let faces = if let Some(sid) = host_shape {
+            self.shapes.get(&sid).map(|s| s.face_ids.clone())
+        } else if let Some(xid) = host_xia {
+            self.xias.get(&xid).map(|x| x.face_ids.clone())
+        } else {
+            None
+        };
+        faces.is_some_and(|f| self.mesh.face_set_manifold_info(&f).is_closed_solid)
+    }
+
     /// Hand a face to the element that owned the face it came from.
     ///
     /// Shape XOR Xia, the same either/or the rest of the reconcile uses.
@@ -8556,13 +8576,43 @@ impl Scene {
                 // Atomic: add 4 vertices, add_face.
                 match self.mesh.draw_rectangle(center, normal, up, width, height, FORM_MATERIAL) {
                     Ok((inner_fid, _verts)) => {
+                        // 사용자 결재 2026-08-11 — (a) 솔리드 것.
+                        //
+                        // Dividing somebody's face does not hand a piece of it
+                        // over. If the face we drew inside already has an owner,
+                        // the region we cut out of it stays theirs and the drawn
+                        // entity keeps only its identity — the same rule the line
+                        // path follows, where a line across a box's top leaves the
+                        // box owning both halves.
+                        //
+                        // Without this the box's shell was short one piece:
+                        // measured, a rect on a 200³ box left the box owning 6 of
+                        // 7 faces, `isSolid` false and its volume 7,666,666
+                        // against a true 8,000,000, with the geometry untouched.
+                        // ⚠ Only when the host is a CLOSED SOLID. On a flat sheet
+                        // there is no shell to keep closed, and a rect drawn
+                        // inside a bigger rect is its own object — that is
+                        // LOCKED #1 P7, and six of its regressions say so
+                        // ("두 stacked inner rect 모두 면을 가진다"). The user's
+                        // decision was about a solid's face; applying it to every
+                        // owned face broke those six.
+                        let host_shape = self.face_to_shape.get(&container_fid).copied();
+                        let host_xia = self.face_to_xia.get(&container_fid).copied();
+                        let host_owned = self.host_is_closed_solid(host_shape, host_xia);
+
                         let xia_id = self.create_xia("Rectangle".to_string());
                         if let Some(xia) = self.xias.get_mut(&xia_id) {
                             xia.position = center;
                             xia.surface_normal = Some(n_norm);
-                            xia.face_ids.push(inner_fid);
+                            if !host_owned {
+                                xia.face_ids.push(inner_fid);
+                            }
                         }
-                        self.register_faces_to_xia(xia_id, &[inner_fid]);
+                        if host_owned {
+                            self.give_face_to_host(inner_fid, host_shape, host_xia);
+                        } else {
+                            self.register_faces_to_xia(xia_id, &[inner_fid]);
+                        }
 
                         // ADR-016 conditional B1 promote.
                         let mut b1_fired = false;
