@@ -37,16 +37,20 @@ fn box_with_ellipse_on_top(cx: f64, rx: f64, ry: f64) -> (Mesh, Vec<FaceId>) {
     (mesh, vec![fid])
 }
 
-fn rederive(mesh: &mut Mesh, seed: &[FaceId]) {
+fn rederive_at(mesh: &mut Mesh, seed: &[FaceId], plane_origin: DVec3) {
     axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
         mesh,
-        DVec3::new(0.0, 0.0, TOP),
+        plane_origin,
         DVec3::Z,
         1e-3,
         true,
         Some(seed),
     )
     .expect("re-derive");
+}
+
+fn rederive(mesh: &mut Mesh, seed: &[FaceId]) {
+    rederive_at(mesh, seed, DVec3::new(0.0, 0.0, TOP));
 }
 
 /// Faces on the top plane, split by whether they stay inside the top's
@@ -102,6 +106,32 @@ fn a_path_b_ellipse_face_knows_which_way_it_faces() {
              Scene's planar filter would drop it"
         ),
     }
+}
+
+/// The Scene does not pass the shape's CENTRE as the plane point — it reads the
+/// first vertex of the drawn face's loop, which for a Path B face is the anchor
+/// on the RIM. The plane is the same either way (both points lie on z = TOP),
+/// so this must not change the answer. It is asked because it is the one input
+/// that provably differs between the working call one layer down and the
+/// failing one in the Scene.
+#[test]
+fn the_plane_point_does_not_have_to_be_the_centre() {
+    let (mut mesh, seed) = box_with_ellipse_on_top(100.0, 40.0, 25.0);
+    // The anchor of a NURBS ellipse is cp[0] = centre + rx·u — on the rim, and
+    // in this placement OUTSIDE the host's footprint (x = 140 > 100).
+    let anchor_pos = mesh
+        .collect_loop_verts(mesh.faces[seed[0]].outer().start)
+        .ok()
+        .and_then(|v| v.first().and_then(|&x| mesh.vertex_pos(x).ok()))
+        .expect("the anchor");
+    rederive_at(&mut mesh, &seed, anchor_pos);
+    let (inside, hanging) = inside_and_hanging(&mesh);
+    assert!(
+        (inside - 40_000.0).abs() < 1.0,
+        "the top tiles exactly once whichever point names the plane — got \
+         {inside:.4} from origin {anchor_pos:?}"
+    );
+    assert!(hanging > 100.0, "and the half past the edge is its own face");
 }
 
 /// The control: a circle in the same place, which the grid says works. If this
