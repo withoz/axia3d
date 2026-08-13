@@ -993,12 +993,20 @@ fn set_freeform_on_edge(
 /// Idempotent: a freeform that already has an owner-id is skipped.
 /// **B5 (mixed)**: freeform×freeform (B3) AND freeform×(rect Line / circle)
 /// overlap. Containment (0 crossings) → A2 hole path; disjoint → preserved.
+/// `also_visible` — edges the scope excludes but the arrangement is given
+/// anyway. A solid top's perimeter is `volume_edges`, so `scope_edges` drops
+/// it; but ADR-281 β-1 feeds that same perimeter to `arrange` as input, and a
+/// freeform can only be found overlapping what this function can SEE. Without
+/// it an ellipse straddling a box's rim met nothing, kept no owner id, and
+/// never entered the graph at all — measured as
+/// `RebuildReport { coplanar_edges: 4 }`, the four being the top's own sides.
 fn detect_freeform_overlaps(
     mesh: &mut Mesh,
     plane_origin: DVec3,
     n_unit: DVec3,
     tol: f64,
     scope_edges: Option<&HashSet<EdgeId>>,
+    also_visible: &HashSet<EdgeId>,
 ) {
     use crate::curves::AnalyticCurve;
     let on_plane = |p: DVec3| (p - plane_origin).dot(n_unit).abs() < tol;
@@ -1050,9 +1058,10 @@ fn detect_freeform_overlaps(
     let eids: Vec<EdgeId> = mesh.edges.iter().map(|(eid, _)| eid).collect();
     let mut others: Vec<AnalyticCurve> = Vec::new();
     for eid in eids {
-        // Option A — restrict to the affected region (None = full plane).
+        // Option A — restrict to the affected region (None = full plane), plus
+        // whatever the arrangement is being given regardless of the scope.
         if let Some(s) = scope_edges {
-            if !s.contains(&eid) {
+            if !s.contains(&eid) && !also_visible.contains(&eid) {
                 continue;
             }
         }
@@ -1577,7 +1586,14 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     //    topology UNCHANGED (no feeding / A1 override / split — those are
     //    B4b-2). Runs before reconstruct so B4b-2 can consume the owner-id.
     if enable_freeform_overlap {
-        detect_freeform_overlaps(mesh, plane_origin, n_unit, tol, scope_edges);
+        detect_freeform_overlaps(
+            mesh,
+            plane_origin,
+            n_unit,
+            tol,
+            scope_edges,
+            &solid_top_boundary,
+        );
     }
 
     // ── Phase 1 — InputCurve 재구성 (4-β) + dirty 면 + 제거할 coplanar edge.

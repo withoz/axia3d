@@ -37,16 +37,20 @@ fn box_with_ellipse_on_top(cx: f64, rx: f64, ry: f64) -> (Mesh, Vec<FaceId>) {
     (mesh, vec![fid])
 }
 
-fn rederive(mesh: &mut Mesh, seed: &[FaceId]) {
+fn rederive_at(mesh: &mut Mesh, seed: &[FaceId], plane_origin: DVec3) {
     axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
         mesh,
-        DVec3::new(0.0, 0.0, TOP),
+        plane_origin,
         DVec3::Z,
         1e-3,
         true,
         Some(seed),
     )
     .expect("re-derive");
+}
+
+fn rederive(mesh: &mut Mesh, seed: &[FaceId]) {
+    rederive_at(mesh, seed, DVec3::new(0.0, 0.0, TOP));
 }
 
 /// Faces on the top plane, split by whether they stay inside the top's
@@ -104,6 +108,32 @@ fn a_path_b_ellipse_face_knows_which_way_it_faces() {
     }
 }
 
+/// The Scene does not pass the shape's CENTRE as the plane point — it reads the
+/// first vertex of the drawn face's loop, which for a Path B face is the anchor
+/// on the RIM. The plane is the same either way (both points lie on z = TOP),
+/// so this must not change the answer. It is asked because it is the one input
+/// that provably differs between the working call one layer down and the
+/// failing one in the Scene.
+#[test]
+fn the_plane_point_does_not_have_to_be_the_centre() {
+    let (mut mesh, seed) = box_with_ellipse_on_top(100.0, 40.0, 25.0);
+    // The anchor of a NURBS ellipse is cp[0] = centre + rx·u — on the rim, and
+    // in this placement OUTSIDE the host's footprint (x = 140 > 100).
+    let anchor_pos = mesh
+        .collect_loop_verts(mesh.faces[seed[0]].outer().start)
+        .ok()
+        .and_then(|v| v.first().and_then(|&x| mesh.vertex_pos(x).ok()))
+        .expect("the anchor");
+    rederive_at(&mut mesh, &seed, anchor_pos);
+    let (inside, hanging) = inside_and_hanging(&mesh);
+    assert!(
+        (inside - 40_000.0).abs() < 1.0,
+        "the top tiles exactly once whichever point names the plane — got \
+         {inside:.4} from origin {anchor_pos:?}"
+    );
+    assert!(hanging > 100.0, "and the half past the edge is its own face");
+}
+
 /// The control: a circle in the same place, which the grid says works. If this
 /// ever fails, the ellipse is not the special one and the whole reading changes.
 #[test]
@@ -136,21 +166,56 @@ fn a_circle_straddling_the_edge_leaves_a_piece() {
     );
 }
 
+/// Count the faces on the top plane. Areas alone cannot answer this question.
+fn pieces_on_the_plane(mesh: &Mesh) -> usize {
+    mesh.faces
+        .iter()
+        .filter(|(fid, f)| {
+            f.is_active()
+                && f.normal().z.abs() > 0.999
+                && mesh.face_bounds(*fid).map_or(false, |(lo, hi)| {
+                    (lo.z - TOP).abs() < 1e-3 && (hi.z - TOP).abs() < 1e-3
+                })
+        })
+        .count()
+}
+
+/// The ellipse reaches the arrangement and is cut at the rim.
+///
+/// ⚠ COUNT THE PIECES. This asserted only that the top read 40,000 and that
+/// something hung past the edge, and it PASSED while nothing was happening —
+/// an untouched top reads its own 40,000 and an unsplit ellipse lying across
+/// the rim reads as "hanging". That vacuity is what sent an afternoon of
+/// hypotheses in the wrong direction; instrumenting the real call is what
+/// settled it (`RebuildReport { coplanar_edges: 4 }`, the four being the box
+/// top's own sides and none of them the ellipse).
+///
+/// The cause: a closed freeform self-loop is PRESERVED rather than fed to the
+/// arrangement unless `detect_freeform_overlaps` marks it with a
+/// `curve_owner_id`, and that detector read the edges it might overlap from
+/// `scope_edges` — which excludes `volume_edges`, i.e. exactly a solid top's
+/// perimeter. It is now also shown `solid_top_boundary`, which the arrangement
+/// was already being given. A rect never hit this (ordinary coplanar edges);
+/// nor did a circle (Phase 1.5 polygonises it into the graph).
 #[test]
-fn an_ellipse_straddling_the_edge_leaves_a_piece() {
+fn an_ellipse_straddling_the_edge_is_cut_at_the_rim() {
     // Centre on the top's edge at x = 100, so half the ellipse hangs over.
     let (mut mesh, seed) = box_with_ellipse_on_top(100.0, 40.0, 25.0);
     rederive(&mut mesh, &seed);
+    assert_eq!(
+        pieces_on_the_plane(&mesh),
+        3,
+        "three pieces — the bitten top, the half on it, and the half hanging \
+         over. Two means the ellipse never reached the arrangement again"
+    );
     let (inside, hanging) = inside_and_hanging(&mesh);
     assert!(
         (inside - 40_000.0).abs() < 1.0,
-        "the top must tile exactly once — got {inside:.4} (less means the \
-         ellipse ate part of it, more means double cover)"
+        "the top still tiles exactly once — got {inside:.4}"
     );
     assert!(
         hanging > 100.0,
-        "half the ellipse hangs past the edge and must be its own face — got \
-         {hanging:.4}"
+        "and the half past the edge is its own face — got {hanging:.4}"
     );
     assert!(
         mesh.verify_face_invariants().is_valid(),
