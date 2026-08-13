@@ -52,7 +52,13 @@
 > ⚠ **Superseded by ADR-139** (2026-05-18, Q3=a 결재). Auto containment
 > split 폐기 — Boundary tool 명시 only. 본 LOCKED 의 *결과 invariant*
 > (닫힌 경계 → 면) 는 메타-원칙 #14 로 보존, *trigger 정책* (자동 split)
-> 만 supersede. 회귀 자산 11+ tests 는 B-ζ atomic sub-step 에서 명시
+> 만 supersede.
+>
+> ⚠⚠ **그리고 되살아났다 — 이 배너만 읽으면 정반대를 배운다.** ADR-176
+> (2026-06-01) 이 auto-intersect / auto-face-synthesis 를 **production
+> default ON** 으로 되돌렸고, ADR-283 (2026-07-08) 이 containment 자동분할을
+> 다시 켰다. 부활 기록이 LOCKED #64 매트릭스와 LOCKED #76 에만 있어서,
+> 기하 원칙을 찾아 여기부터 읽는 사람에게는 보이지 않았다 (2026-08-11 감사). 회귀 자산 11+ tests 는 B-ζ atomic sub-step 에서 명시
 > Boundary 호출 시뮬레이션으로 재작성 예정. 자세한 supersede 근거 는
 > `docs/adr/139-boundary-tool-auto-cycle-deprecation.md` §6 + §15 참조.
 
@@ -180,6 +186,10 @@
 > 폐기 trigger. 자세한 근거는 `docs/adr/139-boundary-tool-auto-cycle-
 > deprecation.md` §1 (Problem statement) + §6 (정책 영향 매트릭스)
 > 참조.
+>
+> ⚠⚠ **그리고 되살아났다** — ADR-176 (2026-06-01) 이 auto-face-synthesis 를
+> **production default ON** 으로 되돌렸다. 부활 기록이 LOCKED #64 / #76 에만
+> 있어서 이 배너만 읽으면 정반대를 배운다 (2026-08-11 감사).
 
 - **새 원칙 P11 (사용자 강조)**: "닫힌 엣지에는 반드시 면이 생성되어야 한다."
 - ADR-019 ("Line is Truth, Face is Byproduct") + ADR-021 P7 의 가장 강한 형태.
@@ -2307,6 +2317,11 @@ render fast-path), LOCKED #15 (P22.5 owner-ID uniformity), LOCKED #16
 > walking`, `coplanar_intersection_segments`) 는 보존 — Boundary tool
 > 호출 시 자산 재활용. 자세한 근거는 `docs/adr/139-boundary-tool-auto-
 > cycle-deprecation.md` §6 (정책 영향 매트릭스) + §10 (Lock-ins) 참조.
+>
+> ⚠⚠ **그리고 되살아났다** — ADR-176 (2026-06-01) 이
+> `auto_intersect_on_draw` 를 **production default ON** 으로 되돌렸다
+> (엔진 기본값은 OFF, TS 설정이 켠다). 부활 기록이 LOCKED #64 / #76 에만
+> 있어서 이 배너만 읽으면 정반대를 배운다 (2026-08-11 감사).
 
 **Canonical anchor (사용자 통찰, 2026-05-14)**:
 > "닫힌 엣지에는 면이 생성되어야 한다. 두 닫힌 엣지가 겹치면 세 면으로
@@ -2439,9 +2454,9 @@ architectural fix + §3.2 매트릭스 정정.
 - **A9.2 결함 C 진짜 메커니즘**:
   - `auto_intersect_coplanar` (coplanar.rs:444+10.5) 의 `remove_face × 2
     + add_face × 3` 가 새 boundary HEs 를 `flags = clear` 로 생성
-  - Render `export_edge_lines_with_map` (mesh.rs:5384-5404) 의 angle
+  - Render `export_edge_lines_with_map` (mesh_export.rs) 의 angle
     coplanar test: Plane × Plane → dot=1.0 < cos(20.1°)=0.939 → hide
-  - Contract 불일치: `Mesh::split_face` (mesh.rs:4068-4069) 는 HARD 명시
+  - Contract 불일치: `Mesh::split_face` 는 HARD 명시
     부여, `auto_intersect_coplanar` 는 미부여
 
 - **A9.3 Fix (Step 10.5 신설)** — lens outer boundary HEs (radial twin
@@ -2455,9 +2470,27 @@ architectural fix + §3.2 매트릭스 정정.
 | Mesh::split_face | ✅ canonical | reference |
 | Mesh::polygonize_closed_curve_face | ❌ (substitute, split 아님) | 정합 (의도) |
 | auto_intersect_coplanar | ✅ Amendment 9 | **fix 완료** |
-| Mesh::split_face_by_chain | ❌ | 별도 PR 권장 |
-| split_face_case_b/c/d | ❌ | 별도 PR 권장 |
-| boolean.split_faces_by_intersections | ❌ | 별도 PR 권장 |
+| Mesh::split_face_by_chain | ✅ **Amendment 10** | fix 완료 |
+| split_face_case_b/c/d | ✅ **Amendment 10** | fix 완료 |
+| boolean.split_faces_by_intersections | ✅ **Amendment 10** | fix 완료 |
+
+> ⚠ **위 세 줄은 2026-08-11 감사 전까지 `❌ 별도 PR 권장` 이었다 — 이미
+> 고쳐져 있었다.** ADR-101 Amendment 10 이 `Mesh::mark_chain_edges_hard` /
+> `mark_edges_hard` / `mark_single_edge_hard` (safe-OR) 헬퍼를 넣고 네 곳을
+> 모두 배선했다. 문자열 "Amendment 10" 은 이 감사 전까지 CLAUDE.md 에 **0회**
+> 등장했다.
+>
+> **대신 새 공백이 생겼다 (실측 2026-08-11)** — 곡면 split 4개
+> `split_{sphere,cylinder,cone,torus}_face_by_circle` 와 `annulus.rs` 전체
+> (`split_face_by_inner_*` 4 진입점) 는 **HARD 참조가 0**. 이들은
+> `add_face_closed_curve` / `add_face_with_holes` + twin-HE reparent 로 면을
+> 짓고 `split_face` 계열에 위임하지 않는다 (`split_circle_face_by_chord` 는
+> 위임한다 — 대조군). 곡면을 원으로 자르면 seam 양쪽 normal 이 일치하므로,
+> `force_hard` 가 우회하는 coplanar-hide 검사에 정확히 걸리는 경우다.
+>
+> ⚠ **canonical 예시 자신이 문서화된 패턴을 어긴다** — `Mesh::split_face` 는
+> `set_flags(HeFlags::HARD)` (덮어쓰기, SOFT/SMOOTH_NORMAL 을 지운다) 를 쓰고,
+> 나머지 전부는 `cur | HARD` (safe OR) 를 쓴다.
 
 - **A9.5 회귀 누적 (Amendment 9)**:
   - axia-geo `operations::coplanar::tests` (+5): `adr101_amendment9_lens_
@@ -2477,7 +2510,7 @@ architectural fix + §3.2 매트릭스 정정.
   contract 강제. Render path 의 coplanar hide 정책 (LOCKED #16 K-ε
   hotfix) 과 split 의도의 충돌은 split-side 의 HARD 부여로 명시 해소.
   추가 분기 / lookup 없이 flag 1 bit 로 정확한 동작 보장 (force_hard
-  fast-path, mesh.rs:5359).
+  fast-path, mesh_export.rs).
 
 - **A9.7 Out-of-scope (deferred)**:
   - ζ-3 cross-cut audit 의 잔존 4 함수 (split_face_by_chain / case_b/c/d
@@ -8444,11 +8477,25 @@ hole_preserves_other`, `phase_g2_cuts_through_two_holes`.
 > — H₁=0 영역 한정. Knotted curve / Plateau's problem / 비평면 closed
 > curve 는 명제 외부."
 
+**범위 amendment (2026-08-11, ADR-312 제안 — 메타-원칙 #10 에 따라 원문은
+그대로 두고 여기 덧붙인다)**:
+> 유도되는 것은 면의 **경계** 다. 면의 **속성** — material / surface /
+> flags / visible / double_sided / tolerance, 그리고 **누가 그 면을
+> 소유하는가** — 는 경계에 복원할 근거가 없으므로 **상속**되며, 면을
+> 부수는 모든 op 는 그 대체물에게 상속을 명시적으로 실어 줄 책임이 있다.
+
+> ⚠ 그러므로 아래 "Face 는 *first-class entity 가 아닌 byproduct*" 는
+> **측정 기준 거짓**이다. `Face` 는 경계에서 복원 불가능한 필드를 8개
+> 지니고, 재유도 코드 자신이 면을 부수기 전 `DirtyInfo{material, surface,
+> polygon, area}` 를 **스냅샷**해 뒀다가 가장 작은 감싸는 폴리곤에서
+> **추측**한다 — byproduct 라면 스냅샷할 것이 없다. 자세히는 **ADR-312 §3**.
+
 **위상수학적 근거 (Jordan-Schoenflies 정리)**:
 - 평면 R² 의 simple closed curve 는 R² 를 inside (disk homeomorphic) +
   outside 로 분할 (Jordan curve 정리)
 - inside region 이 disk 와 homeomorphic (Schoenflies 정리)
-- AxiA 의 coplanar 검사 (LOCKED #5 ε=1.5μm spatial-hash) 가 진입 가드 →
+- AxiA 의 coplanar 검사 (LOCKED #5 ε=**0.15μm** spatial-hash dedup — ADR-147/180
+  이 1.5μm 에서 10× 조였다; 코드는 `SPATIAL_HASH_CELL = 1e-4`) 가 진입 가드 →
   본질적으로 R² 환경 → P14 수학적으로 정합
 - 전역 명제로는 H₁ (first homology group) = 0 (simply-connected surface)
   한정 — torus / Klein bottle / multi-genus 곡면은 비자명 cycle 존재 →
@@ -8533,15 +8580,15 @@ hole_preserves_other`, `phase_g2_cuts_through_two_holes`.
   `split_faces_by_intersections` / 향후 새 split 함수) 는 split-induced
   edges 에 **`HeFlags::HARD` flag 부여** 라는 동일 topological contract
   를 준수해야.
-- Render path (`export_edge_lines_with_map`, mesh.rs:5384-5404) 의
+- Render path (`export_edge_lines_with_map`, mesh_export.rs) 의
   coplanar Plane edge hide 정책 (LOCKED #16 K-ε hotfix) 과 split 의 분할
   의도의 충돌은 **split-side 의 HARD flag 부여** 로 명시 해소. Render
   path 의 정책 자체는 보존 — smooth surface 가시화 목적.
 - **"빠르고 신속하고 정확"**: 추가 분기 / lookup 없이 flag 1 bit 로
-  정확한 동작 보장 (`force_hard` fast-path, mesh.rs:5359). Performance
+  정확한 동작 보장 (`force_hard` fast-path, mesh_export.rs). Performance
   + correctness 동시.
 
-**Contract enforcement 패턴** (canonical reference, mesh.rs:4068-4069):
+**Contract enforcement 패턴** (canonical reference — `Mesh::split_face`):
 ```rust
 // split 후 (face wiring 완료 후) — 두 twin HE 모두 HARD.
 self.hes[he_v1v2].set_flags(HeFlags::HARD);
@@ -8560,9 +8607,20 @@ mesh.hes[he_id].set_flags(cur | HeFlags::HARD);
 | `Mesh::split_face` | ✅ canonical | reference |
 | `Mesh::polygonize_closed_curve_face` | ❌ (substitute, split 아님) | 정합 (의도) |
 | `auto_intersect_coplanar` | ✅ Amendment 9 | **fix 완료** |
-| `Mesh::split_face_by_chain` | ❌ | 별도 PR |
-| `split_face_case_b/c/d` | ❌ | 별도 PR |
-| `boolean.split_faces_by_intersections` | ❌ | 별도 PR |
+| `Mesh::split_face_by_chain` | ✅ **Amendment 10** | fix 완료 |
+| `split_face_case_b/c/d` | ✅ **Amendment 10** | fix 완료 |
+| `boolean.split_faces_by_intersections` | ✅ **Amendment 10** | fix 완료 |
+
+> ⚠ **2026-08-11 감사 정정** — 위 세 줄은 `❌ 별도 PR` 이었으나 이미
+> 고쳐져 있었다(ADR-101 Amendment 10 의 `mark_chain_edges_hard` /
+> `mark_edges_hard` / `mark_single_edge_hard` safe-OR 헬퍼). **대신 새 공백**:
+> `split_{sphere,cylinder,cone,torus}_face_by_circle` 4개와 `annulus.rs`
+> 전체가 **HARD 참조 0** — `add_face_closed_curve` / `add_face_with_holes` +
+> twin-HE reparent 로 짓고 `split_face` 계열에 위임하지 않는다
+> (`split_circle_face_by_chord` 는 위임 — 대조군). 곡면을 원으로 자르면
+> seam 양쪽 normal 이 일치하므로 `force_hard` 가 우회하는 coplanar-hide
+> 검사에 정확히 걸리는 경우다. 그리고 **canonical 예시 자신**(`Mesh::split_face`)
+> 이 위 safe-OR 패턴 대신 덮어쓰기 `set_flags(HeFlags::HARD)` 를 쓴다.
 
 **가이드 (향후 ADR / 코드 결정 시)**:
 - 새 split-type 함수 신설 / 기존 split 함수 수정 시 **HARD flag 부여
@@ -8587,6 +8645,22 @@ mesh.hes[he_id].set_flags(cur | HeFlags::HARD);
 > 부작용의 source."
 > ("Automation cannot infer user intent. Heuristic automation is the
 > source of cascading side-effects.")
+
+**범위 amendment (2026-08-11, ADR-312 제안 — 원문은 그대로 두고 덧붙인다)**:
+> ⚠ **이 문장과 현재 코드가 어긋난다.** 위 canonical 문장은 *"의도를 알 수
+> 없다"* 는 **인식론적** 주장인데, ADR-176 (2026-06-01) 은 세 자동 동작을
+> *"파이프라인이 견고해졌으니"* 라며 되살렸다 — **#16 이 하지 않은 주장을
+> 반박한 것**이다. ADR-283 (2026-07-08) 이 containment 자동분할까지 되살리면서
+> de-facto 읽기는 하나로 굳었다:
+>
+> **#16 이 금지하는 것은 "자동 trigger" 가 아니라 "취약한 자동 trigger" 다.**
+>
+> 둘 중 하나는 틀렸고, 코드와 두 ADR 이 택한 쪽은 후자다. #16 의 문장을 그렇게
+> 바로잡거나, ADR-176/283 이 #16 위반임을 인정하거나 — **하나를 골라야 한다.**
+> 자세히는 **ADR-312 §5 D2**.
+>
+> ⚠ 그리고 아래 "구분 가이드" 표의 휴리스틱 3행은 `ADR-139 폐기` 라고만
+> 적혀 있었는데 **셋 다 프로덕션에서 켜져 있다** (2026-08-11 감사에서 정정).
 
 **Trigger evidence (사용자 evidence + 시연 누적)**:
 - **P5.UX.39~45 cascading fixes 패턴** — 자동 cycle / split / intersect
@@ -8630,9 +8704,20 @@ mesh.hes[he_id].set_flags(cur | HeFlags::HARD);
 | Single explicit op (DrawRect 의 4 vertex → 1 face) | **명시** ✅ | 보존 |
 | Cardinal projection (z=0 강제, LOCKED #63) | **명시** ✅ | 보존 (사용자 view 명확) |
 | Single click → owner ID promote (ADR-037 P22) | **명시** ✅ | 보존 |
-| 닫힌 line cycle 자동 face 합성 (LOCKED #12 P11) | **휴리스틱** ❌ | ADR-139 폐기 |
-| Containment 자동 split (LOCKED #1 P7) | **휴리스틱** ❌ | ADR-139 폐기 |
-| Coplanar overlap 자동 3 sub-face (LOCKED #41) | **휴리스틱** ❌ | ADR-139 폐기 |
+| 닫힌 line cycle 자동 face 합성 (LOCKED #12 P11) | 휴리스틱 | ADR-139 폐기 → **ADR-176 production ON** |
+| Containment 자동 split (LOCKED #1 P7) | 휴리스틱 | ADR-139 폐기 → **ADR-283 재활성** |
+| Coplanar overlap 자동 3 sub-face (LOCKED #41) | 휴리스틱 | ADR-139 폐기 → **ADR-176 production ON** |
+
+> ⚠ **이 표의 아래 세 줄은 2026-08-11 감사 전까지 `❌ ADR-139 폐기` 라고만
+> 적혀 있었다 — 실제로는 셋 다 프로덕션에서 켜져 있다.** 엔진 기본값은 OFF
+> (`scene.rs`) 이고 TS 설정이 `let current = true` 로 켠다
+> (`AutoIntersectSettings.ts` / `AutoFaceSynthesisSettings.ts`, `main.ts` 가 init 에
+> push). 두 진술 다 "참"이지만, 이 표를 canonical 로 읽는 사람은 정반대를 배운다.
+>
+> **그래서 #16 의 범위 자체가 재서술 대상이다** — ADR-176 은 *"견고해졌으니
+> 다시 ON"* 이라 논증하는데, #16 의 canonical 문장은 *"자동화는 사용자 의도를
+> 미리 알 수 없다"* 라는 **인식론적** 주장이지 안정성 주장이 아니다. 즉
+> ADR-176 은 #16 이 하지 않은 주장을 반박했다. 자세히는 **ADR-312**.
 
 ## Session 2026-04-28 완료 내역 (11 commits — RECT 면 합성 정책 정비)
 
