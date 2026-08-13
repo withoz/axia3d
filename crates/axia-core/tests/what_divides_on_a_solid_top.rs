@@ -416,6 +416,93 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
+/// The ellipse straddling a solid's edge — the six openings in the grid.
+///
+/// `draw_freely_matrix`'s soundness grid measures rect and circle crossing or
+/// straddling a solid's edge at 6 → 8 faces, sealed; the ELLIPSE at 6 → 7 with
+/// the solid opened. Six of twenty-seven, all the ellipse, on all three solid
+/// hosts. The re-derive handles this shape correctly on its own
+/// (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`), so the loss is in the
+/// Scene path — which is where D1's was too.
+#[test]
+fn an_ellipse_straddling_the_edge_leaves_its_piece_and_the_solid_sealed() {
+    let mut s = production_solid();
+    let sealed_before = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+        .count();
+    assert_eq!(sealed_before, 6, "the box starts sealed");
+
+    // Centred on the top's edge at x = 100, so half hangs over.
+    s.execute(Command::DrawEllipseAsCurve {
+        center: DVec3::new(100.0, 0.0, TOP),
+        ref_dir: DVec3::X,
+        normal: DVec3::Z,
+        radius_x: 60.0,
+        radius_y: 33.0,
+    });
+
+    let (mut inside, mut hanging) = (0.0, 0.0);
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() || f.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if hi.x > 100.0 + 1e-3 {
+            hanging += s.mesh.face_area(fid);
+        } else {
+            inside += s.mesh.face_area(fid);
+        }
+    }
+    let sealed = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+        .count();
+
+    // TODAY, measured: the ellipse is NOT cut at the host's boundary. It
+    // survives as ONE face spanning the rim (6,210 — the whole ellipse), the
+    // top is left with a bite exactly the size of the half that lay on it
+    // (40,000 − 3,109 = 36,891), and two of the box's six faces stop bounding
+    // the volume.
+    //
+    // Note what is NOT wrong: 36,891 + 6,210 accounts for 40,000 plus the
+    // 3,101 that hangs over, so nothing is covered twice and nothing is
+    // missing. The damage is only that the drawn shape was not SPLIT at the
+    // rim, which leaves the rim broken and the box open.
+    //
+    // That shape — host carved, drawn shape whole — is what the post-draw
+    // repair produces (`subtract_double_covered_faces` takes the difference
+    // from the face with more vertices, which is the top), so the re-derive
+    // did nothing here. It CAN do it: given the same box and ellipse it tiles
+    // all three regions and holds the invariants
+    // (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`). What is not yet
+    // known is why the Scene's call does not reach that result — the ellipse
+    // face's normal, its Plane surface and the planar filter were each checked
+    // and are fine.
+    assert!(
+        (inside - 36_891.08).abs() < 1.0,
+        "TODAY the top carries a bite the size of the ellipse's inner half — \
+         got {inside:.4}. At 40,000 the shape is being split at the rim: \
+         retire this pin and assert the sealed box instead"
+    );
+    assert!(
+        (hanging - 6_210.3).abs() < 5.0,
+        "TODAY the whole ellipse survives as one unsplit face — got {hanging:.4}"
+    );
+    assert_eq!(
+        sealed, 4,
+        "TODAY the box opens — 4 of 6 faces still bound the volume. This is one \
+         of the grid's six openings, and all six are the ellipse"
+    );
+}
+
 /// D9′ was my own misreading, and this is what the numbers actually say.
 ///
 /// I pinned "the plane reads 40,237.88, so the union hole under-deducts by
