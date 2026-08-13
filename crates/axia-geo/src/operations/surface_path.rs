@@ -359,6 +359,19 @@ impl Mesh {
     ///
     /// An existing vertex, or a point on no edge at all (the interior of a
     /// face), falls through to plain `add_vertex` and its own dedup.
+    ///
+    /// ⚠ **Straight edges only** — a point landing on a CURVED edge (a Path B
+    /// self-loop, a rim carrying an `AnalyticCurve`) falls through to
+    /// `add_vertex` too, which leaves it loose: the face's loop still runs past
+    /// it, so the run that needed it is refused and counted in `skipped_runs`.
+    /// That is a report, not silent damage.
+    ///
+    /// It is NOT a limit on cylinders in general — a Path A (polygonal) one has
+    /// zero curved edges and a band round it divides all 24 sides, which
+    /// `a_band_around_a_polygonal_cylinder_divides_every_side` pins. I claimed
+    /// the opposite here first; mutating this filter away changed nothing,
+    /// which is how the claim was caught. The genuine case is a **kernel-native
+    /// (Path B)** host, whose side is ONE curved face — 트랙 C's subject.
     fn split_edge_at_or_add_vertex(&mut self, p: DVec3) -> VertId {
         const TOL: f64 = 1.5e-3; // the dedup floor (LOCKED #5)
         let target = self

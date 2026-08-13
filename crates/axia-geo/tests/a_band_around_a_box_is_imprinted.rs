@@ -181,12 +181,36 @@ fn an_open_paths_end_faces_are_skipped_and_counted() {
         report.first_refusal.is_some(),
         "with the reason carried, not just a number"
     );
+
+    // But the LINE the caller drew is still there. Failing to divide a face
+    // does not mean the line was not drawn — ADR-019's "Line is Truth, Face is
+    // Byproduct", where an orphan wire is kept rather than swept.
+    //
+    // ⚠ This is the second contract, and it is why byte-identity is asserted
+    // only on the revisit path: that one refuses BEFORE the vertex pass, so
+    // there is nothing to roll back. Here the vertices and their edges exist,
+    // and they should.
+    let free_wires = mesh
+        .edges
+        .iter()
+        .filter(|(eid, e)| e.is_active() && mesh.get_faces_sharing_edge(*eid).0.is_empty())
+        .count();
+    assert_eq!(free_wires, 2, "the two segments survive as wires");
+    let loose = mesh
+        .verts
+        .iter()
+        .filter(|(vid, v)| {
+            v.is_active()
+                && !mesh
+                    .edges
+                    .iter()
+                    .any(|(_, e)| e.is_active() && (e.v_small() == *vid || e.v_large() == *vid))
+        })
+        .count();
+    assert_eq!(loose, 0, "and no vertex is left dangling on its own");
+
     let v = mesh.verify_face_invariants();
-    assert!(
-        v.is_valid(),
-        "and the mesh is unharmed — {:?}",
-        v.violations
-    );
+    assert!(v.is_valid(), "and the mesh is sound — {:?}", v.violations);
 }
 
 /// What a PARTIAL failure leaves — measured, because the plan says two things
@@ -301,6 +325,100 @@ fn a_rect_wrapping_a_solid_edge_divides_both_faces() {
     assert!(
         mesh.face_set_manifold_info(&all).is_closed_solid,
         "and the solid is still closed"
+    );
+    let v = mesh.verify_face_invariants();
+    assert!(v.is_valid(), "invariants must hold — {:?}", v.violations);
+}
+
+/// A band around a 24-sided cylinder — the box case with six times the faces.
+///
+/// ⚠ This started as "the curved-host limit" and I was wrong THREE times, each
+/// caught by a measurement rather than by thinking harder:
+///
+/// 1. the doc claimed a curved edge blocks it — mutating the curved-edge filter
+///    away changed nothing, because `create_cylinder(.., 24, ..)` is Path A and
+///    has **zero curved edges**;
+/// 2. the refusal then read `chain start vert 18 not on any loop of face 11` —
+///    my path had picked two side faces that were not ADJACENT;
+/// 3. and then `face B has <3 verts` — my band sat at z = 0, which is the
+///    cylinder's BOTTOM RIM, so the chain cut between two corners that were
+///    already neighbours. `create_cylinder` puts its base at the given centre;
+///    `create_box` centres on it. Two conventions, one assumption.
+///
+/// All three were my test, not the engine. So this asks the real question: a
+/// polygonal cylinder is a box with more sides, and a band at mid-height
+/// divides every one of them. Those vertices do not exist beforehand — each is
+/// made by splitting a vertical edge, the vertex pass doing exactly what the
+/// box case needs.
+///
+/// A kernel-native (Path B) cylinder has ONE curved side face and no two-face
+/// path to try; that is the genuine curved-host case and it belongs to 트랙 C.
+#[test]
+fn a_band_around_a_polygonal_cylinder_divides_every_side() {
+    const N: usize = 24;
+    const R: f64 = 100.0;
+    const H: f64 = 200.0;
+    // ⚠ `create_cylinder` puts its BASE at the given centre, so the solid runs
+    // z ∈ [0, H] — unlike `create_box`, which centres on it. A band at z = 0
+    // would land on the bottom rim and cut between two corners that are already
+    // adjacent ("face B has <3 verts"). Measured, after reasoning got it wrong.
+    const MID: f64 = H / 2.0;
+    let mut mesh = Mesh::new();
+    mesh.create_cylinder(DVec3::ZERO, R, H, N as u32, Default::default())
+        .expect("cylinder");
+    let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+    // The side faces in ANGULAR order — the order a band meets them, which is
+    // not the order they happen to sit in storage.
+    let mut sides: Vec<_> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active() && f.normal().z.abs() < 0.1)
+        .map(|(fid, f)| {
+            let n = f.normal().normalize_or_zero();
+            (n.y.atan2(n.x).rem_euclid(std::f64::consts::TAU), fid)
+        })
+        .collect();
+    sides.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    assert_eq!(sides.len(), N, "a Path A cylinder has one quad per segment");
+
+    // A face centred on angle θ is crossed between the seams at θ ± π/N.
+    let step = std::f64::consts::TAU / N as f64;
+    let seam = |k: usize| {
+        let t = sides[k % N].0 - step / 2.0;
+        DVec3::new(R * t.cos(), R * t.sin(), MID)
+    };
+    let mut points: Vec<DVec3> = (0..N).map(seam).collect();
+    points.push(points[0]); // closed
+    let band = SurfacePath {
+        points,
+        faces: sides.iter().map(|&(_, f)| f).collect(),
+    };
+
+    let report = mesh
+        .imprint_surface_path(&band, MaterialId::new(0))
+        .expect("the band imprints");
+    assert_eq!(
+        report.split_faces.len(),
+        N,
+        "every side is crossed seam to seam — {} skipped, first refusal {:?}",
+        report.skipped_runs,
+        report.first_refusal
+    );
+    assert_eq!(
+        mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+        before + N,
+        "so each side gains its other half"
+    );
+    let all: Vec<_> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| fid)
+        .collect();
+    assert!(
+        mesh.face_set_manifold_info(&all).is_closed_solid,
+        "and the cylinder is still closed"
     );
     let v = mesh.verify_face_invariants();
     assert!(v.is_valid(), "invariants must hold — {:?}", v.violations);
