@@ -5389,7 +5389,7 @@ impl Scene {
     ///
     /// The old line — "면이 겹치지 않게 그려주세요" — is now advice that is
     /// mostly wrong: overlapping shapes DO divide each other in nearly every
-    /// case. Measured 2026-08-05, on a box top, what is left:
+    /// case. Measured 2026-08-05, on a box top, what was left then:
     ///
     /// ```text
     ///   circle then rect     ok        two circles crossing   ok
@@ -5397,11 +5397,21 @@ impl Scene {
     ///   anything with an ellipse in it REFUSED, in either order
     /// ```
     ///
-    /// So there is one real workaround and it applies to circles only — draw
-    /// the round one first, and the angular one cuts it. Saying that beats
-    /// telling someone not to overlap shapes at all, and for a freeform curve,
-    /// where no order works, it says so rather than sending them round in
-    /// circles trying.
+    /// ⚠ That matrix is one day older than the solid-top re-tile (ADR-281 β-1,
+    /// 2026-08-06) and re-measurement 2026-08-13 retired most of it: rect-then-
+    /// circle divides, and so does the ellipse row with the freeform flag
+    /// production sets (`what_divides_on_a_solid_top.rs` pins all of it, with
+    /// the top's 40,000 partition as the judge, not face counts). What actually
+    /// remains undivided on a solid today is the CORNER-straddle's L-shaped
+    /// outer piece — which never reaches this function, because nothing
+    /// overlaps: the piece is simply not made.
+    ///
+    /// So by the time this fires the arrangement really could not divide —
+    /// engine defaults with the flags off, a freeform pair with the freeform
+    /// flag off, or a genuine residual. The guidance below still orders the
+    /// advice by what was once measured to help (round-first for circles; no
+    /// order for freeform), which remains harmless when it fires and unseen
+    /// when the divide succeeds.
     fn describe_overlap(&self, pairs: &[(FaceId, FaceId)]) -> String {
         #[derive(PartialEq, Clone, Copy)]
         enum Boundary {
