@@ -14049,10 +14049,19 @@ impl Mesh {
         }
 
         // Planar faces, and any curved face whose surface gave us nothing.
+        // The boundary, not the chord polygon: a Path B disc is ONE vertex and
+        // its extent lives in the self-loop curve (the box collapsed to a
+        // point), and an arc edge reaches past the chord its endpoints trace.
+        // `loop_polygon` reads both; the vertex list stays as the fallback for
+        // a loop it cannot express (an open self-loop, a broken loop).
         if pts.is_empty() {
             let start = face.outer().start;
             if !start.is_null() {
-                if let Ok(verts) = self.collect_loop_verts(start) {
+                if let Some(poly) =
+                    self.loop_polygon(start, ChordTol::fixed(0.1).following_arcs())
+                {
+                    pts.extend(poly);
+                } else if let Ok(verts) = self.collect_loop_verts(start) {
                     for vid in verts {
                         if let Ok(p) = self.vertex_pos(vid) {
                             pts.push(p);
@@ -14284,10 +14293,21 @@ impl Mesh {
             }
         }
 
-        // Try polygon Newell first (≥3 verts) — exact on a planar face.
+        // Try polygon Newell first (≥3 verts) — exact on a planar face whose
+        // edges are all straight, and the chord polygon of one whose edges are
+        // not. An edge carrying an `Arc` bulges away from its chord, and that
+        // bulge is real area the shoelace never sees: cut a Ø100 circle across a
+        // square's edge and each half is a 3,927 mm² half-disc, while the
+        // triangle its three vertices trace measures 2,500 (measured
+        // 2026-08-13). The arcs survive the split — the pieces carry
+        // `Arc r=50 90°..180°` and so on — so the correction is exact, not a
+        // finer sampling.
         if verts.len() >= 3 {
             if let Some(n) = self.newell_raw(&verts) {
-                return n.length() * 0.5;
+                let unit = n.normalize_or_zero();
+                // Clamped: an inward bulge larger than its chord polygon is a
+                // sampling artifact, not a region with less than no area.
+                return (n.length() * 0.5 + self.loop_curve_bulge(start, unit)).max(0.0);
             }
         }
 
@@ -14311,6 +14331,129 @@ impl Mesh {
         }
 
         0.0
+    }
+
+    /// How much area one loop's arcs add beyond the polygon its vertices trace.
+    ///
+    /// The shoelace reads a chord where the boundary is an arc. For each edge
+    /// carrying an `Arc`, the difference is a circular segment,
+    /// `r²/2 · (θ − sin θ)` with `θ` the swept angle — exact for any θ in
+    /// (0, 2π), minor segment below π and major above. An arc bulging away from
+    /// the face adds that; one bulging into it takes it away, which is what a
+    /// bite out of a rectangle is. Side is read from the half-edge's own
+    /// direction against `normal`, so it follows the loop rather than assuming
+    /// a winding.
+    ///
+    /// Straight edges contribute nothing, so a polygonal face is untouched, and
+    /// a curve kind this does not know analytically still gets measured rather
+    /// than dropped — the fallback reads the shape the curve actually
+    /// tessellates to, so Bezier, B-spline, NURBS and anything added later are
+    /// carried without a new arm.
+    fn loop_curve_bulge(&self, loop_start: HeId, normal: DVec3) -> f64 {
+        if loop_start.is_null() || normal.length_squared() < 0.5 {
+            return 0.0;
+        }
+        let Ok(hes) = self.collect_loop_hes(loop_start) else {
+            return 0.0;
+        };
+        let mut total = 0.0;
+        for he in hes {
+            let Some(half) = self.hes.get(he) else { continue };
+            let Some(edge) = self.edges.get(half.edge()) else { continue };
+            let Some(curve) = edge.curve() else { continue };
+            let (Ok(src), dst) = (self.he_src(he), half.dst()) else { continue };
+            let (Ok(p0), Ok(p1)) = (self.vertex_pos(src), self.vertex_pos(dst)) else {
+                continue;
+            };
+            total += match curve {
+                // Exact: a circular segment is `r²/2 · (θ − sin θ)` for any θ in
+                // (0, 2π) — minor below π, major above. Sampling would only
+                // approach this from below.
+                crate::curves::AnalyticCurve::Arc {
+                    center, radius, normal: arc_n, basis_u, start_angle, end_angle,
+                } => {
+                    let sweep = (end_angle - start_angle).abs();
+                    if !sweep.is_finite() || sweep <= 1e-12 || *radius <= 0.0 {
+                        continue;
+                    }
+                    let segment = radius * radius * 0.5 * (sweep - sweep.sin());
+                    let basis_v = arc_n.cross(*basis_u).normalize_or_zero();
+                    let mid_angle = (start_angle + end_angle) * 0.5;
+                    let mid = *center
+                        + *basis_u * (radius * mid_angle.cos())
+                        + basis_v * (radius * mid_angle.sin());
+                    // Which side of its own chord does the arc bulge to? On a
+                    // loop wound the way `normal` says, the interior is on the
+                    // LEFT of travel — so a bulge to the left (side > 0) eats
+                    // into the chord polygon and is deducted, and a bulge to
+                    // the right hangs outside it and is added. (The first
+                    // draft had this backwards, and the half-disc read 1,073
+                    // where πr²/2 is 3,927 — the regression below is the one
+                    // that caught it.)
+                    let side = (p1 - p0).cross(mid - p0).dot(normal);
+                    if !side.is_finite() || side.abs() <= 1e-12 {
+                        continue;
+                    }
+                    if side > 0.0 { -segment } else { segment }
+                }
+                // A full circle lives on a self-loop edge, whose chord has no
+                // length; `closed_curve_enclosed_area` already gives that face.
+                crate::curves::AnalyticCurve::Circle { .. } => continue,
+                // Everything else: close the sampled curve back over its own
+                // chord and read the signed area of what lies between them.
+                // Same answer as the arm above in the limit, and it needs to
+                // know nothing about the curve beyond how to sample it.
+                other => self.chord_gap_area(other, p0, normal),
+            };
+        }
+        total
+    }
+
+    /// Signed area between a sampled curve and the chord joining its ends.
+    ///
+    /// NEGATIVE when the curve bows to the left of its chord as walked from
+    /// `p0`, seen along `normal` — on a loop wound that way the left is the
+    /// interior, so a left bow eats into the chord polygon and the caller's
+    /// `+=` deducts it; a right bow hangs outside and comes back positive.
+    /// Same convention as the Arc arm above, checked against it by the
+    /// Bezier regression. The region is closed over the tessellation's own
+    /// endpoints, so geometry that drifted off the loop's vertices is measured
+    /// as it is rather than as it should have been. Returns 0 for anything it
+    /// cannot sample into at least a triangle, so an unmeasurable curve costs
+    /// the caller nothing rather than a wrong number.
+    fn chord_gap_area(
+        &self,
+        curve: &crate::curves::AnalyticCurve,
+        p0: DVec3,
+        normal: DVec3,
+    ) -> f64 {
+        use crate::curves::CurveOps;
+        // Fine enough that the sampling error is far below the bulge it is
+        // measuring, and bounded so a huge curve cannot explode the sample count.
+        const BULGE_CHORD_TOL: f64 = 1e-3;
+        let Ok(mut pts) = curve.tessellate(BULGE_CHORD_TOL, self) else {
+            return 0.0;
+        };
+        if pts.len() < 3 {
+            return 0.0;
+        }
+        // The curve carries its own parameter direction, which need not be the
+        // half-edge's. Walk it from this half-edge's source.
+        let head = pts[0];
+        let tail = pts[pts.len() - 1];
+        if (head - p0).length_squared() > (tail - p0).length_squared() {
+            pts.reverse();
+        }
+        // Newell over the closed region: the sampled curve, then back along the
+        // chord. Dotting with `normal` gives the sign the loop cares about.
+        let mut twice_area = DVec3::ZERO;
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = if i + 1 == pts.len() { pts[0] } else { pts[i + 1] };
+            twice_area += a.cross(b);
+        }
+        let signed = twice_area.dot(normal) * 0.5;
+        if signed.is_finite() { signed } else { 0.0 }
     }
 
     /// ADR-253 P1 — enclosed area of a planar closed-curve disk face
@@ -14424,8 +14567,8 @@ impl Mesh {
     /// Sampled at a fixed 0.1 mm rather than the render's camera-dependent
     /// tolerance: a measurement must not change because someone zoomed out.
     pub fn loop_enclosed_area(&self, start: crate::HeId) -> f64 {
-        // A circle is exact — no reason to sample what has a closed form.
         if let Ok(verts) = self.collect_loop_verts(start) {
+            // A circle is exact — no reason to sample what has a closed form.
             if verts.len() < 3 {
                 if let Some(crate::curves::AnalyticCurve::Circle { radius, .. }) = self
                     .hes
@@ -14435,8 +14578,17 @@ impl Mesh {
                 {
                     return std::f64::consts::PI * radius * radius;
                 }
+            } else if let Some(n) = self.newell_raw(&verts) {
+                // A polygon loop is its chord polygon PLUS whatever its curved
+                // edges bulge — the same instrument `face_outer_area` reads, so
+                // a hole bounded by arcs deducts what the arcs enclose, not the
+                // polygon their endpoints trace. A half-disc hole is 3,927 mm²,
+                // and before this it deducted 2,500.
+                let unit = n.normalize_or_zero();
+                return (n.length() * 0.5 + self.loop_curve_bulge(start, unit)).max(0.0);
             }
         }
+        // Closed non-circle curves (self-loop Bezier/BSpline/NURBS).
         // Measurement policy: a fixed tolerance. What something measures must
         // not change because the camera moved or the shape got smaller.
         let Some(pts) = self.loop_polygon(start, ChordTol::fixed(0.1)) else { return 0.0 };
@@ -17566,6 +17718,239 @@ mod tests {
         // (this tests that the normal is computed correctly for orientation)
         let normal_length = normal_before.length();
         assert!((normal_length - 1.0).abs() < 1e-6, "normal should be unit");
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 0단계 계측기 — a face's arcs are area the shoelace never sees
+    // (FACE-PIPELINE-PLAN-2026-08-13, step 0)
+    //
+    // Three instruments shared one assumption — "a boundary is a polygon
+    // of three or more vertices" — and each was wrong about a face whose
+    // boundary carries curves. These pin the corrected readings; the
+    // mutation check for each is recorded in the commit message.
+    // ────────────────────────────────────────────────────────────────
+
+    /// The edge between two vertices on any of a face's loops.
+    fn edge_between_on_face(mesh: &Mesh, fid: FaceId, a: VertId, b: VertId) -> EdgeId {
+        let face = &mesh.faces[fid];
+        let mut starts = vec![face.outer().start];
+        starts.extend(face.inners().iter().map(|lr| lr.start));
+        for start in starts {
+            let Ok(hes) = mesh.collect_loop_hes(start) else { continue };
+            for he in hes {
+                let Ok(src) = mesh.he_src(he) else { continue };
+                let dst = mesh.hes[he].dst();
+                if (src == a && dst == b) || (src == b && dst == a) {
+                    return mesh.hes[he].edge();
+                }
+            }
+        }
+        panic!("no edge between {:?} and {:?} on face {:?}", a, b, fid);
+    }
+
+    #[test]
+    fn a_half_disc_reads_its_bulge() {
+        // Cut a Ø100 circle across a square's edge and each half is a
+        // 3,927 mm² half-disc whose pieces keep their arcs (measured
+        // 2026-08-13) — while the triangle its three vertices trace is
+        // 2,500. Built directly: two quarter arcs and the base chord.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let b = mesh.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let m = mesh.add_vertex(DVec3::new(0.0, 50.0, 0.0));
+        let a = mesh.add_vertex(DVec3::new(-50.0, 0.0, 0.0));
+        let fid = mesh.add_face(&[b, m, a], MaterialId::new(0)).unwrap();
+        for (v0, v1, s, e) in [
+            (b, m, 0.0, std::f64::consts::FRAC_PI_2),
+            (m, a, std::f64::consts::FRAC_PI_2, std::f64::consts::PI),
+        ] {
+            let eid = edge_between_on_face(&mesh, fid, v0, v1);
+            mesh.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+                center: DVec3::ZERO,
+                radius: 50.0,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+                start_angle: s,
+                end_angle: e,
+            }));
+        }
+        let expected = std::f64::consts::PI * 50.0 * 50.0 * 0.5; // 3,926.99
+        let area = mesh.face_area(fid);
+        assert!(
+            (area - expected).abs() < 1e-6,
+            "half-disc reads {area}, expected {expected} — the chord triangle is 2,500"
+        );
+        assert!(
+            (mesh.face_outer_area(fid) - expected).abs() < 1e-6,
+            "face_outer_area disagrees with face_area on a hole-less face"
+        );
+    }
+
+    #[test]
+    fn a_bite_out_of_a_square_deducts_its_bulge() {
+        // The same segment with the opposite sign: one edge arcs INTO the
+        // face, so the region is the square minus the half-disc above the
+        // chord. The first draft had the sign backwards, and this pair of
+        // tests is what tells the two apart.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(DVec3::new(200.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(DVec3::new(200.0, 200.0, 0.0));
+        let v3 = mesh.add_vertex(DVec3::new(0.0, 200.0, 0.0));
+        let fid = mesh.add_face(&[v0, v1, v2, v3], MaterialId::new(0)).unwrap();
+        let eid = edge_between_on_face(&mesh, fid, v0, v1);
+        // Semicircle from v0 (angle π) through (100,100) to v1 (angle 0).
+        mesh.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+            center: DVec3::new(100.0, 0.0, 0.0),
+            radius: 100.0,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+            start_angle: std::f64::consts::PI,
+            end_angle: 0.0,
+        }));
+        let expected = 40_000.0 - std::f64::consts::PI * 100.0 * 100.0 * 0.5;
+        let area = mesh.face_area(fid);
+        assert!(
+            (area - expected).abs() < 1e-6,
+            "bitten square reads {area}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn a_bezier_bulge_is_two_thirds_of_its_control_triangle() {
+        // A quadratic Bezier and its chord enclose exactly 2/3 of the
+        // control triangle — a closed form the engine's sampler does not
+        // share, so the general arm is checked against something it cannot
+        // copy. Also the guard that the Arc arm and the general arm agree
+        // on sign: the curve pulls AWAY from the face and must add.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let p0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
+        let p1 = mesh.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let p2 = mesh.add_vertex(DVec3::new(50.0, 100.0, 0.0));
+        let fid = mesh.add_face(&[p0, p1, p2], MaterialId::new(0)).unwrap();
+        let eid = edge_between_on_face(&mesh, fid, p0, p1);
+        mesh.edges[eid].set_curve(Some(AnalyticCurve::Bezier {
+            control_pts: vec![
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(50.0, -60.0, 0.0), // pulls outward, below the chord
+                DVec3::new(100.0, 0.0, 0.0),
+            ],
+        }));
+        let expected = 5_000.0 + (2.0 / 3.0) * (100.0 * 60.0 * 0.5); // 7,000
+        let area = mesh.face_area(fid);
+        assert!(
+            (area - expected).abs() < 1.0,
+            "bezier-edged triangle reads {area}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn a_hole_bounded_by_arcs_deducts_its_arcs() {
+        // Holes deduct through `loop_enclosed_area`, which read the chord
+        // polygon too: a half-disc hole deducted 2,500 of its 3,927.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let o0 = mesh.add_vertex(DVec3::new(-150.0, -100.0, 0.0));
+        let o1 = mesh.add_vertex(DVec3::new(150.0, -100.0, 0.0));
+        let o2 = mesh.add_vertex(DVec3::new(150.0, 200.0, 0.0));
+        let o3 = mesh.add_vertex(DVec3::new(-150.0, 200.0, 0.0));
+        let hb = mesh.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let hm = mesh.add_vertex(DVec3::new(0.0, 50.0, 0.0));
+        let ha = mesh.add_vertex(DVec3::new(-50.0, 0.0, 0.0));
+        // Hole wound opposite the outer (ha → hm → hb is CW seen from +Z).
+        let fid = mesh
+            .add_face_with_holes(&[o0, o1, o2, o3], &[&[ha, hm, hb]], MaterialId::new(0))
+            .unwrap();
+        for (v0, v1, s, e) in [
+            (ha, hm, std::f64::consts::FRAC_PI_2, std::f64::consts::PI),
+            (hm, hb, 0.0, std::f64::consts::FRAC_PI_2),
+        ] {
+            let eid = edge_between_on_face(&mesh, fid, v0, v1);
+            mesh.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+                center: DVec3::ZERO,
+                radius: 50.0,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+                start_angle: s,
+                end_angle: e,
+            }));
+        }
+        let expected = 300.0 * 300.0 - std::f64::consts::PI * 50.0 * 50.0 * 0.5;
+        let area = mesh.face_area(fid);
+        assert!(
+            (area - expected).abs() < 1e-6,
+            "square with a half-disc hole reads {area}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn face_bounds_of_a_path_b_disc_is_the_disc() {
+        // A Path B face is ONE vertex; the planar path of `face_bounds` read
+        // that vertex and the box collapsed to a point.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let anchor = mesh.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let fid = mesh
+            .add_face_closed_curve(
+                anchor,
+                AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 50.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        let (lo, hi) = mesh.face_bounds(fid).unwrap();
+        assert!(
+            (lo.x + 50.0).abs() < 0.5
+                && (lo.y + 50.0).abs() < 0.5
+                && (hi.x - 50.0).abs() < 0.5
+                && (hi.y - 50.0).abs() < 0.5,
+            "disc bounds read {lo:?}..{hi:?}, expected ±50 — a point means the \
+             boundary was never read"
+        );
+    }
+
+    #[test]
+    fn face_bounds_follows_an_arc_past_its_chords() {
+        // Three 120° arcs between three vertices: the chord triangle's box
+        // stops at the inscribed triangle; the face reaches the full circle.
+        use crate::curves::AnalyticCurve;
+        let mut mesh = Mesh::new();
+        let ang = |deg: f64| deg.to_radians();
+        let at = |a: f64| DVec3::new(50.0 * a.cos(), 50.0 * a.sin(), 0.0);
+        let va = mesh.add_vertex(at(ang(90.0)));
+        let vb = mesh.add_vertex(at(ang(210.0)));
+        let vc = mesh.add_vertex(at(ang(330.0)));
+        let fid = mesh.add_face(&[va, vb, vc], MaterialId::new(0)).unwrap();
+        for (v0, v1, s, e) in [
+            (va, vb, ang(90.0), ang(210.0)),
+            (vb, vc, ang(210.0), ang(330.0)),
+            (vc, va, ang(330.0), ang(450.0)),
+        ] {
+            let eid = edge_between_on_face(&mesh, fid, v0, v1);
+            mesh.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+                center: DVec3::ZERO,
+                radius: 50.0,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+                start_angle: s,
+                end_angle: e,
+            }));
+        }
+        let (lo, hi) = mesh.face_bounds(fid).unwrap();
+        assert!(
+            (lo.x + 50.0).abs() < 0.5
+                && (lo.y + 50.0).abs() < 0.5
+                && (hi.x - 50.0).abs() < 0.5
+                && (hi.y - 50.0).abs() < 0.5,
+            "arc-bounded face bounds read {lo:?}..{hi:?}, expected the full ±50 circle \
+             (the inscribed triangle stops at x ±43.3, y −25..50)"
+        );
     }
 
     // ────────────────────────────────────────────────────────────────

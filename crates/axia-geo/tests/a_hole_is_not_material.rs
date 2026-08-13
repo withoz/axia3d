@@ -198,7 +198,7 @@ fn a_window_in_a_curved_wall_still_over_reports() {
 }
 
 #[test]
-fn a_cap_only_deducts_the_circle_when_the_wall_says_cylinder() {
+fn a_lying_wall_is_refused_and_the_rim_answers_for_itself() {
     // The refusals matter more than the acceptance: this reads a NEIGHBOUR's
     // declared surface to change a number on THIS face, so every way that
     // reading can be wrong has to end at the polygon instead.
@@ -271,36 +271,75 @@ fn a_cap_only_deducts_the_circle_when_the_wall_says_cylinder() {
             .fold(f64::NAN, |acc, d| if acc.is_nan() { d } else { acc.max(d) })
     };
     let with_the_lie = deducted(&mesh);
-    let polygon = ngon_area(40.0, 32);
+    // The lie is refused — the loop's own vertices do not sit at 41. What
+    // answers instead is the rim itself: `punch_circular_hole` puts an `Arc`
+    // on every rim edge, and since the hole deduction reads arc bulge
+    // (step 0, FACE-PIPELINE-PLAN-2026-08-13) that testimony is the TRUE
+    // πr², not the 32-gon this test pinned while the instrument was
+    // polygon-blind.
+    let truth = PI * 1600.0;
     assert!(
-        (with_the_lie - polygon).abs() / polygon < 1e-9,
-        "a radius the loop does not sit on must be refused, leaving the polygon          {polygon:.4} — got {with_the_lie:.4} (πr² for the lie would be {:.4})",
+        (with_the_lie - truth).abs() / truth < 1e-9,
+        "the lie is refused and the rim's own arcs answer: expected {truth:.4}, \
+         got {with_the_lie:.4} (πr² for the lie would be {:.4})",
         PI * 41.0 * 41.0
+    );
+    assert!(
+        (with_the_lie - PI * 41.0 * 41.0).abs() > 100.0,
+        "the lying wall's radius must never be adopted"
     );
     assert!(honest > 0.0, "the honest bore measured");
 }
 
 #[test]
-fn one_bare_wall_is_enough_to_keep_the_polygon() {
+fn a_bare_wall_yields_to_the_rim_arcs_then_to_the_polygon() {
     // A loop can border more than one thing. Strip the surface off a SINGLE
-    // tube quad and the cap must stop claiming to know what its hole is —
-    // 31 cylinders and one unknown is not a circle.
+    // tube quad and the WALL route must stop claiming to know what its hole
+    // is — 31 cylinders and one unknown is not a circle. The rim's own arcs
+    // are a second, closer witness and still answer πr²; only when they are
+    // stripped too does the deduction fall all the way back to the polygon,
+    // which is what this test pinned while the instrument was polygon-blind.
     let mut mesh = boxed();
     let res = mesh
         .drill_circular_through_hole(DVec3::new(0.0, 0.0, 100.0), DVec3::Z, 40.0, 32)
         .expect("bore");
     assert!(mesh.set_face_surface(res.tube_faces[0], None), "strip one wall");
 
-    let deducted = mesh
+    let deducted = |m: &Mesh| -> f64 {
+        m.faces
+            .iter()
+            .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
+            .map(|(fid, _)| m.face_outer_area(fid) - m.face_area(fid))
+            .fold(0.0_f64, f64::max)
+    };
+    let truth = PI * 1600.0;
+    let with_arcs = deducted(&mesh);
+    assert!(
+        (with_arcs - truth).abs() / truth < 1e-9,
+        "one bare wall stops the wall route, but the rim's arcs still answer \
+         {truth:.4} — got {with_arcs:.4}"
+    );
+
+    // Now silence the rim too: no wall testimony, no curve testimony —
+    // nothing left says "circle", and the polygon is all there is.
+    let rims: Vec<_> = mesh
         .faces
         .iter()
         .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
-        .map(|(fid, _)| mesh.face_outer_area(fid) - mesh.face_area(fid))
-        .fold(0.0_f64, f64::max);
+        .flat_map(|(_, f)| f.inners().iter().map(|lr| lr.start).collect::<Vec<_>>())
+        .collect();
+    for start in rims {
+        for he in mesh.collect_loop_hes(start).expect("rim loop") {
+            let eid = mesh.hes[he].edge();
+            mesh.edges[eid].set_curve(None);
+        }
+    }
+    let bare = deducted(&mesh);
     let polygon = ngon_area(40.0, 32);
     assert!(
-        (deducted - polygon).abs() / polygon < 1e-9,
-        "one wall that says nothing sends the cap back to the polygon          {polygon:.4} — got {deducted:.4} (πr² would be {:.4})",
+        (bare - polygon).abs() / polygon < 1e-9,
+        "with no witness at all the cap keeps the polygon {polygon:.4} — got {bare:.4} \
+         (πr² would be {:.4})",
         PI * 1600.0
     );
 }
@@ -372,7 +411,7 @@ fn an_oblique_section_keeps_its_polygon() {
 }
 
 #[test]
-fn walls_that_disagree_about_their_cylinder_keep_the_polygon() {
+fn walls_that_disagree_are_refused_and_the_rim_answers() {
     // The walls must agree they are ONE cylinder. Give a single tube quad a
     // different radius and the cap must stop claiming to know its hole, even
     // though every other wall still says 40 and the loop still sits at 40.
@@ -407,10 +446,18 @@ fn walls_that_disagree_about_their_cylinder_keep_the_polygon() {
         .filter(|(_, f)| f.is_active() && !f.inners().is_empty())
         .map(|(fid, _)| mesh.face_outer_area(fid) - mesh.face_area(fid))
         .fold(0.0_f64, f64::max);
-    let polygon = ngon_area(40.0, 32);
+    // The wall route refuses — thirty-one 40s and one 45 is not one cylinder
+    // — and the rim's own arcs answer the true πr² instead (they were pinned
+    // to the polygon while the instrument was polygon-blind; step 0,
+    // FACE-PIPELINE-PLAN-2026-08-13). The 45 must never be adopted.
+    let truth = PI * 1600.0;
     assert!(
-        (deducted - polygon).abs() / polygon < 1e-9,
-        "one disagreeing wall sends the cap back to the polygon {polygon:.4} — \
+        (deducted - truth).abs() / truth < 1e-9,
+        "disagreeing walls are refused and the rim's arcs answer {truth:.4} — \
          got {deducted:.4}"
+    );
+    assert!(
+        (deducted - PI * 45.0 * 45.0).abs() > 100.0,
+        "the disagreeing wall's radius must never be adopted"
     );
 }

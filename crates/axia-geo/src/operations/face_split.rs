@@ -112,9 +112,26 @@ pub fn point_in_face(mesh: &Mesh, face_id: FaceId, point: DVec3) -> Result<bool>
         return Ok(false);
     }
 
-    // Get face boundary vertices
-    let outer_start = face.outer().start;
-    let loop_verts = mesh.collect_loop_verts(outer_start)?;
+    // The boundary a loop stands for, not the polygon its vertices trace.
+    //
+    // Both used to be the same thing, and reading `collect_loop_verts` was
+    // right. Two boundaries broke that: a Path B face is ONE vertex whose
+    // shape lives in its self-loop curve (so the vertex polygon is degenerate
+    // and every point read as outside), and a split piece keeps `Arc` edges
+    // whose bulge the chord polygon simply does not contain (so a point in the
+    // bulge read as outside — and a point in a circle HOLE, which is a
+    // self-loop inner loop, read as INSIDE, because `h < 3` skipped the hole
+    // entirely). `loop_polygon` is the one place that knows how to read both;
+    // the vertex list stays as the fallback for a loop it cannot express.
+    let loop_pts = |start: crate::HeId| -> Result<Vec<DVec3>> {
+        if let Some(pts) =
+            mesh.loop_polygon(start, crate::mesh::ChordTol::fixed(0.1).following_arcs())
+        {
+            return Ok(pts);
+        }
+        let verts = mesh.collect_loop_verts(start)?;
+        verts.iter().map(|&v| mesh.vertex_pos(v)).collect()
+    };
 
     // Project to 2D (drop dominant axis of normal)
     let (ax1, ax2) = projection_axes(normal);
@@ -122,54 +139,36 @@ pub fn point_in_face(mesh: &Mesh, face_id: FaceId, point: DVec3) -> Result<bool>
     let px = component(point, ax1);
     let py = component(point, ax2);
 
-    // Ray casting algorithm (point-in-polygon) — outer loop
-    let mut inside = false;
-    let n = loop_verts.len();
-    let mut j = n - 1;
-
-    for i in 0..n {
-        let pi = mesh.vertex_pos(loop_verts[i])?;
-        let pj = mesh.vertex_pos(loop_verts[j])?;
-
-        let yi = component(pi, ax2);
-        let yj = component(pj, ax2);
-        let xi = component(pi, ax1);
-        let xj = component(pj, ax1);
-
-        if ((yi > py) != (yj > py)) &&
-           (px < (xj - xi) * (py - yi) / (yj - yi) + xi)
-        {
-            inside = !inside;
+    // Ray casting (point-in-polygon) over one loop's boundary polyline.
+    let ray_cast = |pts: &[DVec3]| -> bool {
+        let n = pts.len();
+        if n < 3 {
+            return false;
         }
-        j = i;
-    }
+        let mut inside = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let yi = component(pts[i], ax2);
+            let yj = component(pts[j], ax2);
+            let xi = component(pts[i], ax1);
+            let xj = component(pts[j], ax1);
+            if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    };
+
+    let outer_start = face.outer().start;
+    let inside = ray_cast(&loop_pts(outer_start)?);
 
     // Phase F — 구멍 안에 있으면 면 '내부'가 아님
     if inside {
         for inner in face.inners() {
             if inner.start.is_null() { continue; }
-            let hole_verts = match mesh.collect_loop_verts(inner.start) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let mut in_hole = false;
-            let h = hole_verts.len();
-            if h < 3 { continue; }
-            let mut j = h - 1;
-            for i in 0..h {
-                let pi = mesh.vertex_pos(hole_verts[i])?;
-                let pj = mesh.vertex_pos(hole_verts[j])?;
-                let yi = component(pi, ax2);
-                let yj = component(pj, ax2);
-                let xi = component(pi, ax1);
-                let xj = component(pj, ax1);
-                if ((yi > py) != (yj > py)) &&
-                   (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
-                    in_hole = !in_hole;
-                }
-                j = i;
-            }
-            if in_hole {
+            let Ok(hole_pts) = loop_pts(inner.start) else { continue };
+            if ray_cast(&hole_pts) {
                 return Ok(false); // hole 내부 → face 외부로 판정
             }
         }
@@ -2726,6 +2725,107 @@ mod tests {
         // Above the face
         let above = DVec3::new(2.0, 5.0, 2.0);
         assert!(!point_in_face(&m, fid, above).unwrap());
+    }
+
+    // ── 0단계 계측기 — the boundary, not the polygon its vertices trace ──
+    // (FACE-PIPELINE-PLAN-2026-08-13, step 0)
+
+    #[test]
+    fn point_in_face_sees_an_arc_bulge() {
+        // A half-disc's chord triangle ends at x+y = 50; the disc itself
+        // reaches x²+y² = 2500. (30,35) lies between the two — in the bulge —
+        // and used to read as outside.
+        use crate::curves::AnalyticCurve;
+        let mut m = Mesh::new();
+        let b = m.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let mid = m.add_vertex(DVec3::new(0.0, 50.0, 0.0));
+        let a = m.add_vertex(DVec3::new(-50.0, 0.0, 0.0));
+        let fid = m.add_face(&[b, mid, a], MaterialId::new(0)).unwrap();
+        let hes = m.collect_loop_hes(m.faces[fid].outer().start).unwrap();
+        for he in hes {
+            let src = m.he_src(he).unwrap();
+            let dst = m.hes[he].dst();
+            let (s, e) = if (src == b && dst == mid) || (src == mid && dst == b) {
+                (0.0, std::f64::consts::FRAC_PI_2)
+            } else if (src == mid && dst == a) || (src == a && dst == mid) {
+                (std::f64::consts::FRAC_PI_2, std::f64::consts::PI)
+            } else {
+                continue; // the base chord stays straight
+            };
+            let eid = m.hes[he].edge();
+            m.edges[eid].set_curve(Some(AnalyticCurve::Arc {
+                center: DVec3::ZERO,
+                radius: 50.0,
+                normal: DVec3::Z,
+                basis_u: DVec3::X,
+                start_angle: s,
+                end_angle: e,
+            }));
+        }
+        // In the bulge: inside the disc, outside the chord triangle.
+        assert!(point_in_face(&m, fid, DVec3::new(30.0, 35.0, 0.0)).unwrap());
+        // Still inside the chord triangle — must keep reading true.
+        assert!(point_in_face(&m, fid, DVec3::new(0.0, 20.0, 0.0)).unwrap());
+        // Past the rim — outside the disc.
+        assert!(!point_in_face(&m, fid, DVec3::new(30.0, 48.0, 0.0)).unwrap());
+    }
+
+    #[test]
+    fn point_in_face_on_a_path_b_disc() {
+        // A Path B face is ONE vertex, so the vertex polygon is degenerate
+        // and every point — the disc's own centre included — read as outside.
+        use crate::curves::AnalyticCurve;
+        let mut m = Mesh::new();
+        let anchor = m.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let fid = m
+            .add_face_closed_curve(
+                anchor,
+                AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 50.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        assert!(point_in_face(&m, fid, DVec3::ZERO).unwrap());
+        assert!(point_in_face(&m, fid, DVec3::new(30.0, 30.0, 0.0)).unwrap());
+        assert!(!point_in_face(&m, fid, DVec3::new(60.0, 0.0, 0.0)).unwrap());
+    }
+
+    #[test]
+    fn a_point_in_a_circle_hole_is_not_in_the_face() {
+        // A circle hole is a self-loop inner loop. The hole walk skipped any
+        // loop under three vertices, so the hole's interior read as INSIDE
+        // the ring — the standard ADR-185 ring shape, misread since Phase F.
+        use crate::curves::AnalyticCurve;
+        let mut m = Mesh::new();
+        let o0 = m.add_vertex(DVec3::new(-100.0, -100.0, 0.0));
+        let o1 = m.add_vertex(DVec3::new(100.0, -100.0, 0.0));
+        let o2 = m.add_vertex(DVec3::new(100.0, 100.0, 0.0));
+        let o3 = m.add_vertex(DVec3::new(-100.0, 100.0, 0.0));
+        let outer = m.add_face(&[o0, o1, o2, o3], MaterialId::new(0)).unwrap();
+        let anchor = m.add_vertex(DVec3::new(50.0, 0.0, 0.0));
+        let disc = m
+            .add_face_closed_curve(
+                anchor,
+                AnalyticCurve::Circle {
+                    center: DVec3::ZERO,
+                    radius: 50.0,
+                    normal: DVec3::Z,
+                    basis_u: DVec3::X,
+                },
+                MaterialId::new(0),
+            )
+            .unwrap();
+        crate::operations::annulus::split_face_by_inner_circle_generic(&mut m, outer, disc)
+            .expect("ring + disc");
+        // The hole's interior belongs to the disc, not the ring.
+        assert!(!point_in_face(&m, outer, DVec3::ZERO).unwrap());
+        assert!(point_in_face(&m, disc, DVec3::ZERO).unwrap());
+        // The ring's own material is still the ring's.
+        assert!(point_in_face(&m, outer, DVec3::new(80.0, 0.0, 0.0)).unwrap());
     }
 
     // ── line_edge_intersection tests ─────────────────────────────────
