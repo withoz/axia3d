@@ -4061,6 +4061,32 @@ impl Scene {
     /// Adopt every face that became active since `before` into the given owner
     /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
     /// carve/drill opening ops. No-op if the host had no owner (demo/script).
+    /// Hand a face to the element that owned the face it came from.
+    ///
+    /// Shape XOR Xia, the same either/or the rest of the reconcile uses.
+    fn give_face_to_host(
+        &mut self,
+        face: FaceId,
+        host_shape: Option<crate::ShapeId>,
+        host_xia: Option<XiaId>,
+    ) {
+        if let Some(sid) = host_shape {
+            if let Some(shape) = self.shapes.get_mut(&sid) {
+                if !shape.face_ids.contains(&face) {
+                    shape.face_ids.push(face);
+                }
+            }
+            self.face_to_shape.insert(face, sid);
+        } else if let Some(xid) = host_xia {
+            self.register_faces_to_xia(xid, &[face]);
+            if let Some(xia) = self.xias.get_mut(&xid) {
+                if !xia.face_ids.contains(&face) {
+                    xia.face_ids.push(face);
+                }
+            }
+        }
+    }
+
     /// Whether a face is still something the mesh has and still draws.
     ///
     /// Both deaths count: `faces.remove` (the re-derive paths) leaves the id
@@ -7755,6 +7781,12 @@ impl Scene {
         // - 양 끝점이 같은 face의 boundary에 있으면 split_face_by_line 시도 (Cross-face split)
         // - 아니면 draw_line + detect_free_edge_loop 반복 (기존 로직)
         let mut all_created_faces: Vec<FaceId> = Vec::new();
+        // Pieces that came from cutting a face somebody already owned, and who
+        // that was. They belong to the arrangement's working set like any other
+        // new face, but they are NOT the drawn thing — see where they are handed
+        // back, below.
+        #[allow(clippy::type_complexity)]
+        let mut split_heirs: Vec<(FaceId, Option<crate::ShapeId>, Option<XiaId>)> = Vec::new();
         let mut all_loop_edge_ids: Vec<EdgeId> = Vec::new();
         let mut first_edge_id: Option<EdgeId> = None;
         let mut touched_verts: Vec<VertId> = Vec::new();
@@ -7783,6 +7815,16 @@ impl Scene {
 
             // ── (a) Cross-face split 시도: 두 vertex 모두 같은 face boundary 위인지 ──
             if let Some(face_id) = self.mesh.find_face_containing_both_verts(v_a, v_b) {
+                // Who owned the face we are about to cut. Splitting somebody's
+                // face does not hand it over: both halves stay theirs, and the
+                // line owns only itself. Without this a line drawn across a box's
+                // top took that top away — measured 2026-08-11, the box stopped
+                // being a solid in the Inspector (isSolid true → false, volume
+                // 8,000,000 → 7,333,333) while its geometry had not changed at
+                // all, and its list and the reverse index disagreed about who
+                // owned the face.
+                let host_shape = self.face_to_shape.get(&face_id).copied();
+                let host_xia = self.face_to_xia.get(&face_id).copied();
                 match axia_geo::operations::face_split::split_face_by_line(
                     &mut self.mesh,
                     face_id,
@@ -7790,9 +7832,21 @@ impl Scene {
                     *seg_end,
                 ) {
                     Ok(result) => {
+                        let owned = host_shape.is_some() || host_xia.is_some();
                         for fid in result.new_faces {
+                            // Note the inheritance, do not apply it yet. The
+                            // post-draw arrangement READS the ownership maps
+                            // (its coplanar reconcile works out `region_shapes`
+                            // from `face_to_shape`), so handing a face over
+                            // mid-flight changes what it decides: doing it here
+                            // instead of after left a small inner rect
+                            // unabsorbed — 5,260,000 mm² against a true
+                            // 4,940,000, caught by `five_rects_with_small_inner`.
                             if !all_created_faces.contains(&fid) {
                                 all_created_faces.push(fid);
+                            }
+                            if owned {
+                                split_heirs.push((fid, host_shape, host_xia));
                             }
                         }
                         continue; // split 성공 — 다음 세그먼트로
@@ -7999,6 +8053,27 @@ impl Scene {
         if self.epoch.is_some() {
             return CommandResult::EntityCreated(0);
         }
+
+        // Cutting somebody's face does not hand it over. Give each surviving
+        // piece back to whoever owned the face it came from, and leave it out of
+        // the "Face" the draw creates. Without this, a line across a box's top
+        // took that top away: measured 2026-08-11, the box stopped being a solid
+        // in the Inspector (isSolid true → false, volume 8,000,000 → 7,333,333)
+        // with its geometry untouched, and the Xia's list and the reverse index
+        // gave different answers about who owned the face.
+        //
+        // After the arrangement, never during it — see the note at the split
+        // site. Only pieces the arrangement kept are handed back: it is free to
+        // replace them, and a replacement is a new face, not an heir.
+        let mut inherited: Vec<FaceId> = Vec::new();
+        for (fid, host_shape, host_xia) in std::mem::take(&mut split_heirs) {
+            if !all_created_faces.contains(&fid) || !self.face_is_live(fid) {
+                continue;
+            }
+            self.give_face_to_host(fid, host_shape, host_xia);
+            inherited.push(fid);
+        }
+        all_created_faces.retain(|f| !inherited.contains(f));
 
         if !all_created_faces.is_empty() {
             // 기존 standalone-edge XIA 정리
