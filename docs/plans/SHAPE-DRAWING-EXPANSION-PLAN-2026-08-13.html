@@ -459,12 +459,28 @@
       측정 매트릭스가 먼저다.
     </p>
     <dl class="kv">
+      <dt>실측된 바닥 <span class="chip ok">2026-08-13</span></dt>
+      <dd>트랙 B 직후 측정 (<code>what_blocks_a_path_on_a_curved_host.rs</code>):
+          Path B 실린더는 <b>3면 / 곡선 엣지 2 / self-loop 2</b>, 그중 <b>비-평면
+          면은 정확히 하나</b>다. 그래서 <b>곡면 호스트는 더 어려운 문제가 아니라
+          다른 문제</b>다 — 측면이 하나뿐이라 그것을 감는 띠는 여러 면을 지나는
+          경로가 아니라 <b>한 면 위의 닫힌 절단 하나</b>이고, 각인에게는 오갈
+          면이 없다. (참고: <b>다각형</b>(Path A) 실린더는 곡면 경우가 아니다 —
+          곡선 엣지 0개이고 트랙 B 의 띠가 24면 전부를 나눈다.)</dd>
+      <dt>⚠ 계측기 함정 <b>여섯 번째</b> — 법선</dt>
+      <dd>Path B 실린더의 <b>측면 법선이 (0,0,1)</b> 로 캡과 똑같이 읽힌다(rim 두 개가
+          원이라 Newell 법선이 축 방향). <code>normal().z.abs() &lt; 0.5</code> 로
+          거르면 측면이 <b>0개</b> 나온다. 모양은 <code>Cylinder</code> SURFACE 에
+          있다 — <b>면이 아니라 surface 에 물어야 한다</b>. 기존 다섯
+          (<code>point_in_face</code> · <code>face_bounds</code> ·
+          <code>face_area</code> · <code>mesh_volume</code> ·
+          <code>is_face_in_volume</code>)과 같은 계열이다.</dd>
       <dt>C-0 측정</dt>
       <dd>곡면 4종 × {원×원 겹침 · 원×원 포함 · seam 곡선과 교차} 매트릭스.
           ⚠ 계측기 함정: 곡면 면은 SURFACE 로 읽는 판독기(<code>face_outer_area</code> ·
           <code>face_bounds</code> · <code>face_outward_flux</code>)만 쓴다 —
           폴리곤 판독기는 곡면에서 거짓말한다(0단계의 교훈 그대로).</dd>
-      <dt>C-1 D6 fix</dt>
+      <dt>C-1 D6 fix <span class="chip ok">완료 PR #125</span></dt>
       <dd>곡면 split 4종 + <code>annulus.rs</code> + <code>carve.rs</code> 에 HARD 부여
           (기존 <code>mark_edges_hard</code> safe-OR 헬퍼 재사용) +
           <code>Mesh::split_face</code> 의 덮어쓰기 → OR 정리. 독립 작업, 언제든.
