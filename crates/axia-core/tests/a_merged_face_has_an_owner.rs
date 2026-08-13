@@ -124,21 +124,27 @@ fn merging_two_owned_halves_leaves_the_survivor_unowned() {
         })
         .map(|(eid, _)| eid)
         .expect("the two halves share an edge");
-    let merged = s.mesh.merge_faces_by_edge(shared).expect("merge");
+    // Through the SCENE, which is where ownership lives — every WASM merge
+    // entry goes this way now. `preferred` names the winner; here both halves
+    // have the same owner so either answers.
+    let merged = s
+        .merge_faces_by_edge_owned(shared, halves.first().copied(), None)
+        .expect("merge");
 
     assert!(
         s.mesh.faces.get(merged).map_or(false, |f| f.is_active()),
         "the merge produced a live face"
     );
     assert!(
-        !s.face_to_shape.contains_key(&merged) && s.get_xia_for_face(merged).is_none(),
-        "TODAY the survivor belongs to nobody — when a reconcile lands it will \
-         name an owner and this assertion is what says so"
+        s.face_to_shape.contains_key(&merged),
+        "the survivor keeps the shape that owned the halves — this read \
+         'nobody' while every WASM merge site called the mesh straight and \
+         skipped the reconcile the carve family got in PR #117"
     );
     assert_eq!(
         dead_ids(&s),
-        2,
-        "TODAY the shape still names both halves, which are gone"
+        0,
+        "and the shape stops naming the two halves, which are gone"
     );
 }
 
@@ -209,4 +215,92 @@ fn merging_on_a_solid_top_leaves_dead_ids_behind() {
         before_dead,
         "a refused merge must leave the owner's list exactly as it was"
     );
+}
+
+/// The rule itself: when the two faces have DIFFERENT owners, the one named
+/// first inherits (사용자 결재 2026-08-13).
+///
+/// Not the larger face and not the lower id — the operand the user picked
+/// first. Which is why the winner is a PARAMETER: "first selected" is a fact
+/// about clicks, and the mesh op takes an edge, not a sequence. The caller that
+/// knows the selection order names it.
+#[test]
+fn the_first_named_owner_inherits_when_the_two_differ() {
+    let build = || -> (Scene, axia_geo::EdgeId, Vec<axia_geo::FaceId>) {
+        let mut s = Scene::new();
+        s.auto_intersect_on_draw = true;
+        s.auto_face_synthesis_on_draw = true;
+        s.face_rederive_on_draw = true;
+        s.execute(Command::DrawRectAsShape {
+            center: DVec3::ZERO,
+            normal: DVec3::Z,
+            up: DVec3::X,
+            width: 200.0,
+            height: 200.0,
+        });
+        s.execute(Command::DrawLine {
+            start: DVec3::new(-120.0, 0.0, 0.0),
+            end: DVec3::new(120.0, 0.0, 0.0),
+            surface_normal: Some(DVec3::Z),
+        });
+        let halves: Vec<_> = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && s.face_to_shape.contains_key(fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        assert_eq!(halves.len(), 2);
+        // Give the second half a shape of its own, so the two differ.
+        let other = s.create_shape("Other".to_string(), vec![halves[1]]);
+        assert_ne!(
+            s.face_to_shape.get(&halves[0]).copied(),
+            Some(other),
+            "the halves must now have different owners"
+        );
+        let shared = s
+            .mesh
+            .edges
+            .iter()
+            .filter(|(_, e)| e.is_active())
+            .find(|(eid, _)| {
+                let (fs, _) = s.mesh.get_faces_sharing_edge(*eid);
+                let live: Vec<_> = fs
+                    .iter()
+                    .copied()
+                    .filter(|f| s.mesh.faces.get(*f).map_or(false, |x| x.is_active()))
+                    .collect();
+                live.len() == 2 && live.iter().all(|f| halves.contains(f))
+            })
+            .map(|(eid, _)| eid)
+            .expect("the halves share an edge");
+        (s, shared, halves)
+    };
+
+    // Name the first half → the merged face joins the FIRST half's shape.
+    let (mut s, edge, halves) = build();
+    let want_first = s.face_to_shape.get(&halves[0]).copied().expect("half 0 owned");
+    let merged = s
+        .merge_faces_by_edge_owned(edge, Some(halves[0]), None)
+        .expect("merge");
+    assert_eq!(
+        s.face_to_shape.get(&merged).copied(),
+        Some(want_first),
+        "naming the first half must hand the result to ITS shape"
+    );
+
+    // Name the second → the other shape wins instead. Same geometry, same edge:
+    // only the pick differs, which is what makes this the rule and not an
+    // accident of ids or areas.
+    let (mut s2, edge2, halves2) = build();
+    let want_second = s2.face_to_shape.get(&halves2[1]).copied().expect("half 1 owned");
+    let merged2 = s2
+        .merge_faces_by_edge_owned(edge2, Some(halves2[1]), None)
+        .expect("merge");
+    assert_eq!(
+        s2.face_to_shape.get(&merged2).copied(),
+        Some(want_second),
+        "and naming the second hands it to the other one"
+    );
+    assert_ne!(want_first, want_second, "the two picks really are different shapes");
 }

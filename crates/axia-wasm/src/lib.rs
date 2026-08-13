@@ -8130,7 +8130,7 @@ impl AxiaEngine {
             }
 
             if !cascade_only {
-                match self.scene.mesh.merge_faces_by_edge_with_tolerance(eid, angle_tol_deg) {
+                match self.scene.merge_faces_by_edge_owned(eid, None, Some(angle_tol_deg)) {
                     Ok(_new_face) => {
                         merged += 1;
                         continue;
@@ -9312,7 +9312,7 @@ impl AxiaEngine {
         let before_boundary = self.active_boundary_count();
         let before_si = self.scene.mesh.detect_self_intersections().count();
 
-        match self.scene.mesh.merge_faces_by_edge(eid) {
+        match self.scene.merge_faces_by_edge_owned(eid, None, None) {
             Ok(new_face) => {
                 if !self.closure_preserving_gate_passed(
                     before_boundary, before_si, &before_snapshot, "merge", true,
@@ -10318,7 +10318,7 @@ impl AxiaEngine {
         }
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
-        match self.scene.mesh.merge_faces_by_edge_with_tolerance(eid, angle_tol_deg) {
+        match self.scene.merge_faces_by_edge_owned(eid, None, Some(angle_tol_deg)) {
             Ok(new_face) => {
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
@@ -10375,7 +10375,12 @@ impl AxiaEngine {
                 Some(v) => v,
                 None => break,
             };
-            match self.scene.mesh.merge_faces_by_edge_with_tolerance(edge_id, angle_tol_deg) {
+            // Whichever of the two the caller listed FIRST keeps the ownership
+            // — the selection arrives in the order the user clicked
+            // (`Array.from(Set)` is insertion-ordered), so `current`'s order is
+            // the user's, and this is where the 사용자 결재 rule lands.
+            let preferred = current.iter().copied().find(|&f| f == f1 || f == f2);
+            match self.scene.merge_faces_by_edge_owned(edge_id, preferred, Some(angle_tol_deg)) {
                 Ok(new_face) => {
                     merges_done += 1;
                     current.retain(|&x| x != f1 && x != f2);
@@ -10541,7 +10546,7 @@ impl AxiaEngine {
             };
 
             // Attempt merge; silently skip non-coplanar candidates
-            match self.scene.mesh.merge_faces_by_edge(edge_id) {
+            match self.scene.merge_faces_by_edge_owned(edge_id, None, None) {
                 Ok(new_face) => {
                     merges_done += 1;
                     // Replace f1/f2 with new_face in the working set
