@@ -416,36 +416,29 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
-/// ⚠ THE ANSWER, and a correction: this call does NOT tile the ellipse either.
+/// The Scene's re-derive entry tiles an ellipse on a box.
 ///
-/// Written to bisect the draw command by replaying it step by step, and every
-/// version passed — so I reported that the Scene's entry worked and the loss
-/// was downstream. It was not. The assertions (top = 40,000, something hanging)
-/// hold when NOTHING happens: an untouched top reads its own 40,000, and an
-/// unsplit ellipse lying across the rim reads as "hanging".
+/// ⚠ COUNT THE PIECES — this was written to bisect the draw command and every
+/// version of it passed while nothing was happening, because "top = 40,000 and
+/// something hanging" holds for an untouched top and an unsplit ellipse alike.
+/// That vacuity is why three wrong hypotheses got as far as they did.
 ///
-/// Instrumenting the real command settled it, which is what should have
-/// happened before any of the hypotheses. Both this replay and the production
-/// draw report exactly the same thing:
+/// Instrumenting the real command is what settled it. Before the fix, this
+/// replay and the production draw reported exactly the same thing:
 ///
 /// ```text
 /// RebuildReport { removed_faces: 1, created_faces: 1, coplanar_edges: 4 }
 /// faces 7 → 7
 /// ```
 ///
-/// Four edges — the box top's own perimeter. The ellipse is not among them.
-/// The top is removed and rebuilt alone, the ellipse is left lying across it,
-/// and the post-draw repair then legitimately resolves a REAL overlap by
-/// carving the top. Every step of that is working as designed.
-///
-/// The cause is in `face_rederive`: a closed freeform self-loop is preserved
-/// rather than fed to the arrangement unless `detect_freeform_overlaps` gives
-/// it a `curve_owner_id`, and that detector reads the edges it might overlap
-/// from `scope_edges` — which excludes `volume_edges`, i.e. exactly a solid
-/// top's perimeter. A rect is unaffected (ordinary coplanar edges) and so is a
-/// circle (Phase 1.5 polygonises it into the graph).
+/// Four edges — the box top's own perimeter, the ellipse not among them. A
+/// closed freeform self-loop is preserved rather than fed to the arrangement
+/// unless `detect_freeform_overlaps` gives it a `curve_owner_id`, and that
+/// detector read the edges it might overlap from `scope_edges`, which excludes
+/// `volume_edges` — exactly a solid top's perimeter. It is now also shown
+/// `solid_top_boundary`, which the arrangement was already being given.
 #[test]
-fn the_scenes_own_rederive_entry_does_not_tile_an_ellipse_either() {
+fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
     use axia_geo::curves::{nurbs, AnalyticCurve};
 
     let mut s = Scene::new();
@@ -504,15 +497,15 @@ fn the_scenes_own_rederive_entry_does_not_tile_an_ellipse_either() {
         })
         .count();
     assert_eq!(
-        pieces, 2,
-        "TODAY two pieces — the whole top and the whole ellipse across it. \
-         Three would mean the ellipse reached the arrangement"
+        pieces, 3,
+        "three pieces — the bitten top, the half on it, the half hanging over. \
+         Two means the ellipse stopped reaching the arrangement again"
     );
     assert!(
         (inside - 40_000.0).abs() < 1.0,
-        "the top is untouched, so it reads its own 40,000 — got {inside:.4}"
+        "the top tiles exactly once — got {inside:.4}"
     );
-    assert!(hanging > 100.0, "and the ellipse is there, whole — got {hanging:.4}");
+    assert!(hanging > 100.0, "and the hanging half is its own face — got {hanging:.4}");
 
     // So the tiling is right when it leaves this call. What the draw command
     // does next is the post-draw repair, which only acts on pairs the
@@ -543,10 +536,13 @@ fn the_scenes_own_rederive_entry_does_not_tile_an_ellipse_either() {
         .count();
     assert_eq!(
         (pairs.len(), sharing_an_edge, coplanar),
-        (2, 0, 1),
-        "on a correctly tiled plane the scan still reports two pairs, neither \
-         sharing an edge, ONE of them coplanar — and a coplanar pair is one the \
-         post-draw repair can act on"
+        (2, 0, 0),
+        "the scan still reports two pairs — a sheet hanging past the rim TOUCHES \
+         the wall without sharing an edge, and contact reads the same as \
+         penetration to it (the plan's D5, still open). But NONE is coplanar \
+         now, so the post-draw repair cannot reach this state: it only acts on \
+         coplanar pairs. Before the ellipse reached the arrangement one of them \
+         was, which is what made the repair look like the culprit"
     );
 
     // So the repair must not act on it. It runs on every draw, so the next
@@ -666,34 +662,34 @@ fn the_ellipse_loss_is_the_same_with_only_the_rederive_running() {
 
     assert_eq!(
         (production.2, rederive_only.2),
-        (4, 4),
-        "TODAY the re-derive alone opens the box exactly as production does — \
-         inside {:.1}/{:.1}, hanging {:.1}/{:.1}",
+        (5, 5),
+        "the re-derive alone gives what production gives — inside {:.1}/{:.1}, \
+         hanging {:.1}/{:.1}",
         production.0,
         rederive_only.0,
         production.1,
         rederive_only.1
     );
     assert!(
-        (production.0 - rederive_only.0).abs() < 1.0,
-        "and to the same numbers, so the legacy auto-intersect is not the one \
-         carving: {:.4} vs {:.4}",
+        (production.0 - rederive_only.0).abs() < 1.0
+            && (production.0 - 40_000.0).abs() < 1.0,
+        "and both tile the top exactly once: {:.4} vs {:.4}",
         production.0,
         rederive_only.0
     );
-    // ⚠ AND WITH BOTH OFF IT READS 4 TOO — with nothing allowed to touch the
-    // draw at all. Nothing has happened to the box in that run: its six faces
-    // are the ones `create_box` made, and the ellipse is a floating sheet lying
-    // over the top. So `is_face_in_volume` is not reporting damage here, it is
-    // reporting that a coplanar sheet over a solid's face confuses it — the
-    // fourth instrument this area has caught doing that (the other three:
+    // ⚠ WITH BOTH OFF THE CLASSIFIER READS 4 — with nothing allowed to touch
+    // the draw at all. Nothing has happened to the box in that run: its six
+    // faces are the ones `create_box` made, and the ellipse is a floating sheet
+    // lying over the top. So `is_face_in_volume` is not reporting damage there,
+    // it is reporting that a coplanar sheet over a solid's face confuses it —
+    // the fourth instrument this area has caught doing that (the other three:
     // `point_in_face`, `face_bounds`, `face_area`, PR #124).
     //
     // That matters beyond this test: `draw_freely_matrix`'s soundness grid uses
-    // exactly this count and calls a drop "the solid was opened". Its six
-    // ellipse rows are this artifact. The underlying defect is still real —
-    // the ellipse is not split at the rim — but "the box opened" was the
-    // instrument talking.
+    // exactly this count and calls a drop "the solid was opened". Its ellipse
+    // rows were partly this artifact — the real defect was that the ellipse
+    // never reached the arrangement, and with that fixed the count moves to 5
+    // above while the geometry is right.
     assert_eq!(neither.2, 4, "the same 4 with every auto behaviour off");
     assert!(
         (neither.0 - 36_891.08).abs() < 1.0,
@@ -803,40 +799,99 @@ fn an_ellipse_straddling_the_edge_leaves_its_piece_and_the_solid_sealed() {
         .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
         .count();
 
-    // TODAY, measured: the ellipse is NOT cut at the host's boundary. It
-    // survives as ONE face spanning the rim (6,210 — the whole ellipse), the
-    // top is left with a bite exactly the size of the half that lay on it
-    // (40,000 − 3,109 = 36,891), and two of the box's six faces stop bounding
-    // the volume.
-    //
-    // Note what is NOT wrong: 36,891 + 6,210 accounts for 40,000 plus the
-    // 3,101 that hangs over, so nothing is covered twice and nothing is
-    // missing. The damage is only that the drawn shape was not SPLIT at the
-    // rim, which leaves the rim broken and the box open.
-    //
-    // That shape — host carved, drawn shape whole — is what the post-draw
-    // repair produces (`subtract_double_covered_faces` takes the difference
-    // from the face with more vertices, which is the top), so the re-derive
-    // did nothing here. It CAN do it: given the same box and ellipse it tiles
-    // all three regions and holds the invariants
-    // (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`). What is not yet
-    // known is why the Scene's call does not reach that result — the ellipse
-    // face's normal, its Plane surface and the planar filter were each checked
-    // and are fine.
+    // Before the fix this read 36,891 inside and 6,210 hanging — the top bitten
+    // by the ellipse's inner half and the whole ellipse lying across it, the
+    // signature of a re-derive that never saw the ellipse at all.
     assert!(
-        (inside - 36_891.08).abs() < 1.0,
-        "TODAY the top carries a bite the size of the ellipse's inner half — \
-         got {inside:.4}. At 40,000 the shape is being split at the rim: \
-         retire this pin and assert the sealed box instead"
+        (inside - 40_000.0).abs() < 1.0,
+        "the top tiles exactly once — got {inside:.4}. 36,891 means the ellipse \
+         is being carved out of it again instead of cut at the rim"
     );
     assert!(
-        (hanging - 6_210.3).abs() < 5.0,
-        "TODAY the whole ellipse survives as one unsplit face — got {hanging:.4}"
+        hanging > 100.0,
+        "and the half past the edge is its own face — got {hanging:.4}"
+    );
+    // ⚠ FIVE, not six, and that is the classifier rather than the box.
+    // `is_face_in_volume` stops counting a solid's face once a coplanar sheet
+    // sits on it, whether or not anything was done to the solid — measured on
+    // an untouched box in `the_post_draw_repair_...` below. What matters is
+    // that the plane tiles once and the invariants hold; whole-scene closure is
+    // the wrong question with a sheet hanging off the rim.
+    assert_eq!(
+        sealed, 5,
+        "the classifier reads 5 of 6 while a piece lies coplanar on the top"
+    );
+}
+
+/// The ellipse now splits like the others — but the volume classifier still
+/// tells them apart, and that difference is pinned rather than waved away.
+///
+/// On the soundness grid the ellipse moved from 6 → 7 faces to 6 → 8, the same
+/// as rect and circle in the same placements. Its plane tiles to exactly
+/// 40,000 and its invariants are clean. But `is_face_in_volume` reads 6 of 6
+/// for rect and circle and 5 of 6 for the ellipse, so something about how the
+/// ellipse's pieces meet the solid's rim is still not what a polygon's are —
+/// most likely duplicated rim edges (a T-junction) where the others share.
+///
+/// The classifier is unreliable on its own (it drops on an UNTOUCHED box the
+/// moment a coplanar sheet lies over it — see the flag comparison above), so
+/// this is not evidence of damage. It is evidence of a DIFFERENCE, and rect and
+/// circle are the control that makes it worth keeping.
+#[test]
+fn an_ellipse_splits_like_a_rect_but_its_pieces_meet_the_rim_differently() {
+    let count = |shape: &str| -> (usize, usize) {
+        let mut s = production_solid();
+        match shape {
+            "rect" => {
+                s.execute(Command::DrawRectAsShape {
+                    center: DVec3::new(100.0, 0.0, TOP),
+                    normal: DVec3::Z,
+                    up: DVec3::X,
+                    width: 120.0,
+                    height: 66.0,
+                });
+            }
+            "circle" => circle(&mut s, 100.0, 60.0),
+            _ => {
+                s.execute(Command::DrawEllipseAsCurve {
+                    center: DVec3::new(100.0, 0.0, TOP),
+                    ref_dir: DVec3::X,
+                    normal: DVec3::Z,
+                    radius_x: 60.0,
+                    radius_y: 33.0,
+                });
+            }
+        }
+        let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let sealed = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+            .count();
+        (faces, sealed)
+    };
+    let (rect_faces, rect_sealed) = count("rect");
+    let (circle_faces, circle_sealed) = count("circle");
+    let (ellipse_faces, ellipse_sealed) = count("ellipse");
+
+    assert_eq!(
+        (rect_faces, circle_faces, ellipse_faces),
+        (8, 8, 8),
+        "all three straddles now make the same number of faces"
     );
     assert_eq!(
-        sealed, 4,
-        "TODAY the box opens — 4 of 6 faces still bound the volume. This is one \
-         of the grid's six openings, and all six are the ellipse"
+        (rect_sealed, circle_sealed),
+        (7, 7),
+        "a polygon and a circle leave seven faces bounding the volume — the \
+         box's five untouched ones plus both halves of the split top"
+    );
+    assert_eq!(
+        ellipse_sealed, 5,
+        "TODAY the ellipse leaves five, so its two top pieces are not counted \
+         in — they meet the rim differently from a polygon's, most likely \
+         duplicated rim edges where the others share. At 7 that difference is \
+         gone: retire this pin and fold the ellipse into the assertion above"
     );
 }
 
