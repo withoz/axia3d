@@ -603,11 +603,21 @@ fn a_shape_drawn_right_around_a_solids_face_is_accepted() {
     assert!(clean(&s), "nothing covers anything else");
     // The shared edges DO bear three faces now, and that is the whole point —
     // what must not appear is anything else wrong.
+    //
+    // This used to read `violations.len() == nm`, i.e. four edges carrying three
+    // faces produced four complaints and the test accepted them as the price of
+    // the T-junction. They were not a price: `edge_stacked_face_pair` was reading
+    // the ring's HOLE loop as though it were an outer loop, so the ring and the
+    // cap came out on the same side of the rim and were called stacked although
+    // together they cover the plane exactly once (2026-08-13, see
+    // `a_ring_does_not_cover_its_own_hole`). The prose above already asked for
+    // "nothing else wrong"; now there is nothing at all.
     let nm = s.mesh.collect_non_manifold_edges().len();
-    assert_eq!(
-        s.mesh.verify_face_invariants().violations.len(),
-        nm,
-        "the T-junctions are the only complaint"
+    assert_eq!(nm, 4, "the four rim edges do carry cap, wall and ring");
+    assert!(
+        s.mesh.verify_face_invariants().violations.is_empty(),
+        "a T-junction is not a complaint: {:?}",
+        s.mesh.verify_face_invariants().violations,
     );
 }
 

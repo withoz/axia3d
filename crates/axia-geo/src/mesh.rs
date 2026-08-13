@@ -12054,6 +12054,23 @@ impl Mesh {
     ///   ellipse overlapping a rect  +1.000   the overlap covered twice
     /// ```
     ///
+    /// ⚠ "left of its own half-edge" only holds on an OUTER loop. A hole loop
+    /// runs the other way round its face, so `normal × direction` there points
+    /// INTO the hole — away from the face that owns it. Without flipping it, a
+    /// ring and the face filling its hole read `+1.000` and get called stacked
+    /// although they tile their plane exactly once. Measured 2026-08-13, a
+    /// 400×400 rect drawn over a 200³ box's top:
+    ///
+    /// ```text
+    ///   ring face 7  hole loop   side (0,-1,0)  ┐ +1.000 → "stacked"
+    ///   top  face 8  outer loop  side (0,-1,0)  ┘ but 160000-40000 + 40000
+    ///                                             covers 400×400 once
+    /// ```
+    ///
+    /// That verdict is not cosmetic: `face_set_manifold_info` asks the same
+    /// question, so the box read `is_closed_solid = false` and its volume came
+    /// back 12,000,000 against a true 8,000,000.
+    ///
     /// Returns the first stacked pair found, for the caller to name.
     pub fn edge_stacked_face_pair(&self, edge_id: EdgeId) -> Option<(FaceId, FaceId)> {
         let (faces, hes) = self.get_faces_sharing_edge(edge_id);
@@ -12074,7 +12091,13 @@ impl Mesh {
                 continue;
             };
             let dir = (p1 - p0).normalize_or_zero();
-            occupancy.push((f, n, n.cross(dir)));
+            // On a hole loop the face is to the RIGHT of the half-edge.
+            let on_outer = self
+                .collect_loop_hes(face.outer().start)
+                .map(|hes| hes.contains(&he))
+                .unwrap_or(true);
+            let side = if on_outer { n.cross(dir) } else { -n.cross(dir) };
+            occupancy.push((f, n, side));
         }
         for i in 0..occupancy.len() {
             for j in (i + 1)..occupancy.len() {
