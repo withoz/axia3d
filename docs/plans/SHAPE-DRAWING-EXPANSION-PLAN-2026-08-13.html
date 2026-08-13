@@ -135,6 +135,38 @@
     <span><b>전제</b> PR #122 (<code>444aa30</code>) 는 <b>main 에 아직 없다</b></span>
     <span><b>차용원</b> <code>D:\AixiAcad\engine</code> (read-only · 본인 저작권)</span>
   </div>
+
+  <div class="note" style="margin-top:26px">
+    <span class="tag">진행 갱신 · 2026-08-13 (본 계획 착수 후)</span>
+    <p>
+      순서대로 착수한 결과 <b>결함 표의 절반이 이미 닫혀 있었거나 닫혔다</b>. 측정이
+      계획을 두 번 정정했으므로 아래 본문보다 이 갱신이 우선한다:
+    </p>
+    <ul>
+      <li><b>P (전제)</b> ✅ #122 랜드 · <b>0단계 계측기</b> #124 — 승계한 wip 에
+          <b>Arc 부호 반전</b>과 컴파일 오류가 있었고, 계획에 없던 결함 1건
+          (<code>point_in_face</code> 가 자기루프 원 구멍을 건너뜀) 추가 수정.</li>
+      <li><b>C-1 (D6)</b> ✅ #125 — 실측으로 범위 축소: 실제 결함은 N-엣지 곡면 split
+          4곳뿐. 구×해석원은 fast-path 가, open seam 은 <code>split_face_by_chain</code>
+          위임이 이미 계약을 지키고 있었다.</li>
+      <li><b>D8 · D9</b> ✅ <b>이미 고쳐져 있었다</b> (#126) — 근거였던 실측이 입체 top
+          재타일(ADR-281 β-1)보다 <b>하루 앞섰고</b>, 은퇴 신호 테스트는 저장소에 존재한
+          적이 없다. 따라서 트랙 A 의 MVP 는 D8 이 아니라 <b>D1</b> 이 됐다.</li>
+      <li><b>D1</b> ✅ #127(원인) + #128(수정) — "비볼록 바깥 영역"으로 국소화. 두 반쪽:
+          cleanup 이 <b>느슨한 끝</b>만 벗기도록 + 재유도 scope 가 free wire 를 따라가도록.
+          ⚠ cleanup 쪽은 <code>face_rederive_on_draw</code> 게이트 (엔진 기본값에선 여전히 열림).</li>
+      <li><b>D2</b> ✅ 본 PR — 원인은 계획서 추정(“crossing 요구 경로에서 빠짐”)이 아니라
+          <b>재유도 재료화의 full-circle 지름길이 hole 을 버린 것</b>. arrangement 는 처음부터
+          링+구멍을 정확히 냈다.</li>
+      <li><b>D7</b> ✅ <b>결함이 아니었다</b> — 구멍 뚫린 호스트 위 그리기는 실측 결과 건전.</li>
+      <li><b>남은 것</b>: <b>D9′</b> (신규 발견 — rect×ellipse 의 union 구멍이 곡선
+          메타데이터를 잃어 ~5% 적게 공제) · <b>D4</b> (소유권) · D5 · 트랙 B~F.</li>
+    </ul>
+    <p>
+      판정 기준도 바뀌었다 — 면 개수가 아니라 <b>top 이 정확히 40,000 으로 분할되는가</b>.
+      D2 는 개수로는 정상으로 보이고 <b>면적으로만</b> 드러난다.
+    </p>
+  </div>
 </header>
 
 <section>

@@ -140,25 +140,25 @@ fn no_overlap_loses_a_face_fails_to_make_one_or_breaks_the_mesh() {
 }
 
 #[test]
-fn a_disk_swallowing_a_solids_face_still_covers_it_twice() {
-    // KNOWN OPEN, pinned so that closing it is noticed rather than silent.
-    //
-    // A rect or hexagon drawn over the whole top of a box becomes a RING whose
-    // hole is that top — the plane ends up covered exactly once. A circle does
-    // not: a Path B closed-curve face is one anchor vertex and one self-loop
-    // edge, it shares no edge with the top face, and the coplanar arrangement
-    // never cuts it. The disk simply lies on top.
-    //
-    // Measured 2026-08-13, a Ø400 circle over a 200-cube's top:
+fn a_disk_swallowing_a_solids_face_covers_it_once() {
+    // CLOSED 2026-08-13 (D2). This pinned the gap while it stood:
     //
     // ```text
     //   rect    covering   +Z area 160000   ring 120000 + top 40000   once  ✓
     //   circle  covering   +Z area 165664   disk 125664 + top 40000   twice ✗
     // ```
     //
-    // Nothing else reports it: the two faces share no edge, so the non-manifold
-    // check cannot see them, and they are coplanar, so triangle-triangle
-    // intersection does not either. Only the area does.
+    // The reading it recorded was right and its explanation was not. The
+    // arrangement DOES cut a closed curve against its host — it returns the
+    // ring with the top as its hole. What dropped the hole was the re-derive's
+    // materializer: a region whose whole outer boundary is one full circle took
+    // a shortcut to `add_face_closed_curve`, which takes no holes. The shortcut
+    // is now standalone-only.
+    //
+    // Worth keeping in its closed form for what the comment above got right:
+    // nothing but the AREA reports this. The two faces share no edge, so the
+    // non-manifold check cannot see them, and they are coplanar, so
+    // triangle-triangle intersection does not either.
     let mut scene = Scene::new();
     scene.auto_intersect_on_draw = true;
     scene.auto_face_synthesis_on_draw = true;
@@ -184,14 +184,9 @@ fn a_disk_swallowing_a_solids_face_still_covers_it_twice() {
 
     let disk = std::f64::consts::PI * 200.0 * 200.0;
     assert!(
-        (upward - (disk + 40_000.0)).abs() < 1.0,
-        "the box top is covered twice; expected {} while this is open, got {upward}",
+        (upward - disk).abs() < 1.0,
+        "the plane must hold the disk's {disk} exactly once — got {upward} \
+         ({} is the top covered twice again)",
         disk + 40_000.0,
-    );
-    // When the arrangement learns to cut a closed-curve face against its host,
-    // this is what it should read instead — update the assertion above then.
-    assert!(
-        (upward - disk).abs() > 1.0,
-        "the plane is now covered once — the gap above is closed, retire this test",
     );
 }

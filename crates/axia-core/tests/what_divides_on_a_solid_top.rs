@@ -110,6 +110,66 @@ fn assert_sound_partition(s: &Scene, label: &str) {
     );
 }
 
+// ── Track A's remaining rows, measured before being believed ───────────────
+//
+// D2 and D7 come from the plan's defect table and were written down in
+// 2026-08. Two of that table's rows turned out to be already fixed by the time
+// they were re-measured (D8 by ADR-281, and the ellipse row by the freeform
+// arm), so these are asserted rather than assumed — the same 40,000 partition
+// is the judge.
+
+/// D2 — the drawn shape SWALLOWS the host (reverse containment).
+///
+/// The plan's evidence: a Ø400 circle over a 200 × 200 top read 165,664 where
+/// 125,664 is the truth — the disc sat ON the top instead of the top becoming
+/// a hole in it, so 40,000 mm² was covered twice. Reverse containment reaches
+/// neither containment detector (both look for something INSIDE) nor
+/// `auto_intersect_coplanar` (which wants crossings), which is why it had no
+/// path at all.
+#[test]
+fn a_shape_that_swallows_the_top_does_not_cover_it_twice() {
+    let mut s = production_solid();
+    let before = active(&s);
+    // Ø400 circle centred on the 200 × 200 top: the top is strictly inside it.
+    circle(&mut s, 0.0, 200.0);
+    assert!(active(&s) > before, "the circle must appear");
+    let v = s.mesh.verify_face_invariants().violations;
+    assert!(v.is_empty(), "swallowing circle: violations {v:?}");
+    // The plane now holds the top (40,000) plus the ring around it
+    // (π·200² − 40,000 = 85,663.71), and nothing twice: 125,663.71.
+    let truth = std::f64::consts::PI * 200.0 * 200.0;
+    let a = top_plane_area(&s);
+    assert!(
+        (a - truth).abs() < 1.0,
+        "the plane must hold πr² = {truth:.4} once — got {a:.4} \
+         (truth + 40,000 = {:.4} means the top is covered twice)",
+        truth + 40_000.0
+    );
+}
+
+/// D7 — drawing on a host that already has a hole.
+///
+/// `single_face_containing_corners` returns None once the host carries an
+/// inner loop, so the interior fast-path is skipped and the draw falls through
+/// to the unified pipeline. The question is only whether the result is sound.
+#[test]
+fn a_second_shape_on_a_holed_top_still_tiles_it() {
+    let mut s = production_solid();
+    circle(&mut s, 0.0, 40.0); // a disc in the middle of the top
+    assert_sound_partition(&s, "first circle");
+    let mid = active(&s);
+    // A rect in the free part of the top, clear of the disc.
+    s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(-60.0, -60.0, TOP),
+        normal: DVec3::Z,
+        up: DVec3::X,
+        width: 50.0,
+        height: 50.0,
+    });
+    assert!(active(&s) > mid, "the rect must appear on a holed host");
+    assert_sound_partition(&s, "rect on a holed top");
+}
+
 #[test]
 fn a_rect_then_a_circle_divide_a_solid_top() {
     // The order describe_overlap's 2026-08-05 matrix called REFUSED.
