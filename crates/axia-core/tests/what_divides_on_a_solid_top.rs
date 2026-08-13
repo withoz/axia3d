@@ -157,15 +157,16 @@ fn a_rect_straddling_the_tops_edge_keeps_its_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "the hanging piece exists");
 }
 
-/// What KIND of loss is it — was the outer boundary never drawn, or drawn and
-/// left without a face?
+/// The outer boundary is there AND it bounds a face.
 ///
-/// The answer decides where the fix goes. Edges past the host with no face on
-/// them mean the geometry arrived and only the face synthesis / re-derive
-/// missed it; no edges at all would mean the draw itself stopped at the host's
-/// rim, which is a different repair entirely.
+/// This pinned the loss while it stood: nothing survived past the host, not
+/// even a wire, because the closed-shape cleanup deleted the whole hanging
+/// boundary before the arrangement could use it. Both halves of the repair
+/// are needed to move it — keeping a closed cycle through the cleanup, and
+/// letting the arrangement's scope follow the wires out — so this asserting
+/// `faced > 0` is what says both are still in place.
 #[test]
-fn a_corner_straddles_outer_sides_survive_as_wires_without_a_face() {
+fn a_corner_straddles_outer_sides_bound_a_face() {
     let mut s = production_solid();
     rect(&mut s, 100.0, 100.0, 100.0); // [50,150]² — only [50,100]² is on the top
 
@@ -197,12 +198,15 @@ fn a_corner_straddles_outer_sides_survive_as_wires_without_a_face() {
         }
     }
     assert_eq!(
-        (wires, faced),
-        (0, 0),
-        "TODAY nothing of the rect survives past the host — not even a wire. \
-         So the loss is not 'a face was not synthesized', it is 'the boundary \
-         was removed'. The companion test says who removes it. When either \
-         count turns non-zero, retire this pin"
+        wires, 0,
+        "no part of the hanging boundary may be left as a bare wire — \
+         {wires} wire(s), {faced} faced"
+    );
+    assert!(
+        faced > 0,
+        "the rect's outer sides must bound the hanging piece — 0 faced edges \
+         means the boundary was deleted again, or the arrangement never \
+         reached it"
     );
 }
 
@@ -302,58 +306,54 @@ fn a_sheet_host_and_a_solid_host_answer_alike_for_a_corner_straddle() {
         pieces_past_the_edge(&s)
     };
     assert_eq!(
-        (sheet_outer, solid_outer),
-        (1, 0),
-        "TODAY the sheet keeps its L and the solid does not. Track A wants the \
-         two hosts to answer alike — when they do, this reads (1, 1): retire \
-         this pin and assert equality instead"
+        sheet_outer, solid_outer,
+        "sheet kept {sheet_outer} outer piece(s), solid kept {solid_outer} — \
+         Track A wants the two hosts to answer alike"
     );
+    assert_eq!(solid_outer, 1, "and the answer is one hanging piece, not none");
 }
 
-/// D1's mechanism, in one place, so the fix does not have to be re-derived:
+/// D1: the corner-straddle keeps its L.
 ///
-/// 1. `arrange` handles it — two squares meeting at a corner give three
+/// Where it used to go, since the two halves that fix it are far apart and a
+/// regression in either would land here:
+///
+/// 1. `arrange` always handled it — two squares meeting at a corner give three
 ///    regions, the L among them at exactly 7,500
 ///    (`axia-geo/tests/a_non_convex_outer_piece_is_made.rs`).
-/// 2. the re-derive handles it — seeded with a rect FACE on a box top it
-///    produces all three, 47,500, invariants intact (same file).
+/// 2. so did the re-derive, seeded with a rect FACE — all three, 47,500.
 /// 3. but `exec_draw_rect` draws four LINES first, and the synthesis that
-///    follows does not make the L: its cycle mixes free edges with the solid's
+///    follows cannot make the L: its cycle mixes free edges with the solid's
 ///    wall-shared rim.
-/// 4. `cleanup_dangling_topological_edges` (ADR-025 P11 Phase 7) then removes
-///    every scoped edge bounding no active face — closed cycle or not — so the
-///    L's boundary is gone before the re-derive is ever called.
+/// 4. `cleanup_dangling_topological_edges` then deleted that unfaced boundary
+///    as a residual, before the re-derive was ever called — which is why
+///    nothing survived past the host, not even a wire, while the same four
+///    sides drawn as four LINES (never reaching step 4) kept theirs.
 ///
-/// Steps 3 and 4 are why nothing survives past the host, and why four separate
-/// lines (which never reach step 4) leave wires behind.
+/// Fixed at 3-4 rather than at 1-2: the cleanup now peels only strands with a
+/// loose END and leaves closed cycles alone, and the re-derive's scope follows
+/// free wires out of the affected region so the arrangement is handed the whole
+/// boundary instead of the part inside the host.
 ///
-/// The fix therefore needs BOTH: let the arrangement run before the cleanup,
-/// AND widen its scope to the drawn shape's own extent — today's scope is the
-/// affected FACES' boxes (ADR-186 Option A, a perf mechanism), which stop at
-/// the host and so never reach the far sides at x = 150. Neither half alone is
-/// enough, which is why this is its own change and not a line in this one.
+/// ⚠ Both halves are needed and the first is gated on `face_rederive_on_draw`,
+/// which production sets (ADR-176) and the engine default does not. Keeping a
+/// cycle is keeping it FOR the arrangement; with no arrangement it is just an
+/// orphan, and the 27-RECT stress measures 10 of them if the gate is dropped.
+/// So on engine defaults this case is still open — deliberately, and the two
+/// tests that pin ADR-025 P11 STRICT are what say so.
 #[test]
-fn the_outer_piece_of_a_corner_straddle_is_still_missing() {
-    // D1, narrowed: same rect, straddling the CORNER — its outer region is an
-    // L, and the divide drops it. Pinned at today's answer; when the divide
-    // learns non-convex outer regions this goes red, and the fix should flip
-    // it to assert the L exists (40,000 + 7,500).
+fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     let mut s = production_solid();
     rect(&mut s, 100.0, 100.0, 100.0); // [50,150]² — only [50,100]² is on the top
     let v = s.mesh.verify_face_invariants().violations;
     assert!(v.is_empty(), "corner-straddle: violations {v:?}");
     let a = top_plane_area(&s);
     assert!(
-        (a - 40_000.0).abs() < 1e-6,
-        "the top itself still tiles exactly — got {a:.4}"
+        (a - 47_500.0).abs() < 1e-6,
+        "the top's 40,000 plus the L's 7,500 — got {a:.4} (40,000 means the L \
+         is gone again; more means something is covered twice)"
     );
-    assert_eq!(
-        pieces_past_the_edge(&s),
-        0,
-        "TODAY the L-shaped outer piece is dropped — if one exists now, the \
-         divide learned non-convex outer regions: retire this pin and assert \
-         45,000 + the L (7,500) instead"
-    );
+    assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
 #[test]
