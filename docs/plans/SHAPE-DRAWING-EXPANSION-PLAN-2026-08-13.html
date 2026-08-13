@@ -370,6 +370,29 @@
 
   <div class="stage">
     <h3><span class="chip ok">트랙 B</span> 여러 면을 지나는 그리기 — 표면 각인 <span class="id">신규 능력 · 1주 · A 와 병행 가능</span></h3>
+    <div class="note warn">
+      <span class="tag">사후 정정 — 이 문단의 전제가 틀렸다</span>
+      <p>
+        “각인(면 분할)은 없다”는 <b>2면 경우에 대해 거짓</b>이다. 실측:
+      </p>
+      <pre style="margin:0 0 10px">양 끝이 면 안쪽      6 → 6   선만 그림 (자를 두 번째 경계가 없음)
+양 끝이 rim 위       6 → 8   <b>두 면 다 나뉜다</b>
+3면 경로             거부    "사이 면을 지나는 경로는 아직 없습니다"</pre>
+      <p>
+        기존 <code>Command::DrawLineAlongSurface</code> 가 각 구간을
+        <code>exec_draw_line_as_shape</code> 로 그리고, 그 경로가 crossing-split ·
+        재유도 · arrangement 를 전부 탄다. 나눌 수 있는 경로를 주면 나눈다.
+        그러므로 <code>imprint_surface_path</code> 가 실제로 더하는 것은 더 좁고,
+        그대로 적는 편이 낫다 — ① <b>2면 초과</b>(라우팅이 두 면에서 포기한다:
+        <code>LeavesThroughAnotherEdge</code>. 상자 띠 4면, 다각형 실린더 24면은
+        아예 표현이 안 된다) ② <b>이미 해소된 경로를 입력으로</b> 받는 것(호출자가
+        스스로 계산한 도형을 각인할 수 있다) ③ <b>보고</b>(무엇이 안 나뉘었는지 —
+        조용한 no-op 과 구별된다).
+        이 세션에서 계획서 항목이 “이미 있는 기능”으로 판명된 <b>네 번째</b>다
+        (앞의 셋은 D5·D7·D8). 회귀:
+        <code>what_the_existing_along_surface_command_already_does.rs</code>.
+      </p>
+    </div>
     <p>
       지금 우리 <code>surface_path.rs</code> 는 <b>경로 계산까지만</b> 한다 — 인접 2면을
       unfold 해 꺾임점을 정확히 구하고, 인접하지 않으면 <code>NotAdjacent</code> 로 명시
