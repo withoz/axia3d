@@ -416,14 +416,36 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
-/// The last bisect: the Scene's own re-derive wrapper, called directly.
+/// ⚠ THE ANSWER, and a correction: this call does NOT tile the ellipse either.
 ///
-/// One layer down the same box and ellipse tile into three regions
-/// (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`). This calls
-/// `intersect_faces_inner` — the Scene's entry to that same code — on a scene
-/// built by hand, so nothing else in the draw command can be involved.
+/// Written to bisect the draw command by replaying it step by step, and every
+/// version passed — so I reported that the Scene's entry worked and the loss
+/// was downstream. It was not. The assertions (top = 40,000, something hanging)
+/// hold when NOTHING happens: an untouched top reads its own 40,000, and an
+/// unsplit ellipse lying across the rim reads as "hanging".
+///
+/// Instrumenting the real command settled it, which is what should have
+/// happened before any of the hypotheses. Both this replay and the production
+/// draw report exactly the same thing:
+///
+/// ```text
+/// RebuildReport { removed_faces: 1, created_faces: 1, coplanar_edges: 4 }
+/// faces 7 → 7
+/// ```
+///
+/// Four edges — the box top's own perimeter. The ellipse is not among them.
+/// The top is removed and rebuilt alone, the ellipse is left lying across it,
+/// and the post-draw repair then legitimately resolves a REAL overlap by
+/// carving the top. Every step of that is working as designed.
+///
+/// The cause is in `face_rederive`: a closed freeform self-loop is preserved
+/// rather than fed to the arrangement unless `detect_freeform_overlaps` gives
+/// it a `curve_owner_id`, and that detector reads the edges it might overlap
+/// from `scope_edges` — which excludes `volume_edges`, i.e. exactly a solid
+/// top's perimeter. A rect is unaffected (ordinary coplanar edges) and so is a
+/// circle (Phase 1.5 polygonises it into the graph).
 #[test]
-fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
+fn the_scenes_own_rederive_entry_does_not_tile_an_ellipse_either() {
     use axia_geo::curves::{nurbs, AnalyticCurve};
 
     let mut s = Scene::new();
@@ -469,13 +491,28 @@ fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
         }
         if hi.x > 100.0 + 1e-3 { hanging += s.mesh.face_area(f) } else { inside += s.mesh.face_area(f) }
     }
+    let pieces = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(f, face)| {
+            face.is_active()
+                && face.normal().z.abs() > 0.999
+                && s.mesh.face_bounds(*f).map_or(false, |(lo, hi)| {
+                    (lo.z - TOP).abs() < 1e-3 && (hi.z - TOP).abs() < 1e-3
+                })
+        })
+        .count();
+    assert_eq!(
+        pieces, 2,
+        "TODAY two pieces — the whole top and the whole ellipse across it. \
+         Three would mean the ellipse reached the arrangement"
+    );
     assert!(
         (inside - 40_000.0).abs() < 1.0,
-        "the top must tile exactly once — got {inside:.4}. If this is 40,000 \
-         the Scene's entry works and the loss is elsewhere in the draw command; \
-         if it is 36,891 the wrapper is where it goes"
+        "the top is untouched, so it reads its own 40,000 — got {inside:.4}"
     );
-    assert!(hanging > 100.0, "and the hanging half is its own face — got {hanging:.4}");
+    assert!(hanging > 100.0, "and the ellipse is there, whole — got {hanging:.4}");
 
     // So the tiling is right when it leaves this call. What the draw command
     // does next is the post-draw repair, which only acts on pairs the

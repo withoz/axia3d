@@ -166,22 +166,58 @@ fn a_circle_straddling_the_edge_leaves_a_piece() {
     );
 }
 
+/// Count the faces on the top plane. Areas alone cannot answer this question.
+fn pieces_on_the_plane(mesh: &Mesh) -> usize {
+    mesh.faces
+        .iter()
+        .filter(|(fid, f)| {
+            f.is_active()
+                && f.normal().z.abs() > 0.999
+                && mesh.face_bounds(*fid).map_or(false, |(lo, hi)| {
+                    (lo.z - TOP).abs() < 1e-3 && (hi.z - TOP).abs() < 1e-3
+                })
+        })
+        .count()
+}
+
+/// ⚠ THE ELLIPSE IS NEVER FED TO THE ARRANGEMENT — pinned at today's answer.
+///
+/// This test used to assert only that the top read 40,000 and that something
+/// hung past the edge, and it PASSED — which is how I spent an afternoon
+/// believing the re-derive handled the ellipse and the loss was downstream.
+/// Both hold when NOTHING happens: an untouched top reads 40,000, and an
+/// unsplit ellipse lying across the rim reads as "hanging". Instrumenting the
+/// real call is what settled it — `RebuildReport { removed_faces: 1,
+/// created_faces: 1, coplanar_edges: 4 }`, four edges being the box top's own
+/// perimeter and none of them the ellipse.
+///
+/// Why: a closed freeform self-loop is PRESERVED rather than fed, unless
+/// `detect_freeform_overlaps` marks it with a `curve_owner_id`. That detector
+/// pairs the freeform against other coplanar edges, but it reads them from
+/// `scope_edges`, which excludes `volume_edges` — and a solid top's perimeter
+/// is exactly that. So the ellipse has nothing to be found overlapping, keeps
+/// no owner id, stays out of the arrangement, and the top is re-derived alone.
+/// A rect does not hit this (its edges are ordinary coplanar ones) and neither
+/// does a circle (Phase 1.5 polygonises it into the graph).
 #[test]
-fn an_ellipse_straddling_the_edge_leaves_a_piece() {
+fn an_ellipse_straddling_the_edge_is_not_yet_cut() {
     // Centre on the top's edge at x = 100, so half the ellipse hangs over.
     let (mut mesh, seed) = box_with_ellipse_on_top(100.0, 40.0, 25.0);
     rederive(&mut mesh, &seed);
+    assert_eq!(
+        pieces_on_the_plane(&mesh),
+        2,
+        "TODAY the plane holds two pieces — the whole top and the whole \
+         ellipse across it. Cut at the rim it would hold THREE: the bitten \
+         top, the half on it, and the half hanging over. At 3 this pin retires \
+         and the areas below become the assertion"
+    );
     let (inside, hanging) = inside_and_hanging(&mesh);
     assert!(
         (inside - 40_000.0).abs() < 1.0,
-        "the top must tile exactly once — got {inside:.4} (less means the \
-         ellipse ate part of it, more means double cover)"
+        "the top is untouched, so it still reads its own 40,000 — got {inside:.4}"
     );
-    assert!(
-        hanging > 100.0,
-        "half the ellipse hangs past the edge and must be its own face — got \
-         {hanging:.4}"
-    );
+    assert!(hanging > 100.0, "and the ellipse is there, whole — got {hanging:.4}");
     assert!(
         mesh.verify_face_invariants().is_valid(),
         "invariants must hold"
