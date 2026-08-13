@@ -15,7 +15,8 @@
 //! Adjacent faces only, for now. Two faces that do not touch would need a walk
 //! across the intervening ones, and that is a different problem — this module
 //! says so rather than guessing (`NoPath::NotAdjacent`).
-use crate::{FaceId, Mesh};
+use crate::{FaceId, MaterialId, Mesh, VertId};
+use anyhow::{ensure, Result};
 use glam::DVec3;
 
 /// A polyline that stays on the surface.
@@ -239,6 +240,172 @@ impl Mesh {
             .sum();
         Some(sum / verts.len() as f64)
     }
+
+    /// Cut a path that runs across several faces INTO them — the imprint.
+    ///
+    /// [`Self::path_along_surface`] works out where a route goes; this is the
+    /// other half, which makes it geometry. The path arrives already resolved
+    /// (`points[i] → points[i+1]` lies in `faces[i]`, every interior point on
+    /// the edge between consecutive faces), so the work here is bookkeeping in
+    /// the right order rather than any new geometry:
+    ///
+    /// 1. every point becomes a vertex FIRST, before anything is split. A
+    ///    transition point sits on a shared edge and belongs to the chains on
+    ///    BOTH sides of it; making it once means the two faces are cut at the
+    ///    same vertex instead of at two that merely coincide — the same reason
+    ///    a rim needs its pre-split before a shape is drawn over it.
+    /// 2. then each face is split by its own run of the chain.
+    ///
+    /// `split_face_by_chain` already carries the HARD contract (메타-원칙 #15),
+    /// so the seams show.
+    ///
+    /// **v1 limits, taken deliberately and reported rather than hidden:**
+    ///
+    /// - a run that does not cross its face from boundary to boundary cannot
+    ///   divide it, so it is SKIPPED and counted in `skipped_runs`. That is the
+    ///   open path's two end faces; a closed band has none, which is why a band
+    ///   around a box is the case that works whole.
+    /// - a path that visits the same face twice is REFUSED outright: the first
+    ///   split replaces that face, and the second run would name an id that no
+    ///   longer exists.
+    ///
+    /// Not self-transacted — the caller wraps it, so the mesh op and whatever
+    /// it reconciles land as one undo step and roll back together.
+    pub fn imprint_surface_path(
+        &mut self,
+        path: &SurfacePath,
+        material: MaterialId,
+    ) -> Result<ImprintReport> {
+        ensure!(
+            path.points.len() >= 2 && path.faces.len() + 1 == path.points.len(),
+            "imprint_surface_path: {} points and {} faces do not describe a path",
+            path.points.len(),
+            path.faces.len()
+        );
+        for &f in &path.faces {
+            ensure!(
+                self.faces.get(f).is_some_and(|x| x.is_active()),
+                "imprint_surface_path: face {f:?} is not active"
+            );
+        }
+        // Runs of consecutive segments on one face, in order.
+        let mut runs: Vec<(FaceId, usize, usize)> = Vec::new(); // (face, first pt, last pt)
+        for (i, &f) in path.faces.iter().enumerate() {
+            match runs.last_mut() {
+                Some((prev, _, end)) if *prev == f => *end = i + 1,
+                _ => runs.push((f, i, i + 1)),
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (f, _, _) in &runs {
+            ensure!(
+                seen.insert(*f),
+                "imprint_surface_path: the path returns to face {f:?}; the first \
+                 split replaces it, so the second visit has nothing to cut"
+            );
+        }
+
+        // Every point once, before any split — see (1) above.
+        //
+        // A transition point sits ON a shared edge, not at either of its ends,
+        // and `split_face_by_chain` cuts between vertices the face's loop
+        // ALREADY has. So the edge has to be broken there first, which also
+        // gives the vertex to BOTH faces at once — the same pre-split the rim
+        // needs before a shape is drawn across it. Measured without this: all
+        // four runs of a band round a box were refused and nothing divided.
+        let verts: Vec<VertId> = path
+            .points
+            .iter()
+            .map(|&p| self.split_edge_at_or_add_vertex(p))
+            .collect();
+
+        // The chain's own edges, before the split. `split_face_by_chain` cuts
+        // ALONG edges that already exist — it says so when they do not
+        // ("edge between verts N and M missing — caller must draw it first").
+        // Drawing them here is the caller doing that.
+        for w in verts.windows(2) {
+            if w[0] != w[1] {
+                let _ = self.add_edge(w[0], w[1]);
+            }
+        }
+
+        let mut report = ImprintReport::default();
+        for (face, first, last) in runs {
+            let chain = &verts[first..=last];
+            match crate::operations::face_split::split_face_by_chain(self, face, chain, material) {
+                Ok(res) => {
+                    report.split_faces.push(face);
+                    report.new_faces.extend(res.new_faces);
+                }
+                Err(e) => {
+                    report.skipped_runs += 1;
+                    if report.first_refusal.is_none() {
+                        report.first_refusal = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        Ok(report)
+    }
+}
+
+impl Mesh {
+    /// The vertex at `p`, breaking an edge to make one if `p` lies along it.
+    ///
+    /// `add_vertex` alone would put a loose vertex at that position: the loops
+    /// on either side of the edge would still run straight past it, and a chain
+    /// ending there has nothing to attach to. Splitting the edge gives the
+    /// vertex to both faces at once, which is what makes the next step possible.
+    ///
+    /// An existing vertex, or a point on no edge at all (the interior of a
+    /// face), falls through to plain `add_vertex` and its own dedup.
+    fn split_edge_at_or_add_vertex(&mut self, p: DVec3) -> VertId {
+        const TOL: f64 = 1.5e-3; // the dedup floor (LOCKED #5)
+        let target = self
+            .edges
+            .iter()
+            .filter(|(_, e)| e.is_active() && e.curve().is_none())
+            .find_map(|(eid, e)| {
+                let a = self.verts.get(e.v_small())?.pos();
+                let b = self.verts.get(e.v_large())?.pos();
+                // An end already — nothing to split.
+                if (p - a).length() <= TOL || (p - b).length() <= TOL {
+                    return None;
+                }
+                let span = b - a;
+                let len = span.length();
+                if len <= TOL {
+                    return None;
+                }
+                let t = (p - a).dot(span) / (len * len);
+                if !(0.0..=1.0).contains(&t) {
+                    return None;
+                }
+                ((a + span * t - p).length() <= TOL).then_some(eid)
+            });
+        match target {
+            Some(eid) => match self.split_edge(eid, p) {
+                Ok((v, _, _)) => v,
+                Err(_) => self.add_vertex(p),
+            },
+            None => self.add_vertex(p),
+        }
+    }
+}
+
+/// What an imprint did, including what it could not do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImprintReport {
+    /// Faces the path cut in two.
+    pub split_faces: Vec<FaceId>,
+    /// The piece each split left on the far side of the chain.
+    pub new_faces: Vec<FaceId>,
+    /// Runs that could not divide their face — an end of an open path, which
+    /// enters but never leaves. Counted rather than silently dropped.
+    pub skipped_runs: usize,
+    /// Why the first skipped run was refused. A count alone says something was
+    /// dropped without saying what to do about it.
+    pub first_refusal: Option<String>,
 }
 
 #[cfg(test)]
@@ -485,6 +652,9 @@ mod tests {
             m.find_surface_face(DVec3::new(100.0, 100.0, 100.0), 1e-6),
             Some(top)
         );
-        assert_eq!(m.find_surface_face(DVec3::new(100.0, 100.0, 140.0), 1e-6), None);
+        assert_eq!(
+            m.find_surface_face(DVec3::new(100.0, 100.0, 140.0), 1e-6),
+            None
+        );
     }
 }
