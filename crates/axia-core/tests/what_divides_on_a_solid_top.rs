@@ -662,7 +662,7 @@ fn the_ellipse_loss_is_the_same_with_only_the_rederive_running() {
 
     assert_eq!(
         (production.2, rederive_only.2),
-        (5, 5),
+        (7, 7),
         "the re-derive alone gives what production gives — inside {:.1}/{:.1}, \
          hanging {:.1}/{:.1}",
         production.0,
@@ -818,8 +818,8 @@ fn an_ellipse_straddling_the_edge_leaves_its_piece_and_the_solid_sealed() {
     // that the plane tiles once and the invariants hold; whole-scene closure is
     // the wrong question with a sheet hanging off the rim.
     assert_eq!(
-        sealed, 5,
-        "the classifier reads 5 of 6 while a piece lies coplanar on the top"
+        sealed, 7,
+        "seven faces bound the volume — the box's five untouched ones plus both          halves of the split top. Five meant the ellipse's pieces were running          beside the rim instead of sharing it"
     );
 }
 
@@ -887,11 +887,10 @@ fn an_ellipse_splits_like_a_rect_but_its_pieces_meet_the_rim_differently() {
          box's five untouched ones plus both halves of the split top"
     );
     assert_eq!(
-        ellipse_sealed, 5,
-        "TODAY the ellipse leaves five, so its two top pieces are not counted \
-         in — they meet the rim differently from a polygon's, most likely \
-         duplicated rim edges where the others share. At 7 that difference is \
-         gone: retire this pin and fold the ellipse into the assertion above"
+        ellipse_sealed, 7,
+        "and the ellipse now leaves seven too — its top pieces share the rim \
+         with the wall instead of running beside it. This read 5 while the \
+         ellipse skipped the pre-split"
     );
 }
 
@@ -1021,18 +1020,13 @@ fn an_ellipses_top_pieces_are_missing_a_neighbour_where_a_rects_are_not() {
         "a rect's top pieces have a neighbour across every edge"
     );
     assert_eq!(
-        ellipse, 2,
-        "TODAY the ellipse's do not — two edges with no face across them, which \
-         is exactly what drops those pieces out of the volume.\n\n\
-         The cause is a missing PRE-SPLIT, and it is in the draw rather than \
-         the arrangement. The re-derive never splits a preserved edge — \
-         `edges_to_remove` excludes `volume_edges` — so the wall keeps the whole \
-         rim it always had while the new top pieces get fresh edges between the \
-         crossing points. Whoever draws has to break the rim FIRST: a rect does \
-         it through `exec_draw_line`'s crossing split, a circle through \
-         `split_edges_at_circle_crossings`, and the ellipse does neither. \
-         `exec_draw_ellipse_as_curve` says so in as many words — \"the \
-         Circle-specific rim crossing-split is skipped for the ellipse MVP\".\n\n\
-         At 0 the ellipse has one too: retire this pin."
+        ellipse, 0,
+        "and so do an ellipse's, now that it breaks the rim before drawing. \
+         This read 2 while `exec_draw_ellipse_as_curve` skipped the pre-split \
+         a rect gets from `exec_draw_line` and a circle from \
+         `split_edges_at_circle_crossings` — the re-derive never splits a \
+         PRESERVED edge (`edges_to_remove` excludes `volume_edges`), so the \
+         wall kept the whole rim while the arrangement built fresh edges for \
+         the pieces, and two faces ran along one line without sharing it"
     );
 }

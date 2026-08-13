@@ -9660,6 +9660,23 @@ impl Scene {
             knots: k,
             degree: deg as u32,
         };
+        // Break existing straight edges where the ellipse's rim crosses them,
+        // BEFORE creating the face — the same order the circle uses, and for
+        // the same reason: the crossing vertices have to be in the spatial hash
+        // first so the rim anchor and the arc endpoints dedup onto them.
+        //
+        // Skipping this is what left an ellipse's top pieces out of the volume.
+        // The re-derive never splits a solid's rim (it is `volume_edges` and
+        // stays whole), so the wall kept the edge it always had while the
+        // arrangement built fresh ones for the pieces: measured, a rect
+        // straddling a box's rim leaves 0 edges without a neighbour, an ellipse
+        // left 2. A rect gets its split from `exec_draw_line`, a circle from
+        // `split_edges_at_circle_crossings`; the ellipse had neither.
+        if self.auto_intersect_on_draw || self.face_rederive_on_draw {
+            self.mesh
+                .split_edges_at_curve_crossings(&curve, center, n_norm);
+        }
+
         let face_id = match self.mesh.add_face_closed_curve(anchor, curve, FORM_MATERIAL) {
             Ok(fid) => fid,
             Err(e) => {

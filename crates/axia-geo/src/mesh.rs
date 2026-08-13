@@ -9589,6 +9589,105 @@ impl Mesh {
         splits
     }
 
+    /// Break existing straight edges where a closed FREEFORM curve crosses them
+    /// — the ellipse's half of what `split_edges_at_circle_crossings` does.
+    ///
+    /// Whoever draws has to break the rim first. The coplanar re-derive never
+    /// splits a PRESERVED edge — a solid's rim is `volume_edges` and stays
+    /// whole — so the wall keeps the edge it always had while the arrangement
+    /// builds fresh ones between the crossing points for the pieces it makes.
+    /// Two faces then run along the same line without sharing it, which is what
+    /// dropped an ellipse's top pieces out of the volume: measured, a rect
+    /// straddling a box's rim leaves 0 edges without a neighbour and an ellipse
+    /// left 2. A rect gets its split from `exec_draw_line`, a circle from the
+    /// function above; a freeform had nothing.
+    ///
+    /// The crossings come from the SAME kernel the arrangement uses for any
+    /// pair involving a freeform (`curves::intersect::intersect_curves`, ADR-030
+    /// subdivide + Newton), at the same tolerance it uses. That matters more
+    /// than it looks: a point computed a different way lands microns off, the
+    /// 0.15 μm spatial hash refuses to merge it, and the duplicate rim this is
+    /// meant to remove comes back as a duplicate VERTEX instead.
+    ///
+    /// A straight edge is one carrying no curve; the drawn shape's own rim is
+    /// not straight, so it is never a target. Returns the number of splits.
+    pub fn split_edges_at_curve_crossings(
+        &mut self,
+        curve: &crate::curves::AnalyticCurve,
+        plane_point: DVec3,
+        plane_normal: DVec3,
+    ) -> usize {
+        // The dedup floor (LOCKED #5) is the scale at which two points are the
+        // same point; endpoints nearer than this need no split.
+        const TOL: f64 = 1.5e-3;
+        // `analytic_arrange` intersects freeform pairs at `(eps * 0.1)` with
+        // eps = 1e-4. Same number here, so the same crossing comes back.
+        const CCI_TOL: f64 = 1e-5;
+        let n = plane_normal.normalize_or_zero();
+        if n.length_squared() < 1e-12 {
+            return 0;
+        }
+        // Snapshot first — `split_edge` mutates the set being walked.
+        let targets: Vec<(EdgeId, DVec3, DVec3)> = self
+            .edges
+            .iter()
+            .filter(|(_, e)| e.is_active() && e.curve().is_none())
+            .filter_map(|(id, e)| {
+                let a = self.vertex_pos(e.v_small()).ok()?;
+                let b = self.vertex_pos(e.v_large()).ok()?;
+                Some((id, a, b))
+            })
+            .collect();
+
+        let mut splits = 0usize;
+        for (edge_id, a, b) in targets {
+            if (a - plane_point).dot(n).abs() > TOL || (b - plane_point).dot(n).abs() > TOL {
+                continue;
+            }
+            // A segment IS a degree-1 Bezier — the same lift the arrangement
+            // makes before handing a line to the shared kernel.
+            let segment = crate::curves::AnalyticCurve::Bezier {
+                control_pts: vec![a, b],
+            };
+            let Ok(hits) = crate::curves::intersect::intersect_curves(
+                &segment, curve, self, CCI_TOL,
+            ) else {
+                continue;
+            };
+            let mut crossings: Vec<DVec3> = hits
+                .into_iter()
+                .map(|h| h.point)
+                // Interior only: an endpoint already sits on the curve and
+                // splitting there would put the same point in the neighbouring
+                // loop twice (the tangency lesson from the circle path above).
+                .filter(|p| (*p - a).length() > TOL && (*p - b).length() > TOL)
+                .collect();
+            if crossings.is_empty() {
+                continue;
+            }
+            crossings.sort_by(|p, q| {
+                (*p - a)
+                    .length_squared()
+                    .partial_cmp(&(*q - a).length_squared())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            crossings.dedup_by(|p, q| (*p - *q).length() <= TOL);
+            // Split from the `a` end; `split_edge` hands back the far piece, so
+            // each remaining crossing lands on it.
+            let mut cur = edge_id;
+            for cpt in crossings {
+                match self.split_edge(cur, cpt) {
+                    Ok((_vp, _e1, e2)) => {
+                        cur = e2;
+                        splits += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        splits
+    }
+
     /// **CAD trim item 4 (2026-06-15)** — analytic circle × circle crossings
     /// (two coplanar circles, shared `normal`). Returns the 0 / 1 / 2 rim
     /// intersection points by the closed-form radical-line construction. Pure
