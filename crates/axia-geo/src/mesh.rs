@@ -4281,6 +4281,12 @@ impl Mesh {
         self.hes[he2].set_next(he2);
         self.hes[he2].set_prev(he2);
         self.faces[host_face].add_inner(LoopRef { start: he2, is_outer: false });
+        // 메타-원칙 #15 — same split, same contract. The wireframe draws this
+        // seam anyway (self-loop Circle → closed-curve fast-path, A-κ), so the
+        // flag changes nothing today; it is here so every curved split carries
+        // the same mark, and so the seam survives if the fast-path ever learns
+        // to consult smooth-groups.
+        self.mark_edges_hard(&[self.hes[he1].edge()]);
         Some((cap_face, host_face))
     }
 
@@ -4376,6 +4382,9 @@ impl Mesh {
             self.hes[nxt].set_prev(cur);
         }
         self.faces[host_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+        // 메타-원칙 #15 — same split, same contract (see the cylinder mirror).
+        let seam: Vec<EdgeId> = cap_hes.iter().map(|&h| self.hes[h].edge()).collect();
+        self.mark_edges_hard(&seam);
         Some((cap, host_face))
     }
 
@@ -4999,6 +5008,13 @@ impl Mesh {
             self.hes[nxt].set_prev(cur);
         }
         self.faces[host_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+        // 메타-원칙 #15 — split-induced edges carry HARD, here as everywhere.
+        // Cap and remainder inherit the SAME Cylinder (A-χ), so without this
+        // the smooth-group hide (A-τ) reads the seam as surface interior and
+        // the porthole the user just cut never reaches the wireframe —
+        // measured 0 segments (a_split_line_on_a_curved_face_shows).
+        let seam: Vec<EdgeId> = cap_hes.iter().map(|&h| self.hes[h].edge()).collect();
+        self.mark_edges_hard(&seam);
         Some((cap, host_face))
     }
 
@@ -5125,6 +5141,9 @@ impl Mesh {
             self.hes[nxt].set_prev(cur);
         }
         self.faces[host_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+        // 메타-원칙 #15 — same split, same contract (see the cylinder mirror).
+        let seam: Vec<EdgeId> = cap_hes.iter().map(|&h| self.hes[h].edge()).collect();
+        self.mark_edges_hard(&seam);
         Some((cap, host_face))
     }
 
@@ -5254,6 +5273,9 @@ impl Mesh {
             self.hes[nxt].set_prev(cur);
         }
         self.faces[host_face].add_inner(LoopRef { start: twins[0], is_outer: false });
+        // 메타-원칙 #15 — same split, same contract (see the cylinder mirror).
+        let seam: Vec<EdgeId> = cap_hes.iter().map(|&h| self.hes[h].edge()).collect();
+        self.mark_edges_hard(&seam);
         Some((cap, host_face))
     }
 
@@ -10694,9 +10716,16 @@ impl Mesh {
 
         // === Assign face references ===
 
-        // Mark split edge HEs as HARD so they render even between coplanar faces
-        self.hes[he_v1v2].set_flags(HeFlags::HARD);
-        self.hes[he_v2v1].set_flags(HeFlags::HARD);
+        // Mark split edge HEs as HARD so they render even between coplanar
+        // faces. Safe-OR, like every other split site (ADR-101 Amendment 10) —
+        // these two HEs are freshly created so there is nothing to preserve
+        // today, but the canonical example should not be the one place that
+        // overwrites (it wiped SOFT / SMOOTH_NORMAL, teaching the wrong
+        // pattern to whoever copies it next).
+        let cur = self.hes[he_v1v2].flags();
+        self.hes[he_v1v2].set_flags(cur | HeFlags::HARD);
+        let cur = self.hes[he_v2v1].flags();
+        self.hes[he_v2v1].set_flags(cur | HeFlags::HARD);
 
         // Loop A keeps face_id — set face on the new split HE
         self.hes[he_v1v2].set_face(face_id);
