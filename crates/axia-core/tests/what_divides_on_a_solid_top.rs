@@ -416,14 +416,25 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
+/// D9′ was my own misreading, and this is what the numbers actually say.
+///
+/// I pinned "the plane reads 40,237.88, so the union hole under-deducts by
+/// ~238" from the total alone, without checking that a hole existed. It does
+/// not: the ellipse in that case is centred at x = 60 with rx = 50, so it
+/// reaches x = 110 and hangs 10 mm past the top's own edge at x = 100. The
+/// excess is that hanging piece — the same thing D1's L is, and correct.
+///
+/// The instrument was never at fault either: a hole bounded by a Bezier
+/// deducts its bulge to the closed form
+/// (`axia-geo/tests/a_freeform_hole_deducts_its_bulge.rs`), and arcs were
+/// settled in PR #124.
+///
+/// So the question the total cannot answer is asked properly here: what lies
+/// WITHIN the top's footprint must tile it exactly once, and what reaches past
+/// it is a hanging sheet, counted separately. Analytically the ellipse's cap
+/// beyond x = 100 is 3,000 · ∫√(1−t²)dt over [0.8, 1] ≈ 245.
 #[test]
-fn an_ellipse_union_hole_still_drops_its_curve() {
-    // Rect × ellipse divides (it did not before the freeform arm), and the
-    // pieces carry their freeform boundary — the bulge-aware instruments read
-    // them near-exactly. The host's union HOLE loop does not carry it, so the
-    // hole deducts the chord polygon (~5% small) and the plane over-counts by
-    // ~238. Pinned at today's number; when hole loops keep their curves this
-    // goes red — retire it and fold the case into assert_sound_partition.
+fn a_rect_and_an_ellipse_tile_the_top_and_the_ellipse_hangs_over() {
     let mut s = production_solid();
     rect(&mut s, 0.0, 0.0, 80.0);
     let mid = active(&s);
@@ -431,17 +442,41 @@ fn an_ellipse_union_hole_still_drops_its_curve() {
         center: DVec3::new(60.0, 0.0, TOP),
         ref_dir: DVec3::X, // ⚠ ref_dir BEFORE normal
         normal: DVec3::Z,
-        radius_x: 50.0,
+        radius_x: 50.0, // reaches x = 110 — past the top's edge at 100
         radius_y: 30.0,
     });
     assert!(active(&s) > mid, "the ellipse must divide, not vanish");
     let v = s.mesh.verify_face_invariants().violations;
     assert!(v.is_empty(), "rect-then-ellipse: violations {v:?}");
-    let a = top_plane_area(&s);
+
+    // Split the plane's faces by whether they stay inside the top's footprint.
+    let mut inside = 0.0;
+    let mut hanging = 0.0;
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() || f.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if hi.x > 100.0 + 1e-3 {
+            hanging += s.mesh.face_area(fid);
+        } else {
+            inside += s.mesh.face_area(fid);
+        }
+    }
     assert!(
-        a > 40_000.0 + 100.0 && a < 40_000.0 + 400.0,
-        "TODAY the union hole under-deducts and the plane reads ~40,238 — \
-         got {a:.4}. At exactly 40,000 the hole kept its curve: retire this \
-         pin and use assert_sound_partition"
+        (inside + hanging - top_plane_area(&s)).abs() < 1e-6,
+        "the split must account for every face on the plane"
+    );
+    assert!(
+        hanging > 100.0 && hanging < 400.0,
+        "the ellipse's cap past x = 100 is ~245 by hand — got {hanging:.4}"
+    );
+    assert!(
+        (inside - 40_000.0).abs() < 1.0,
+        "what lies within the top must tile it exactly once — got {inside:.4} \
+         (this is the assertion the old 40,237.88 pin should have made)"
     );
 }
