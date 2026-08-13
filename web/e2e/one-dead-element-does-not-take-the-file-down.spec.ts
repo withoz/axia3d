@@ -51,15 +51,27 @@ test.describe('one dead element does not take the file down', () => {
           return false;
         }
       };
-      bridge.engine.create_box(0, 0, 0, 200, 200, 200);
-      // Split the top face, which makes a Shape of the two halves.
-      bridge.drawLineAsShape(-100, 0, 100, 100, 0, 100);
+      // Two adjacent coplanar rects sharing one edge, each drawn as a Shape.
+      // Merging them kills both operands, and `merge_faces_by_edge` reconciles
+      // ownership not at all — so every owner involved is left listing only
+      // faces that are gone. That is the condition under test.
+      //
+      // ⚠ This used to be built by splitting a box's top with a line. PR #119
+      // stopped a split from handing the host's face to the drawn entity, so
+      // that setup no longer empties anybody — the defect chain got shorter,
+      // and the precondition had to move rather than be relaxed away.
+      bridge.drawRectAsShape(-50, 0, 0, 0, 0, 1, 1, 0, 0, 100, 100);
+      bridge.drawRectAsShape(50, 0, 0, 0, 0, 1, 1, 0, 0, 100, 100);
       const beforeIfc = bridge.exportIfcModel('probe') as string | null;
 
-      // Merge them back. Both operands die and one new face is born.
-      const merged = bridge.engine.mergeFacesByEdge(16);
+      let merged: number | null = null;
+      for (let edge = 0; edge < 60 && merged === null; edge++) {
+        try {
+          const r = bridge.engine.mergeFacesByEdge(edge);
+          if (r >= 0) merged = r;
+        } catch { /* not a mergeable edge */ }
+      }
 
-      // Find an owner the merge emptied — that is the condition under test.
       const shapes = Array.from(bridge.getShapeIds?.() ?? []) as number[];
       const emptied = shapes
         .map((s) => {
@@ -76,14 +88,12 @@ test.describe('one dead element does not take the file down', () => {
       };
     });
 
-    expect(got.merged).toBeGreaterThanOrEqual(0);
+    expect(got.merged, 'nothing merged, so the condition was never built').not.toBeNull();
     expect(got.beforeIfc).not.toBeNull();
     // The condition this exists for: an owner that lists faces and has none live.
     expect(got.emptied.length, 'the merge should have emptied an owner').toBeGreaterThan(0);
     // And the file still comes out.
     expect(got.afterIfc, 'IFC export returned null after the merge').not.toBeNull();
-    const names = [...(got.afterIfc ?? '').matchAll(ELEMENT_RE)].map((m) => `${m[1]}:${m[2]}`);
-    expect(names).toContain('WALL:Box');
   });
 
   test('a clean model is unchanged', async ({ page }) => {
