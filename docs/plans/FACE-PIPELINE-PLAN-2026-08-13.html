@@ -1,0 +1,462 @@
+<title>면 파이프라인 변경 계획 · 2026-08-13</title>
+<style>
+  :root {
+    --ground: #f6f7f9; --surface: #ffffff; --surface-2: #eef0f4;
+    --ink: #14161d; --ink-2: #3c4354; --ink-3: #6b7385;
+    --rule: #d6dae2; --rule-strong: #b3bac6;
+    --accent: #333366; --accent-soft: #e6e7f2;
+    --ok: #1c6b46; --ok-soft: #dcefe4;
+    --open: #8a5d0d; --open-soft: #f6ecd6;
+    --bad: #a02a26; --bad-soft: #f6dedd;
+    --shadow: 0 1px 2px rgba(20,22,29,.06), 0 8px 24px -16px rgba(20,22,29,.3);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e1016; --surface: #161923; --surface-2: #1d212c;
+      --ink: #e7e9ef; --ink-2: #b6bcca; --ink-3: #858da0;
+      --rule: #2a2f3c; --rule-strong: #3b4252;
+      --accent: #9aa0e2; --accent-soft: #22243a;
+      --ok: #63c396; --ok-soft: #16281f;
+      --open: #d7a63f; --open-soft: #2b2314;
+      --bad: #e8827c; --bad-soft: #2e1917;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px -16px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e1016; --surface: #161923; --surface-2: #1d212c;
+    --ink: #e7e9ef; --ink-2: #b6bcca; --ink-3: #858da0;
+    --rule: #2a2f3c; --rule-strong: #3b4252;
+    --accent: #9aa0e2; --accent-soft: #22243a;
+    --ok: #63c396; --ok-soft: #16281f;
+    --open: #d7a63f; --open-soft: #2b2314;
+    --bad: #e8827c; --bad-soft: #2e1917;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: "Pretendard","Pretendard Variable",-apple-system,"Apple SD Gothic Neo",
+                 "Segoe UI","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+    font-size: 16px; line-height: 1.7; -webkit-font-smoothing: antialiased; word-break: keep-all;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 120px; }
+  code, .num { font-family: ui-monospace,"Cascadia Mono","SFMono-Regular",Consolas,monospace;
+               font-variant-numeric: tabular-nums; font-size: .875em; }
+
+  header.mast { border-bottom: 2px solid var(--ink); padding: 56px 0 22px; margin-bottom: 40px; }
+  .eyebrow { font-family: ui-monospace,Consolas,monospace; font-size: 11px; letter-spacing: .16em;
+             text-transform: uppercase; color: var(--ink-3); margin: 0 0 14px; }
+  h1 { font-size: clamp(28px,4.2vw,42px); line-height: 1.16; letter-spacing: -.022em;
+       font-weight: 700; margin: 0 0 16px; text-wrap: balance; }
+  .standfirst { font-size: 17.5px; color: var(--ink-2); max-width: 62ch; margin: 0 0 24px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 26px;
+          font-family: ui-monospace,Consolas,monospace; font-size: 12px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  section { margin: 0 0 60px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px;
+              border-bottom: 1px solid var(--rule-strong); padding-bottom: 10px; margin-bottom: 24px; }
+  .sec-head .step { font-family: ui-monospace,Consolas,monospace; font-size: 12px;
+                    letter-spacing: .1em; color: var(--accent); flex: none; }
+  .sec-head h2 { font-size: clamp(20px,2.4vw,26px); letter-spacing: -.015em; font-weight: 650;
+                 margin: 0; text-wrap: balance; }
+  h3 { font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; margin: 28px 0 10px; }
+  p { max-width: 68ch; margin: 0 0 14px; }
+  p.lede { font-size: 17px; color: var(--ink-2); }
+  ul, ol { max-width: 68ch; margin: 0 0 14px; padding-left: 1.25em; }
+  li { margin-bottom: 6px; }
+
+  .chip { display: inline-block; font-family: ui-monospace,Consolas,monospace; font-size: 11px;
+          letter-spacing: .04em; padding: 2px 8px; border-radius: 2px; white-space: nowrap; vertical-align: 1px; }
+  .chip.ok { background: var(--ok-soft); color: var(--ok); }
+  .chip.open { background: var(--open-soft); color: var(--open); }
+  .chip.bad { background: var(--bad-soft); color: var(--bad); }
+  .chip.neutral { background: var(--surface-2); color: var(--ink-2); }
+
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px;
+              background: var(--surface); margin: 0 0 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+             font-weight: 600; background: var(--surface-2); border-bottom: 1px solid var(--rule-strong); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n { font-family: ui-monospace,Consolas,monospace; font-variant-numeric: tabular-nums;
+         text-align: right; white-space: nowrap; }
+  caption { caption-side: bottom; text-align: left; font-size: 12.5px; color: var(--ink-3); padding: 10px 14px 12px; }
+
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft);
+          padding: 15px 18px; border-radius: 0 3px 3px 0; margin: 0 0 20px; max-width: 72ch; }
+  .note p:last-child { margin-bottom: 0; }
+  .note .tag { font-family: ui-monospace,Consolas,monospace; font-size: 11px; letter-spacing: .1em;
+               text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 5px; }
+  .note.warn { border-left-color: var(--open); background: var(--open-soft); }
+  .note.warn .tag { color: var(--open); }
+
+  pre { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+        padding: 14px 16px; overflow-x: auto; font-family: ui-monospace,Consolas,monospace;
+        font-size: 12.5px; line-height: 1.6; color: var(--ink-2); margin: 0 0 18px;
+        font-variant-numeric: tabular-nums; }
+
+  .stage { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+           border-radius: 0 3px 3px 0; padding: 20px 22px; margin: 0 0 16px; box-shadow: var(--shadow); }
+  .stage.first { border-left-color: var(--ok); }
+  .stage.later { border-left-color: var(--ink-3); }
+  .stage > h3 { margin-top: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .stage .id { font-family: ui-monospace,Consolas,monospace; font-size: 12px; color: var(--ink-3); letter-spacing: .06em; }
+  .stage p:last-child, .stage ul:last-child, .stage dl:last-child { margin-bottom: 0; }
+
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 14.5px; margin: 14px 0 0; }
+  dl.kv dt { color: var(--ink-3); font-size: 12.5px; padding-top: 2px; }
+  dl.kv dd { margin: 0; }
+
+  .flow { font-family: ui-monospace,Consolas,monospace; font-size: 13px; color: var(--ink-2);
+          background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+          padding: 16px 18px; overflow-x: auto; margin: 0 0 16px; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 20px; font-size: 13px;
+           color: var(--ink-3); max-width: 72ch; }
+  @media (max-width: 640px) { .wrap { padding: 0 18px 80px; } }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">변경 계획 · 면 파이프라인 · 2026-08-13</p>
+  <h1>계측기가 셋 다 같은 가정으로 틀렸다.<br>그 가정을 없애는 것이 계획이다.</h1>
+  <p class="standfirst">
+    겹쳐 그리기 36조합을 프로덕션 조건으로 전수 측정한 결과, 면은 사라지지 않고 위상도 깨지지 않는다.
+    깨진 것은 하나였고 이미 고쳤다. 남은 것은 <b>측정 도구 자신의 결함</b>과, 그 도구 때문에
+    오랫동안 보이지 않던 실제 결함 셋이다.
+  </p>
+  <div class="meta">
+    <span><b>기준</b> <code>444aa30</code> (fix/ring-is-not-stacked-on-its-own-hole)</span>
+    <span><b>회귀</b> cargo 3,558 통과 / 0 실패</span>
+    <span><b>상태</b> 승인 대기 — 0단계 착수분이 미커밋으로 남아 있음</span>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="step">00</span><h2>확정 사실</h2></div>
+
+  <h3>참인 것 (측정)</h3>
+  <ul>
+    <li>36조합 어디서도 면이 <b>사라지거나 생성에 실패하지 않는다</b>.</li>
+    <li>위상 위반 <b>0</b> — 링/구멍 판정을 고친 뒤.</li>
+    <li>원×사각, 원×원, 그리는 순서 무관성, 중첩 구멍 — <b>기하 정확</b>. 조각들이 <code>Arc r=50 90°..180°</code> 처럼 해석 곡선을 그대로 달고 있다.</li>
+  </ul>
+
+  <h3>거짓으로 판명된 것 — 내가 냈던 결론</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>계측기</th><th>무엇을 못 보나</th><th>그래서 내린 잘못된 결론</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>point_in_face</code></td>
+          <td>Path B 자기루프 면에서 <b>항상 false</b> (외곽 정점 1개 → 퇴화 다각형)</td>
+          <td>“이중 덮음 0” — 원판을 아예 못 봤다</td>
+        </tr>
+        <tr>
+          <td><code>face_bounds</code></td>
+          <td>자기루프 평면 면의 bbox가 <b>한 점</b>으로 퇴화</td>
+          <td>원판 위치를 한 점으로 읽었다</td>
+        </tr>
+        <tr>
+          <td><code>face_area</code></td>
+          <td>호의 배부름 무시, <b>다각형만</b> 계산</td>
+          <td>“원이 마름모로 붕괴” — 실제로는 호가 보존돼 있었다</td>
+        </tr>
+      </tbody>
+      <caption>같은 이유로 “시트 18경우 전부 깨끗”도 정정한다 — 그것은 <i>위상</i> 기준이었고 <i>형상</i>은 재지 않았다.</caption>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">01</span><h2>방침 — 단정하지 않는다</h2></div>
+
+  <p class="lede">
+    세 계측기는 서로 다른 버그가 아니라 <b>같은 가정 하나</b>를 공유한다:
+    “면의 경계는 정점 3개 이상의 다각형이다.”
+  </p>
+  <p>
+    우리 엔진은 이미 그 가정 밖이다 — Path B 자기루프 면(정점 1개), <code>Arc</code>를 단 엣지,
+    NURBS 경계. 그래서 계획의 각 단계는 <b>지금 측정된 케이스를 특판하지 않고 그 가정을 제거하는
+    방향</b>으로 쓴다. 단계마다 “확장 대비” 항목을 둔다 — 새 곡선 종류·새 면 종류가 들어와도
+    <b>새 분기 없이</b> 통과해야 한다.
+  </p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">02</span><h2>고칠 것 넷</h2></div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>결함</th><th>증거</th><th>파급</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>D3</b></td>
+          <td><code>face_area</code>가 곡선 배부름을 무시</td>
+          <td class="n">반원 3,927 → 2,500 (36% 과소)</td>
+          <td>면적 표시 · 부피 · 승격 게이트로 전파</td>
+        </tr>
+        <tr>
+          <td><b>D1</b></td>
+          <td>입체면 <b>모서리</b>를 걸친 사각형의 바깥 조각이 생성되지 않음</td>
+          <td class="n">입체 2면 합 40,000 / 시트 3면, 바깥 7,500 존재</td>
+          <td>사용자가 그린 것이 사라짐</td>
+        </tr>
+        <tr>
+          <td><b>D2</b></td>
+          <td>호스트를 <b>삼키는</b> 도형의 arrangement 부재 (Path B 원)</td>
+          <td class="n">+Z 면적 165,664 (참값 125,664)</td>
+          <td>이중 덮음 40,000</td>
+        </tr>
+        <tr>
+          <td><b>D4</b></td>
+          <td>소유권을 물려주지 않고 <b>추측</b>한다</td>
+          <td class="n">입체 18경우 중 7건 열림 · 부피 오류</td>
+          <td>Slice · IFC · 승격 연쇄</td>
+        </tr>
+        <tr>
+          <td><b>D5</b></td>
+          <td>자기교차 검출기가 <b>접촉을 관통으로</b> 세고, <b>coplanar 겹침은 못 본다</b></td>
+          <td class="n">육각 partial si=2 (실제 정확) / 원 covering si=0 (실제 이중)</td>
+          <td>게이트가 이 판정 위에 올라타 있다</td>
+        </tr>
+        <tr>
+          <td><b>D6</b></td>
+          <td>곡면 split의 <code>HARD</code> 계약 공백 (메타-원칙 #15)</td>
+          <td class="n">carve · cone · cylinder · torus · annulus 모두 HARD=0</td>
+          <td>곡면을 원으로 자르면 분할선이 렌더에서 숨는다</td>
+        </tr>
+        <tr>
+          <td><b>D7</b></td>
+          <td><code>single_face_containing_corners</code>가 호스트 면에 <b>구멍이 있으면</b> None</td>
+          <td class="n">기록된 미해결</td>
+          <td>구멍 뚫린 면 위에 다시 그리기</td>
+        </tr>
+      </tbody>
+      <caption>
+        D5는 방향을 먼저 정해야 한다 — 지금은 과다 보고와 미검출이 동시에 있고,
+        게이트를 그대로 조이면 멀쩡한 모델이 막힌다. D6는 <code>Mesh::split_face</code>가
+        <code>set_flags(HARD)</code>로 덮어쓰는 반면 나머지가 <code>cur | HARD</code>인
+        불일치도 함께 정리한다.
+      </caption>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">03</span><h2>단계</h2></div>
+
+  <div class="stage first">
+    <h3><span class="chip ok">0단계</span> 계측기 통합·일반화 <span class="id">선행 조건 · 반나절</span></h3>
+    <p><b>왜 먼저인가.</b> 이걸 안 고치면 1~3단계의 합격 판정을 못 믿을 값 위에 세우게 된다.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>계측기</th><th>지금</th><th>바꿀 것</th></tr></thead>
+        <tbody>
+          <tr><td><code>face_area</code></td><td>다각형 shoelace만</td>
+              <td>＋ 곡선 배부름 보정 — Arc는 닫힌 해 <code>r²/2(θ−sinθ)</code>, 나머지는 곡선-현 사이 부호 있는 면적</td></tr>
+          <tr><td><code>point_in_face</code></td><td>자기루프 면 → 항상 false</td><td>경계 통로를 거쳐 곡선 샘플로 판정</td></tr>
+          <tr><td><code>face_bounds</code></td><td>자기루프 평면 면 → 점으로 퇴화</td><td>동일</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <dl class="kv">
+      <dt>확장 대비</dt>
+      <dd>곡선 종류별 <code>match</code>를 늘리지 않는다. Arc만 정확식, <b>나머지 전부는 “곡선을 샘플해 현과의 사이 면적”이라는 하나의 일반식</b> → Bezier · BSpline · NURBS · 향후 추가분이 자동 포함. 구멍(inner) 루프에도 같은 보정.</dd>
+      <dt>검증</dt>
+      <dd>반원 3,927 / 오목하게 물린 면(부호 반대) / Bezier 경계 면 / 다각형 면 회귀 0.</dd>
+      <dt>변이</dt>
+      <dd>보정을 제거하면 2,500으로 되돌아가는지.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip bad">1단계</span> 모서리 걸침에서 바깥 조각 소실 <span class="id">D1 · 1~2일</span></h3>
+    <p>
+      시트에서는 되고 입체에서만 안 된다. 그러므로 <b>분기 지점을 먼저 특정</b>한다 —
+      같은 입력을 두 경로에 넣고 재유도가 만든 region 목록을 비교해 바깥 region이 어디서
+      버려지는지 확인한 <b>뒤에</b> 고친다. 원인 확정 전에는 코드를 건드리지 않는다.
+    </p>
+    <dl class="kv">
+      <dt>확장 대비</dt>
+      <dd>“사각형·모서리” 한 경우를 특판하지 않는다. <code>{도형 3종} × {겹침 6종} × {시트, 입체}</code> 36조합이 <b>같은 결과</b>를 내도록 요구하는 회귀를 먼저 세우고, 그것을 통과시키는 방식으로 고친다.</dd>
+      <dt>검증</dt>
+      <dd>시트/입체 corner · partial 대칭. 현재 정상인 육각형이 대조군.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip bad">2단계</span> 호스트를 삼키는 도형 <span class="id">D2 · 2~3일</span></h3>
+    <p>
+      다각형은 링을 만드는데 Path B 원은 얹힌다. 교차점이 0개(역포함)라
+      “정확히 2 crossing”을 요구하는 경로에서 빠지는 것으로 보인다 — 착수 전에 확인한다.
+    </p>
+    <dl class="kv">
+      <dt>확장 대비</dt>
+      <dd>원 전용 분기가 아니라 <b>역포함(그린 도형 ⊃ 호스트)을 경계 종류와 무관하게</b> 다룬다. 링의 구멍 경계에는 원래 곡선(<code>Arc</code>/<code>Circle</code>)을 보존한다.</dd>
+      <dt>검증</dt>
+      <dd>이미 회귀에 못박아 둔 <span class="num">165,664</span> → <span class="num">125,664</span>. 닫히는 순간 테스트가 “은퇴하라”고 알린다.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">3단계</span> 소유권 상속 <span class="id">D4 · 1주 · 가장 큼</span></h3>
+    <p>
+      기하는 정확한데 주인이 끊긴다. 처방은 <code>Scene.shape_to_drawn_faces</code> —
+      <b>입체가 소유하고, 그린 Shape는 기억한다</b>. 파킹 브랜치
+      <code>wip/rect-on-solid-belongs-to-solid</code>가 절반까지 가 있다.
+      참고 형태는 AixiAcad의 <code>FaceLineage</code>(Preserved / Split / Merged / Removed).
+    </p>
+    <dl class="kv">
+      <dt>위험</dt>
+      <dd><code>drawRectAsShape → getShapeFaceIds → createSolidExtrude</code>를 쓰는 <code>DrawWallTool</code> · <code>SliceTool</code> · ADR-264 boss E2E가 깨진다 → “소유”와 “기억”의 분리가 필수.</dd>
+      <dt>확장 대비</dt>
+      <dd>그리기 경로만이 아니라 <b>면을 부수는 모든 op</b>가 같은 통로로 상속을 실어 나르게 한다. <code>merge_faces_by_edge</code>는 지금 상속이 <b>전혀 없다</b>(기록된 미해결) — 이번에 같은 메커니즘에 태운다.</dd>
+      <dt>검증</dt>
+      <dd>36조합의 <code>opened</code> 7 → 0. Slice · IFC · 승격 회귀.</dd>
+    </dl>
+  </div>
+
+  <div class="stage later">
+    <h3><span class="chip neutral">4단계</span> 그리기에도 롤백 게이트</h3>
+    <p>
+      cut · extrude · boolean은 ADR-267 게이트가 지키는데 <b>그리기는 입체를 열어도 통과</b>한다.
+      AixiAcad는 분할 전 스냅샷을 뜨고 watertight 실패 시 통째로 롤백한다.
+      <b>순서상 마지막인 이유</b>: 1~3의 오탐이 남아 있으면 정상 모델까지 막는다.
+    </p>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">3.5단계</span> 자기교차 판정의 방향 <span class="id">D5 · 2일</span></h3>
+    <p>
+      접촉은 손상이 아니고, coplanar 겹침은 손상이다 — 지금은 정확히 반대로 나온다.
+      림 모서리를 스치는 조각을 2건으로 세면서, 같은 평면에 얹힌 원판은 0건으로 본다.
+      <b>게이트가 이 판정 위에 올라타 있으므로</b> 방향을 확정하지 않고 4단계를 켜면 정상 모델이 막힌다.
+    </p>
+    <dl class="kv">
+      <dt>확장 대비</dt>
+      <dd>“삼각형이 삼각형을 뚫는가”만이 아니라 <b>같은 평면에서 두 면이 같은 땅을 덮는가</b>를 물을 수 있어야 한다. 후자는 지금 어떤 검사도 하지 않는다 — 엣지를 공유 안 하면 non-manifold가 못 보고, coplanar면 삼각형 교차도 못 본다.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">3.6단계</span> 곡면 split의 위상 계약 <span class="id">D6 · 1일</span></h3>
+    <p>
+      메타-원칙 #15는 “같은 분할 연산은 같은 topological contract”를 요구하고,
+      split-induced 엣지에 <code>HARD</code>를 다는 것이 그 계약이다.
+      확인 결과 <code>split_{sphere,cylinder,cone,torus}_face_by_circle</code>과
+      <code>annulus.rs</code> 전체가 <b>HARD 참조 0</b>이다. 곡면을 원으로 자르면 seam 양쪽 normal이
+      일치하므로, 렌더의 coplanar-hide 검사에 정확히 걸려 분할선이 보이지 않는다.
+    </p>
+    <dl class="kv">
+      <dt>함께 정리</dt>
+      <dd><code>Mesh::split_face</code>만 <code>set_flags(HARD)</code>로 덮어쓴다(SOFT · SMOOTH_NORMAL을 지운다). 나머지는 전부 <code>cur | HARD</code>. canonical 예시가 문서화된 패턴을 어기고 있다.</dd>
+    </dl>
+  </div>
+
+  <div class="stage later">
+    <h3><span class="chip neutral">5단계</span> 퍼즈 하네스 <span class="id">선택 · 확장 대비의 본체</span></h3>
+    <p>
+      회귀 자산은 많지만 <b>무작위 연산 연쇄로 두들기는 하네스가 없다</b>(AixiAcad는 100세션 × 50연산).
+      36조합은 내가 상상한 조합일 뿐이고 상상 못 한 조합이 남는다. 이것이 “단정하지 않기”의 구조적 답이다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">04</span><h2>검증 범위 — 36조합이 못 만진 곳</h2></div>
+
+  <p class="lede">
+    지금의 매트릭스는 <b>평면 호스트 × 축정렬 평면 × As-Shape 도형 3종 × 한 번 그리기</b>다.
+    우리 기능은 거기서 멈추지 않으므로, 아래를 매트릭스에 편입하지 않으면
+    “36/36 통과”는 실제보다 넓게 들린다.
+  </p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>빠진 축</th><th>지금</th><th>왜 중요한가</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>타원 · 자유곡선 · 베지어</b></td>
+          <td>0회 — <code>DrawEllipseAsCurve</code>는 As-Shape와 <b>다른 경로</b>다</td>
+          <td>“타원이 무엇과든 겹치는 경우”는 입체에서 미해결로 기록돼 있다</td>
+        </tr>
+        <tr>
+          <td><b>곡면 호스트</b> (구 · 원통 · 콘 · 토러스)</td>
+          <td>0회 — 호스트는 시트와 박스 윗면뿐</td>
+          <td>곡면 위 그리기는 별도 6-layer 경로다. D6가 바로 여기 있다</td>
+        </tr>
+        <tr>
+          <td><b>기울어진 평면</b></td>
+          <td>0회 — 전부 <code>z=0</code> 또는 <code>z=100</code></td>
+          <td>face-aware 평면 결정은 cardinal과 slanted를 <b>다르게</b> 다룬다</td>
+        </tr>
+        <tr>
+          <td><b>다중 도형 누적</b></td>
+          <td>1회 그리기만</td>
+          <td>연쇄 부작용은 두 번째 이후에 나온다</td>
+        </tr>
+        <tr>
+          <td><b>Undo · 스냅샷 왕복</b></td>
+          <td>미측정</td>
+          <td>호를 단 조각이 <code>.axia</code> 저장/로드를 넘는지 확인 안 됨</td>
+        </tr>
+        <tr>
+          <td><b>구멍 뚫린 면 위에 다시 그리기</b></td>
+          <td>미측정 (D7)</td>
+          <td>호스트에 구멍이 있으면 컨테이너 탐색이 None을 낸다</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <span class="tag">계획에 미치는 영향</span>
+    <p>
+      이 축들은 새 단계가 아니라 <b>각 단계의 합격 기준</b>이다. 0단계의 곡선 보정은 타원·베지어에서도
+      맞아야 하고, 1단계의 “36조합 동일 결과” 회귀는 곡면 호스트와 기울어진 평면으로 넓혀야 한다.
+      그렇지 않으면 지금 고치는 것이 평면·축정렬에만 맞춘 특판이 된다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">05</span><h2>순서와 의존</h2></div>
+  <div class="flow">0 계측기 ──▶ 1 모서리 소실 ──▶ 2 역포함 ──▶ 3 소유권 ──▶ 3.5 자기교차 방향 ──▶ 4 게이트
+                    │                                                                        └──▶ 5 퍼즈
+                    └──▶ 3.6 곡면 HARD 계약  (독립 · 언제든)</div>
+  <p>
+    0이 없으면 1·2의 판정을 못 믿는다. 3은 1·2가 만든 면 집합 위에서 돈다.
+    3.5는 4의 <b>선행 조건</b>이다 — 방향을 정하지 않고 게이트를 조이면 정상 모델이 막힌다.
+    3.6은 다른 단계와 얽히지 않으므로 순서에 구애받지 않고, 곡면 작업을 할 때 같이 넣는 편이 싸다.
+  </p>
+
+  <h3>공통 규칙</h3>
+  <ul>
+    <li>단계마다 <b>별도 PR</b> — 의미 단위 완결 (LOCKED #44)</li>
+    <li>모든 가드는 <b>변이 검증</b> — 끄면 실제로 실패하는지 눈으로 본다</li>
+    <li><b>대조군 필수</b> — 검사를 지워서 통과하는 길을 막는다</li>
+    <li>원인 확정 전 코드 수정 금지 (메타-원칙 #6)</li>
+  </ul>
+
+  <div class="note warn">
+    <span class="tag">현재 작업 상태</span>
+    <p>
+      0단계 착수분(<code>face_area</code>의 곡선 배부름 보정 + 곡선 종류에 열린 일반식)이
+      <code>crates/axia-geo/src/mesh.rs</code>에 <b>커밋 없이</b> 남아 있다.
+      승인되면 이어서 검증·회귀를 붙이고, 순서를 바꾸실 경우 되돌린다.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>
+    이 계획의 모든 수치는 이 저장소에서 프로덕션과 같은 플래그(자동 교차분할 · 자동 면합성 · 면 재유도 ON)로
+    직접 측정한 것이다. AixiAcad 대조 항목은 <code>D:\AixiAcad\engine</code> 소스를 읽어 확인했다.
+  </p>
+</footer>
+
+</div>
