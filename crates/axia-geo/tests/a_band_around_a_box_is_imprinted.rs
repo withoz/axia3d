@@ -120,7 +120,10 @@ fn the_band_leaves_the_box_closed() {
 #[test]
 fn a_path_that_revisits_a_face_is_refused_and_nothing_moves() {
     let (mut mesh, sides) = cube_and_its_sides();
-    let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    // "Nothing moves" measured as the plan asks — byte-identical, not a face
+    // count. A count is blind to a vertex that was created and left behind,
+    // which is exactly what a refusal AFTER the vertex pass would leave.
+    let before = bincode::serialize(&mesh).expect("serialize");
     let revisit = SurfacePath {
         points: vec![
             DVec3::new(100.0, -100.0, 0.0),
@@ -137,10 +140,12 @@ fn a_path_that_revisits_a_face_is_refused_and_nothing_moves() {
         err.to_string().contains("returns to face"),
         "and say why: {err}"
     );
-    assert_eq!(
-        mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
-        before,
-        "a refusal leaves the mesh exactly as it was"
+    let after = bincode::serialize(&mesh).expect("serialize");
+    assert!(
+        after == before,
+        "a refusal leaves the mesh byte-identical — {} vs {} bytes",
+        before.len(),
+        after.len()
     );
 }
 
@@ -182,4 +187,121 @@ fn an_open_paths_end_faces_are_skipped_and_counted() {
         "and the mesh is unharmed — {:?}",
         v.violations
     );
+}
+
+/// What a PARTIAL failure leaves — measured, because the plan says two things
+/// that cannot both be true.
+///
+/// Its "v1 한계 채택" adopts skip-and-record for runs that cannot divide their
+/// face; its acceptance line asks for byte-identical rollback on injected
+/// failure. Those are opposite answers to the same question, so this asks the
+/// code which one it gives.
+///
+/// The answer, and the contract from here: **a refusal that happens BEFORE any
+/// mutation rolls back byte-identically (there is nothing to roll back); a run
+/// that cannot divide its face is skipped, and the runs that could still
+/// divide theirs DO.** A path is not all-or-nothing — it is a list of cuts, and
+/// the ones that land are the useful part. What the caller is owed is knowing
+/// which did not, which is what `skipped_runs` + `first_refusal` carry.
+#[test]
+fn a_partial_failure_keeps_the_cuts_that_landed_and_names_the_one_that_did_not() {
+    let (mut mesh, sides) = cube_and_its_sides();
+    let before_faces = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+    // Two runs: the first crosses +X edge to edge (divides), the second enters
+    // +Y and stops in its middle (cannot divide — no second boundary).
+    let partial = SurfacePath {
+        points: vec![
+            DVec3::new(100.0, -100.0, 0.0), // +X ∩ −Y
+            DVec3::new(100.0, 100.0, 0.0),  // +X ∩ +Y  — crosses +X
+            DVec3::new(0.0, 100.0, 0.0),    // interior of +Y — stops
+        ],
+        faces: vec![sides[0], sides[1]],
+    };
+    let report = mesh
+        .imprint_surface_path(&partial, MaterialId::new(0))
+        .expect("a partial path is not an error");
+
+    assert_eq!(
+        report.split_faces.len(),
+        1,
+        "the run that crossed its face divided it"
+    );
+    assert_eq!(
+        report.skipped_runs, 1,
+        "and the run that stopped inside its face did not"
+    );
+    assert!(
+        report.first_refusal.is_some(),
+        "with the kernel's own reason carried out, not just a count"
+    );
+    assert_eq!(
+        mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+        before_faces + 1,
+        "so the mesh keeps the one cut that landed — NOT rolled back"
+    );
+    let v = mesh.verify_face_invariants();
+    assert!(v.is_valid(), "and is sound either way — {:?}", v.violations);
+}
+
+/// The plan's third acceptance line: a rect that wraps a solid EDGE, so it
+/// lies on two faces at once, divides both.
+///
+/// It is the band's harder sibling. The band's runs are two points each; this
+/// one's are four, because on each face the rect contributes three of its
+/// sides — the fourth side IS the box's edge, which is not a cut but the thing
+/// being crossed. And it only avoids the revisit refusal because the loop
+/// STARTS on that shared edge: begin anywhere else and the +X part is split in
+/// two, appearing at both ends of the path.
+#[test]
+fn a_rect_wrapping_a_solid_edge_divides_both_faces() {
+    let (mut mesh, sides) = cube_and_its_sides();
+    let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+    // A 50 × 100 rect straddling the vertical edge at x = 100, y = 100.
+    // Half of it on +X (y ∈ [50,100]), half on +Y (x ∈ [50,100]), z ∈ [−50,50].
+    let wrap = SurfacePath {
+        points: vec![
+            DVec3::new(100.0, 100.0, -50.0), // on the shared edge — the start
+            DVec3::new(100.0, 50.0, -50.0),  // ┐
+            DVec3::new(100.0, 50.0, 50.0),   // │ three sides on +X
+            DVec3::new(100.0, 100.0, 50.0),  // ┘ back to the shared edge
+            DVec3::new(50.0, 100.0, 50.0),   // ┐
+            DVec3::new(50.0, 100.0, -50.0),  // │ three sides on +Y
+            DVec3::new(100.0, 100.0, -50.0), // ┘ closed
+        ],
+        faces: vec![
+            sides[0], sides[0], sides[0], // +X
+            sides[1], sides[1], sides[1], // +Y
+        ],
+    };
+    let report = mesh
+        .imprint_surface_path(&wrap, MaterialId::new(0))
+        .expect("the wrapping rect imprints");
+
+    assert_eq!(
+        report.split_faces.len(),
+        2,
+        "both faces the rect lies on are divided — {} skipped, first refusal {:?}",
+        report.skipped_runs,
+        report.first_refusal
+    );
+    assert_eq!(report.skipped_runs, 0, "and neither run is skipped");
+    assert_eq!(
+        mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+        before + 2,
+        "so the box gains the rect's two halves as their own faces"
+    );
+    let all: Vec<_> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| fid)
+        .collect();
+    assert!(
+        mesh.face_set_manifold_info(&all).is_closed_solid,
+        "and the solid is still closed"
+    );
+    let v = mesh.verify_face_invariants();
+    assert!(v.is_valid(), "invariants must hold — {:?}", v.violations);
 }
