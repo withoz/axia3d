@@ -959,3 +959,80 @@ fn a_rect_and_an_ellipse_tile_the_top_and_the_ellipse_hangs_over() {
          (this is the assertion the old 40,237.88 pin should have made)"
     );
 }
+
+/// WHERE the ellipse's pieces lose the rim — counted, not guessed.
+///
+/// `is_face_in_volume` asks one thing: does every boundary half-edge of this
+/// face have another active face across its edge. So a top piece drops out of
+/// the volume when one of its edges has no neighbour. This counts those edges
+/// for a rect and for an ellipse in the same straddle, restricted to pieces
+/// that lie WITHIN the host's footprint — the hanging piece outside legitimately
+/// has free edges in both cases and is not the question.
+#[test]
+fn an_ellipses_top_pieces_are_missing_a_neighbour_where_a_rects_are_not() {
+    let orphan_edges = |shape: &str| -> usize {
+        let mut s = production_solid();
+        if shape == "rect" {
+            s.execute(Command::DrawRectAsShape {
+                center: DVec3::new(100.0, 0.0, TOP),
+                normal: DVec3::Z,
+                up: DVec3::X,
+                width: 120.0,
+                height: 66.0,
+            });
+        } else {
+            s.execute(Command::DrawEllipseAsCurve {
+                center: DVec3::new(100.0, 0.0, TOP),
+                ref_dir: DVec3::X,
+                normal: DVec3::Z,
+                radius_x: 60.0,
+                radius_y: 33.0,
+            });
+        }
+        let mut orphans = 0usize;
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() || f.normal().z.abs() <= 0.999 {
+                continue;
+            }
+            // On the top plane AND inside the footprint (skip the hanging one).
+            let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+            if (lo.z - TOP).abs() > 1e-3 || hi.x > 100.0 + 1e-3 {
+                continue;
+            }
+            let Ok(hes) = s.mesh.collect_loop_hes(f.outer().start) else { continue };
+            for he in hes {
+                let eid = s.mesh.hes[he].edge();
+                let (faces, _) = s.mesh.get_faces_sharing_edge(eid);
+                let neighbours = faces
+                    .iter()
+                    .filter(|&&x| x != fid && s.mesh.faces.get(x).map_or(false, |t| t.is_active()))
+                    .count();
+                if neighbours == 0 {
+                    orphans += 1;
+                }
+            }
+        }
+        orphans
+    };
+    let rect = orphan_edges("rect");
+    let ellipse = orphan_edges("ellipse");
+    assert_eq!(
+        rect, 0,
+        "a rect's top pieces have a neighbour across every edge"
+    );
+    assert_eq!(
+        ellipse, 2,
+        "TODAY the ellipse's do not — two edges with no face across them, which \
+         is exactly what drops those pieces out of the volume.\n\n\
+         The cause is a missing PRE-SPLIT, and it is in the draw rather than \
+         the arrangement. The re-derive never splits a preserved edge — \
+         `edges_to_remove` excludes `volume_edges` — so the wall keeps the whole \
+         rim it always had while the new top pieces get fresh edges between the \
+         crossing points. Whoever draws has to break the rim FIRST: a rect does \
+         it through `exec_draw_line`'s crossing split, a circle through \
+         `split_edges_at_circle_crossings`, and the ellipse does neither. \
+         `exec_draw_ellipse_as_curve` says so in as many words — \"the \
+         Circle-specific rim crossing-split is skipped for the ellipse MVP\".\n\n\
+         At 0 the ellipse has one too: retire this pin."
+    );
+}
