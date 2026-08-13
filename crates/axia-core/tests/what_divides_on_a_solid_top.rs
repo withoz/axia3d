@@ -433,6 +433,11 @@ fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
     s.mesh
         .create_box(DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
         .expect("box");
+    // `execute()` clears the face-AABB cache before dispatching, so do that too.
+    s.mesh.clear_face_aabb_cache();
+    // Production opens the transaction BEFORE it makes the face, so do that.
+    s.transactions.begin();
+    s.transactions.set_before_snapshot(s.scene_snapshot());
     let centre = DVec3::new(100.0, 0.0, TOP);
     let (cp, w, k, deg) = nurbs::ellipse(centre, 60.0, 33.0, DVec3::X, DVec3::Y);
     let anchor = s.mesh.add_vertex(cp[0]);
@@ -450,6 +455,8 @@ fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
     // for this to be the same call.
     s.create_shape("Ellipse (kernel-native)".to_string(), vec![fid]);
     s.intersect_faces_inner(&[fid]).expect("the Scene's re-derive entry");
+    s.transactions.set_after_snapshot(s.scene_snapshot());
+    s.transactions.commit();
 
     let (mut inside, mut hanging) = (0.0, 0.0);
     for (f, face) in s.mesh.faces.iter() {
@@ -487,18 +494,78 @@ fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
             })
         })
         .count();
-    // TODAY: two pairs, and NEITHER shares an edge — so this is not the scan
-    // misreading a shared boundary between neighbours, which was the first
-    // guess. A hanging sheet meets the solid's wall along the rim without
-    // sharing an edge with it, and contact of that kind is what the scan is
-    // counting.
+    // The repair only acts on COPLANAR pairs (a fold between faces at an angle
+    // is a different problem and it says so). So the number that decides
+    // whether it can reach these is how many of them are coplanar.
+    let coplanar = pairs
+        .iter()
+        .filter(|(a, b)| {
+            let (na, nb) = (s.mesh.faces[*a].normal(), s.mesh.faces[*b].normal());
+            na.normalize_or_zero().dot(nb.normalize_or_zero()).abs() >= 0.999
+        })
+        .count();
+    assert_eq!(
+        (pairs.len(), sharing_an_edge, coplanar),
+        (2, 0, 1),
+        "on a correctly tiled plane the scan still reports two pairs, neither \
+         sharing an edge, ONE of them coplanar — and a coplanar pair is one the \
+         post-draw repair can act on"
+    );
+
+    // So the repair must not act on it. It runs on every draw, so the next
+    // draw anywhere in the scene is what would reach this state — and the
+    // tiling has to survive it.
+    s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(-500.0, -500.0, TOP),
+        normal: DVec3::Z,
+        up: DVec3::X,
+        width: 20.0,
+        height: 20.0,
+    });
+    let mut after = 0.0;
+    for (f, face) in s.mesh.faces.iter() {
+        if !face.is_active() || face.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(f) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 || hi.x > 100.0 + 1e-3 {
+            continue;
+        }
+        if lo.x < -400.0 {
+            continue; // the far-away rect, not the host
+        }
+        after += s.mesh.face_area(f);
+    }
+    assert!(
+        (after - 40_000.0).abs() < 1.0,
+        "a later draw elsewhere must not let the repair carve this tiling back \
+         out — the top read {after:.4} afterwards. Without the shared-ground \
+         guard the coplanar pair above is taken and the host loses the lens"
+    );
+    // TODAY: two pairs, neither sharing an edge, ONE of them coplanar. A
+    // coplanar pair is one the post-draw repair could act on, so this looked
+    // like the answer — the repair undoing correct work, i.e. the plan's D5.
     //
-    // That is D5 of the plan, in its own words: "접촉은 손상이 아니고,
-    // coplanar 겹침은 손상이다 — 지금은 정확히 반대로 나온다". The plan has it
-    // as a precondition for the rollback GATE; it turns out the post-draw
-    // repair already consumes the same verdict, which is why a correctly tiled
-    // ellipse gets carved back out. Fixing the ellipse therefore means settling
-    // D5, not patching the ellipse.
+    // ⚠ IT IS NOT, and the correction is the point of this block. A guard
+    // making the repair require real shared GROUND rather than mere contact
+    // was written and tried FOUR ways — an absolute floor and a threshold
+    // relative to the smaller face, each both after the circle branch and
+    // ahead of every branch. The production ellipse reads the same 36,891 in
+    // all four, and removing the guard again breaks nothing. So the repair is
+    // not what carves, and the guard was reverted rather than landed inert.
+    //
+    // What this test does establish is the other half: every step of
+    // `exec_draw_ellipse_as_curve` replayed by hand — the AABB cache cleared
+    // as `execute` clears it, the transaction opened BEFORE the face is made,
+    // the face, the Shape, then this call — tiles to exactly 40,000. The real
+    // command does not. Everything between them that could differ has now been
+    // checked: normal, surface, plane point, ownership, both flags, the
+    // transaction, the cache, and the repair.
+    //
+    // Which means the next step is not another hypothesis. It is to instrument
+    // the real command — count the faces either side of its own
+    // `intersect_faces_inner` — because reading produces plausible stories
+    // faster than the code can correct them.
     assert_eq!(
         (pairs.len(), sharing_an_edge),
         (2, 0),
