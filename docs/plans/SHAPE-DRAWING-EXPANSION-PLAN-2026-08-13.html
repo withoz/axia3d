@@ -1,0 +1,580 @@
+<title>도형 그리기 확장 계획 — 면과 입체면 · 2026-08-13</title>
+<style>
+  :root {
+    --ground: #f6f7f9; --surface: #ffffff; --surface-2: #eef0f4;
+    --ink: #14161d; --ink-2: #3c4354; --ink-3: #6b7385;
+    --rule: #d6dae2; --rule-strong: #b3bac6;
+    --accent: #333366; --accent-soft: #e6e7f2;
+    --ok: #1c6b46; --ok-soft: #dcefe4;
+    --open: #8a5d0d; --open-soft: #f6ecd6;
+    --bad: #a02a26; --bad-soft: #f6dedd;
+    --shadow: 0 1px 2px rgba(20,22,29,.06), 0 8px 24px -16px rgba(20,22,29,.3);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e1016; --surface: #161923; --surface-2: #1d212c;
+      --ink: #e7e9ef; --ink-2: #b6bcca; --ink-3: #858da0;
+      --rule: #2a2f3c; --rule-strong: #3b4252;
+      --accent: #9aa0e2; --accent-soft: #22243a;
+      --ok: #63c396; --ok-soft: #16281f;
+      --open: #d7a63f; --open-soft: #2b2314;
+      --bad: #e8827c; --bad-soft: #2e1917;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px -16px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e1016; --surface: #161923; --surface-2: #1d212c;
+    --ink: #e7e9ef; --ink-2: #b6bcca; --ink-3: #858da0;
+    --rule: #2a2f3c; --rule-strong: #3b4252;
+    --accent: #9aa0e2; --accent-soft: #22243a;
+    --ok: #63c396; --ok-soft: #16281f;
+    --open: #d7a63f; --open-soft: #2b2314;
+    --bad: #e8827c; --bad-soft: #2e1917;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: "Pretendard","Pretendard Variable",-apple-system,"Apple SD Gothic Neo",
+                 "Segoe UI","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+    font-size: 16px; line-height: 1.7; -webkit-font-smoothing: antialiased; word-break: keep-all;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 120px; }
+  code, .num { font-family: ui-monospace,"Cascadia Mono","SFMono-Regular",Consolas,monospace;
+               font-variant-numeric: tabular-nums; font-size: .875em; }
+
+  header.mast { border-bottom: 2px solid var(--ink); padding: 56px 0 22px; margin-bottom: 40px; }
+  .eyebrow { font-family: ui-monospace,Consolas,monospace; font-size: 11px; letter-spacing: .16em;
+             text-transform: uppercase; color: var(--ink-3); margin: 0 0 14px; }
+  h1 { font-size: clamp(28px,4.2vw,42px); line-height: 1.16; letter-spacing: -.022em;
+       font-weight: 700; margin: 0 0 16px; text-wrap: balance; }
+  .standfirst { font-size: 17.5px; color: var(--ink-2); max-width: 62ch; margin: 0 0 24px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 26px;
+          font-family: ui-monospace,Consolas,monospace; font-size: 12px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  section { margin: 0 0 60px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px;
+              border-bottom: 1px solid var(--rule-strong); padding-bottom: 10px; margin-bottom: 24px; }
+  .sec-head .step { font-family: ui-monospace,Consolas,monospace; font-size: 12px;
+                    letter-spacing: .1em; color: var(--accent); flex: none; }
+  .sec-head h2 { font-size: clamp(20px,2.4vw,26px); letter-spacing: -.015em; font-weight: 650;
+                 margin: 0; text-wrap: balance; }
+  h3 { font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; margin: 28px 0 10px; }
+  p { max-width: 68ch; margin: 0 0 14px; }
+  p.lede { font-size: 17px; color: var(--ink-2); }
+  ul, ol { max-width: 68ch; margin: 0 0 14px; padding-left: 1.25em; }
+  li { margin-bottom: 6px; }
+
+  .chip { display: inline-block; font-family: ui-monospace,Consolas,monospace; font-size: 11px;
+          letter-spacing: .04em; padding: 2px 8px; border-radius: 2px; white-space: nowrap; vertical-align: 1px; }
+  .chip.ok { background: var(--ok-soft); color: var(--ok); }
+  .chip.open { background: var(--open-soft); color: var(--open); }
+  .chip.bad { background: var(--bad-soft); color: var(--bad); }
+  .chip.neutral { background: var(--surface-2); color: var(--ink-2); }
+
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px;
+              background: var(--surface); margin: 0 0 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+             font-weight: 600; background: var(--surface-2); border-bottom: 1px solid var(--rule-strong); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n { font-family: ui-monospace,Consolas,monospace; font-variant-numeric: tabular-nums;
+         text-align: right; white-space: nowrap; }
+  caption { caption-side: bottom; text-align: left; font-size: 12.5px; color: var(--ink-3); padding: 10px 14px 12px; }
+
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft);
+          padding: 15px 18px; border-radius: 0 3px 3px 0; margin: 0 0 20px; max-width: 72ch; }
+  .note p:last-child { margin-bottom: 0; }
+  .note .tag { font-family: ui-monospace,Consolas,monospace; font-size: 11px; letter-spacing: .1em;
+               text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 5px; }
+  .note.warn { border-left-color: var(--open); background: var(--open-soft); }
+  .note.warn .tag { color: var(--open); }
+
+  pre { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+        padding: 14px 16px; overflow-x: auto; font-family: ui-monospace,Consolas,monospace;
+        font-size: 12.5px; line-height: 1.6; color: var(--ink-2); margin: 0 0 18px;
+        font-variant-numeric: tabular-nums; }
+
+  .stage { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+           border-radius: 0 3px 3px 0; padding: 20px 22px; margin: 0 0 16px; box-shadow: var(--shadow); }
+  .stage.first { border-left-color: var(--ok); }
+  .stage.later { border-left-color: var(--ink-3); }
+  .stage > h3 { margin-top: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .stage .id { font-family: ui-monospace,Consolas,monospace; font-size: 12px; color: var(--ink-3); letter-spacing: .06em; }
+  .stage p:last-child, .stage ul:last-child, .stage dl:last-child { margin-bottom: 0; }
+
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 14.5px; margin: 14px 0 0; }
+  dl.kv dt { color: var(--ink-3); font-size: 12.5px; padding-top: 2px; }
+  dl.kv dd { margin: 0; }
+
+  .flow { font-family: ui-monospace,Consolas,monospace; font-size: 13px; color: var(--ink-2);
+          background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+          padding: 16px 18px; overflow-x: auto; margin: 0 0 16px; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 20px; font-size: 13px;
+           color: var(--ink-3); max-width: 72ch; }
+  @media (max-width: 640px) { .wrap { padding: 0 18px 80px; } }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">확장 계획 · 도형 그리기 (면 + 입체면) · 2026-08-13</p>
+  <h1>결함 넷이 한 가정의 네 증상이다.<br>입체 위에서 arrangement 를 켜는 것이 확장이다.</h1>
+  <p class="standfirst">
+    <code>FACE-PIPELINE-PLAN-2026-08-13</code> 을 코드로 검증한 검토 결과와, 그 위에 세우는
+    도형 그리기 확장 계획이다. 계획서의 진단은 전부 코드에서 확인됐다. 다만 D1·D2·D7 과
+    계획서가 빠뜨린 잔존 두 건은 별개 결함이 아니라 <b>"호스트는 시트다"라는 한 가정</b>의
+    증상들이고, 그 가정을 제거하는 것이 이 확장의 축이다. AixiAcad 는 같은 문제를 이미
+    풀어 본 기록을 갖고 있고, 저작권이 사용자 본인이라 차용에 제약이 없다.
+  </p>
+  <div class="meta">
+    <span><b>기준</b> main <code>d3b4b19</code> (#121) — 검증은 본 워크트리에서 직접</span>
+    <span><b>전제</b> PR #122 (<code>444aa30</code>) 는 <b>main 에 아직 없다</b></span>
+    <span><b>차용원</b> <code>D:\AixiAcad\engine</code> (read-only · 본인 저작권)</span>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="step">01</span><h2>계획서 검토 — 채택 · 정정 · 누락</h2></div>
+
+  <h3>채택 (코드로 재확인한 것)</h3>
+  <ul>
+    <li><b>0단계 선행 원칙</b> — 계측기(<code>face_area</code> · <code>point_in_face</code> ·
+        <code>face_bounds</code>)를 고치지 않으면 1~3단계 판정을 믿을 수 없다. 동의.</li>
+    <li><b>D2 진단</b> — 직접 확인: <code>detect_circle_containment</code> 과
+        <code>detect_polygon_containment</code> (annulus.rs) 모두 "안에 든 것"만 찾는다.
+        <b>그린 도형이 호스트를 삼키는 방향(역포함)은 어느 검출기에도 없고</b>,
+        <code>auto_intersect_coplanar</code> 는 crossing 을 요구한다. 계획서의 추정이 맞다.</li>
+    <li><b>D6 진단</b> — 직접 재측정: <code>carve.rs</code> HARD 0건, <code>annulus.rs</code> 0건,
+        <code>mesh.rs</code> 의 곡면 split 4종(<code>split_{sphere,cylinder,cone,torus}_face_by_circle</code>)
+        구간 0건. <code>Mesh::split_face</code> 의 <code>set_flags(HARD)</code> 덮어쓰기 불일치도 그대로다.</li>
+    <li><b>3.5 → 4 의존</b> — SI 판정 방향(접촉≠손상, coplanar 겹침=손상) 확정 전에
+        게이트를 조이면 정상 모델이 막힌다. 동의.</li>
+    <li><b>공통 규칙</b> — 변이 검증 · 대조군 · 원인 확정 전 수정 금지 · 단계별 PR. 전부 유지.</li>
+  </ul>
+
+  <h3>정정 셋</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>정정</th><th>근거 (직접 확인)</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>R1</b></td>
+          <td>계획서의 기준 커밋 <code>444aa30</code> (PR #122, 링/구멍 판정 fix)이
+              <b>main 에 없다</b>. 계획의 "위상 위반 0"은 그 fix 를 포함해 잰 수치다.
+              <b>첫 행동은 PR #122 랜드</b>여야 하고, 그 전의 어떤 측정도 계획서 수치와
+              비교하면 안 된다.</td>
+          <td><code>git merge-base --is-ancestor 444aa30 main</code> → NOT in main.
+              브랜치 <code>fix/ring-is-not-stacked-on-its-own-hole</code> 에만 존재.</td>
+        </tr>
+        <tr>
+          <td><b>R2</b></td>
+          <td>계획서 하단 "0단계 착수분이 커밋 없이 남아 있음"은 낡았다 — 실제로는
+              <code>work/face-pipeline-2026-08-13</code> 에 wip 커밋으로 존재한다.
+              단 그 wip 은 미리뷰·미검증이므로 상태 자체(승인 대기)는 유효.</td>
+          <td><code>9241217</code> wip(area) — mesh.rs +123줄.</td>
+        </tr>
+        <tr>
+          <td><b>R3</b></td>
+          <td>결함 목록에 D-번호가 없는 <b>잔존 2건</b>이 빠졌다. 아래에 <b>D8 · D9</b> 로
+              부여한다. D8 은 §04 "빠진 축" 표에도 없다 — 코드가 안내문(Toast)으로
+              우회 중인, 이미 알려진 실패다.</td>
+          <td><code>describe_overlap</code> (scene.rs) 실측 주석: 입체 면 위
+              "rect then circle REFUSED / anything with an ellipse REFUSED, in either order".</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>추가 결함 ID</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>결함</th><th>증거</th><th>현재 처치</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>D8</b></td>
+          <td>입체 면 위 <b>rect 먼저 → circle 겹쳐 그리기</b>가 안 된다 (반대 순서는 됨)</td>
+          <td>2026-08-05 실측, <code>describe_overlap</code> 주석에 매트릭스로 고정</td>
+          <td>Toast 로 "원을 먼저 그리라"고 안내 — 우회이지 해결이 아니다</td>
+        </tr>
+        <tr>
+          <td><b>D9</b></td>
+          <td>입체 면 위 <b>타원·자유곡선이 무엇과든 겹치는</b> 경우 — 어느 순서도 안 됨</td>
+          <td>같은 실측. 시트에서는 <code>freeform_overlap</code> arrange 가 처리한다 (0 violations)</td>
+          <td>Toast 안내. 시트 경로가 입체에서 꺼져 있는 것이 원인</td>
+        </tr>
+      </tbody>
+      <caption>D8·D9 는 새 버그 발견이 아니라 이미 측정된 실패에 번호를 붙인 것이다 (LOCKED #103).</caption>
+    </table>
+  </div>
+
+  <h3>구조 관찰 — 계획서 자신의 방침을 결함에도 적용한다</h3>
+  <p>
+    계획서 §01 의 방침은 "세 계측기는 같은 가정 하나를 공유한다 — 그 가정을 제거한다"였다.
+    같은 렌즈로 결함을 보면: <b>D1(모서리 걸침) · D2(역포함) · D7(구멍 있는 호스트) ·
+    D8(rect→circle) · D9(자유곡선)는 전부 "호스트는 시트다"라는 한 가정의 증상</b>이다.
+  </p>
+  <p>
+    근거는 코드가 스스로 적어 뒀다. <code>circle_overlap.rs</code> 머리주석:
+    <i>"On a SOLID's face the same draw is REFUSED: that re-derive is deliberately skipped
+    wherever the affected region touches a solid, because re-arranging the region there
+    re-cuts edges the solid's walls are standing on."</i> — 시트에서 다 되는 이유는 arrangement
+    (<code>rebuild_coplanar_faces_analytic_scoped</code>, scene.rs 의 δ-4a "sheet only")가 돌기
+    때문이고, 입체에서 일부만 되는 이유는 그 빈자리를 <b>조합별 특수 경로</b>가 메우기 때문이다
+    — 원×원 하나에 468줄(<code>circle_overlap.rs</code>), containment 4종
+    (<code>assign_circle_holes_innermost</code> · <code>assign_polygon_holes</code> ·
+    <code>detect_circle_containment</code> · <code>detect_polygon_containment</code>),
+    convex 한정 <code>auto_intersect_coplanar</code>. 특수 경로가 없는 조합(D8·D9)이
+    정확히 안 되는 조합이다.
+  </p>
+  <div class="note">
+    <span class="tag">따라서</span>
+    <p>
+      계획서 1·2단계를 개별 패치로 소진하지 말고, <b>분기 지점 특정(계획서 1단계의 원칙
+      그대로) → 입체 면 위 면-국소 arrangement(트랙 A)</b> 로 푼다. D1·D2·D7·D8·D9 는
+      그 트랙의 <b>합격 기준</b>이 된다. 특수 경로를 하나 더 짜면(D8 용 rect×circle,
+      D9 용 ellipse×…) 조합 수만큼 코드가 늘고, 다음 곡선 종류가 들어올 때 또 는다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">02</span><h2>확장 트랙</h2></div>
+
+  <div class="stage first">
+    <h3><span class="chip ok">전제 P</span> PR #122 랜드 + 0단계(계측기) 완성 <span class="id">즉시 · 반나절</span></h3>
+    <p>
+      #122 없이는 어떤 측정도 계획서 수치와 비교 불가(R1). 0단계는 기존 계획 그대로 —
+      <code>face_area</code> 곡선 배부름(Arc 닫힌 해 + 나머지는 곡선-현 일반식),
+      <code>point_in_face</code> · <code>face_bounds</code> 자기루프 통로.
+      wip <code>9241217</code> 을 리뷰·회귀 붙여 완결한다.
+    </p>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip bad">트랙 A</span> 입체 평면 면 위 — 면-국소 arrangement <span class="id">D1·D2·D7·D8·D9 · 2~3주 · 확장의 축</span></h3>
+    <p>
+      <b>설계 원칙: 재유도(제거 후 재구축)가 아니라 in-place 분할.</b> 입체에서 재유도가
+      꺼진 이유는 벽이 딛고 선 rim 엣지를 다시 자르기 때문이었다. 그러므로 호스트 면의
+      <b>rim 은 보존</b>하고, 내부에만 새 경계를 심는다. 이미 있는 부품으로 조립한다:
+    </p>
+    <ul>
+      <li><b>2D 영역 계산</b> — <code>boundary_kernel::analytic_arrange</code> (line/circle 정확 CCI,
+          freeform 포함). 시트가 이미 쓰는 그 코드다. 입력만 "호스트 면의 경계 + 그린 곡선"으로
+          국소화한다.</li>
+      <li><b>in-place 수술 패턴</b> — 특수 경로들이 이미 증명한 것: <code>annulus</code> 의
+          twin-loop reparent, <code>circle_overlap</code> 의 호 분해 + 중점 분할(2-edge bigon 회피).
+          일반화 대상이지 폐기 대상이 아니다.</li>
+      <li><b>봉합</b> — <code>t_junction.rs</code> 의 <code>heal_t_junction</code> (이미 HARD 계약 준수).</li>
+      <li><b>게이트 + 롤백</b> — <code>guard_imprint</code> 가 이미 스냅샷을 뜬다. 결과 판정만
+          watertight(소유 볼륨 한정)로 바꿔 단다.</li>
+    </ul>
+    <dl class="kv">
+      <dt>AixiAcad 교훈</dt>
+      <dd>① <b>면마다 split → apply → heal 을 즉시</b> — 봉합을 미루면 이웃 면이 각자 정점을
+          만들어 봉합 불가가 된다. 같은 두 번의 절단이 봉합 시점만으로 "깨진 솔리드 대 완전한
+          watertight"로 갈린 실측이 있다 (<code>surface_following_matrix.rs</code>).
+          ② heal 허용오차는 <b>곡률 기반</b> <code>max(1e-3, 3 × 최대 현오차)</code> — 고정
+          1e-3 은 곡면에서 조용히 아무것도 안 한다 (실측: 실린더 세로 chord heal=0).
+          ③ 실패 시 <b>통째 롤백</b> — 부분 성공을 남기지 않는다.</dd>
+      <dt>산출물 형태</dt>
+      <dd>arrangement 가 처음부터 <b>RebuildReport(FaceLineage 포함)</b> 를 낸다 — 트랙 E 가
+          그 보고서를 소비해 소유권·재질을 승계한다. 소유권을 나중에 덧대는 게 아니라
+          op 산출물에 실어 나르는 구조 (ADR-312 정합).</dd>
+      <dt>은퇴 로드맵</dt>
+      <dd>합격 기준이 닫힐 때마다 특수 경로가 하나씩 은퇴한다 — circle_overlap(원×원) →
+          containment 4종 → <code>describe_overlap</code> 의 우회 안내문. 각각 pinned
+          테스트가 "은퇴하라"고 알리는 구조(계획서 2단계 패턴)를 그대로 쓴다.
+          <b>은퇴 전까지 특수 경로는 산 채로 대조군이다.</b></dd>
+      <dt>합격 기준</dt>
+      <dd>D1(바깥 조각 존재, 시트/입체 대칭) · D2(<span class="num">165,664 → 125,664</span>) ·
+          D7(구멍 있는 호스트 위 중첩 그리기) · D8(rect→circle 순서 무관) ·
+          D9(타원·자유곡선, 시트와 동일 결과) · 기존 36조합 무회귀 ·
+          <code>volume_face_count</code> 불감소.</dd>
+      <dt>순서</dt>
+      <dd>착수 전 <b>분기 지점 특정</b>(계획서 1단계 원칙): 같은 입력을 시트/입체 두 경로에
+          넣고 region 목록이 갈라지는 지점을 확인한 뒤 시작한다. MVP 는 D8(rect×circle) —
+          가장 흔한 사용자 조합이고 대조군(circle×circle 특수 경로)이 살아 있다.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">트랙 B</span> 여러 면을 지나는 그리기 — 표면 각인 <span class="id">신규 능력 · 1주 · A 와 병행 가능</span></h3>
+    <p>
+      지금 우리 <code>surface_path.rs</code> 는 <b>경로 계산까지만</b> 한다 — 인접 2면을
+      unfold 해 꺾임점을 정확히 구하고, 인접하지 않으면 <code>NotAdjacent</code> 로 명시
+      거부한다. 각인(면 분할)은 없다. AixiAcad 의 <code>imprint_surface_path</code> 는
+      그 다음 절반이다: 경로를 같은-면 구간으로 묶고, 전이 접점을 <b>먼저 전부</b> 구해
+      양쪽 조각 끝에 넣고, 면 순서대로 split → apply → <b>즉시 heal</b>, 마지막에
+      watertight 게이트 + 통째 롤백.
+    </p>
+    <dl class="kv">
+      <dt>v1 한계 채택</dt>
+      <dd>AixiAcad 가 계측으로 확정한 한계를 그대로 갖고 시작한다 — 면을 완전히 가로지르지
+          않는 조각(열린 경로의 시작·끝 면)은 분할하지 않고 건너뛰며 기록한다. 같은 면
+          재방문 경로는 거부한다(첫 분할로 면 id 가 사라진다). <b>닫힌 경로(상자를 감는 띠)는
+          전 구간 완전 통과라 온전히 동작</b> — 이것이 대표 시연 사례다.</dd>
+      <dt>우리 부품</dt>
+      <dd>전이 접점 = <code>surface_path</code> unfold(평면 인접에서 정확해) ·
+          면 내 분할 = <code>split_face_by_chain</code>(HARD 계약 이미 준수) ·
+          봉합 = <code>heal_t_junction</code> · 스냅샷 = <code>guard_imprint</code>.
+          부족한 것은 <b>오케스트레이션 함수 하나</b>다.</dd>
+      <dt>합격 기준</dt>
+      <dd>상자 4면을 감는 닫힌 띠 → 새 면 생성 + 소유 볼륨 watertight 유지 ·
+          모서리를 넘는 rect(두 면에 걸침) → 양면 각각 분할 ·
+          실패 주입 시 byte-identical 롤백(변이 검증).</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">트랙 C</span> 곡면 호스트 — 측정 먼저, 계약부터 <span class="id">D6 + 미측정 축 · D6 는 1일 · 즉시 가능</span></h3>
+    <p>
+      곡면 위 <b>단일</b> 도형 그리기는 이미 넓다 — 원은 4곡면 완료(ADR-202/257/263),
+      자유곡선·베지어는 open seam, OSNAP 도 곡면 위에서 동작한다(LOCKED #104).
+      <b>곡면 위 도형 겹침은 0회 측정</b>이다. 미측정을 결함으로 단정하지 않는다 —
+      측정 매트릭스가 먼저다.
+    </p>
+    <dl class="kv">
+      <dt>C-0 측정</dt>
+      <dd>곡면 4종 × {원×원 겹침 · 원×원 포함 · seam 곡선과 교차} 매트릭스.
+          ⚠ 계측기 함정: 곡면 면은 SURFACE 로 읽는 판독기(<code>face_outer_area</code> ·
+          <code>face_bounds</code> · <code>face_outward_flux</code>)만 쓴다 —
+          폴리곤 판독기는 곡면에서 거짓말한다(0단계의 교훈 그대로).</dd>
+      <dt>C-1 D6 fix</dt>
+      <dd>곡면 split 4종 + <code>annulus.rs</code> + <code>carve.rs</code> 에 HARD 부여
+          (기존 <code>mark_edges_hard</code> safe-OR 헬퍼 재사용) +
+          <code>Mesh::split_face</code> 의 덮어쓰기 → OR 정리. 독립 작업, 언제든.
+          곡면을 원으로 자르면 seam 양쪽 normal 이 일치해 분할선이 렌더에서 숨는
+          정확히 그 케이스다. 변이 검증: HARD 를 빼면 wireframe 에서 분할선이 사라져야 한다.</dd>
+      <dt>C-2 곡면 겹침</dt>
+      <dd>C-0 결과에 따라, 트랙 A 의 면-국소 arrangement 를 <b>호스트 파라미터 공간</b>으로
+          확장한다 — 평면=평면기저(정확), 원통·콘=unroll(전개 가능이라 정확),
+          구·토러스=param+metric 보정. 이 3-tier 는 LOCKED #87 의 곡선 표현 정책과 같은
+          기준이라 새 정책이 아니다. AixiAcad 의 <code>split_curved_face_by_curve</code>
+          (Planar/Cylindrical/Spherical/Cone 통일 진입 + wrap-around seam 처리)가 설계 참고.</dd>
+      <dt>C-3 곡면 위 직선</dt>
+      <dd>2-클릭 직선은 기하적으로 불가(측지선 degenerate — LOCKED #104, 재론 금지).
+          rim→내부→rim <b>3-클릭 폴리라인</b>은 실측으로 가능 — DrawLine 이 세그먼트마다
+          커밋하는 상태기계를 체인 수집으로 바꾸는 TS 작업이다. 별도 소단계.</dd>
+    </dl>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip open">트랙 D</span> 기울어진 · 임의 평면 <span class="id">미측정 축 · 측정 반나절</span></h3>
+    <p>
+      36조합은 전부 <code>z=0</code> 또는 <code>z=100</code> 축정렬이었다. 3점 작업평면
+      (<code>tool-plane</code>)과 sketch offset/tilt 은 이미 있으므로(LOCKED #104),
+      비어 있는 것은 <b>측정</b>이다. AixiAcad 의 <code>omni_plane_matrix</code> 설계를
+      차용한다: 평면 4종(XY·XZ·YZ·<b>비축정렬 사선</b>) × 닫힌 도형 도구 전부,
+      판정은 "면 생성 + 법선 정합"만 — 면적 하드코딩은 취약해서 뺀다는 것까지 그대로.
+      사선이 핵심이다: 축정렬 3종만 재면 "축정렬 전용" 코드를 놓친다.
+    </p>
+  </div>
+
+  <div class="stage">
+    <h3><span class="chip bad">트랙 E</span> 소유권 상속 — 계획서 3단계의 구체화 <span class="id">D4 · 1주 · A 산출물의 소비자</span></h3>
+    <p>
+      계획서 3단계를 유지하되 형태를 확정한다: 트랙 A 의 arrangement 가 내는
+      <b>RebuildReport 를 단일 진실원천</b>으로 삼고, 소유권·재질이 그 보고서의
+      lineage 를 따라 승계된다. AixiAcad 의 검증된 형태를 이식한다 —
+      <code>FaceLineage {Preserved / Split(Vec) / Merged / Removed}</code> +
+      vid-set 기반 매칭(<b>좌표 무관</b> — centroid 휴리스틱을 명시적으로 deprecate 한
+      이력까지 참고 가치가 있다).
+    </p>
+    <dl class="kv">
+      <dt>같은 통로에 태울 것</dt>
+      <dd><code>merge_faces_by_edge</code> — 현재 상속이 전혀 없음(측정: box+선 1개 →
+          unowned 2, IFC 에 고아 export). 5개 WASM 콜사이트가 mesh 직행이다.
+          ⚠ <b>사용자 결정 필요</b>: 두 피병합 면의 owner 가 다를 때 누가 상속하는가.</dd>
+      <dt>선행 정리</dt>
+      <dd><code>wip/rect-on-solid-belongs-to-solid</code> 의 (a2) 완성 —
+          입체가 소유하고 Shape 는 <code>Scene.shape_to_drawn_faces</code> 로 기억
+          (Scene-level map, ADR-091 D-β 규칙). DrawWallTool·SliceTool·boss E2E 가
+          기억 쪽을 읽도록 전환.</dd>
+      <dt>합격 기준</dt>
+      <dd>36조합 <code>opened</code> 7 → 0 · Slice · IFC · 승격 회귀 ·
+          legacy <code>.axia</code> 의 죽은 id 필터(#117 이전 파일).</dd>
+    </dl>
+  </div>
+
+  <div class="stage later">
+    <h3><span class="chip neutral">트랙 F</span> 퍼즈 하네스 + 게이트 <span class="id">계획서 3.5 · 4 · 5단계 유지</span></h3>
+    <p>
+      계획서의 순서를 그대로 따른다 — 3.5(SI 판정 방향: 접촉≠손상 / coplanar 겹침=손상)를
+      확정한 뒤에만 4(그리기 롤백 게이트)를 켠다. 5단계 퍼즈는 AixiAcad
+      <code>fuzz_modeling.rs</code> 구조를 이식한다: 결정적 LCG(seed 재현) ×
+      100세션 × 50연산 × 매 연산 후 invariant 검증 + 실패 시 seed·op 로그.
+      36조합은 상상한 조합이고, 상상 못 한 조합은 이것이 답이다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">03</span><h2>AixiAcad 차용 매트릭스</h2></div>
+
+  <p class="lede">
+    라이선스: <code>D:\AixiAcad\engine\LICENSE</code> = "AixxiA Engine, Copyright (c) 2026 WyKo
+    &lt;withoz1111@gmail.com&gt;, All Rights Reserved" — <b>사용자 본인 저작물</b>이므로 본인
+    프로젝트 간 이식에 제약이 없다. 저장소는 git 없는 read-only — <b>복사로 가져오고 참조하지
+    않는다</b>. 타입 체계가 다르므로(그쪽 <code>Form</code>/slotmap, 우리 <code>Mesh</code>/DCEL)
+    코드 줄이 아니라 <b>알고리즘·순서·상수·테스트 설계</b>를 이식한다.
+  </p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>자산</th><th>위치</th><th>무엇이 검증돼 있나</th><th>차용 형태</th><th>트랙</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>imprint_surface_path 의 순서</b></td>
+          <td><code>form.rs:4725</code></td>
+          <td>면마다 split→apply→<b>즉시</b> heal. 봉합 시점 하나로 "깨진 솔리드 대 watertight"가
+              갈린 실측. 전이 접점은 넣기 전에 전부 계산(넣으면서 구하면 끝점이 바뀜)</td>
+          <td>패턴 이식 (오케스트레이션 구조 + 실패 모드)</td>
+          <td>B · A</td>
+        </tr>
+        <tr>
+          <td><b>곡률 기반 heal 허용오차</b></td>
+          <td><code>form.rs:4860</code></td>
+          <td><code>max(1e-3, 3 × 최대 현오차)</code>. 고정 1e-3 은 곡면에서 무동작(실측 heal=0).
+              배수 3 은 SI 하네스 실측값</td>
+          <td>식 그대로</td>
+          <td>A · B · C</td>
+        </tr>
+        <tr>
+          <td><b>watertight 게이트 + 통째 롤백</b></td>
+          <td><code>form.rs:4826</code></td>
+          <td>소유 볼륨 한정 판정 → 실패 시 스냅샷 복원. 부분 성공 잔존 0</td>
+          <td>패턴 (우리 <code>guard_imprint</code> 스냅샷 재사용)</td>
+          <td>A · B</td>
+        </tr>
+        <tr>
+          <td><b>FaceLineage + RebuildReport</b></td>
+          <td><code>form.rs:196~231, 20569</code></td>
+          <td>Preserved/Split/Merged/Removed 4형 + vid-set 매칭(좌표 무관) + 재질 승계.
+              selection 재매핑·undo·preview 의 단일 진실원천으로 운영된 이력</td>
+          <td>타입 + 알고리즘 이식</td>
+          <td>E · A</td>
+        </tr>
+        <tr>
+          <td><b>split_curved_face_by_curve</b></td>
+          <td><code>form.rs:1329</code></td>
+          <td>Planar/Cylindrical/Spherical/Cone <b>통일 진입</b> + wrap-around seam(A2.3.1).
+              targeted(1면만) · deterministic · lineage 명시</td>
+          <td>설계 참고 (우리는 per-surface 4종 분산)</td>
+          <td>C</td>
+        </tr>
+        <tr>
+          <td><b>CutTube 해석적 사전판정</b></td>
+          <td><code>cut_overlap.rs</code></td>
+          <td>자르기 <b>전</b> 겹침 판정 + 교선 폴리라인 산출. "정점만 보면 0건"(선분 관통
+              필요) 실측. 경계는 eps 물러난 진짜 내부만</td>
+          <td>설계 참고 — D5 방향(접촉/관통 구분) 결정 자료</td>
+          <td>3.5</td>
+        </tr>
+        <tr>
+          <td><b>fuzz_modeling 하네스</b></td>
+          <td><code>tests/fuzz_modeling.rs</code></td>
+          <td>결정적 LCG · 100×50 · 매 op invariant · seed 재현 로그</td>
+          <td>구조 이식 (op 목록은 우리 것으로)</td>
+          <td>F</td>
+        </tr>
+        <tr>
+          <td><b>omni_plane_matrix 측정 설계</b></td>
+          <td><code>tests/omni_plane_matrix.rs</code></td>
+          <td>평면 4종(사선 포함) × 도구 전부. 판정 최소화(면 생성 + 법선 정합)의 이유까지 명문</td>
+          <td>테스트 설계 차용</td>
+          <td>D</td>
+        </tr>
+        <tr>
+          <td><b>Bentley-Ottmann sweep</b></td>
+          <td><code>boundary_kernel/bentley_ottmann.rs</code></td>
+          <td>O((N+K) log N) — 6+ 사각형 누적 hang 을 잡은 이력. 단 <b>선분 전용</b></td>
+          <td><b>보류</b> — 우리 arrange 는 곡선 정확 CCI 가 강점이고 이미 국소 스코프.
+              프로파일링이 요구할 때만, 곡선 지원 설계와 함께</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><b>nsided Phase0-d 교훈</b></td>
+          <td><code>tests/nsided_junction_facts.rs</code></td>
+          <td>1케이스로 "bounded 확정" 보고 → 파라미터 스윕이 90°·정사각 전용임을 폭로.
+              구현 착수 전에 잡음</td>
+          <td>프로세스 교훈 — 각 트랙 합격 기준에 스윕 강제</td>
+          <td>전체</td>
+        </tr>
+      </tbody>
+      <caption>
+        surface_following_matrix 의 ok_*/pinned_* 관례는 이미 우리 저장소의 관례와 같아 차용 항목이 아니다.
+        theirs 의 <code>draw_beyond_face_boundary</code> 스위트는 우리 엔진에서 이미 4/4 통과 확인(2026-08 감사).
+      </caption>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="step">04</span><h2>순서와 의존</h2></div>
+
+  <div class="flow">P (#122 랜드 + 0단계 계측기)
+   │
+   ├─▶ A-분기특정(1일) ─▶ A 면-국소 arrangement (MVP=D8) ─▶ A 확장(D1·D2·D7·D9) ─▶ 특수 경로 은퇴
+   │                                                            │
+   │                                                            └─▶ E 소유권 (A 의 RebuildReport 소비)
+   ├─▶ B 표면 각인 — A 와 독립 (분할 기반, arrangement 불요)
+   ├─▶ C-0 곡면 측정 ─▶ C-2 곡면 겹침 (A 의 파라미터 공간 확장)
+   │        C-1 D6(HARD) — 완전 독립 · 즉시 가능 · 1일
+   │        C-3 곡선 3-클릭 — TS 상태기계 · 독립
+   ├─▶ D 임의 평면 측정 (omni matrix)
+   │
+   └─▶ (E 이후) 3.5 SI 방향 ─▶ 4 게이트 ─▶ F 퍼즈</div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>순번</th><th>단위 (PR)</th><th>기간</th><th>사용자가 얻는 것</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td>P — #122 랜드 + 0단계 완결</td><td class="n">반나절</td><td>믿을 수 있는 자(계측기)</td></tr>
+        <tr><td class="n">2</td><td>C-1 — D6 HARD 계약 (독립 선행)</td><td class="n">1일</td><td>곡면 분할선이 보인다</td></tr>
+        <tr><td class="n">3</td><td>A-분기특정 → A MVP (D8)</td><td class="n">1주</td><td>입체 위 rect→circle 이 된다</td></tr>
+        <tr><td class="n">4</td><td>A 확장 (D1 · D2 · D7 · D9)</td><td class="n">1~2주</td><td>입체 위 그리기가 시트와 같아진다</td></tr>
+        <tr><td class="n">5</td><td>E — 소유권 (FaceLineage)</td><td class="n">1주</td><td>opened 7→0 · IFC/Slice 안정</td></tr>
+        <tr><td class="n">6</td><td>B — 표면 각인</td><td class="n">1주</td><td>모서리를 넘는 그리기 · 감는 띠</td></tr>
+        <tr><td class="n">7</td><td>C-0 · D — 측정 2건</td><td class="n">1~2일</td><td>곡면 겹침 · 사선 평면의 사실 확보</td></tr>
+        <tr><td class="n">8</td><td>C-2 · C-3 — 곡면 확장</td><td class="n">측정 후 산정</td><td>곡면 위 겹침 · 곡면 위 선</td></tr>
+        <tr><td class="n">9</td><td>3.5 → 4 → F</td><td class="n">기존 계획</td><td>게이트 · 퍼즈</td></tr>
+      </tbody>
+      <caption>3·6 은 병행 가능(코드 영역 분리 — A 는 scene/arrange, B 는 surface_path/오케스트레이션).
+        각 단위는 별도 PR (LOCKED #44).</caption>
+    </table>
+  </div>
+
+  <h3>공통 규칙 (계획서에서 승계 + 추가)</h3>
+  <ul>
+    <li>모든 가드는 <b>변이 검증</b> — 끄면 실제로 실패하는지 눈으로 본다.</li>
+    <li><b>대조군 필수</b> — 특수 경로는 은퇴 전까지 산 채로 대조군.</li>
+    <li>원인 확정 전 코드 수정 금지 · <b>스윕 전 "bounded" 단정 금지</b> (nsided 교훈).</li>
+    <li>곡면 측정은 SURFACE 판독기만 — 폴리곤 판독기는 곡면에서 거짓말한다.</li>
+    <li>절대 <code>#[ignore]</code> 금지.</li>
+  </ul>
+
+  <div class="note warn">
+    <span class="tag">사용자 결정 대기 항목</span>
+    <p>
+      ① 트랙 E: 두 owner 가 다른 면을 merge 할 때 누가 상속하는가 (측정된 미해결의 선행 결정).
+      ② 트랙 A 착수 승인 — LOCKED #104 가 "계획 C 는 사용자 결재로 다음 계획"이라 기록한
+      바로 그 항목이다. ③ 계획서 0단계 wip(<code>9241217</code>)을 이어받을지, 리뷰 후
+      재작성할지.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>
+    이 문서의 코드 인용은 전부 본 워크트리(main <code>d3b4b19</code> 기준)와
+    <code>D:\AixiAcad\engine</code> 소스를 직접 읽어 확인한 것이다 — 프로브 실행 없음
+    (사용자 지시). 실측 수치는 계획서(<code>FACE-PIPELINE-PLAN-2026-08-13</code>)와
+    LOCKED #103/#104, describe_overlap 주석의 기록을 인용했다.
+  </p>
+</footer>
+
+</div>
