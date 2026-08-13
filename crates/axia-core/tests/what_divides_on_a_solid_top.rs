@@ -157,6 +157,181 @@ fn a_rect_straddling_the_tops_edge_keeps_its_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "the hanging piece exists");
 }
 
+/// What KIND of loss is it — was the outer boundary never drawn, or drawn and
+/// left without a face?
+///
+/// The answer decides where the fix goes. Edges past the host with no face on
+/// them mean the geometry arrived and only the face synthesis / re-derive
+/// missed it; no edges at all would mean the draw itself stopped at the host's
+/// rim, which is a different repair entirely.
+#[test]
+fn a_corner_straddles_outer_sides_survive_as_wires_without_a_face() {
+    let mut s = production_solid();
+    rect(&mut s, 100.0, 100.0, 100.0); // [50,150]² — only [50,100]² is on the top
+
+    let past = |lo: DVec3, hi: DVec3| hi.x > 100.0 + 1e-3 || hi.y > 100.0 + 1e-3;
+    let mut wires = 0usize; // edges past the host bounding NO active face
+    let mut faced = 0usize; // edges past the host that do bound one
+    for (eid, e) in s.mesh.edges.iter() {
+        if !e.is_active() {
+            continue;
+        }
+        let (Ok(a), Ok(b)) = (s.mesh.vertex_pos(e.v_small()), s.mesh.vertex_pos(e.v_large()))
+        else {
+            continue;
+        };
+        if (a.z - TOP).abs() > 1e-3 || (b.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if !past(a.min(b), a.max(b)) {
+            continue;
+        }
+        let (adj, _) = s.mesh.get_faces_sharing_edge(eid);
+        if adj
+            .iter()
+            .any(|&f| s.mesh.faces.get(f).map_or(false, |x| x.is_active()))
+        {
+            faced += 1;
+        } else {
+            wires += 1;
+        }
+    }
+    assert_eq!(
+        (wires, faced),
+        (0, 0),
+        "TODAY nothing of the rect survives past the host — not even a wire. \
+         So the loss is not 'a face was not synthesized', it is 'the boundary \
+         was removed'. The companion test says who removes it. When either \
+         count turns non-zero, retire this pin"
+    );
+}
+
+/// Who removed it: the closed-shape cleanup.
+///
+/// `exec_draw_rect` ends with `cleanup_dangling_topological_edges` (ADR-025
+/// P11 Phase 7), which deactivates leftover topological edges after a CLOSED
+/// shape on the grounds that they are synthesis artifacts. Drawing the same
+/// four sides as four LINES never reaches that call — and there the outer
+/// sides survive as bare wires. Same geometry, same host, same flags; the only
+/// difference is the cleanup.
+///
+/// So the L is lost in two steps: synthesis does not make it (its cycle mixes
+/// free edges with the solid's wall-shared rim), and the cleanup then removes
+/// the evidence — before the re-derive, which CAN tile it, ever runs
+/// (`axia-geo/tests/a_non_convex_outer_piece_is_made.rs` proves it tiles when
+/// the boundary is still there).
+#[test]
+fn drawing_the_same_corner_as_four_lines_keeps_the_outer_sides() {
+    let mut s = production_solid();
+    let c = [
+        DVec3::new(50.0, 50.0, TOP),
+        DVec3::new(150.0, 50.0, TOP),
+        DVec3::new(150.0, 150.0, TOP),
+        DVec3::new(50.0, 150.0, TOP),
+    ];
+    for i in 0..4 {
+        s.execute(Command::DrawLine {
+            start: c[i],
+            end: c[(i + 1) % 4],
+            surface_normal: Some(DVec3::Z),
+        });
+    }
+    let survivors = s
+        .mesh
+        .edges
+        .iter()
+        .filter(|(_, e)| e.is_active())
+        .filter(|(_, e)| {
+            let (Ok(a), Ok(b)) = (s.mesh.vertex_pos(e.v_small()), s.mesh.vertex_pos(e.v_large()))
+            else {
+                return false;
+            };
+            (a.z - TOP).abs() < 1e-3
+                && (b.z - TOP).abs() < 1e-3
+                && (a.x.max(b.x) > 100.0 + 1e-3 || a.y.max(b.y) > 100.0 + 1e-3)
+        })
+        .count();
+    assert!(
+        survivors > 0,
+        "four lines must leave the outer sides behind — if this is 0 the \
+         cleanup is NOT the difference and the companion test's conclusion \
+         needs rewriting"
+    );
+}
+
+/// The same corner-straddle on a SHEET host — is losing the L a solid-only
+/// thing, or does the draw path lose it wherever it happens?
+///
+/// The plan's Track A asks the 36 combinations to answer alike on a sheet and
+/// on a solid, so the pair is worth holding even while one of them is wrong.
+#[test]
+fn a_sheet_host_and_a_solid_host_answer_alike_for_a_corner_straddle() {
+    let sheet_outer = {
+        let mut s = Scene::new();
+        s.auto_intersect_on_draw = true;
+        s.auto_face_synthesis_on_draw = true;
+        s.face_rederive_on_draw = true;
+        s.freeform_overlap_on_draw = true;
+        s.execute(Command::DrawRectAsShape {
+            center: DVec3::new(0.0, 0.0, 0.0),
+            normal: DVec3::Z,
+            up: DVec3::X,
+            width: 200.0,
+            height: 200.0,
+        });
+        s.execute(Command::DrawRectAsShape {
+            center: DVec3::new(100.0, 100.0, 0.0),
+            normal: DVec3::Z,
+            up: DVec3::X,
+            width: 100.0,
+            height: 100.0,
+        });
+        s.mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| {
+                f.is_active()
+                    && f.normal().z.abs() > 0.999
+                    && s.mesh.face_bounds(*fid).map_or(false, |(_, hi)| hi.x > 100.0 + 1e-3)
+            })
+            .count()
+    };
+    let solid_outer = {
+        let mut s = production_solid();
+        rect(&mut s, 100.0, 100.0, 100.0);
+        pieces_past_the_edge(&s)
+    };
+    assert_eq!(
+        (sheet_outer, solid_outer),
+        (1, 0),
+        "TODAY the sheet keeps its L and the solid does not. Track A wants the \
+         two hosts to answer alike — when they do, this reads (1, 1): retire \
+         this pin and assert equality instead"
+    );
+}
+
+/// D1's mechanism, in one place, so the fix does not have to be re-derived:
+///
+/// 1. `arrange` handles it — two squares meeting at a corner give three
+///    regions, the L among them at exactly 7,500
+///    (`axia-geo/tests/a_non_convex_outer_piece_is_made.rs`).
+/// 2. the re-derive handles it — seeded with a rect FACE on a box top it
+///    produces all three, 47,500, invariants intact (same file).
+/// 3. but `exec_draw_rect` draws four LINES first, and the synthesis that
+///    follows does not make the L: its cycle mixes free edges with the solid's
+///    wall-shared rim.
+/// 4. `cleanup_dangling_topological_edges` (ADR-025 P11 Phase 7) then removes
+///    every scoped edge bounding no active face — closed cycle or not — so the
+///    L's boundary is gone before the re-derive is ever called.
+///
+/// Steps 3 and 4 are why nothing survives past the host, and why four separate
+/// lines (which never reach step 4) leave wires behind.
+///
+/// The fix therefore needs BOTH: let the arrangement run before the cleanup,
+/// AND widen its scope to the drawn shape's own extent — today's scope is the
+/// affected FACES' boxes (ADR-186 Option A, a perf mechanism), which stop at
+/// the host and so never reach the far sides at x = 150. Neither half alone is
+/// enough, which is why this is its own change and not a line in this one.
 #[test]
 fn the_outer_piece_of_a_corner_straddle_is_still_missing() {
     // D1, narrowed: same rect, straddling the CORNER — its outer region is an
