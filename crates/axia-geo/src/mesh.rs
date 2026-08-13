@@ -14261,10 +14261,19 @@ impl Mesh {
             }
         }
 
-        // Try polygon Newell first (≥3 verts) — exact on a planar face.
+        // Try polygon Newell first (≥3 verts) — exact on a planar face whose
+        // edges are all straight, and the chord polygon of one whose edges are
+        // not. An edge carrying an `Arc` bulges away from its chord, and that
+        // bulge is real area the shoelace never sees: cut a Ø100 circle across a
+        // square's edge and each half is a 3,927 mm² half-disc, while the
+        // triangle its three vertices trace measures 2,500 (measured
+        // 2026-08-13). The arcs survive the split — the pieces carry
+        // `Arc r=50 90°..180°` and so on — so the correction is exact, not a
+        // finer sampling.
         if verts.len() >= 3 {
             if let Some(n) = self.newell_raw(&verts) {
-                return n.length() * 0.5;
+                let unit = n.normalize_or_zero();
+                return n.length() * 0.5 + self.loop_arc_bulge(start, unit);
             }
         }
 
@@ -14288,6 +14297,118 @@ impl Mesh {
         }
 
         0.0
+    }
+
+    /// How much area one loop's arcs add beyond the polygon its vertices trace.
+    ///
+    /// The shoelace reads a chord where the boundary is an arc. For each edge
+    /// carrying an `Arc`, the difference is a circular segment,
+    /// `r²/2 · (θ − sin θ)` with `θ` the swept angle — exact for any θ in
+    /// (0, 2π), minor segment below π and major above. An arc bulging away from
+    /// the face adds that; one bulging into it takes it away, which is what a
+    /// bite out of a rectangle is. Side is read from the half-edge's own
+    /// direction against `normal`, so it follows the loop rather than assuming
+    /// a winding.
+    ///
+    /// Straight edges contribute nothing, so a polygonal face is untouched, and
+    /// a curve kind this does not know analytically still gets measured rather
+    /// than dropped — the fallback reads the shape the curve actually
+    /// tessellates to, so Bezier, B-spline, NURBS and anything added later are
+    /// carried without a new arm.
+    fn loop_curve_bulge(&self, loop_start: HeId, normal: DVec3) -> f64 {
+        if loop_start.is_null() || normal.length_squared() < 0.5 {
+            return 0.0;
+        }
+        let Ok(hes) = self.collect_loop_hes(loop_start) else {
+            return 0.0;
+        };
+        let mut total = 0.0;
+        for he in hes {
+            let Some(half) = self.hes.get(he) else { continue };
+            let Some(edge) = self.edges.get(half.edge()) else { continue };
+            let Some(curve) = edge.curve() else { continue };
+            let (Ok(src), dst) = (self.he_src(he), half.dst()) else { continue };
+            let (Ok(p0), Ok(p1)) = (self.vertex_pos(src), self.vertex_pos(dst)) else {
+                continue;
+            };
+            total += match curve {
+                // Exact: a circular segment is `r²/2 · (θ − sin θ)` for any θ in
+                // (0, 2π) — minor below π, major above. Sampling would only
+                // approach this from below.
+                crate::curves::AnalyticCurve::Arc {
+                    center, radius, normal: arc_n, basis_u, start_angle, end_angle,
+                } => {
+                    let sweep = (end_angle - start_angle).abs();
+                    if !sweep.is_finite() || sweep <= 1e-12 || *radius <= 0.0 {
+                        continue;
+                    }
+                    let segment = radius * radius * 0.5 * (sweep - sweep.sin());
+                    let basis_v = arc_n.cross(*basis_u).normalize_or_zero();
+                    let mid_angle = (start_angle + end_angle) * 0.5;
+                    let mid = *center
+                        + *basis_u * (radius * mid_angle.cos())
+                        + basis_v * (radius * mid_angle.sin());
+                    // Which side of its own chord does the arc bulge to?
+                    let side = (p1 - p0).cross(mid - p0).dot(normal);
+                    if !side.is_finite() || side.abs() <= 1e-12 {
+                        continue;
+                    }
+                    if side > 0.0 { segment } else { -segment }
+                }
+                // A full circle lives on a self-loop edge, whose chord has no
+                // length; `closed_curve_enclosed_area` already gives that face.
+                crate::curves::AnalyticCurve::Circle { .. } => continue,
+                // Everything else: close the sampled curve back over its own
+                // chord and read the signed area of what lies between them.
+                // Same answer as the arm above in the limit, and it needs to
+                // know nothing about the curve beyond how to sample it.
+                other => self.chord_gap_area(other, p0, p1, normal),
+            };
+        }
+        total
+    }
+
+    /// Signed area between a sampled curve and the chord joining its ends.
+    ///
+    /// Positive when the curve bows to the left of `p0 → p1` as seen along
+    /// `normal`, which is the direction that adds area to a loop running that
+    /// way. Returns 0 for anything it cannot sample into at least a triangle,
+    /// so an unmeasurable curve costs the caller nothing rather than a wrong
+    /// number.
+    fn chord_gap_area(
+        &self,
+        curve: &crate::curves::AnalyticCurve,
+        p0: DVec3,
+        p1: DVec3,
+        normal: DVec3,
+    ) -> f64 {
+        use crate::curves::CurveOps;
+        // Fine enough that the sampling error is far below the bulge it is
+        // measuring, and bounded so a huge curve cannot explode the sample count.
+        const BULGE_CHORD_TOL: f64 = 1e-3;
+        let Ok(mut pts) = curve.tessellate(BULGE_CHORD_TOL, self) else {
+            return 0.0;
+        };
+        if pts.len() < 3 {
+            return 0.0;
+        }
+        // The curve carries its own parameter direction, which need not be the
+        // half-edge's. Walk it from this half-edge's source.
+        let head = pts[0];
+        let tail = pts[pts.len() - 1];
+        if (head - p0).length_squared() > (tail - p0).length_squared() {
+            pts.reverse();
+        }
+        // Newell over the closed region: the sampled curve, then back along the
+        // chord. Dotting with `normal` gives the sign the loop cares about.
+        let mut twice_area = DVec3::ZERO;
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = if i + 1 == pts.len() { pts[0] } else { pts[i + 1] };
+            twice_area += a.cross(b);
+        }
+        let signed = twice_area.dot(normal) * 0.5;
+        if signed.is_finite() { signed } else { 0.0 }
     }
 
     /// ADR-253 P1 — enclosed area of a planar closed-curve disk face
