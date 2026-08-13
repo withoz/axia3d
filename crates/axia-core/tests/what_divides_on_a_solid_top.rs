@@ -416,6 +416,239 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
+/// The last bisect: the Scene's own re-derive wrapper, called directly.
+///
+/// One layer down the same box and ellipse tile into three regions
+/// (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`). This calls
+/// `intersect_faces_inner` — the Scene's entry to that same code — on a scene
+/// built by hand, so nothing else in the draw command can be involved.
+#[test]
+fn the_scenes_own_rederive_entry_tiles_an_ellipse_on_a_box() {
+    use axia_geo::curves::{nurbs, AnalyticCurve};
+
+    let mut s = Scene::new();
+    s.face_rederive_on_draw = true;
+    s.auto_intersect_on_draw = true;
+    s.freeform_overlap_on_draw = true;
+    s.mesh
+        .create_box(DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
+        .expect("box");
+    let centre = DVec3::new(100.0, 0.0, TOP);
+    let (cp, w, k, deg) = nurbs::ellipse(centre, 60.0, 33.0, DVec3::X, DVec3::Y);
+    let anchor = s.mesh.add_vertex(cp[0]);
+    let fid = s
+        .mesh
+        .add_face_closed_curve(
+            anchor,
+            AnalyticCurve::NURBS { control_pts: cp, weights: w, knots: k, degree: deg as u32 },
+            axia_core::scene::FORM_MATERIAL,
+        )
+        .expect("ellipse face");
+
+    // The real command registers the Shape BEFORE re-deriving, and the
+    // re-derive captures and re-adopts owners, so the ownership has to be here
+    // for this to be the same call.
+    s.create_shape("Ellipse (kernel-native)".to_string(), vec![fid]);
+    s.intersect_faces_inner(&[fid]).expect("the Scene's re-derive entry");
+
+    let (mut inside, mut hanging) = (0.0, 0.0);
+    for (f, face) in s.mesh.faces.iter() {
+        if !face.is_active() || face.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(f) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if hi.x > 100.0 + 1e-3 { hanging += s.mesh.face_area(f) } else { inside += s.mesh.face_area(f) }
+    }
+    assert!(
+        (inside - 40_000.0).abs() < 1.0,
+        "the top must tile exactly once — got {inside:.4}. If this is 40,000 \
+         the Scene's entry works and the loss is elsewhere in the draw command; \
+         if it is 36,891 the wrapper is where it goes"
+    );
+    assert!(hanging > 100.0, "and the hanging half is its own face — got {hanging:.4}");
+
+    // So the tiling is right when it leaves this call. What the draw command
+    // does next is the post-draw repair, which only acts on pairs the
+    // self-intersection scan reports — so ask what it would find on a result
+    // that is already correct.
+    let pairs = s.mesh.detect_self_intersections().intersecting_pairs;
+    let sharing_an_edge = pairs
+        .iter()
+        .filter(|(a, b)| {
+            s.mesh.edges.iter().any(|(eid, e)| {
+                if !e.is_active() {
+                    return false;
+                }
+                let (fs, _) = s.mesh.get_faces_sharing_edge(eid);
+                fs.contains(a) && fs.contains(b)
+            })
+        })
+        .count();
+    // TODAY: two pairs, and NEITHER shares an edge — so this is not the scan
+    // misreading a shared boundary between neighbours, which was the first
+    // guess. A hanging sheet meets the solid's wall along the rim without
+    // sharing an edge with it, and contact of that kind is what the scan is
+    // counting.
+    //
+    // That is D5 of the plan, in its own words: "접촉은 손상이 아니고,
+    // coplanar 겹침은 손상이다 — 지금은 정확히 반대로 나온다". The plan has it
+    // as a precondition for the rollback GATE; it turns out the post-draw
+    // repair already consumes the same verdict, which is why a correctly tiled
+    // ellipse gets carved back out. Fixing the ellipse therefore means settling
+    // D5, not patching the ellipse.
+    assert_eq!(
+        (pairs.len(), sharing_an_edge),
+        (2, 0),
+        "TODAY a correctly tiled plane still reports two overlaps, neither \
+         between faces that share an edge. When the scan stops counting \
+         contact this reads (0, 0): retire the pin and assert emptiness"
+    );
+}
+
+/// Which path is doing the damage — the re-derive, or the post-draw repair?
+///
+/// With `face_rederive_on_draw` ON and `auto_intersect_on_draw` OFF, the
+/// re-derive is the only thing that can act on the draw. If the result matches
+/// the full-production one, the re-derive is not contributing and the shape of
+/// the loss belongs to whatever runs after it.
+#[test]
+fn the_ellipse_loss_is_the_same_with_only_the_rederive_running() {
+    let measure = |rederive: bool, auto: bool| -> (f64, f64, usize) {
+        let mut s = Scene::new();
+        s.face_rederive_on_draw = rederive;
+        s.auto_intersect_on_draw = auto;
+        s.auto_face_synthesis_on_draw = true;
+        s.freeform_overlap_on_draw = true;
+        s.mesh
+            .create_box(DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
+            .expect("box");
+        s.execute(Command::DrawEllipseAsCurve {
+            center: DVec3::new(100.0, 0.0, TOP),
+            ref_dir: DVec3::X,
+            normal: DVec3::Z,
+            radius_x: 60.0,
+            radius_y: 33.0,
+        });
+        let (mut inside, mut hanging) = (0.0, 0.0);
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() || f.normal().z.abs() <= 0.999 {
+                continue;
+            }
+            let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+            if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+                continue;
+            }
+            if hi.x > 100.0 + 1e-3 {
+                hanging += s.mesh.face_area(fid);
+            } else {
+                inside += s.mesh.face_area(fid);
+            }
+        }
+        let sealed = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+            .count();
+        (inside, hanging, sealed)
+    };
+
+    let production = measure(true, true);
+    let rederive_only = measure(true, false);
+    let neither = measure(false, false);
+
+    assert_eq!(
+        (production.2, rederive_only.2),
+        (4, 4),
+        "TODAY the re-derive alone opens the box exactly as production does — \
+         inside {:.1}/{:.1}, hanging {:.1}/{:.1}",
+        production.0,
+        rederive_only.0,
+        production.1,
+        rederive_only.1
+    );
+    assert!(
+        (production.0 - rederive_only.0).abs() < 1.0,
+        "and to the same numbers, so the legacy auto-intersect is not the one \
+         carving: {:.4} vs {:.4}",
+        production.0,
+        rederive_only.0
+    );
+    // ⚠ AND WITH BOTH OFF IT READS 4 TOO — with nothing allowed to touch the
+    // draw at all. Nothing has happened to the box in that run: its six faces
+    // are the ones `create_box` made, and the ellipse is a floating sheet lying
+    // over the top. So `is_face_in_volume` is not reporting damage here, it is
+    // reporting that a coplanar sheet over a solid's face confuses it — the
+    // fourth instrument this area has caught doing that (the other three:
+    // `point_in_face`, `face_bounds`, `face_area`, PR #124).
+    //
+    // That matters beyond this test: `draw_freely_matrix`'s soundness grid uses
+    // exactly this count and calls a drop "the solid was opened". Its six
+    // ellipse rows are this artifact. The underlying defect is still real —
+    // the ellipse is not split at the rim — but "the box opened" was the
+    // instrument talking.
+    assert_eq!(neither.2, 4, "the same 4 with every auto behaviour off");
+    assert!(
+        (neither.0 - 36_891.08).abs() < 1.0,
+        "and the top is carved to the SAME 36,891 with every auto behaviour \
+         off — got {:.4}. So neither the re-derive nor the auto-intersect is \
+         doing it: the post-draw repair is ungated and runs regardless",
+        neither.0
+    );
+}
+
+/// The post-draw repair is ungated — it carves with every flag off.
+///
+/// Written to show that a floating ellipse leaves the box alone, and it does
+/// not: one of the six faces `create_box` made is gone even with the re-derive
+/// and the auto-intersect both switched off. Nothing else in the draw touches
+/// the host, so this is `subtract_double_covered_faces` — which no flag
+/// controls — taking the overlap out of the top.
+#[test]
+fn the_post_draw_repair_carves_the_host_with_every_flag_off() {
+    let mut s = Scene::new();
+    s.face_rederive_on_draw = false;
+    s.auto_intersect_on_draw = false;
+    s.auto_face_synthesis_on_draw = true;
+    s.freeform_overlap_on_draw = true;
+    let box_faces: Vec<_> = s
+        .mesh
+        .create_box(DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
+        .expect("box");
+    assert!(
+        s.mesh.face_set_manifold_info(&box_faces).is_closed_solid,
+        "the box starts closed"
+    );
+
+    s.execute(Command::DrawEllipseAsCurve {
+        center: DVec3::new(100.0, 0.0, TOP),
+        ref_dir: DVec3::X,
+        normal: DVec3::Z,
+        radius_x: 60.0,
+        radius_y: 33.0,
+    });
+
+    let still_there: Vec<_> = box_faces
+        .iter()
+        .copied()
+        .filter(|f| s.mesh.faces.get(*f).map_or(false, |x| x.is_active()))
+        .collect();
+    assert_eq!(
+        still_there.len(),
+        5,
+        "TODAY the top is replaced even with every flag off — the repair is \
+         not gated by them. At 6 the repair has learned to leave a host alone \
+         and this pin retires"
+    );
+    assert!(
+        s.mesh.verify_face_invariants().is_valid(),
+        "the carve at least leaves the invariants intact"
+    );
+}
+
 /// The ellipse straddling a solid's edge — the six openings in the grid.
 ///
 /// `draw_freely_matrix`'s soundness grid measures rect and circle crossing or
