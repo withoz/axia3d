@@ -110,6 +110,66 @@ fn assert_sound_partition(s: &Scene, label: &str) {
     );
 }
 
+// ── Track A's remaining rows, measured before being believed ───────────────
+//
+// D2 and D7 come from the plan's defect table and were written down in
+// 2026-08. Two of that table's rows turned out to be already fixed by the time
+// they were re-measured (D8 by ADR-281, and the ellipse row by the freeform
+// arm), so these are asserted rather than assumed — the same 40,000 partition
+// is the judge.
+
+/// D2 — the drawn shape SWALLOWS the host (reverse containment).
+///
+/// The plan's evidence: a Ø400 circle over a 200 × 200 top read 165,664 where
+/// 125,664 is the truth — the disc sat ON the top instead of the top becoming
+/// a hole in it, so 40,000 mm² was covered twice. Reverse containment reaches
+/// neither containment detector (both look for something INSIDE) nor
+/// `auto_intersect_coplanar` (which wants crossings), which is why it had no
+/// path at all.
+#[test]
+fn a_shape_that_swallows_the_top_does_not_cover_it_twice() {
+    let mut s = production_solid();
+    let before = active(&s);
+    // Ø400 circle centred on the 200 × 200 top: the top is strictly inside it.
+    circle(&mut s, 0.0, 200.0);
+    assert!(active(&s) > before, "the circle must appear");
+    let v = s.mesh.verify_face_invariants().violations;
+    assert!(v.is_empty(), "swallowing circle: violations {v:?}");
+    // The plane now holds the top (40,000) plus the ring around it
+    // (π·200² − 40,000 = 85,663.71), and nothing twice: 125,663.71.
+    let truth = std::f64::consts::PI * 200.0 * 200.0;
+    let a = top_plane_area(&s);
+    assert!(
+        (a - truth).abs() < 1.0,
+        "the plane must hold πr² = {truth:.4} once — got {a:.4} \
+         (truth + 40,000 = {:.4} means the top is covered twice)",
+        truth + 40_000.0
+    );
+}
+
+/// D7 — drawing on a host that already has a hole.
+///
+/// `single_face_containing_corners` returns None once the host carries an
+/// inner loop, so the interior fast-path is skipped and the draw falls through
+/// to the unified pipeline. The question is only whether the result is sound.
+#[test]
+fn a_second_shape_on_a_holed_top_still_tiles_it() {
+    let mut s = production_solid();
+    circle(&mut s, 0.0, 40.0); // a disc in the middle of the top
+    assert_sound_partition(&s, "first circle");
+    let mid = active(&s);
+    // A rect in the free part of the top, clear of the disc.
+    s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(-60.0, -60.0, TOP),
+        normal: DVec3::Z,
+        up: DVec3::X,
+        width: 50.0,
+        height: 50.0,
+    });
+    assert!(active(&s) > mid, "the rect must appear on a holed host");
+    assert_sound_partition(&s, "rect on a holed top");
+}
+
 #[test]
 fn a_rect_then_a_circle_divide_a_solid_top() {
     // The order describe_overlap's 2026-08-05 matrix called REFUSED.
@@ -356,14 +416,112 @@ fn a_corner_straddle_keeps_its_l_shaped_outer_piece() {
     assert_eq!(pieces_past_the_edge(&s), 1, "one hanging piece, the L");
 }
 
+/// The ellipse straddling a solid's edge — the six openings in the grid.
+///
+/// `draw_freely_matrix`'s soundness grid measures rect and circle crossing or
+/// straddling a solid's edge at 6 → 8 faces, sealed; the ELLIPSE at 6 → 7 with
+/// the solid opened. Six of twenty-seven, all the ellipse, on all three solid
+/// hosts. The re-derive handles this shape correctly on its own
+/// (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`), so the loss is in the
+/// Scene path — which is where D1's was too.
 #[test]
-fn an_ellipse_union_hole_still_drops_its_curve() {
-    // Rect × ellipse divides (it did not before the freeform arm), and the
-    // pieces carry their freeform boundary — the bulge-aware instruments read
-    // them near-exactly. The host's union HOLE loop does not carry it, so the
-    // hole deducts the chord polygon (~5% small) and the plane over-counts by
-    // ~238. Pinned at today's number; when hole loops keep their curves this
-    // goes red — retire it and fold the case into assert_sound_partition.
+fn an_ellipse_straddling_the_edge_leaves_its_piece_and_the_solid_sealed() {
+    let mut s = production_solid();
+    let sealed_before = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+        .count();
+    assert_eq!(sealed_before, 6, "the box starts sealed");
+
+    // Centred on the top's edge at x = 100, so half hangs over.
+    s.execute(Command::DrawEllipseAsCurve {
+        center: DVec3::new(100.0, 0.0, TOP),
+        ref_dir: DVec3::X,
+        normal: DVec3::Z,
+        radius_x: 60.0,
+        radius_y: 33.0,
+    });
+
+    let (mut inside, mut hanging) = (0.0, 0.0);
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() || f.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if hi.x > 100.0 + 1e-3 {
+            hanging += s.mesh.face_area(fid);
+        } else {
+            inside += s.mesh.face_area(fid);
+        }
+    }
+    let sealed = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(fid, f)| f.is_active() && s.mesh.is_face_in_volume(*fid))
+        .count();
+
+    // TODAY, measured: the ellipse is NOT cut at the host's boundary. It
+    // survives as ONE face spanning the rim (6,210 — the whole ellipse), the
+    // top is left with a bite exactly the size of the half that lay on it
+    // (40,000 − 3,109 = 36,891), and two of the box's six faces stop bounding
+    // the volume.
+    //
+    // Note what is NOT wrong: 36,891 + 6,210 accounts for 40,000 plus the
+    // 3,101 that hangs over, so nothing is covered twice and nothing is
+    // missing. The damage is only that the drawn shape was not SPLIT at the
+    // rim, which leaves the rim broken and the box open.
+    //
+    // That shape — host carved, drawn shape whole — is what the post-draw
+    // repair produces (`subtract_double_covered_faces` takes the difference
+    // from the face with more vertices, which is the top), so the re-derive
+    // did nothing here. It CAN do it: given the same box and ellipse it tiles
+    // all three regions and holds the invariants
+    // (`axia-geo/tests/an_ellipse_hanging_off_a_solid.rs`). What is not yet
+    // known is why the Scene's call does not reach that result — the ellipse
+    // face's normal, its Plane surface and the planar filter were each checked
+    // and are fine.
+    assert!(
+        (inside - 36_891.08).abs() < 1.0,
+        "TODAY the top carries a bite the size of the ellipse's inner half — \
+         got {inside:.4}. At 40,000 the shape is being split at the rim: \
+         retire this pin and assert the sealed box instead"
+    );
+    assert!(
+        (hanging - 6_210.3).abs() < 5.0,
+        "TODAY the whole ellipse survives as one unsplit face — got {hanging:.4}"
+    );
+    assert_eq!(
+        sealed, 4,
+        "TODAY the box opens — 4 of 6 faces still bound the volume. This is one \
+         of the grid's six openings, and all six are the ellipse"
+    );
+}
+
+/// D9′ was my own misreading, and this is what the numbers actually say.
+///
+/// I pinned "the plane reads 40,237.88, so the union hole under-deducts by
+/// ~238" from the total alone, without checking that a hole existed. It does
+/// not: the ellipse in that case is centred at x = 60 with rx = 50, so it
+/// reaches x = 110 and hangs 10 mm past the top's own edge at x = 100. The
+/// excess is that hanging piece — the same thing D1's L is, and correct.
+///
+/// The instrument was never at fault either: a hole bounded by a Bezier
+/// deducts its bulge to the closed form
+/// (`axia-geo/tests/a_freeform_hole_deducts_its_bulge.rs`), and arcs were
+/// settled in PR #124.
+///
+/// So the question the total cannot answer is asked properly here: what lies
+/// WITHIN the top's footprint must tile it exactly once, and what reaches past
+/// it is a hanging sheet, counted separately. Analytically the ellipse's cap
+/// beyond x = 100 is 3,000 · ∫√(1−t²)dt over [0.8, 1] ≈ 245.
+#[test]
+fn a_rect_and_an_ellipse_tile_the_top_and_the_ellipse_hangs_over() {
     let mut s = production_solid();
     rect(&mut s, 0.0, 0.0, 80.0);
     let mid = active(&s);
@@ -371,17 +529,41 @@ fn an_ellipse_union_hole_still_drops_its_curve() {
         center: DVec3::new(60.0, 0.0, TOP),
         ref_dir: DVec3::X, // ⚠ ref_dir BEFORE normal
         normal: DVec3::Z,
-        radius_x: 50.0,
+        radius_x: 50.0, // reaches x = 110 — past the top's edge at 100
         radius_y: 30.0,
     });
     assert!(active(&s) > mid, "the ellipse must divide, not vanish");
     let v = s.mesh.verify_face_invariants().violations;
     assert!(v.is_empty(), "rect-then-ellipse: violations {v:?}");
-    let a = top_plane_area(&s);
+
+    // Split the plane's faces by whether they stay inside the top's footprint.
+    let mut inside = 0.0;
+    let mut hanging = 0.0;
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() || f.normal().z.abs() <= 0.999 {
+            continue;
+        }
+        let Some((lo, hi)) = s.mesh.face_bounds(fid) else { continue };
+        if (lo.z - TOP).abs() > 1e-3 || (hi.z - TOP).abs() > 1e-3 {
+            continue;
+        }
+        if hi.x > 100.0 + 1e-3 {
+            hanging += s.mesh.face_area(fid);
+        } else {
+            inside += s.mesh.face_area(fid);
+        }
+    }
     assert!(
-        a > 40_000.0 + 100.0 && a < 40_000.0 + 400.0,
-        "TODAY the union hole under-deducts and the plane reads ~40,238 — \
-         got {a:.4}. At exactly 40,000 the hole kept its curve: retire this \
-         pin and use assert_sound_partition"
+        (inside + hanging - top_plane_area(&s)).abs() < 1e-6,
+        "the split must account for every face on the plane"
+    );
+    assert!(
+        hanging > 100.0 && hanging < 400.0,
+        "the ellipse's cap past x = 100 is ~245 by hand — got {hanging:.4}"
+    );
+    assert!(
+        (inside - 40_000.0).abs() < 1.0,
+        "what lies within the top must tile it exactly once — got {inside:.4} \
+         (this is the assertion the old 40,237.88 pin should have made)"
     );
 }

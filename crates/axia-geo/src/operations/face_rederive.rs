@@ -1803,7 +1803,15 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             .or_else(|| Some(default_plane_surface.clone()));
 
         // standalone full circle?
-        if af.outer.len() == 1 {
+        //
+        // Only when it really is standalone. `add_face_closed_curve` builds a
+        // 1-anchor self-loop face and takes no holes, so a full-circle region
+        // that HAS holes lost them here — a circle drawn right around a solid's
+        // top kept the top AND laid the whole disc over it, 165,663.71 where
+        // πr² = 125,663.71 (D2, measured 2026-08-13). With holes it goes the
+        // general way below, which carries them and still attaches the Arc
+        // curves, so the rim stays analytic.
+        if af.outer.len() == 1 && af.holes.is_empty() {
             if let SubCurve::Arc { center, radius, a0, a1 } = &af.outer[0] {
                 if (a1 - a0).abs() >= two_pi - 1e-6 {
                     let anchor = mesh.add_vertex(unproject(cpt(*center, *radius, *a0)));
@@ -1839,16 +1847,26 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
                     seg_freeform.push(None);
                 }
                 SubCurve::Arc { center, radius, a0, a1 } => {
-                    let amid = (a0 + a1) / 2.0;
                     let c3 = unproject(*center);
-                    // 이 arc 의 2 반호(D7 분할)에 공유 owner — 한 선택 단위.
+                    // 이 arc 의 반호들(D7 분할)에 공유 owner — 한 선택 단위.
                     let arc_owner = mesh.next_curve_owner_id();
-                    seg_verts.push(mesh.add_vertex(unproject(cpt(*center, *radius, *a0))));
-                    seg_arcs.push(Some((c3, *radius, *a0, amid, Some(arc_owner))));
-                    seg_freeform.push(None);
-                    seg_verts.push(mesh.add_vertex(unproject(cpt(*center, *radius, amid))));
-                    seg_arcs.push(Some((c3, *radius, amid, *a1, Some(arc_owner))));
-                    seg_freeform.push(None);
+                    // Halves normally; THIRDS for a full circle, which reaches
+                    // here only when the region has holes (a ring). Two verts
+                    // would leave the loop below three and the ring would be
+                    // dropped — the same 2-edge bigon the DCEL cannot hold that
+                    // the closed-curve materializer splits for.
+                    let full = (a1 - a0).abs() >= two_pi - 1e-6;
+                    let cuts: Vec<f64> = if full {
+                        let step = (a1 - a0) / 3.0;
+                        vec![*a0, a0 + step, a0 + 2.0 * step, *a1]
+                    } else {
+                        vec![*a0, (a0 + a1) / 2.0, *a1]
+                    };
+                    for w in cuts.windows(2) {
+                        seg_verts.push(mesh.add_vertex(unproject(cpt(*center, *radius, w[0]))));
+                        seg_arcs.push(Some((c3, *radius, w[0], w[1], Some(arc_owner))));
+                        seg_freeform.push(None);
+                    }
                 }
                 // B4b-2b — smooth freeform attach: D7 midpoint split (lens
                 // 2-vert → 4-vert + P-Q multigraph 회피) + sub-bezier per half.
