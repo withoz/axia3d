@@ -3936,6 +3936,66 @@ impl Scene {
         (owning_shape, owning_xia, before)
     }
 
+    /// Merge two faces across an edge AND hand the ownership on — the FIRST
+    /// SELECTED one keeps it (사용자 결재 2026-08-13).
+    ///
+    /// `merge_faces_by_edge` removes BOTH operands and makes a third, so without
+    /// this the survivor belongs to nobody and the owner is left naming two ids
+    /// that no longer exist. Measured on a sheet: draw a rect (it owns its face),
+    /// cut it with a line (both halves stay with the Shape), merge them back —
+    /// 2 dead ids, 0 owners. That is the ADR-203 §36 gap the carve family had
+    /// closed by PR #117 and the merge family never did; every WASM merge site
+    /// went straight to the mesh.
+    ///
+    /// Which owner wins cannot be decided here — "first selected" is a fact
+    /// about the user's clicks, not about the geometry — so the caller names
+    /// the winner. `preferred` is the face whose owner inherits; when it owns
+    /// nothing, the other operand's owner is used, so merging an owned face into
+    /// an unowned one still leaves the result owned rather than dropping it.
+    ///
+    /// Not self-transacted: the WASM caller wraps mesh op + reconcile in one
+    /// undo step, the same way the carve family does.
+    /// `angle_tol_deg` picks the mesh op: `None` is the strict
+    /// `merge_faces_by_edge`, `Some(t)` the tolerant one. Both remove their
+    /// operands, so both need the reconcile.
+    pub fn merge_faces_by_edge_owned(
+        &mut self,
+        edge: axia_geo::EdgeId,
+        preferred: Option<FaceId>,
+        angle_tol_deg: Option<f64>,
+    ) -> anyhow::Result<FaceId> {
+        // Read the operands BEFORE the merge — afterwards both are gone.
+        let (operands, _) = self.mesh.get_faces_sharing_edge(edge);
+        let live: Vec<FaceId> = operands
+            .into_iter()
+            .filter(|f| self.mesh.faces.get(*f).map_or(false, |x| x.is_active()))
+            .collect();
+        // Winner first, then the rest — the first that owns anything decides.
+        let mut order: Vec<FaceId> = Vec::with_capacity(live.len());
+        if let Some(p) = preferred {
+            if live.contains(&p) {
+                order.push(p);
+            }
+        }
+        order.extend(live.iter().copied().filter(|f| Some(*f) != preferred));
+        let owning_shape = order.iter().find_map(|f| self.face_to_shape.get(f).copied());
+        let owning_xia = order.iter().find_map(|f| self.face_to_xia.get(f).copied());
+        let before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+
+        let merged = match angle_tol_deg {
+            Some(t) => self.mesh.merge_faces_by_edge_with_tolerance(edge, t)?,
+            None => self.mesh.merge_faces_by_edge(edge)?,
+        };
+        self.adopt_new_active_faces(owning_shape, owning_xia, &before);
+        Ok(merged)
+    }
+
     /// ADR-262 + §36-amendment — carve a door U-notch AND reconcile face ownership:
     /// the carve's new faces (jambs, splits, bottom notch) are adopted into the
     /// host wall's owning element, so the wall element owns its full geometry.
