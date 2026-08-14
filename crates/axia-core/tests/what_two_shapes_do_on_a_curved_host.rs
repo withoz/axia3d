@@ -364,27 +364,28 @@ fn c0_the_clipped_tessellation_knows_the_real_area() {
         "the cap's clipped triangles agree with πr² ({cap_t:.3})"
     );
 
-    // PIN, and it is not what I expected. The two pieces do NOT add up: the
-    // remainder alone measures more than the whole side it was cut from. So
-    // the render's clip is not a drop-in area either — one of the two clippers
-    // covers ground twice. Whatever fixes the area has to fix this first.
+    // They add up. This pinned the OPPOSITE when it was written: the remainder
+    // alone measured 1392.555 against a side of 1256.637, because the band was
+    // earcut in (u, v) and mapped back. Gridding it (`band_minus_hole_uv`)
+    // brought the remainder to 978.958 against a true 977.58.
     assert!(
-        cap_t + rem_t > 1.2 * side,
-        "TODAY the pieces over-sum: {cap_t:.3} + {rem_t:.3} = {:.3} vs a side of \
-         {side:.3}. When they add up, retire this pin",
+        (cap_t + rem_t - side).abs() < 0.02 * side,
+        "the pieces sum back to the side they came from: {cap_t:.3} + {rem_t:.3} \
+         = {:.3} vs {side:.3}",
         cap_t + rem_t
     );
     assert!(
-        rem_t > side,
-        "TODAY the remainder alone ({rem_t:.3}) exceeds the whole side \
-         ({side:.3}) — that is the part that cannot be right"
+        rem_t < side,
+        "and the remainder ({rem_t:.3}) is less than the whole side ({side:.3}), \
+         which it was not"
     );
 
-    // WHY, measured rather than reasoned. The remainder is earcut in (u, v)
-    // parameter space and mapped back, and u is an ANGLE: a triangle joining
-    // two points far apart in u is a thin sliver on the chart and a flat slab
-    // cutting THROUGH the cylinder in space. Its area is the slab's, not the
-    // band's. If the widest triangle spans most of a turn, that is the cause.
+    // WHY it used to be wrong, kept because the number is what named the fix.
+    // The remainder was earcut in (u, v) and mapped back, and u is an ANGLE: a
+    // triangle joining two points far apart in u is a thin sliver on the chart
+    // and a flat slab cutting THROUGH the cylinder in space. Its area is the
+    // slab's, not the band's. The widest measured 177° of the turn; the same
+    // measurement now reads a few degrees, and that is what is asserted.
     let t = s
         .mesh
         .tessellate_cylinder_circle_clipped(rem, 0.02)
@@ -422,11 +423,22 @@ fn c0_the_clipped_tessellation_knows_the_real_area() {
         worst_span.to_degrees(),
         worst_area
     );
+    // 45° is a quarter of what a slab measured, so it fails on the old
+    // behaviour and passes on the new.
+    //
+    // ⚠ The residual, stated rather than rounded away: the widest is 31.7°,
+    // against a grid cell of 7.2°. It is at a CORNER of the patch rectangle,
+    // where the zip has to connect a square outline to a round hole and the
+    // angle between consecutive outline points jumps. Its area is 5.4 mm² of
+    // 1256.6 and the pieces still sum to 0.06%, so it costs accuracy nothing —
+    // it is a single slightly flat spot. Closing it means following the hole
+    // with a staircase of grid cells instead of a rectangle (the marching
+    // approach the sphere uses), which is a bigger change than the numbers
+    // currently justify.
     assert!(
-        worst_span > 1.0,
-        "TODAY at least one triangle reaches {:.1}° across the cylinder — a \
-         flat slab through the solid, not a patch of its skin. That is where \
-         the extra area comes from",
+        worst_span.to_degrees() < 45.0,
+        "a triangle reaches {:.1}° across the cylinder — a flat slab through \
+         the solid, not a patch of its skin",
         worst_span.to_degrees()
     );
 
@@ -454,10 +466,14 @@ fn c0_the_clipped_tessellation_knows_the_real_area() {
         "REM DEPTH {deep} of {} triangles sit inside the skin; vertex radii {rmin:.3}..{rmax:.3}",
         t.triangles.len()
     );
-    assert!(
-        deep > 0,
-        "the extra triangles are INSIDE the cylinder ({deep}), which is why the \
-         viewport looks correct while the area does not"
+    // This is why nobody had SEEN it: a chord slab lies inside the cylinder,
+    // so the skin occludes it — the render looked right and only a measurement
+    // noticed. 84 of 133 triangles sat inside the radius. Now none should.
+    assert_eq!(
+        deep, 0,
+        "no triangle should sit inside the skin; {deep} of {} do, and they are \
+         the ones the picture cannot show you",
+        t.triangles.len()
     );
 }
 
@@ -532,14 +548,13 @@ fn c0_the_viewport_draws_slabs_through_the_solid_after_a_curved_split() {
         "the undrawn cylinder's buffers agree with 2πRh + 2πR²: {plain:.3} vs \
          {truth:.3}"
     );
-    // PIN. When the uv triangles are refined before map-back, this drops to
-    // ~truth and the assertion fails — that is the retire signal, and the
-    // control above is what says the fix worked rather than the reader changing.
+    // And the answer the direct clipper call could not give. This pinned
+    // `drawn > 1.15 * truth` when it was written — 2292.511 against 1884.956 —
+    // and the control above is what says the fix is the render's doing rather
+    // than the reader's.
     assert!(
-        drawn > 1.15 * truth,
-        "TODAY drawing one circle takes the drawn area from {plain:.3} to \
-         {drawn:.3} against a true {truth:.3} — the extra is slabs through the \
-         solid. When it lands near {truth:.3}, retire this pin"
+        (drawn - truth).abs() < 0.02 * truth,
+        "drawing a circle does not change what the viewport draws: {plain:.3}          -> {drawn:.3}, true {truth:.3}"
     );
 }
 
