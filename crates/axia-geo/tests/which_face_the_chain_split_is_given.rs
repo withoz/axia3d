@@ -261,11 +261,21 @@ fn what_the_materializers_own_steps_leave_behind() {
     // polygonisation. The outer loop also only has to be a polygon when it is
     // the loop being cut.
     //
-    // What the refusal says NOW is the real answer, and it is not a bug:
-    // cutting a face ACROSS ONE OF ITS HOLES is not implemented. The engine
-    // has said so since 2026-04-28, with the topology it would need spelled
-    // out — "one simple face (chain area) + one face-with-hole (rest)". That
-    // is the piece C-2's materializer is waiting on.
+    // That uncovered the real gap — cutting a face ACROSS ONE OF ITS HOLES,
+    // which the engine had described and refused since 2026-04-28. It is built
+    // now (`split_face_across_hole`, verified on a square annulus in
+    // `a_face_can_be_cut_across_its_hole.rs`), so the wall has moved once more,
+    // and this is where it stands:
+    //
+    //     split_face_across_hole: outer loop has <3 verts
+    //
+    // The piece that KEEPS the outer loop is rebuilt with
+    // `add_face_with_holes`, and a Path B band's outer loop is one vertex and a
+    // self-loop circle — there is nothing to rebuild it from. The same wall as
+    // the very first attempt, now met from the other side. Getting past it
+    // means not rebuilding that piece at all: splice the new hole into the
+    // face that already exists, the way `split_cylinder_face_by_circle` wires
+    // twin half-edges into an inner loop.
     assert_eq!(
         outer_before, 1,
         "the host's outer loop is one vertex — what used to trigger the \
@@ -273,12 +283,12 @@ fn what_the_materializers_own_steps_leave_behind() {
     );
     let why = attempt.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
     assert!(
-        why.contains("inner (hole) loop"),
-        "the refusal names the real gap: {why}"
+        why.contains("outer loop has <3 verts"),
+        "the refusal names where the wall is now: {why}"
     );
     assert!(
-        why.contains(&format!("face {}", host.raw())),
-        "and the RIGHT face — it used to name the one it had just made: {why}"
+        !why.contains("not on any loop of face"),
+        "and no longer names a face it made itself: {why}"
     );
 
     // ── And the refusal is CLEAN, which it was not when this was written ──
