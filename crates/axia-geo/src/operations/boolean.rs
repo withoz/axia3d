@@ -21861,11 +21861,12 @@ mod adr142_gamma_tests {
         let v_left = mesh.add_vertex(DVec3::new(-5.0, 0.0, 0.0));
         let v_right = mesh.add_vertex(DVec3::new(5.0, 0.0, 0.0));
 
+        let snap_before = mesh.snapshot();
         let result = split_face_by_chain(&mut mesh, face, &[v_left, v_right], mat);
         // β-1 K1 fire → polygonize → chain endpoint lookup 정상 (또는 split
         // 결과 정상 Err — 어쨌든 panic / silent fail 아닌 정의된 결과).
         // Err 도 K1 progression evidence (closed-curve 가 polygon mode 진입).
-        match result {
+        match &result {
             Ok(_split_result) => {
                 // β-1 fire 후 chain split 성공 — Path B Circle 이 polygon
                 // boundary 로 확장 + 2 sub-face 생성 시도.
@@ -21879,10 +21880,42 @@ mod adr142_gamma_tests {
             }
         }
 
-        // Evidence — face 가 polygonize 되어 verts 증가 (silent skip 회피).
+        // Evidence.
+        //
+        // ⚠ This used to be "verts increased", counted AFTER a split that was
+        // allowed to fail — mutation-on-failure used as proof. That is the
+        // defect, not the evidence: a refused split now restores the mesh
+        // (measured 2026-08-14). So the claim is split in two, and each half is
+        // checked against the outcome it belongs to.
         let verts_after = mesh.verts.iter().filter(|(_, v)| v.is_active()).count();
-        assert!(verts_after > 2,
-            "γ-4: β-1 polygonize 후 verts > 2 (anchor + 2 chain endpoints + N polygonal verts)");
+        match &result {
+            Ok(_) => assert!(
+                verts_after > 2,
+                "γ-4: the split landed, so β-1 polygonised on the way in                  (verts {verts_after})"
+            ),
+            Err(_) => assert_eq!(
+                mesh.snapshot(),
+                snap_before,
+                "γ-4: the split refused, so the mesh is exactly as it was"
+            ),
+        }
+        // Either way, K1 itself fires on a closed-curve face — asked directly
+        // rather than inferred from wreckage.
+        let mut probe = Mesh::new();
+        let pa = probe.add_vertex(DVec3::new(5.0, 0.0, 0.0));
+        let pc = crate::curves::AnalyticCurve::Circle {
+            center: DVec3::ZERO,
+            radius: 5.0,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+        };
+        let pf = probe.add_face_closed_curve(pa, pc, mat).unwrap();
+        let pg = crate::operations::face_split::polygonize_if_closed_curve(&mut probe, pf)
+            .expect("K1 polygonize");
+        assert!(
+            probe.collect_loop_verts(probe.faces[pg].outer().start).unwrap().len() >= 3,
+            "γ-4: K1 turns a closed-curve face into a polygon"
+        );
     }
 
     /// γ-5 regression guard — Polygonal face Boolean + chain split 영향 0.

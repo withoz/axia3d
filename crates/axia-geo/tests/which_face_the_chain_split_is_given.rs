@@ -260,27 +260,34 @@ fn what_the_materializers_own_steps_leave_behind() {
     );
     assert!(attempt.is_err(), "so the host cut is refused today");
 
-    // ⚠ AND THE REFUSAL IS NOT CLEAN. The polygonisation runs first and
-    // replaces the face; the split then fails and nothing puts it back. The
-    // caller is told no AND left with a different mesh — the same shape of
-    // defect ADR-298 corrected elsewhere ("refused but already mutated").
+    // ── And the refusal is CLEAN, which it was not when this was written ──
+    //
+    // The polygonisation runs before the split has checked anything, so a
+    // refusal used to hand the caller both an error and a different mesh:
+    //
+    //     before   faces [(0,[1]), (1,[1]), (2,[1,1,50]), (3,[50])]
+    //     after    faces [(0,[0]), (1,[1]),               (3,[50]), (4,[23])]
+    //
+    // The host gone, a 23-vertex face in its place, and face 0 left with a
+    // boundary loop of NO vertices. Same shape as the "refused but already
+    // mutated" defect ADR-298 corrected elsewhere. `split_face_by_chain` and
+    // `split_face_by_line` now snapshot before polygonising and restore on any
+    // error — and only when polygonising would actually fire, so the ordinary
+    // path pays nothing.
     println!(
         "MAT 5 after the refusal: host still there? {}; faces={:?}",
         mesh.faces.get(host).is_some_and(|f| f.is_active()),
         shape(&mesh)
     );
     assert!(
-        mesh.faces.get(host).is_none_or(|f| !f.is_active()),
-        "TODAY a refused chain split has already replaced the host. When the          refusal leaves the mesh alone, retire this pin"
+        mesh.faces.get(host).is_some_and(|f| f.is_active()),
+        "a refused split leaves the host where it was"
     );
-    assert_ne!(
+    assert_eq!(
         mesh.snapshot(),
         snap_before,
-        "and the mesh is not what it was — that is the part worth fixing"
+        "and the mesh byte-identical — not merely close"
     );
-    // Concretely: the host is replaced by a 23-vertex face, and one of the
-    // caps is left with a loop of NO vertices at all. Named rather than
-    // summarised, so a fix can be checked against something specific.
     let empty: Vec<u32> = mesh
         .faces
         .iter()
@@ -291,8 +298,8 @@ fn what_the_materializers_own_steps_leave_behind() {
         .map(|(fid, _)| fid.raw())
         .collect();
     assert!(
-        !empty.is_empty(),
-        "TODAY the refusal also leaves a face with an empty boundary loop          ({empty:?}). When it does not, retire this pin too"
+        empty.is_empty(),
+        "and no face is left with an empty boundary loop ({empty:?})"
     );
 
 }
@@ -373,4 +380,55 @@ fn the_cap_cuts_cleanly_because_its_boundary_is_already_a_polygon() {
     );
     let v = mesh.verify_face_invariants();
     assert!(v.is_valid(), "and the mesh is sound — {:?}", v.violations);
+}
+
+/// The same contract on the other entry that polygonises: a refused
+/// `split_face_by_line` leaves the mesh alone too.
+///
+/// Both call `polygonize_if_closed_curve` before they check anything, so both
+/// had the same defect. Claiming one is fixed without measuring the other
+/// would be claiming more than was tested.
+#[test]
+fn a_refused_line_split_also_leaves_the_mesh_alone() {
+    use axia_geo::operations::face_split::split_face_by_line;
+
+    let mut mesh = Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    // The wall is a Path B band: a one-vertex outer loop, so the split
+    // polygonises on the way in.
+    assert_eq!(
+        mesh.collect_loop_verts(mesh.faces.get(side).unwrap().outer().start).unwrap().len(),
+        1,
+        "the wall's outer loop is one vertex — the trigger"
+    );
+
+    let before = mesh.snapshot();
+    // A line nowhere near the wall: nothing to cut, so the split must refuse.
+    let out = split_face_by_line(
+        &mut mesh,
+        side,
+        DVec3::new(500.0, 500.0, 5.0),
+        DVec3::new(600.0, 600.0, 5.0),
+    );
+    println!(
+        "LINE refused? {}; mesh unchanged? {}",
+        out.is_err(),
+        mesh.snapshot() == before
+    );
+    assert!(out.is_err(), "a line off the face is refused");
+    assert_eq!(
+        mesh.snapshot(),
+        before,
+        "and the refusal leaves the mesh byte-identical"
+    );
 }
