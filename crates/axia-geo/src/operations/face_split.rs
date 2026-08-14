@@ -27,6 +27,28 @@ use crate::tolerances::*;
 /// polygonize. `polygonize_closed_curve_face` returns `Ok(None)` if the
 /// face already has polygonal boundary (>1 vert) — in that case we keep
 /// the original face_id.
+/// Would `polygonize_if_closed_curve` actually change anything?
+///
+/// Read-only, and the whole point: polygonisation is a MUTATION that the split
+/// functions run before they have checked anything. When it fires and the split
+/// then fails, the caller is told no and handed a different mesh — measured
+/// 2026-08-14 on a Path B cylinder band, where a refused chain split left the
+/// host replaced by a 23-vertex face and another face with a boundary loop of
+/// no vertices at all (`which_face_the_chain_split_is_given.rs`). Same shape as
+/// the "refused but already mutated" defect ADR-298 corrected elsewhere.
+///
+/// The guard costs nothing when this returns `false`, which is almost always.
+pub(crate) fn would_polygonize(mesh: &Mesh, face_id: FaceId) -> bool {
+    let Some(face) = mesh.faces.get(face_id).filter(|f| f.is_active()) else {
+        return false;
+    };
+    let start = face.outer().start;
+    if start.is_null() {
+        return false;
+    }
+    mesh.collect_loop_verts(start).map(|v| v.len() == 1).unwrap_or(false)
+}
+
 pub(crate) fn polygonize_if_closed_curve(
     mesh: &mut Mesh,
     face_id: FaceId,
@@ -262,6 +284,29 @@ pub fn line_edge_intersection(
 /// - **Vertex-to-edge**: line from a vertex to a point on an edge → face splits in two
 /// - **Internal closed loop**: (future) line forms a closed shape inside → inner face + outer ring
 pub fn split_face_by_line(
+    mesh: &mut Mesh,
+    face_id: FaceId,
+    line_start: DVec3,
+    line_end: DVec3,
+) -> Result<FaceSplitResult> {
+    // A refusal leaves the mesh alone. Without this it did not: the closed-curve
+    // polygonisation below runs BEFORE the split's own checks, so a face could
+    // be replaced and then the split refuse, handing the caller both an error
+    // and a different mesh. See `would_polygonize`.
+    if !would_polygonize(mesh, face_id) {
+        return split_face_by_line_inner(mesh, face_id, line_start, line_end);
+    }
+    let before = mesh.clone();
+    match split_face_by_line_inner(mesh, face_id, line_start, line_end) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            *mesh = before;
+            Err(e)
+        }
+    }
+}
+
+fn split_face_by_line_inner(
     mesh: &mut Mesh,
     face_id: FaceId,
     line_start: DVec3,
@@ -565,6 +610,28 @@ pub fn split_face_by_line(
 ///   multi-seam split, not handled).
 /// * Edges between consecutive chain verts missing → `Err`.
 pub fn split_face_by_chain(
+    mesh: &mut Mesh,
+    face_id: FaceId,
+    chain_verts: &[VertId],
+    inherit_material: MaterialId,
+) -> Result<FaceSplitResult> {
+    // A refusal leaves the mesh alone — see `split_face_by_line` above, and
+    // `would_polygonize` for what it costs (nothing, unless the face is a
+    // closed curve).
+    if !would_polygonize(mesh, face_id) {
+        return split_face_by_chain_inner(mesh, face_id, chain_verts, inherit_material);
+    }
+    let before = mesh.clone();
+    match split_face_by_chain_inner(mesh, face_id, chain_verts, inherit_material) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            *mesh = before;
+            Err(e)
+        }
+    }
+}
+
+fn split_face_by_chain_inner(
     mesh: &mut Mesh,
     face_id: FaceId,
     chain_verts: &[VertId],
@@ -3850,25 +3917,54 @@ mod tests {
         let pre_verts = m.collect_loop_verts(m.faces[circle_face].outer().start).unwrap();
         assert_eq!(pre_verts.len(), 1, "pre: Path B Circle = 1 anchor vert");
 
-        // Chain endpoints arbitrary (not on circle boundary) — K1 fires polygonize
-        // first, then chain endpoint lookup may fail. The proof of K1 firing is
-        // that face boundary becomes polygonized (>= 3 verts) regardless.
-        let dummy_a = m.add_vertex(DVec3::new(10.0, 0.0, 0.0));
-        let dummy_b = m.add_vertex(DVec3::new(-10.0, 0.0, 0.0));
-        let _ = split_face_by_chain(&mut m, circle_face, &[dummy_a, dummy_b], mat);
+        // K1 fires: the closed-curve face becomes a polygon.
+        //
+        // ⚠ This used to be observed through a split that FAILED, on the
+        // grounds that "the proof of K1 firing is that the boundary becomes
+        // polygonized regardless". That was the defect, asserted as a feature:
+        // a refused split now restores the mesh (measured 2026-08-14 — the old
+        // behaviour left a host replaced and a face with an empty boundary
+        // loop), so a failure is no longer evidence of anything. The intent is
+        // kept and the observation moved to where it belongs.
+        let polygonized = polygonize_if_closed_curve(&mut m, circle_face)
+            .expect("K1 polygonize");
+        let outer = m.collect_loop_verts(m.faces[polygonized].outer().start).unwrap();
+        assert!(
+            outer.len() >= 3,
+            "K1 polygonize fired → boundary {} verts (expected >= 3)",
+            outer.len()
+        );
 
-        // Post-condition: at least 1 active face has polygonized boundary (>=3 verts).
-        // K1 polygonize_if_closed_curve fired → original 1-vert face transformed.
-        let max_outer_verts: usize = m.faces.iter()
-            .filter(|(_, f)| f.is_active())
-            .filter_map(|(_, f)| {
-                m.collect_loop_verts(f.outer().start).ok().map(|v| v.len())
-            })
-            .max()
-            .unwrap_or(0);
-        assert!(max_outer_verts >= 3,
-            "K1 polygonize fired → max active face boundary {} verts (expected >= 3)",
-            max_outer_verts);
+        // And through the split entry, which is what wires it: a chain whose
+        // endpoints ARE on that polygon splits the face.
+        let (a, b) = (outer[0], outer[outer.len() / 2]);
+        // The chain cuts ALONG an edge, so the caller draws it first — the same
+        // contract the surface imprint learned.
+        let _ = m.add_edge(a, b);
+        let res = split_face_by_chain(&mut m, polygonized, &[a, b], mat);
+        assert!(
+            res.is_ok(),
+            "a chain across the polygonized face splits it: {res:?}"
+        );
+
+        // A refusal, by contrast, leaves the mesh where it was.
+        let mut m2 = Mesh::new();
+        let anchor2 = m2.add_vertex(DVec3::new(5.0, 0.0, 0.0));
+        let circle2 = AnalyticCurve::Circle {
+            center: DVec3::ZERO,
+            radius: 5.0,
+            normal: DVec3::Z,
+            basis_u: DVec3::X,
+        };
+        let face2 = m2.add_face_closed_curve(anchor2, circle2, mat).unwrap();
+        let far_a = m2.add_vertex(DVec3::new(100.0, 0.0, 0.0));
+        let far_b = m2.add_vertex(DVec3::new(-100.0, 0.0, 0.0));
+        let snap = m2.snapshot();
+        assert!(
+            split_face_by_chain(&mut m2, face2, &[far_a, far_b], mat).is_err(),
+            "a chain off the boundary is refused"
+        );
+        assert_eq!(m2.snapshot(), snap, "and the refusal changes nothing");
     }
 
     /// polygonize_if_closed_curve helper unit — polygon face 는 same face_id 반환
