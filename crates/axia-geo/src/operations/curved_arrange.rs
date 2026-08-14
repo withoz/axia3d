@@ -25,8 +25,8 @@
 //! treatment; the sphere and torus are not, and are left for later rather than
 //! approximated quietly.
 //!
-//! This module is the GEOMETRY half: it says what the regions are. Putting
-//! them back into the mesh is the other half.
+//! The geometry half says what the regions are; `resolve_overlap_on_cylinder`
+//! puts them back into the mesh.
 
 use crate::boundary_kernel::bentley_ottmann::bentley_ottmann_resolve;
 use crate::boundary_kernel::geom2::Vec2;
@@ -145,6 +145,19 @@ fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
     inside
 }
 
+/// The three regions, plus the outline the pair presents to everything else.
+///
+/// A host that had one circular hole must end up with the UNION as its hole —
+/// not two overlapping ones — so the boundary of that union is as much part of
+/// the answer as the regions inside it.
+#[derive(Clone, Debug)]
+pub struct CurvedArrangement {
+    /// A-only, the lens, and B-only. Always exactly three.
+    pub regions: Vec<CurvedRegion>,
+    /// The outline of `A ∪ B`, on the surface, counter-clockwise.
+    pub union_boundary: Vec<DVec3>,
+}
+
 /// Resolve two closed loops that meet on a cylinder into the regions they
 /// divide it into.
 ///
@@ -157,7 +170,7 @@ pub fn arrange_two_loops_on_cylinder(
     surface: &AnalyticSurface,
     loop_a: &[DVec3],
     loop_b: &[DVec3],
-) -> Option<Vec<CurvedRegion>> {
+) -> Option<CurvedArrangement> {
     let (axis_origin, axis_dir, radius, ref_dir) = match surface {
         AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
             (*axis_origin, *axis_dir, *radius, *ref_dir)
@@ -219,8 +232,29 @@ pub fn arrange_two_loops_on_cylinder(
 
     let eps_area = (eps * eps).max(1e-18);
     let mut out = Vec::new();
+    let mut union_2d: Option<Vec<Vec2>> = None;
     for r in extract_regions(&g, eps_area) {
         if r.signed_area <= eps_area {
+            // The unbounded region walks the union's outline the other way
+            // round. Its boundary is what the host's hole has to become, so
+            // keep the largest one rather than dropping it with the slivers.
+            if r.signed_area < -eps_area {
+                let take = union_2d
+                    .as_ref()
+                    .map(|u| u.len() < r.verts.len())
+                    .unwrap_or(true);
+                if take {
+                    let mut pts: Vec<Vec2> = r
+                        .verts
+                        .iter()
+                        .filter_map(|v| g.vertices.get(v).map(|x| x.p))
+                        .collect();
+                    if pts.len() == r.verts.len() {
+                        pts.reverse(); // CW walk -> CCW outline
+                        union_2d = Some(pts);
+                    }
+                }
+            }
             continue; // CW outer region, or a sliver
         }
         let inside_a = point_in_polygon(r.centroid, &pa);
@@ -259,5 +293,166 @@ pub fn arrange_two_loops_on_cylinder(
     if kinds.len() != 3 {
         return None;
     }
-    Some(out)
+    let union_boundary: Vec<DVec3> = union_2d?.iter().map(|&q| chart.to_3d(q)).collect();
+    if union_boundary.len() < 3 {
+        return None;
+    }
+    Some(CurvedArrangement { regions: out, union_boundary })
 }
+
+/// Where the two loops cross, and the two halves the second is cut into.
+pub struct Crossing {
+    /// The two points where loop B meets loop A's boundary.
+    pub points: [DVec3; 2],
+    /// Which segment of loop A each crossing lies on — `seg[k]` runs from
+    /// `loop_a[seg[k]]` to the next point round. The caller splits THAT edge
+    /// rather than searching for one near the point, which is the difference
+    /// between cutting the rim and leaving a loose vertex beside it.
+    pub seg: [usize; 2],
+    /// B's points from the first crossing to the second, going OUTSIDE A.
+    pub outside: Vec<DVec3>,
+    /// B's points from the first crossing to the second, going INSIDE A.
+    pub inside: Vec<DVec3>,
+}
+
+/// Cut loop B where it meets loop A, in the host's unrolled chart.
+pub fn crossing_on_cylinder(
+    surface: &AnalyticSurface,
+    loop_a: &[DVec3],
+    loop_b: &[DVec3],
+) -> Option<Crossing> {
+    let (axis_origin, axis_dir, radius, ref_dir) = match surface {
+        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+            (*axis_origin, *axis_dir, *radius, *ref_dir)
+        }
+        _ => return None,
+    };
+    if loop_a.len() < 3 || loop_b.len() < 3 {
+        return None;
+    }
+    let raw = |p: DVec3| -> Option<(f64, f64)> {
+        let (_sp, mut u, v) =
+            cylinder::project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
+        if u < 0.0 {
+            u += std::f64::consts::TAU;
+        }
+        Some((u, v))
+    };
+    let ra: Vec<(f64, f64)> = loop_a.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
+    let rb: Vec<(f64, f64)> = loop_b.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
+    let chart = Unroll {
+        axis_origin,
+        axis_dir,
+        radius,
+        ref_dir,
+        u_seam: seam_missing_both(&ra, &rb),
+    };
+    let pa: Vec<Vec2> = loop_a.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
+    let pb: Vec<Vec2> = loop_b.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
+
+    // Which of B's points are inside A. The crossings are where that flips —
+    // exactly two of them for a pair that genuinely cross.
+    let inside: Vec<bool> = pb.iter().map(|&q| point_in_polygon(q, &pa)).collect();
+    let n = pb.len();
+    let flips: Vec<usize> = (0..n).filter(|&i| inside[i] != inside[(i + 1) % n]).collect();
+    if flips.len() != 2 {
+        return None;
+    }
+
+    // The crossing point, taken ON A's EDGE rather than on the surface.
+    //
+    // Those are not the same place, and the difference is exactly what stopped
+    // the first attempt. A rim edge is a 3D CHORD between two loop points; the
+    // chart intersection maps back onto the CYLINDER, which stands off that
+    // chord by the sagitta — about 1.9 µm for a 48-gon of radius 3 on R = 10,
+    // against a 1.5 µm dedup floor (LOCKED #5). Just far enough to miss, and
+    // the split then made a free vertex instead of cutting the rim: "chain
+    // start vert 50 not on any loop of face 4".
+    //
+    // So the hit is returned as (segment, parameter) and interpolated along the
+    // chord, which puts it on the edge by construction.
+    let seg_hit = |i: usize| -> Option<(DVec3, usize)> {
+        let (b0, b1) = (pb[i], pb[(i + 1) % n]);
+        let m = pa.len();
+        let mut best: Option<(f64, usize, f64)> = None;
+        for j in 0..m {
+            let (a0, a1) = (pa[j], pa[(j + 1) % m]);
+            let d1 = Vec2 { x: b1.x - b0.x, y: b1.y - b0.y };
+            let d2 = Vec2 { x: a1.x - a0.x, y: a1.y - a0.y };
+            let den = d1.x * d2.y - d1.y * d2.x;
+            if den.abs() < 1e-12 {
+                continue;
+            }
+            let t = ((a0.x - b0.x) * d2.y - (a0.y - b0.y) * d2.x) / den;
+            let u = ((a0.x - b0.x) * d1.y - (a0.y - b0.y) * d1.x) / den;
+            if (-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u) {
+                if best.as_ref().map(|(bt, _, _)| t < *bt).unwrap_or(true) {
+                    best = Some((t, j, u.clamp(0.0, 1.0)));
+                }
+            }
+        }
+        let (_, j, u) = best?;
+        let (q0, q1) = (loop_a[j], loop_a[(j + 1) % loop_a.len()]);
+        Some((q0 + (q1 - q0) * u, j))
+    };
+    let (i0, i1) = (flips[0], flips[1]);
+    let ((h0, j0), (h1, j1)) = (seg_hit(i0)?, seg_hit(i1)?);
+
+    // Walk B from one crossing to the other, twice — once each way round.
+    let walk = |from: usize, to: usize, first: DVec3, last: DVec3| -> Vec<DVec3> {
+        let mut out = vec![first];
+        let mut k = (from + 1) % n;
+        while k != (to + 1) % n {
+            out.push(loop_b[k]);
+            k = (k + 1) % n;
+        }
+        out.push(last);
+        out
+    };
+    let side_a = walk(i0, i1, h0, h1);
+    let mut side_b = walk(i1, i0, h1, h0);
+    // Both arcs must run the SAME way — crossing 0 to crossing 1 — because the
+    // caller cuts two faces with them and the cuts have to meet. The second
+    // walk goes round the other way by construction, so it comes back
+    // reversed. (Caught by a test that asked; the two arcs used to start at
+    // different ends and only one of them said so.)
+    side_b.reverse();
+    // `inside[i0 + 1]` says which side the first walk went down.
+    let first_is_inside = inside[(i0 + 1) % n];
+    let (inside_pts, outside_pts) = if first_is_inside {
+        (side_a, side_b)
+    } else {
+        (side_b, side_a)
+    };
+    if inside_pts.len() < 2 || outside_pts.len() < 2 {
+        return None;
+    }
+    Some(Crossing {
+        points: [h0, h1],
+        seg: [j0, j1],
+        outside: outside_pts,
+        inside: inside_pts,
+    })
+}
+
+// The materializer is NOT here yet, deliberately.
+//
+// Two routes were tried and measured. Rebuilding the host with
+// `add_face_with_holes` cannot work at all: a Path B band's OUTER loop is one
+// vertex and a self-loop circle (ADR-089 Phase 2), so there is nothing to
+// rebuild it from — "Face requires at least 3 vertices, got 1".
+//
+// The second route is right in shape and not yet right in detail. Cap A's rim
+// IS the host's hole — same 48 vertices, wired through twin half-edges, pinned
+// by `the_cap_rim_is_also_the_hosts_hole` — so both cuts are ordinary chain
+// splits with their endpoints already on the face being cut:
+//
+//     host   split by B's arc OUTSIDE A   ->  host' + B-only
+//     cap A  split by B's arc INSIDE A    ->  A-only + the lens
+//
+// What stopped it was a face id, not the geometry: `split_face_by_chain` kept
+// answering "chain start vert 50 not on any loop of face 4" while the rim
+// belongs to face 2. Something between the crossing split and the chain split
+// is handing over a different face, and shipping a half-applied arrangement
+// would be worse than the overlap it replaces — so this waits for that to be
+// measured rather than guessed.

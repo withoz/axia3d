@@ -59,7 +59,7 @@ fn two_crossing_circles_give_three_regions_of_the_right_size() {
     let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 96);
     let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 96);
 
-    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("they cross, so they arrange");
+    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("they cross, so they arrange").regions;
     assert_eq!(regions.len(), 3, "A-only, the lens, B-only");
 
     let lens_exact =
@@ -102,7 +102,7 @@ fn the_regions_come_back_onto_the_wall() {
     let (r, d) = (3.0_f64, 3.6_f64);
     let a = geodesic_circle(1.0, 10.0, r, 64);
     let b = geodesic_circle(1.0 + d / R, 10.0, r, 64);
-    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("arrange");
+    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("arrange").regions;
     for reg in &regions {
         assert!(reg.boundary.len() >= 3, "a region has a boundary");
         for p in &reg.boundary {
@@ -151,13 +151,13 @@ fn a_pair_straddling_the_seam_arranges_the_same() {
     let middle = {
         let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 96);
         let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 96);
-        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("middle")
+        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("middle").regions
     };
     let on_seam = {
         // Centred on u = 0, where the chart would be cut by default.
         let a = geodesic_circle(0.0, 10.0, r, 96);
         let b = geodesic_circle(d / R, 10.0, r, 96);
-        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("on the seam")
+        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("on the seam").regions
     };
     let area_of = |v: &[axia_geo::operations::curved_arrange::CurvedRegion], s: Share| {
         v.iter().find(|x| x.share == s).expect("region").area
@@ -169,4 +169,103 @@ fn a_pair_straddling_the_seam_arranges_the_same() {
             "{s:?}: {m:.4} in the middle, {o:.4} on the seam"
         );
     }
+}
+
+/// The fact the materializer stands on: after a circle splits the wall, the
+/// cap's rim IS part of the host's boundary — same vertices, because the two
+/// faces are wired through twin half-edges.
+///
+/// Written because the materializer kept being told "chain start vert 50 not on
+/// any loop of face 4", and that claim had to be checked rather than assumed.
+#[test]
+fn the_cap_rim_is_also_the_hosts_hole() {
+    use axia_geo::MaterialId;
+    let mut mesh = axia_geo::Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, 3.0, 48);
+    let (cap, host) = mesh.split_cylinder_face_by_circle(side, &a).expect("split");
+
+    let cap_rim: Vec<_> = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("cap rim");
+    let host_f = mesh.faces.get(host).expect("host");
+    let mut host_loops: Vec<Vec<_>> = vec![mesh
+        .collect_loop_verts(host_f.outer().start)
+        .expect("host outer")];
+    for l in host_f.inners() {
+        host_loops.push(mesh.collect_loop_verts(l.start).expect("host inner"));
+    }
+    println!(
+        "TWIN cap rim {} verts; host loops {:?}; host id {host:?}, cap id {cap:?}",
+        cap_rim.len(),
+        host_loops.iter().map(|l| l.len()).collect::<Vec<_>>()
+    );
+    let shared = host_loops
+        .iter()
+        .any(|l| l.len() == cap_rim.len() && cap_rim.iter().all(|v| l.contains(v)));
+    assert!(
+        shared,
+        "the cap's rim must be one of the host's loops — otherwise a chain that \
+         starts on the rim cannot split the host"
+    );
+}
+
+/// Cutting B where it meets A: two crossings, and the two arcs between them.
+///
+/// The crossing is taken ON A's edge, not on the surface, and those are not the
+/// same place — a rim edge is a 3D chord and the cylinder stands off it by the
+/// sagitta. For a 48-gon of radius 3 on R = 10 that gap is 1.9 µm against a
+/// 1.5 µm dedup floor (LOCKED #5): just far enough that a crossing computed on
+/// the surface lands beside the rim instead of on it. This asserts which of the
+/// two it is.
+#[test]
+fn the_second_circle_is_cut_where_it_meets_the_first() {
+    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    let (r, d) = (3.0_f64, 3.6_f64);
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 48);
+    let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 48);
+    let x = crossing_on_cylinder(&wall(), &a, &b).expect("they cross");
+
+    // Each crossing sits on the segment of A it says it does.
+    for k in 0..2 {
+        let (q0, q1) = (a[x.seg[k]], a[(x.seg[k] + 1) % a.len()]);
+        let span = q1 - q0;
+        let t = (x.points[k] - q0).dot(span) / span.length_squared();
+        let off = (q0 + span * t - x.points[k]).length();
+        println!("CUT crossing {k} on segment {} at t={t:.4}, off by {off:.3e}", x.seg[k]);
+        assert!((0.0..=1.0).contains(&t), "t={t} is not within the segment");
+        assert!(off < 1e-12, "the point is {off:.3e} off the chord, not on it");
+    }
+    // Both arcs start and end at the crossings, and between them they are the
+    // whole of B plus the two endpoints counted twice.
+    for arc in [&x.inside, &x.outside] {
+        assert!((arc[0] - x.points[0]).length() < 1e-9, "an arc starts at a crossing");
+        assert!(
+            (arc[arc.len() - 1] - x.points[1]).length() < 1e-9,
+            "and ends at the other"
+        );
+    }
+    assert_eq!(
+        x.inside.len() + x.outside.len(),
+        b.len() + 4,
+        "every point of B is on one arc or the other, with both crossings on both"
+    );
+    // The inside arc really is inside: it is the shorter way for circles this
+    // close, and every one of its interior points is nearer A's centre.
+    let centre_a = geodesic_circle(std::f64::consts::PI, 10.0, 0.0, 1)[0];
+    let far = x.inside[1..x.inside.len() - 1]
+        .iter()
+        .map(|p| (*p - centre_a).length())
+        .fold(0.0_f64, f64::max);
+    assert!(far < r * 1.02, "the inside arc stays within A ({far:.4} vs {r})");
 }
