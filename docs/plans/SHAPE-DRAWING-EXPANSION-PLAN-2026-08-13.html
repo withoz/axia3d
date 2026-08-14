@@ -474,12 +474,43 @@
           있다 — <b>면이 아니라 surface 에 물어야 한다</b>. 기존 다섯
           (<code>point_in_face</code> · <code>face_bounds</code> ·
           <code>face_area</code> · <code>mesh_volume</code> ·
-          <code>is_face_in_volume</code>)과 같은 계열이다.</dd>
-      <dt>C-0 측정</dt>
-      <dd>곡면 4종 × {원×원 겹침 · 원×원 포함 · seam 곡선과 교차} 매트릭스.
-          ⚠ 계측기 함정: 곡면 면은 SURFACE 로 읽는 판독기(<code>face_outer_area</code> ·
-          <code>face_bounds</code> · <code>face_outward_flux</code>)만 쓴다 —
-          폴리곤 판독기는 곡면에서 거짓말한다(0단계의 교훈 그대로).</dd>
+          <code>is_face_in_volume</code>)과 같은 계열이다.
+          <b>일곱 번째는 아래 C-0 에서 나왔다</b> — 그리고 그건 이 계획서가
+          C-0 판정용으로 지정한 판독기였다.</dd>
+      <dt>C-0 측정 <span class="chip ok">완료 2026-08-14</span></dt>
+      <dd>곡면 4종 × {원×원 겹침 · 원×원 포함 · seam 곡선과 교차} 매트릭스 +
+          대조군, <code>what_two_shapes_do_on_a_curved_host.rs</code> 8건.
+          <b>16셀 전부 그려진다</b> — invariants 유효, self-intersection 0.
+          거부되는 조합은 없다. 그런데 <b>겹침과 포함이 같은 결과(+1면)</b>를 내고,
+          그것이 결과다:
+          <pre>포함   cap 을 안쪽 원으로 쪼갠다              정상
+겹침   remainder 를 두 번째 원으로 쪼개고
+       첫 번째는 건드리지 않는다               ← C-2 의 몫</pre>
+          위상으로 판정했다(어떤 판독기도 못 하므로): 가로질러 그렸는데
+          <b>cap A 경계가 31 → 31 정점</b>. lens 아래 땅을 두 면이 함께 갖는다.
+          메시는 건전하고, SI 스캔은 평면에서와 같은 이유로 못 본다(D5 — 두 면이
+          엣지를 공유하지 않고 아무것도 관통하지 않는다).</dd>
+      <dd><b>⚠ 계측기 함정 일곱 번째 — 그리고 그게 계획서가 지정한 판독기다.</b>
+          <code>face_outer_area</code> 는 곡면을 surface 로 읽는다(옳다). 그런데
+          적분이 surface 의 <b>전체</b> <code>u_range × v_range</code> 를 돌고,
+          split 은 두 자식에게 부모의 전체 범위를 그대로 준다 — 렌더가 경계
+          정점으로 sub-slice 를 계산하라고 <b>일부러</b> 그렇게 한다(LOCKED #35 A-χ).
+          렌더는 좁히고 면적은 안 좁힌다. Ø20×20 원통 측면 1256.637 →
+          원 하나 그린 뒤 cap 과 remainder 가 <b>각각</b> 1256.637 → 솔리드 표면적이
+          그리는 것만으로 1884.956 → 3141.593 으로 늘어난다. 범위를 좁히는 건
+          해결이 아니다 — 측지 원반은 u-v 사각형이 아니다.</dd>
+      <dd><b>⚠ 그리고 렌더가 솔리드를 가로지르는 조각을 그린다.</b>
+          <code>export_buffers</code>(실제 경로)로:
+          <pre>맨 원통          1882.477   (참값 1884.956 — 내접이므로 정상)
+원 하나 그린 뒤   2292.511   (+21.6%)</pre>
+          remainder 는 (u,v) 에서 earcut 후 3D 로 매핑되는데 <b>u 는 각도</b>다 —
+          u 로 멀리 떨어진 두 점을 잇는 삼각형은 차트에선 얇은 조각이고 공간에선
+          솔리드를 관통하는 평면 슬래브다. 가장 넓은 것이 <b>177°</b>,
+          remainder 의 133 삼각형 중 <b>84개</b>가 반지름 안쪽에 중심을 둔다(정점은
+          전부 정확히 r=10 위). 아무도 못 본 이유는 슬래브가 원통 <b>안</b>에 있어
+          스킨에 가리기 때문 — 그림은 맞고 버퍼는 틀렸다. cap 은 정상(273.289 vs
+          πr²=279.056)이라 clip 자체가 틀린 게 아니다. 빠진 것은 map-back 전
+          uv 삼각형 세분이다. 변이 검증: clip 을 끄면 2292.511 → 3138.287.</dd>
       <dt>C-1 D6 fix <span class="chip ok">완료 PR #125</span></dt>
       <dd>곡면 split 4종 + <code>annulus.rs</code> + <code>carve.rs</code> 에 HARD 부여
           (기존 <code>mark_edges_hard</code> safe-OR 헬퍼 재사용) +
