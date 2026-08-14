@@ -3078,29 +3078,55 @@ impl Mesh {
         }
 
         // ── REMAINDER: a geodesic split loop is an inner hole → band minus hole ──
-        for inner in face.inners() {
-            if let Some(hole_verts) = split_loop_verts(inner.start) {
-                let hole_3d: Vec<DVec3> =
-                    hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
-                if hole_3d.len() < 3 {
+        // Every geodesic hole, as on the cylinder — a second circle drawn on a
+        // cone wall used to be covered by its own band.
+        let all_holes_raw: Vec<Vec<(f64, f64)>> = {
+            let mut out = Vec::new();
+            for inner in face.inners() {
+                if let Some(hole_verts) = split_loop_verts(inner.start) {
+                    let hole_3d: Vec<DVec3> =
+                        hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
+                    if hole_3d.len() < 3 {
+                        return None;
+                    }
+                    let mut uv = Vec::with_capacity(hole_3d.len());
+                    for &p in &hole_3d {
+                        uv.push(invert(p)?);
+                    }
+                    out.push(uv);
+                }
+            }
+            out
+        };
+        {
+            {
+                if all_holes_raw.is_empty() {
                     return None;
                 }
-                let hole_raw: Vec<(f64, f64)> = {
-                    let mut out = Vec::with_capacity(hole_3d.len());
-                    for &p in &hole_3d {
-                        out.push(invert(p)?);
+                let hole_raw = all_holes_raw[0].clone();
+                // The seam must miss EVERY hole: of a few hundred candidate
+                // angles, the one furthest from the nearest hole point.
+                let u_seam = {
+                    const CANDIDATES: usize = 360;
+                    let mut best = (all_holes_raw[0][0].0 + PI, -1.0_f64);
+                    for c in 0..CANDIDATES {
+                        let cand = TAU * (c as f64) / (CANDIDATES as f64);
+                        let mut nearest = f64::MAX;
+                        for h in &all_holes_raw {
+                            for &(u, _) in h {
+                                let mut d = (u - cand).abs() % TAU;
+                                if d > PI {
+                                    d = TAU - d;
+                                }
+                                nearest = nearest.min(d);
+                            }
+                        }
+                        if nearest > best.1 {
+                            best = (cand, nearest);
+                        }
                     }
-                    out
+                    best.0
                 };
-                // Seam OPPOSITE the hole: shift u so the cap sits near π, away
-                // from the band rectangle's 0/2π edges.
-                let (mut sx, mut sy) = (0.0_f64, 0.0_f64);
-                for &(u, _) in &hole_raw {
-                    sx += u.cos();
-                    sy += u.sin();
-                }
-                let u_center = sy.atan2(sx);
-                let u_seam = u_center + PI;
                 let shift = |u: f64| -> f64 {
                     let mut s = u - u_seam;
                     while s < 0.0 {
@@ -3113,6 +3139,10 @@ impl Mesh {
                 };
                 let hole_uv: Vec<(f64, f64)> =
                     hole_raw.iter().map(|&(u, v)| (shift(u), v)).collect();
+                let holes_uv: Vec<Vec<(f64, f64)>> = all_holes_raw
+                    .iter()
+                    .map(|h| h.iter().map(|&(u, v)| (shift(u), v)).collect())
+                    .collect();
                 // Outer band rectangle in shifted-u, finely sampled. The cone
                 // radius scales with v → use the largest (base) radius for the
                 // circumferential segment count.
@@ -3169,13 +3199,7 @@ impl Mesh {
                         TAU,
                         v_lo,
                         v_hi,
-                        // ⚠ ONE hole. The cylinder above collects every
-                        // geodesic hole and picks a seam that misses them all;
-                        // the cone's seam is computed differently and has not
-                        // been restructured, so a SECOND circle drawn on a cone
-                        // is still covered by its band. Pinned in
-                        // `two_circles_on_a_curved_host_share_ground.rs`.
-                        std::slice::from_ref(&hole_uv),
+                        &holes_uv,
                         n_u,
                         n_v,
                         &map_back_shifted,
@@ -3380,31 +3404,59 @@ impl Mesh {
         }
 
         // ── REMAINDER: porthole is an inner hole → full param square minus hole ──
-        for inner in face.inners() {
-            if let Some(hole_verts) = split_loop_verts(inner.start) {
-                let hole_3d: Vec<DVec3> =
-                    hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
-                if hole_3d.len() < 3 {
+        // Every geodesic hole, as on the cylinder and cone.
+        let all_holes_raw: Vec<Vec<(f64, f64)>> = {
+            let mut out = Vec::new();
+            for inner in face.inners() {
+                if let Some(hole_verts) = split_loop_verts(inner.start) {
+                    let hole_3d: Vec<DVec3> =
+                        hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
+                    if hole_3d.len() < 3 {
+                        return None;
+                    }
+                    let mut uv = Vec::with_capacity(hole_3d.len());
+                    for &p in &hole_3d {
+                        uv.push(invert(p)?);
+                    }
+                    out.push(uv);
+                }
+            }
+            out
+        };
+        {
+            {
+                if all_holes_raw.is_empty() {
                     return None;
                 }
-                let hole_raw: Vec<(f64, f64)> = {
-                    let mut out = Vec::with_capacity(hole_3d.len());
-                    for &p in &hole_3d {
-                        out.push(invert(p)?);
+                let hole_raw = all_holes_raw[0].clone();
+                // BOTH seams must miss EVERY hole — the torus is periodic in u
+                // and in v. Same question as on the cylinder, asked twice: of a
+                // few hundred candidates, the angle furthest from the nearest
+                // hole coordinate.
+                let furthest = |axis_u: bool, holes: &[Vec<(f64, f64)>]| -> f64 {
+                    const CANDIDATES: usize = 360;
+                    let mut best = (PI, -1.0_f64);
+                    for c in 0..CANDIDATES {
+                        let cand = TAU * (c as f64) / (CANDIDATES as f64);
+                        let mut nearest = f64::MAX;
+                        for h in holes {
+                            for &(u, v) in h {
+                                let a = if axis_u { u } else { v };
+                                let mut d = (a - cand).abs() % TAU;
+                                if d > PI {
+                                    d = TAU - d;
+                                }
+                                nearest = nearest.min(d);
+                            }
+                        }
+                        if nearest > best.1 {
+                            best = (cand, nearest);
+                        }
                     }
-                    out
+                    best.0
                 };
-                // Circular means → seams OPPOSITE the hole (centre the hole at
-                // (π,π) in shifted space, away from both 0/2π seams).
-                let (mut cu_x, mut cu_y, mut cv_x, mut cv_y) = (0.0, 0.0, 0.0, 0.0);
-                for &(u, v) in &hole_raw {
-                    cu_x += u.cos();
-                    cu_y += u.sin();
-                    cv_x += v.cos();
-                    cv_y += v.sin();
-                }
-                let u_seam = cu_y.atan2(cu_x) + PI;
-                let v_seam = cv_y.atan2(cv_x) + PI;
+                let u_seam = furthest(true, &all_holes_raw);
+                let v_seam = furthest(false, &all_holes_raw);
                 let shift = |a: f64, seam: f64| -> f64 {
                     let mut s = a - seam;
                     while s < 0.0 {
@@ -3417,6 +3469,12 @@ impl Mesh {
                 };
                 let hole_uv: Vec<(f64, f64)> =
                     hole_raw.iter().map(|&(u, v)| (shift(u, u_seam), shift(v, v_seam))).collect();
+                let holes_uv: Vec<Vec<(f64, f64)>> = all_holes_raw
+                    .iter()
+                    .map(|h| {
+                        h.iter().map(|&(u, v)| (shift(u, u_seam), shift(v, v_seam))).collect()
+                    })
+                    .collect();
                 // Outer = full param square [0,2π]×[0,2π], sampled CCW on 4 edges.
                 let n_u = crate::curves::circle::segment_count_for_arc(mr + nr, TAU, chord_tol)
                     .clamp(16, 96);
@@ -3447,9 +3505,7 @@ impl Mesh {
                     map_back(u + u_seam, v + v_seam)
                 };
                 if let Some((verts, uvs, tris)) = Self::band_minus_hole_uv(
-                    // ⚠ ONE hole, as on the cone — see there.
-                    0.0, TAU, 0.0, TAU, std::slice::from_ref(&hole_uv), n_u, n_v,
-                    &map_back_shifted,
+                    0.0, TAU, 0.0, TAU, &holes_uv, n_u, n_v, &map_back_shifted,
                 ) {
                     let uv: Vec<[f64; 2]> =
                         uvs.iter().map(|p| [p[0] + u_seam, p[1] + v_seam]).collect();

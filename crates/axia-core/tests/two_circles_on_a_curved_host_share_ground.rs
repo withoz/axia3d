@@ -186,3 +186,95 @@ fn two_disjoint_circles_leave_the_area_alone() {
         two - TRUE_SURFACE
     );
 }
+
+/// The same claim on every curved host, not just the one that was measured
+/// first. The cylinder was restructured to collect all holes; the cone and
+/// torus were left at one for a while, with the gap written into the code —
+/// this is what closed it.
+#[test]
+fn two_disjoint_circles_leave_the_area_alone_on_every_host() {
+    use axia_geo::surfaces::{cone, sphere, torus};
+    for host in ["cylinder", "sphere", "cone", "torus"] {
+        let mut s = Scene::new();
+        let m = MaterialId::new(0);
+        s.mesh.set_cylinder_path_b_default(true);
+        s.mesh.set_sphere_path_b_default(true);
+        s.mesh.set_cone_path_b_default(true);
+        s.mesh.set_torus_path_b_default(true);
+        match host {
+            "cylinder" => { s.mesh.create_cylinder(DVec3::ZERO, R, H, 16, m).unwrap(); }
+            "sphere" => { s.mesh.create_sphere(DVec3::ZERO, R, 16, 12, m).unwrap(); }
+            "cone" => { s.mesh.create_cone(DVec3::ZERO, R, H, 16, m).unwrap(); }
+            _ => { s.mesh.create_torus_kernel_native(DVec3::ZERO, R, 3.0, m).unwrap(); }
+        }
+        let face = s
+            .mesh
+            .faces
+            .iter()
+            .find(|(_, f)| {
+                f.is_active()
+                    && f.surface()
+                        .is_some_and(|su| !matches!(su, AnalyticSurface::Plane { .. }))
+            })
+            .map(|(fid, _)| fid)
+            .unwrap();
+        let surf = s.mesh.face_surface(face).unwrap().clone();
+        let at = |u: f64, v: f64| -> DVec3 {
+            match &surf {
+                AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } =>
+                    cylinder::evaluate(*axis_origin, *axis_dir, *radius, *ref_dir, u, v),
+                AnalyticSurface::Sphere { center, radius, axis_dir, ref_dir, .. } =>
+                    sphere::evaluate(*center, *radius, *axis_dir, *ref_dir, u, v),
+                AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } =>
+                    cone::evaluate(*apex, *axis_dir, *half_angle, *ref_dir, u, v),
+                AnalyticSurface::Torus { center, axis_dir, ref_dir, major_radius, minor_radius, .. } =>
+                    torus::evaluate(*center, *axis_dir, *ref_dir, *major_radius, *minor_radius, u, v),
+                _ => panic!("not curved"),
+            }
+        };
+        let ((u0, u1), (v0, v1)) = match &surf {
+            AnalyticSurface::Cylinder { u_range, v_range, .. }
+            | AnalyticSurface::Sphere { u_range, v_range, .. }
+            | AnalyticSurface::Cone { u_range, v_range, .. }
+            | AnalyticSurface::Torus { u_range, v_range, .. } => (*u_range, *v_range),
+            _ => panic!("not curved"),
+        };
+        let (vm, du) = (0.5 * (v0 + v1), 0.12 * (u1 - u0));
+        let draw = |s: &mut Scene, f: FaceId, u: f64| match host {
+            "cylinder" => s.draw_circle_on_cylinder(f, at(u, vm), at(u + du, vm)),
+            "sphere" => s.draw_circle_on_sphere(f, at(u, vm), at(u + du, vm)),
+            "cone" => s.draw_circle_on_cone(f, at(u, vm), at(u + du, vm)),
+            _ => s.draw_circle_on_torus(f, at(u, vm), at(u + du, vm)),
+        };
+        let before = drawn_area(&mut s);
+        // A quarter turn apart in u — nowhere near each other.
+        let quarter = 0.25 * (u1 - u0);
+        let Some((_, rem)) = draw(&mut s, face, u0 + quarter) else {
+            panic!("{host}: first circle must draw");
+        };
+        let second = draw(&mut s, rem, u0 + 3.0 * quarter);
+        assert!(second.is_some(), "{host}: second circle must draw");
+        let after = drawn_area(&mut s);
+        println!(
+            "EVERY {host:<9} {before:>9.3} -> {after:>9.3}   x{:.4}",
+            after / before
+        );
+        // Per host, because they do not all land in the same place and one
+        // shared threshold would either hide the torus's residual or fail the
+        // three that are exact.
+        //
+        //   cylinder / sphere / cone   x1.0001 - x1.0002
+        //   torus                      x1.0243   (x1.0055 for a single circle)
+        //
+        // The torus read x0.5418 before any of this — it drew less than half of
+        // its own surface. What is left is a ring-versus-grid residual on a
+        // doubly periodic chart: recorded rather than rounded away, and small
+        // enough that chasing it would cost more than it returns.
+        let tol = if host == "torus" { 0.03 } else { 0.01 };
+        assert!(
+            (after / before - 1.0).abs() < tol,
+            "{host}: two circles that share no ground changed the drawn area by x{:.4}",
+            after / before
+        );
+    }
+}
