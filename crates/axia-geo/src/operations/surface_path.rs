@@ -372,7 +372,7 @@ impl Mesh {
     /// the opposite here first; mutating this filter away changed nothing,
     /// which is how the claim was caught. The genuine case is a **kernel-native
     /// (Path B)** host, whose side is ONE curved face — 트랙 C's subject.
-    fn split_edge_at_or_add_vertex(&mut self, p: DVec3) -> VertId {
+    pub(crate) fn split_edge_at_or_add_vertex(&mut self, p: DVec3) -> VertId {
         const TOL: f64 = 1.5e-3; // the dedup floor (LOCKED #5)
         let target = self
             .edges
