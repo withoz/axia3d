@@ -239,26 +239,47 @@ fn what_the_materializers_own_steps_leave_behind() {
 
     // ── The answer ────────────────────────────────────────────────────────
     //
-    // Nothing this sequence does is wrong. `split_face_by_chain` opens with
+    // Nothing this sequence does is wrong. `split_face_by_chain` USED TO open
+    // with an unconditional
     //
     //     let face_id = polygonize_if_closed_curve(mesh, face_id)?;
     //
     // and the host is a Path B band: its OUTER loop is ONE vertex and a
-    // self-loop circle (ADR-089 Phase 2). So the split polygonises it, gets a
-    // NEW face back, and looks for the chain on that one — while the chain's
+    // self-loop circle (ADR-089 Phase 2). So the split polygonised it, got a
+    // NEW face back, and looked for the chain on that one — while the chain's
     // vertices belong to the face that was just replaced. Hence a refusal
     // naming face 4 when the caller passed face 2, and hence "vert 50 not on
     // any loop", which was true of the new face and false of the old.
     //
-    // The cap does not have this problem: its boundary is a 48-gon, so nothing
-    // is polygonised and the cut goes through. That asymmetry is the route —
-    // whatever fixes this has to polygonise the host BEFORE the crossings and
-    // chains are built, so they are made on the face that survives.
+    // And worse than a wrong id: polygonising KEEPS ONLY THE OUTER LOOP,
+    // measured `[1, 1, 48] -> [23]` (`polygonize_keeps_or_drops_the_holes`).
+    // So "polygonise the host first" was never a route either — it would have
+    // dropped the cap's hole and the top rim.
+    //
+    // The fix was to stop transforming a face that did not need it: the chain
+    // is looked for FIRST, and only a chain with nowhere to live triggers the
+    // polygonisation. The outer loop also only has to be a polygon when it is
+    // the loop being cut.
+    //
+    // What the refusal says NOW is the real answer, and it is not a bug:
+    // cutting a face ACROSS ONE OF ITS HOLES is not implemented. The engine
+    // has said so since 2026-04-28, with the topology it would need spelled
+    // out — "one simple face (chain area) + one face-with-hole (rest)". That
+    // is the piece C-2's materializer is waiting on.
     assert_eq!(
         outer_before, 1,
-        "the host's outer loop is one vertex — that is what triggers it"
+        "the host's outer loop is one vertex — what used to trigger the \
+         polygonisation, and no longer does"
     );
-    assert!(attempt.is_err(), "so the host cut is refused today");
+    let why = attempt.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        why.contains("inner (hole) loop"),
+        "the refusal names the real gap: {why}"
+    );
+    assert!(
+        why.contains(&format!("face {}", host.raw())),
+        "and the RIGHT face — it used to name the one it had just made: {why}"
+    );
 
     // ── And the refusal is CLEAN, which it was not when this was written ──
     //

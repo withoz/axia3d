@@ -27,6 +27,22 @@ use crate::tolerances::*;
 /// polygonize. `polygonize_closed_curve_face` returns `Ok(None)` if the
 /// face already has polygonal boundary (>1 vert) — in that case we keep
 /// the original face_id.
+/// Are both chain endpoints on an INNER loop of this face?
+///
+/// Used to let a cut across a hole through even when the face's outer loop is
+/// a one-vertex closed curve — the outer loop is not the one being cut.
+fn face_id_has_inner_home(mesh: &Mesh, face_id: FaceId, chain_verts: &[VertId]) -> bool {
+    let Some(face) = mesh.faces.get(face_id).filter(|f| f.is_active()) else {
+        return false;
+    };
+    let (a, b) = (chain_verts[0], *chain_verts.last().unwrap());
+    face.inners().iter().any(|l| {
+        mesh.collect_loop_verts(l.start)
+            .map(|vs| vs.contains(&a) && vs.contains(&b))
+            .unwrap_or(false)
+    })
+}
+
 /// Would `polygonize_if_closed_curve` actually change anything?
 ///
 /// Read-only, and the whole point: polygonisation is a MUTATION that the split
@@ -651,11 +667,49 @@ fn split_face_by_chain_inner(
     // pass 한다 해도 chain endpoint lookup (line 597 pos_on) 이 fail.
     // → silent err 또는 invalid sub-face. K1 진입 시 closed-curve detect
     // → polygonize 자동 호출 → polygon mode 변환 후 split 진행.
-    let face_id = polygonize_if_closed_curve(mesh, face_id)?;
+    // Polygonise only if the chain has nowhere to live yet.
+    //
+    // The hotfix above transforms the face on the way in, which is right when
+    // the chain is meant to cut the closed-curve boundary itself — and wrong
+    // when it is not. A Path B band has three loops (two rims and a hole cut
+    // by an earlier circle); polygonising it keeps ONLY the outer one and
+    // drops the rest, measured `[1, 1, 48] -> [23]`
+    // (`polygonize_keeps_or_drops_the_holes`). A chain sitting on that hole
+    // would have its face rebuilt out from under it — which is exactly what
+    // happened: "chain start vert 50 not on any loop of face 4" while the rim
+    // belonged to face 2.
+    //
+    // So ask first. If both endpoints are already on some loop of the face,
+    // nothing needs transforming.
+    let chain_has_a_home = |mesh: &Mesh, f: FaceId| -> bool {
+        let Some(face) = mesh.faces.get(f).filter(|x| x.is_active()) else {
+            return false;
+        };
+        let a = chain_verts[0];
+        let b = *chain_verts.last().unwrap();
+        let holds = |start| {
+            mesh.collect_loop_verts(start)
+                .map(|vs| vs.contains(&a) && vs.contains(&b))
+                .unwrap_or(false)
+        };
+        holds(face.outer().start) || face.inners().iter().any(|l| holds(l.start))
+    };
+    let face_id = if chain_has_a_home(mesh, face_id) {
+        face_id
+    } else {
+        polygonize_if_closed_curve(mesh, face_id)?
+    };
 
     let outer_start = mesh.faces[face_id].outer().start;
     let outer_boundary = mesh.collect_loop_verts(outer_start)?;
-    ensure!(outer_boundary.len() >= 3, "face boundary has <3 verts");
+    // …and the outer loop only has to be a polygon when it is the one being
+    // cut. It is merely where the search starts; an inner loop replaces it
+    // below, and a band's one-vertex rim is no reason to refuse a cut across
+    // its hole.
+    ensure!(
+        outer_boundary.len() >= 3 || face_id_has_inner_home(mesh, face_id, chain_verts),
+        "face boundary has <3 verts"
+    );
 
     // Locate chain[0] and chain[last]. They may be on the OUTER boundary or
     // on one of the INNER (hole) loops. We pick the first loop that contains
@@ -3965,6 +4019,70 @@ mod tests {
             "a chain off the boundary is refused"
         );
         assert_eq!(m2.snapshot(), snap, "and the refusal changes nothing");
+    }
+
+    /// Does polygonising a face keep its HOLES?
+    ///
+    /// "Polygonise the host first" was the obvious next move for the C-2
+    /// materializer, and the route depends on this answer: a Path B band has
+    /// three loops (two rims and the cap's hole), and a refused split earlier
+    /// left a face with ONE. Asked before building on it.
+    #[test]
+    fn polygonize_keeps_or_drops_the_holes() {
+        use crate::curves::AnalyticCurve;
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        m.cylinder_path_b_default = true;
+        m.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).expect("cylinder");
+        let side = m
+            .faces
+            .iter()
+            .find(|(_, f)| {
+                f.is_active()
+                    && f.surface().is_some_and(|s| {
+                        !matches!(s, crate::surfaces::AnalyticSurface::Plane { .. })
+                    })
+            })
+            .map(|(fid, _)| fid)
+            .expect("wall");
+        let circle: Vec<DVec3> = (0..48)
+            .map(|i| {
+                let t = std::f64::consts::TAU * (i as f64) / 48.0;
+                crate::surfaces::cylinder::evaluate(
+                    DVec3::ZERO,
+                    DVec3::Z,
+                    10.0,
+                    DVec3::X,
+                    std::f64::consts::PI + (3.0 * t.cos()) / 10.0,
+                    10.0 + 3.0 * t.sin(),
+                )
+            })
+            .collect();
+        let (_cap, host) = m.split_cylinder_face_by_circle(side, &circle).expect("split");
+        let loops_of = |m: &Mesh, f: FaceId| -> Vec<usize> {
+            let face = m.faces.get(f).unwrap();
+            let mut v = vec![m.collect_loop_verts(face.outer().start).unwrap().len()];
+            for l in face.inners() {
+                v.push(m.collect_loop_verts(l.start).unwrap().len());
+            }
+            v
+        };
+        let before = loops_of(&m, host);
+        assert_eq!(before, vec![1, 1, 48], "the band: rim, rim, and the cap's hole");
+
+        let poly = polygonize_if_closed_curve(&mut m, host).expect("polygonize");
+        let after = loops_of(&m, poly);
+        println!("POLY {:?} -> face {} {:?}", before, poly.raw(), after);
+
+        // PIN whichever it is, so the next attempt does not find out the hard
+        // way. `let _ = AnalyticCurve::Circle` keeps the import honest if the
+        // body changes.
+        let _ = |c: AnalyticCurve| c;
+        assert_eq!(
+            after.len(),
+            1,
+            "TODAY polygonising a multi-loop face keeps only its outer loop              ({before:?} -> {after:?}) — the holes are dropped. When they              survive, retire this pin"
+        );
     }
 
     /// polygonize_if_closed_curve helper unit — polygon face 는 same face_id 반환
