@@ -1963,6 +1963,288 @@ impl Mesh {
         Some(crate::surfaces::SurfaceTessellation { vertices: verts, triangles, uv: uvs })
     }
 
+    /// ADR-197 #6, generalised: refine an earcut uv triangulation until its
+    /// triangles hug the surface instead of cutting through the solid.
+    ///
+    /// `earcut` triangulates a boundary and adds no interior points, so a patch
+    /// spanning a lot of parameter space keeps a faceted interior. On a sphere
+    /// that showed up as a visibly flat octant (ADR-197). On a CYLINDER it is
+    /// worse and invisible: u is an ANGLE, so a triangle joining two points far
+    /// apart in u is a thin sliver on the chart and a flat slab THROUGH the
+    /// solid in space, hidden behind the skin. Measured 2026-08-14 — drawing one
+    /// circle on a Ø20 × 20 cylinder took the exported area from 1882.477 to
+    /// 2292.511 (+21.6%), with the worst triangle spanning 177° of the turn and
+    /// its centroid sagging 66% of the radius inward.
+    ///
+    /// Triangulate a cap — a closed boundary with no hole — as concentric
+    /// rings rather than one earcut, for the same reason the band is gridded.
+    ///
+    /// The cap a circle leaves on a cylinder is a geodesic disc, and a disc big
+    /// enough to be worth drawing takes a large slice of the turn (a Ø19 circle
+    /// on a Ø20 cylinder spans 108°). earcut adds no interior points, so its
+    /// ~29 triangles reach up to 80° across — flat plates on a round wall, and
+    /// unlike the band's slabs these are on the OUTSIDE where they can be seen.
+    /// Measured 2026-08-14: worst centroid sag 25% of the radius, cap area
+    /// 273.289 against πr² = 279.056.
+    ///
+    /// A geodesic disc is star-shaped about its centre, so rings work and need
+    /// no triangulator: walk out from the centre to the boundary in `n_r`
+    /// steps. The boundary points are the caller's own, so the cap still meets
+    /// the band exactly along the split loop.
+    fn disc_from_boundary_uv(
+        boundary_uv: &[(f64, f64)],
+        n_r: usize,
+        map_back: &dyn Fn(f64, f64) -> DVec3,
+    ) -> Option<(Vec<DVec3>, Vec<[f64; 2]>, Vec<[usize; 3]>)> {
+        let k = boundary_uv.len();
+        if k < 3 || n_r < 2 {
+            return None;
+        }
+        let cu = boundary_uv.iter().map(|p| p.0).sum::<f64>() / k as f64;
+        let cv = boundary_uv.iter().map(|p| p.1).sum::<f64>() / k as f64;
+        let mut verts = Vec::with_capacity(k * n_r + 1);
+        let mut uvs = Vec::with_capacity(k * n_r + 1);
+        let mut push = |u: f64, v: f64, verts: &mut Vec<DVec3>, uvs: &mut Vec<[f64; 2]>| -> usize {
+            verts.push(map_back(u, v));
+            uvs.push([u, v]);
+            verts.len() - 1
+        };
+        let centre = push(cu, cv, &mut verts, &mut uvs);
+        // Ring r sits at r/n_r of the way out; ring n_r IS the caller's
+        // boundary, point for point.
+        let mut rings: Vec<Vec<usize>> = Vec::with_capacity(n_r);
+        for r in 1..=n_r {
+            let f = r as f64 / n_r as f64;
+            let mut ring = Vec::with_capacity(k);
+            for &(bu, bv) in boundary_uv {
+                ring.push(push(
+                    cu + f * (bu - cu),
+                    cv + f * (bv - cv),
+                    &mut verts,
+                    &mut uvs,
+                ));
+            }
+            rings.push(ring);
+        }
+        let mut tris = Vec::with_capacity(k * (2 * n_r - 1));
+        for i in 0..k {
+            tris.push([centre, rings[0][i], rings[0][(i + 1) % k]]);
+        }
+        for r in 1..n_r {
+            let (a, b) = (&rings[r - 1], &rings[r]);
+            for i in 0..k {
+                let j = (i + 1) % k;
+                tris.push([a[i], b[i], b[j]]);
+                tris.push([a[i], b[j], a[j]]);
+            }
+        }
+        Some((verts, uvs, tris))
+    }
+
+    /// Triangulate a parameter-space band with one hole as a GRID, not as one
+    /// earcut — because earcut adds no interior points and a band has nothing
+    /// but interior.
+    ///
+    /// The band a circle leaves behind on a cylinder or cone is the rectangle
+    /// `[0, 2π] × v_range` minus the cap. Its outer ring IS finely sampled
+    /// (≈50 points along each long side, at the chord tolerance), and earcut
+    /// throws all of it away: those points are exactly COLLINEAR in uv, so they
+    /// clip as zero-area ears and what remains is a coarse quadrilateral. The
+    /// triangles that then bridge to the hole reach right across the band — and
+    /// u is an ANGLE, so a triangle spanning 177° of the turn is a flat slab
+    /// through the solid rather than a patch of its skin, hidden behind the
+    /// skin where nothing looks.
+    ///
+    /// Measured 2026-08-14, drawing one circle on a Ø20 × 20 cylinder:
+    ///
+    /// ```text
+    ///   exported area   1882.477 → 2292.511   (+21.6%, true 1884.956)
+    ///   worst triangle  spans 177° of the turn, centroid 66% of R inward
+    ///   cone            +10.3%   torus −46%   sphere exact
+    /// ```
+    ///
+    /// Two subdivision fixes were tried and measured before this one. A global
+    /// N-grid over every coarse triangle (ADR-197 #6, which is right for a
+    /// sphere patch) costs ×130 in triangles because it pays the worst case
+    /// everywhere — not shippable against LOCKED #45/#46. Per-edge splitting
+    /// with a centroid fan is cheaper but does not work at all: the wedges from
+    /// the centroid still span the full width, and the cone got WORSE (×4.78).
+    /// Subdivision cannot fix a triangle that should never have existed.
+    ///
+    /// So the band is gridded — cells clear of the hole become two triangles
+    /// each, and only the hole's own neighbourhood is earcut, where the region
+    /// is small enough that earcut cannot produce a wide triangle. The local
+    /// patch is cut on grid lines, so its boundary points are exactly the
+    /// surrounding cells' — no T-junctions, no cracks.
+    fn band_minus_hole_uv(
+        u0: f64,
+        u1: f64,
+        v0: f64,
+        v1: f64,
+        hole_uv: &[(f64, f64)],
+        n_u: usize,
+        n_v: usize,
+        map_back: &dyn Fn(f64, f64) -> DVec3,
+    ) -> Option<(Vec<DVec3>, Vec<[f64; 2]>, Vec<[usize; 3]>)> {
+        if hole_uv.len() < 3 || n_u < 2 || n_v < 1 || u1 <= u0 || v1 <= v0 {
+            return None;
+        }
+        let du = (u1 - u0) / n_u as f64;
+        let dv = (v1 - v0) / n_v as f64;
+        // The hole's grid-aligned neighbourhood: one cell of margin, so the
+        // local earcut always has room between the hole and its own boundary.
+        let (mut hu0, mut hu1) = (f64::MAX, f64::MIN);
+        let (mut hv0, mut hv1) = (f64::MAX, f64::MIN);
+        for &(u, v) in hole_uv {
+            hu0 = hu0.min(u);
+            hu1 = hu1.max(u);
+            hv0 = hv0.min(v);
+            hv1 = hv1.max(v);
+        }
+        let ci0 = (((hu0 - u0) / du).floor() as i64 - 1).clamp(0, n_u as i64) as usize;
+        let ci1 = (((hu1 - u0) / du).ceil() as i64 + 1).clamp(0, n_u as i64) as usize;
+        let cj0 = (((hv0 - v0) / dv).floor() as i64 - 1).clamp(0, n_v as i64) as usize;
+        let cj1 = (((hv1 - v0) / dv).ceil() as i64 + 1).clamp(0, n_v as i64) as usize;
+        if ci1 <= ci0 || cj1 <= cj0 {
+            return None; // the hole is not inside this band — leave it alone
+        }
+
+        let mut verts: Vec<DVec3> = Vec::new();
+        let mut uvs: Vec<[f64; 2]> = Vec::new();
+        let mut tris: Vec<[usize; 3]> = Vec::new();
+        let mut push = |u: f64, v: f64, verts: &mut Vec<DVec3>, uvs: &mut Vec<[f64; 2]>| -> usize {
+            verts.push(map_back(u, v));
+            uvs.push([u, v]);
+            verts.len() - 1
+        };
+
+        // Every cell outside the hole's neighbourhood: two triangles.
+        for j in 0..n_v {
+            for i in 0..n_u {
+                if i >= ci0 && i < ci1 && j >= cj0 && j < cj1 {
+                    continue; // reserved for the local patch below
+                }
+                let (ua, ub) = (u0 + i as f64 * du, u0 + (i + 1) as f64 * du);
+                let (va, vb) = (v0 + j as f64 * dv, v0 + (j + 1) as f64 * dv);
+                let a = push(ua, va, &mut verts, &mut uvs);
+                let b = push(ub, va, &mut verts, &mut uvs);
+                let c = push(ub, vb, &mut verts, &mut uvs);
+                let d = push(ua, vb, &mut verts, &mut uvs);
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+            }
+        }
+
+        // The hole's neighbourhood, earcut with the hole in it. Its outline is
+        // walked along grid lines so its points coincide with the cells above.
+        let (pu0, pu1) = (u0 + ci0 as f64 * du, u0 + ci1 as f64 * du);
+        let (pv0, pv1) = (v0 + cj0 as f64 * dv, v0 + cj1 as f64 * dv);
+        let mut patch: Vec<(f64, f64)> = Vec::new();
+        for i in ci0..ci1 {
+            patch.push((u0 + i as f64 * du, pv0));
+        }
+        for j in cj0..cj1 {
+            patch.push((pu1, v0 + j as f64 * dv));
+        }
+        for i in (ci0 + 1..=ci1).rev() {
+            patch.push((u0 + i as f64 * du, pv1));
+        }
+        for j in (cj0 + 1..=cj1).rev() {
+            patch.push((pu0, v0 + j as f64 * dv));
+        }
+        // The ring between the patch outline and the hole, zipped rather than
+        // earcut. Earcut here would put the slabs straight back: a circle wide
+        // enough to matter takes a third of the turn, so its neighbourhood is
+        // not local and earcut's bridges cross it (measured — the patch alone
+        // still left a triangle sagging 38% of the radius). Both loops wind
+        // once around the hole's centre, so walking them together in angle
+        // gives only short triangles and needs no triangulator at all.
+        if patch.len() < 3 {
+            return None;
+        }
+        let cu = hole_uv.iter().map(|p| p.0).sum::<f64>() / hole_uv.len() as f64;
+        let cv = hole_uv.iter().map(|p| p.1).sum::<f64>() / hole_uv.len() as f64;
+        let ang = |p: &(f64, f64)| (p.1 - cv).atan2(p.0 - cu);
+        // Both loops counter-clockwise about that centre, so "advance the one
+        // whose next point comes first" is well defined.
+        let ccw = |loop_uv: &[(f64, f64)]| -> bool {
+            let mut a = 0.0;
+            for i in 0..loop_uv.len() {
+                let (x0, y0) = loop_uv[i];
+                let (x1, y1) = loop_uv[(i + 1) % loop_uv.len()];
+                a += (x0 - cu) * (y1 - cv) - (x1 - cu) * (y0 - cv);
+            }
+            a > 0.0
+        };
+        let mut outer = patch.clone();
+        let mut inner = hole_uv.to_vec();
+        if !ccw(&outer) {
+            outer.reverse();
+        }
+        if !ccw(&inner) {
+            inner.reverse();
+        }
+        // Start each loop at its own angular minimum so the walk stays in step.
+        let rot = |l: &mut Vec<(f64, f64)>| {
+            if let Some(k) = (0..l.len()).min_by(|&a, &b| {
+                ang(&l[a]).partial_cmp(&ang(&l[b])).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                l.rotate_left(k);
+            }
+        };
+        rot(&mut outer);
+        rot(&mut inner);
+
+        let base_o = verts.len();
+        for &(u, v) in &outer {
+            push(u, v, &mut verts, &mut uvs);
+        }
+        let base_i = verts.len();
+        for &(u, v) in &inner {
+            push(u, v, &mut verts, &mut uvs);
+        }
+        let (m, k) = (outer.len(), inner.len());
+        // Unwrapped angle, so the comparison does not trip over the ±π seam.
+        let unwrap_from = |l: &[(f64, f64)], start: f64| -> Vec<f64> {
+            let mut out = Vec::with_capacity(l.len() + 1);
+            let mut prev = start;
+            for p in l {
+                let mut a = ang(p);
+                while a < prev - std::f64::consts::PI {
+                    a += std::f64::consts::TAU;
+                }
+                while a > prev + std::f64::consts::PI {
+                    a -= std::f64::consts::TAU;
+                }
+                out.push(a);
+                prev = a;
+            }
+            out.push(out[0] + std::f64::consts::TAU);
+            out
+        };
+        let start = ang(&outer[0]).min(ang(&inner[0]));
+        let ao = unwrap_from(&outer, start);
+        let ai = unwrap_from(&inner, start);
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < m || j < k {
+            let take_outer = if i >= m {
+                false
+            } else if j >= k {
+                true
+            } else {
+                ao[i + 1] <= ai[j + 1]
+            };
+            if take_outer {
+                tris.push([base_o + i, base_o + (i + 1) % m, base_i + j % k]);
+                i += 1;
+            } else {
+                tris.push([base_o + i % m, base_i + (j + 1) % k, base_i + j % k]);
+                j += 1;
+            }
+        }
+        Some((verts, uvs, tris))
+    }
+
     /// **ADR-202 β-3b (2026-06-17, smooth boundary 2026-06-17)** — render a Sphere
     /// face split by a closed circle on the sphere (cap / annulus). The surface
     /// spans the whole hemisphere, so the default `tessellate` would fill it (cap
@@ -2348,13 +2630,40 @@ impl Mesh {
             if tri.is_empty() {
                 return None;
             }
-            let all_uv: Vec<(f64, f64)> =
-                outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
-            let vertices: Vec<DVec3> = all_uv.iter().map(|&(u, v)| map_back(u, v)).collect();
-            let uv: Vec<[f64; 2]> = all_uv.iter().map(|&(u, v)| [u, v]).collect();
-            let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tri.len() / 3);
-            for c in tri.chunks_exact(3) {
-                let (a, b, cc) = (c[0], c[1], c[2]);
+            // A hole-less patch is a cap: ring it from the centre instead of
+            // earcutting, so its interior follows the wall (see
+            // `disc_from_boundary_uv`). Anything with a hole keeps the earcut.
+            let ringed = if hole_uv.is_empty() {
+                let n_r = {
+                    let cu = outer_uv.iter().map(|p| p.0).sum::<f64>() / outer_uv.len() as f64;
+                    let cv = outer_uv.iter().map(|p| p.1).sum::<f64>() / outer_uv.len() as f64;
+                    // Radial steps sized like the rim's own spacing, so the
+                    // triangles come out roughly equilateral.
+                    let radial = (map_back(outer_uv[0].0, outer_uv[0].1) - map_back(cu, cv)).length();
+                    let rim = (map_back(outer_uv[0].0, outer_uv[0].1)
+                        - map_back(outer_uv[1 % outer_uv.len()].0, outer_uv[1 % outer_uv.len()].1))
+                    .length()
+                    .max(1e-9);
+                    (radial / rim).ceil().clamp(2.0, 32.0) as usize
+                };
+                Self::disc_from_boundary_uv(outer_uv, n_r, &map_back)
+            } else {
+                None
+            };
+            let (vertices, uv, tris) = match ringed {
+                Some((v, uvs, t)) => (v, uvs, t),
+                None => {
+                    let all_uv: Vec<(f64, f64)> =
+                        outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
+                    (
+                        all_uv.iter().map(|&(u, v)| map_back(u, v)).collect(),
+                        all_uv.iter().map(|&(u, v)| [u, v]).collect::<Vec<_>>(),
+                        tri.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+                    )
+                }
+            };
+            let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+            for &[a, b, cc] in &tris {
                 let (pa, pb, pc) = (vertices[a], vertices[b], vertices[cc]);
                 let face_n = (pb - pa).cross(pc - pa);
                 let out_n = outward_at((pa + pb + pc) / 3.0);
@@ -2456,15 +2765,52 @@ impl Mesh {
                     if tri.is_empty() {
                         return None;
                     }
-                    let all_uv: Vec<(f64, f64)> =
-                        outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
-                    let vertices: Vec<DVec3> =
-                        all_uv.iter().map(|&(u, v)| map_back_shifted(u, v)).collect();
-                    let uv: Vec<[f64; 2]> =
-                        all_uv.iter().map(|&(u, v)| [u + u_seam, v]).collect();
-                    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tri.len() / 3);
-                    for c in tri.chunks_exact(3) {
-                        let (a, b, cc) = (c[0], c[1], c[2]);
+                    // THE band path — this is where the slabs came from. Grid
+                    // it instead of earcutting the whole thing; only the
+                    // hole's own neighbourhood is earcut, where the region is
+                    // too small to produce a wide triangle. Falls back to the
+                    // plain earcut if the band cannot be gridded, so nothing
+                    // that used to render stops rendering.
+                    // How many rows the band needs, asked of the surface rather
+                    // than of the chart: make a v-cell about as long as a
+                    // u-cell is wide, in millimetres. Chart-independent, so the
+                    // cone (whose v is a distance) and the cylinder (whose v is
+                    // too) both get it right without special-casing.
+                    let v_mid = 0.5 * (v_lo + v_hi);
+                    let cell_u = (map_back_shifted(TAU / n_u as f64, v_mid)
+                        - map_back_shifted(0.0, v_mid))
+                    .length()
+                    .max(1e-9);
+                    let span_v = (map_back_shifted(0.0, v_hi) - map_back_shifted(0.0, v_lo)).length();
+                    let n_v = (span_v / cell_u).ceil().clamp(1.0, 64.0) as usize;
+                    let gridded = Self::band_minus_hole_uv(
+                        0.0,
+                        TAU,
+                        v_lo,
+                        v_hi,
+                        &hole_uv,
+                        n_u,
+                        n_v,
+                        &map_back_shifted,
+                    );
+                    let (vertices, uv, tris) = match gridded {
+                        Some((v, uvs, t)) => (
+                            v,
+                            uvs.iter().map(|p| [p[0] + u_seam, p[1]]).collect::<Vec<_>>(),
+                            t,
+                        ),
+                        None => {
+                            let all_uv: Vec<(f64, f64)> =
+                                outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
+                            (
+                                all_uv.iter().map(|&(u, v)| map_back_shifted(u, v)).collect(),
+                                all_uv.iter().map(|&(u, v)| [u + u_seam, v]).collect::<Vec<_>>(),
+                                tri.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+                            )
+                        }
+                    };
+                    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+                    for &[a, b, cc] in &tris {
                         let (pa, pb, pc) = (vertices[a], vertices[b], vertices[cc]);
                         let face_n = (pb - pa).cross(pc - pa);
                         let out_n = outward_at((pa + pb + pc) / 3.0);
@@ -2592,13 +2938,40 @@ impl Mesh {
             if tri.is_empty() {
                 return None;
             }
-            let all_uv: Vec<(f64, f64)> =
-                outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
-            let vertices: Vec<DVec3> = all_uv.iter().map(|&(u, v)| map_back(u, v)).collect();
-            let uv: Vec<[f64; 2]> = all_uv.iter().map(|&(u, v)| [u, v]).collect();
-            let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tri.len() / 3);
-            for c in tri.chunks_exact(3) {
-                let (a, b, cc) = (c[0], c[1], c[2]);
+            // A hole-less patch is a cap: ring it from the centre instead of
+            // earcutting, so its interior follows the wall (see
+            // `disc_from_boundary_uv`). Anything with a hole keeps the earcut.
+            let ringed = if hole_uv.is_empty() {
+                let n_r = {
+                    let cu = outer_uv.iter().map(|p| p.0).sum::<f64>() / outer_uv.len() as f64;
+                    let cv = outer_uv.iter().map(|p| p.1).sum::<f64>() / outer_uv.len() as f64;
+                    // Radial steps sized like the rim's own spacing, so the
+                    // triangles come out roughly equilateral.
+                    let radial = (map_back(outer_uv[0].0, outer_uv[0].1) - map_back(cu, cv)).length();
+                    let rim = (map_back(outer_uv[0].0, outer_uv[0].1)
+                        - map_back(outer_uv[1 % outer_uv.len()].0, outer_uv[1 % outer_uv.len()].1))
+                    .length()
+                    .max(1e-9);
+                    (radial / rim).ceil().clamp(2.0, 32.0) as usize
+                };
+                Self::disc_from_boundary_uv(outer_uv, n_r, &map_back)
+            } else {
+                None
+            };
+            let (vertices, uv, tris) = match ringed {
+                Some((v, uvs, t)) => (v, uvs, t),
+                None => {
+                    let all_uv: Vec<(f64, f64)> =
+                        outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
+                    (
+                        all_uv.iter().map(|&(u, v)| map_back(u, v)).collect(),
+                        all_uv.iter().map(|&(u, v)| [u, v]).collect::<Vec<_>>(),
+                        tri.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+                    )
+                }
+            };
+            let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+            for &[a, b, cc] in &tris {
                 let (pa, pb, pc) = (vertices[a], vertices[b], vertices[cc]);
                 let face_n = (pb - pa).cross(pc - pa);
                 let out_n = outward_at((pa + pb + pc) / 3.0);
@@ -2704,15 +3077,52 @@ impl Mesh {
                     if tri.is_empty() {
                         return None;
                     }
-                    let all_uv: Vec<(f64, f64)> =
-                        outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
-                    let vertices: Vec<DVec3> =
-                        all_uv.iter().map(|&(u, v)| map_back_shifted(u, v)).collect();
-                    let uv: Vec<[f64; 2]> =
-                        all_uv.iter().map(|&(u, v)| [u + u_seam, v]).collect();
-                    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tri.len() / 3);
-                    for c in tri.chunks_exact(3) {
-                        let (a, b, cc) = (c[0], c[1], c[2]);
+                    // THE band path — this is where the slabs came from. Grid
+                    // it instead of earcutting the whole thing; only the
+                    // hole's own neighbourhood is earcut, where the region is
+                    // too small to produce a wide triangle. Falls back to the
+                    // plain earcut if the band cannot be gridded, so nothing
+                    // that used to render stops rendering.
+                    // How many rows the band needs, asked of the surface rather
+                    // than of the chart: make a v-cell about as long as a
+                    // u-cell is wide, in millimetres. Chart-independent, so the
+                    // cone (whose v is a distance) and the cylinder (whose v is
+                    // too) both get it right without special-casing.
+                    let v_mid = 0.5 * (v_lo + v_hi);
+                    let cell_u = (map_back_shifted(TAU / n_u as f64, v_mid)
+                        - map_back_shifted(0.0, v_mid))
+                    .length()
+                    .max(1e-9);
+                    let span_v = (map_back_shifted(0.0, v_hi) - map_back_shifted(0.0, v_lo)).length();
+                    let n_v = (span_v / cell_u).ceil().clamp(1.0, 64.0) as usize;
+                    let gridded = Self::band_minus_hole_uv(
+                        0.0,
+                        TAU,
+                        v_lo,
+                        v_hi,
+                        &hole_uv,
+                        n_u,
+                        n_v,
+                        &map_back_shifted,
+                    );
+                    let (vertices, uv, tris) = match gridded {
+                        Some((v, uvs, t)) => (
+                            v,
+                            uvs.iter().map(|p| [p[0] + u_seam, p[1]]).collect::<Vec<_>>(),
+                            t,
+                        ),
+                        None => {
+                            let all_uv: Vec<(f64, f64)> =
+                                outer_uv.iter().chain(hole_uv.iter()).cloned().collect();
+                            (
+                                all_uv.iter().map(|&(u, v)| map_back_shifted(u, v)).collect(),
+                                all_uv.iter().map(|&(u, v)| [u + u_seam, v]).collect::<Vec<_>>(),
+                                tri.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+                            )
+                        }
+                    };
+                    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+                    for &[a, b, cc] in &tris {
                         let (pa, pb, pc) = (vertices[a], vertices[b], vertices[cc]);
                         let face_n = (pb - pa).cross(pc - pa);
                         let out_n = outward_at((pa + pb + pc) / 3.0);
@@ -2949,6 +3359,39 @@ impl Mesh {
                 }
                 for j in 0..n_v {
                     outer_uv.push((0.0, TAU * (1.0 - j as f64 / n_v as f64))); // left u=0
+                }
+                // Grid it, for the reason the cylinder and cone band is
+                // gridded — and the torus needs it most: BOTH u and v are
+                // angles here, so an earcut triangle wide in either is a slab
+                // through the tube. Measured 2026-08-14 the torus did not
+                // merely over-draw like the others, it came out 46% SHORT
+                // (1180.374 → 639.479 exported, 3192 → 85 triangles), which is
+                // the one of the four a user can see: missing surface is a
+                // hole in the picture.
+                let map_back_shifted = |u: f64, v: f64| -> DVec3 {
+                    map_back(u + u_seam, v + v_seam)
+                };
+                if let Some((verts, uvs, tris)) = Self::band_minus_hole_uv(
+                    0.0, TAU, 0.0, TAU, &hole_uv, n_u, n_v, &map_back_shifted,
+                ) {
+                    let uv: Vec<[f64; 2]> =
+                        uvs.iter().map(|p| [p[0] + u_seam, p[1] + v_seam]).collect();
+                    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+                    for &[a, b, c] in &tris {
+                        let (pa, pb, pc) = (verts[a], verts[b], verts[c]);
+                        let face_n = (pb - pa).cross(pc - pa);
+                        let out_n = outward_at((pa + pb + pc) / 3.0);
+                        if face_n.dot(out_n) >= 0.0 {
+                            triangles.push([a as u32, b as u32, c as u32]);
+                        } else {
+                            triangles.push([a as u32, c as u32, b as u32]);
+                        }
+                    }
+                    return Some(crate::surfaces::SurfaceTessellation {
+                        vertices: verts,
+                        triangles,
+                        uv,
+                    });
                 }
                 // earcut in SHIFTED space; map back adds (u_seam, v_seam).
                 return emit(&outer_uv, &hole_uv, u_seam, v_seam);
