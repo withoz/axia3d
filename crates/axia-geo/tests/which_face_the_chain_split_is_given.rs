@@ -1,0 +1,376 @@
+//! Measuring the face id, rather than reasoning about it.
+//!
+//! The C-2 materializer kept being refused with
+//!
+//! ```text
+//!   split_face_by_chain: chain start vert 50 not on any loop of face 4
+//! ```
+//!
+//! while `the_cap_rim_is_also_the_hosts_hole` says the rim belongs to face 2.
+//! Three things could produce that and only one of them is true, so this walks
+//! the sequence and prints what each step leaves behind:
+//!
+//!   1. `raw()` is not the index, and "face 4" is not FaceId(4)
+//!   2. splitting a rim edge replaces the host, so the caller's id goes stale
+//!   3. the vertex genuinely is not on the host, twin half-edges notwithstanding
+//!
+//! Nothing here fixes anything. It is the measurement the fix has to stand on.
+
+use axia_geo::surfaces::{cylinder, AnalyticSurface};
+use axia_geo::{FaceId, MaterialId, Mesh, VertId};
+use glam::DVec3;
+
+const R: f64 = 10.0;
+
+fn geodesic_circle(u0: f64, v0: f64, r: f64, n: usize) -> Vec<DVec3> {
+    (0..n)
+        .map(|i| {
+            let t = std::f64::consts::TAU * (i as f64) / (n as f64);
+            cylinder::evaluate(
+                DVec3::ZERO,
+                DVec3::Z,
+                R,
+                DVec3::X,
+                u0 + (r * t.cos()) / R,
+                v0 + r * t.sin(),
+            )
+        })
+        .collect()
+}
+
+/// Every active face, and which loops it has.
+fn shape(mesh: &Mesh) -> Vec<(u32, Vec<usize>)> {
+    mesh.faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, f)| {
+            let mut loops = vec![mesh.collect_loop_verts(f.outer().start).map(|v| v.len()).unwrap_or(0)];
+            for l in f.inners() {
+                loops.push(mesh.collect_loop_verts(l.start).map(|v| v.len()).unwrap_or(0));
+            }
+            (fid.raw(), loops)
+        })
+        .collect()
+}
+
+/// Which active faces have `v` on one of their loops.
+fn faces_carrying(mesh: &Mesh, v: VertId) -> Vec<u32> {
+    mesh.faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .filter(|(_, f)| {
+            let on = |s| mesh.collect_loop_verts(s).map(|vs| vs.contains(&v)).unwrap_or(false);
+            on(f.outer().start) || f.inners().iter().any(|l| on(l.start))
+        })
+        .map(|(fid, _)| fid.raw())
+        .collect()
+}
+
+#[test]
+fn splitting_a_rim_edge_and_who_still_owns_it() {
+    let mut mesh = Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    println!("STEP 0 wall={} faces={:?}", side.raw(), shape(&mesh));
+
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, 3.0, 48);
+    let (cap, host) = mesh.split_cylinder_face_by_circle(side, &a).expect("split");
+    println!(
+        "STEP 1 cap={} host={} faces={:?}",
+        cap.raw(),
+        host.raw(),
+        shape(&mesh)
+    );
+
+    // CLAIM 1 — is the id the index?
+    assert_eq!(
+        FaceId::new(host.raw()),
+        host,
+        "raw() round-trips, so the number in an error message IS the face"
+    );
+
+    // Take a rim edge and split it in the middle, exactly as the materializer
+    // does before it cuts.
+    let rim = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim");
+    let (v0, v1) = (rim[0], rim[1]);
+    let mid = 0.5 * (mesh.vertex_pos(v0).unwrap() + mesh.vertex_pos(v1).unwrap());
+    let e = mesh.find_edge(v0, v1).expect("rim edge");
+    let carried_before = (faces_carrying(&mesh, v0), faces_carrying(&mesh, v1));
+    let (vm, _, _) = mesh.split_edge(e, mid).expect("split the rim edge");
+    println!(
+        "STEP 2 split rim -> vert {}; faces={:?}",
+        vm.raw(),
+        shape(&mesh)
+    );
+    println!(
+        "       v0 was on faces {:?}, v1 on {:?}; the new vert is on {:?}",
+        carried_before.0,
+        carried_before.1,
+        faces_carrying(&mesh, vm)
+    );
+
+    // CLAIM 2 — did the host survive the edge split with the same id?
+    assert!(
+        mesh.faces.get(host).is_some_and(|f| f.is_active()),
+        "TODAY the host is still face {} after a rim edge is split",
+        host.raw()
+    );
+    assert!(
+        mesh.faces.get(cap).is_some_and(|f| f.is_active()),
+        "and so is the cap"
+    );
+
+    // CLAIM 3 — the new vertex is on BOTH, because the edge is shared through
+    // twin half-edges. This is what the materializer needs and what the refusal
+    // said was not so.
+    let on = faces_carrying(&mesh, vm);
+    assert!(
+        on.contains(&cap.raw()),
+        "the split vertex is on the cap ({on:?})"
+    );
+    assert!(
+        on.contains(&host.raw()),
+        "and on the host — {on:?} does not include {}",
+        host.raw()
+    );
+}
+
+/// The materializer's own sequence, step by step, printing what each one leaves.
+///
+/// The single-edge test above rules out every explanation that does not involve
+/// something the materializer itself does: the id round-trips, the host keeps
+/// its id through an edge split, and the new vertex lands on both faces. So the
+/// face the refusal names must be one this sequence CREATES.
+#[test]
+fn what_the_materializers_own_steps_leave_behind() {
+    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    use axia_geo::operations::face_split::split_face_by_chain;
+
+    let mut mesh = Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    let (r, d) = (3.0_f64, 3.6_f64);
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 48);
+    let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 48);
+    let (cap, host) = mesh.split_cylinder_face_by_circle(side, &a).expect("split");
+
+    let surface = mesh.face_surface(host).expect("surface").clone();
+    let loop_a: Vec<DVec3> = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim")
+        .iter()
+        .map(|&v| mesh.vertex_pos(v).unwrap())
+        .collect();
+    let x = crossing_on_cylinder(&surface, &loop_a, &b).expect("they cross");
+
+    // (1) the two crossings become vertices on the rim
+    let rim: Vec<VertId> = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim");
+    let m = rim.len();
+    let mut split_at = |mesh: &mut Mesh, k: usize| -> VertId {
+        let (va, vb) = (rim[x.seg[k] % m], rim[(x.seg[k] + 1) % m]);
+        let e = mesh.find_edge(va, vb).expect("rim edge");
+        mesh.split_edge(e, x.points[k]).expect("split").0
+    };
+    let p0 = split_at(&mut mesh, 0);
+    let p1 = split_at(&mut mesh, 1);
+    println!(
+        "MAT 0 split_cylinder_face_by_circle returned cap={} host={}",
+        cap.raw(),
+        host.raw()
+    );
+    println!("MAT 1 crossings -> verts {} {}; faces={:?}", p0.raw(), p1.raw(), shape(&mesh));
+    println!("      p0 on faces {:?}, p1 on {:?}", faces_carrying(&mesh, p0), faces_carrying(&mesh, p1));
+
+    // (2) the chains get their own vertices and edges
+    let mut chain_of = |mesh: &mut Mesh, pts: &[DVec3], first: VertId, last: VertId| -> Vec<VertId> {
+        let mut vs = vec![first];
+        for &p in &pts[1..pts.len() - 1] {
+            vs.push(mesh.add_vertex(p));
+        }
+        vs.push(last);
+        vs.dedup();
+        for w in vs.windows(2) {
+            if w[0] != w[1] {
+                let _ = mesh.add_edge(w[0], w[1]);
+            }
+        }
+        vs
+    };
+    let outside = chain_of(&mut mesh, &x.outside, p0, p1);
+    println!("MAT 2 outside chain {} verts; faces={:?}", outside.len(), shape(&mesh));
+    let inside = chain_of(&mut mesh, &x.inside, p0, p1);
+    println!("MAT 3 inside chain {} verts; faces={:?}", inside.len(), shape(&mesh));
+    println!("      chain start {} is on faces {:?}", outside[0].raw(), faces_carrying(&mesh, outside[0]));
+
+    // (3) the cut that was refused — with the state captured BEFORE it, because
+    // that turned out to matter.
+    let outer_before = mesh
+        .collect_loop_verts(mesh.faces.get(host).unwrap().outer().start)
+        .unwrap()
+        .len();
+    let snap_before = mesh.snapshot();
+    let attempt = split_face_by_chain(&mut mesh, host, &outside, MaterialId::new(0));
+    match &attempt {
+        Ok(res) => println!("MAT 4 host split OK -> new faces {:?}", res.new_faces),
+        Err(e) => println!("MAT 4 host split REFUSED: {e}"),
+    }
+
+    // ── The answer ────────────────────────────────────────────────────────
+    //
+    // Nothing this sequence does is wrong. `split_face_by_chain` opens with
+    //
+    //     let face_id = polygonize_if_closed_curve(mesh, face_id)?;
+    //
+    // and the host is a Path B band: its OUTER loop is ONE vertex and a
+    // self-loop circle (ADR-089 Phase 2). So the split polygonises it, gets a
+    // NEW face back, and looks for the chain on that one — while the chain's
+    // vertices belong to the face that was just replaced. Hence a refusal
+    // naming face 4 when the caller passed face 2, and hence "vert 50 not on
+    // any loop", which was true of the new face and false of the old.
+    //
+    // The cap does not have this problem: its boundary is a 48-gon, so nothing
+    // is polygonised and the cut goes through. That asymmetry is the route —
+    // whatever fixes this has to polygonise the host BEFORE the crossings and
+    // chains are built, so they are made on the face that survives.
+    assert_eq!(
+        outer_before, 1,
+        "the host's outer loop is one vertex — that is what triggers it"
+    );
+    assert!(attempt.is_err(), "so the host cut is refused today");
+
+    // ⚠ AND THE REFUSAL IS NOT CLEAN. The polygonisation runs first and
+    // replaces the face; the split then fails and nothing puts it back. The
+    // caller is told no AND left with a different mesh — the same shape of
+    // defect ADR-298 corrected elsewhere ("refused but already mutated").
+    println!(
+        "MAT 5 after the refusal: host still there? {}; faces={:?}",
+        mesh.faces.get(host).is_some_and(|f| f.is_active()),
+        shape(&mesh)
+    );
+    assert!(
+        mesh.faces.get(host).is_none_or(|f| !f.is_active()),
+        "TODAY a refused chain split has already replaced the host. When the          refusal leaves the mesh alone, retire this pin"
+    );
+    assert_ne!(
+        mesh.snapshot(),
+        snap_before,
+        "and the mesh is not what it was — that is the part worth fixing"
+    );
+    // Concretely: the host is replaced by a 23-vertex face, and one of the
+    // caps is left with a loop of NO vertices at all. Named rather than
+    // summarised, so a fix can be checked against something specific.
+    let empty: Vec<u32> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .filter(|(_, f)| {
+            mesh.collect_loop_verts(f.outer().start).map(|v| v.is_empty()).unwrap_or(true)
+        })
+        .map(|(fid, _)| fid.raw())
+        .collect();
+    assert!(
+        !empty.is_empty(),
+        "TODAY the refusal also leaves a face with an empty boundary loop          ({empty:?}). When it does not, retire this pin too"
+    );
+
+}
+
+/// The other half of the asymmetry: the CAP cuts cleanly, because its boundary
+/// is a 48-gon and nothing is polygonised on the way in.
+///
+/// That is the route. Whatever fixes the host has to polygonise it BEFORE the
+/// crossings and chains are built, so they are made on the face that survives.
+#[test]
+fn the_cap_cuts_cleanly_because_its_boundary_is_already_a_polygon() {
+    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    use axia_geo::operations::face_split::split_face_by_chain;
+
+    let mut mesh = Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    let (r, d) = (3.0_f64, 3.6_f64);
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 48);
+    let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 48);
+    let (cap, host) = mesh.split_cylinder_face_by_circle(side, &a).expect("split");
+    let surface = mesh.face_surface(host).expect("surface").clone();
+    let loop_a: Vec<DVec3> = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim")
+        .iter()
+        .map(|&v| mesh.vertex_pos(v).unwrap())
+        .collect();
+    let x = crossing_on_cylinder(&surface, &loop_a, &b).expect("cross");
+
+    let rim: Vec<VertId> = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim");
+    let m = rim.len();
+    let mut split_at = |mesh: &mut Mesh, k: usize| -> VertId {
+        let (va, vb) = (rim[x.seg[k] % m], rim[(x.seg[k] + 1) % m]);
+        let e = mesh.find_edge(va, vb).expect("rim edge");
+        mesh.split_edge(e, x.points[k]).expect("split").0
+    };
+    let p0 = split_at(&mut mesh, 0);
+    let p1 = split_at(&mut mesh, 1);
+    let mut vs = vec![p0];
+    for &p in &x.inside[1..x.inside.len() - 1] {
+        vs.push(mesh.add_vertex(p));
+    }
+    vs.push(p1);
+    vs.dedup();
+    for w in vs.windows(2) {
+        if w[0] != w[1] {
+            let _ = mesh.add_edge(w[0], w[1]);
+        }
+    }
+    let cap_outer = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .unwrap()
+        .len();
+    let cut = split_face_by_chain(&mut mesh, cap, &vs, MaterialId::new(0));
+    match &cut {
+        Ok(res) => println!(
+            "CAP outer {cap_outer} verts -> split OK, {} new face(s)",
+            res.new_faces.len()
+        ),
+        Err(e) => println!("CAP outer {cap_outer} verts -> REFUSED: {e}"),
+    }
+    assert!(cap_outer >= 3, "the cap's boundary is a polygon, not a self-loop");
+    assert!(
+        cut.is_ok(),
+        "so nothing is polygonised on the way in and the cut lands: {cut:?}"
+    );
+    let v = mesh.verify_face_invariants();
+    assert!(v.is_valid(), "and the mesh is sound — {:?}", v.violations);
+}
