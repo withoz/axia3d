@@ -239,26 +239,57 @@ fn what_the_materializers_own_steps_leave_behind() {
 
     // ── The answer ────────────────────────────────────────────────────────
     //
-    // Nothing this sequence does is wrong. `split_face_by_chain` opens with
+    // Nothing this sequence does is wrong. `split_face_by_chain` USED TO open
+    // with an unconditional
     //
     //     let face_id = polygonize_if_closed_curve(mesh, face_id)?;
     //
     // and the host is a Path B band: its OUTER loop is ONE vertex and a
-    // self-loop circle (ADR-089 Phase 2). So the split polygonises it, gets a
-    // NEW face back, and looks for the chain on that one — while the chain's
+    // self-loop circle (ADR-089 Phase 2). So the split polygonised it, got a
+    // NEW face back, and looked for the chain on that one — while the chain's
     // vertices belong to the face that was just replaced. Hence a refusal
     // naming face 4 when the caller passed face 2, and hence "vert 50 not on
     // any loop", which was true of the new face and false of the old.
     //
-    // The cap does not have this problem: its boundary is a 48-gon, so nothing
-    // is polygonised and the cut goes through. That asymmetry is the route —
-    // whatever fixes this has to polygonise the host BEFORE the crossings and
-    // chains are built, so they are made on the face that survives.
+    // And worse than a wrong id: polygonising KEEPS ONLY THE OUTER LOOP,
+    // measured `[1, 1, 48] -> [23]` (`polygonize_keeps_or_drops_the_holes`).
+    // So "polygonise the host first" was never a route either — it would have
+    // dropped the cap's hole and the top rim.
+    //
+    // The fix was to stop transforming a face that did not need it: the chain
+    // is looked for FIRST, and only a chain with nowhere to live triggers the
+    // polygonisation. The outer loop also only has to be a polygon when it is
+    // the loop being cut.
+    //
+    // That uncovered the real gap — cutting a face ACROSS ONE OF ITS HOLES,
+    // which the engine had described and refused since 2026-04-28. It is built
+    // now (`split_face_across_hole`, verified on a square annulus in
+    // `a_face_can_be_cut_across_its_hole.rs`), so the wall has moved once more,
+    // and this is where it stands:
+    //
+    //     split_face_across_hole: outer loop has <3 verts
+    //
+    // The piece that KEEPS the outer loop is rebuilt with
+    // `add_face_with_holes`, and a Path B band's outer loop is one vertex and a
+    // self-loop circle — there is nothing to rebuild it from. The same wall as
+    // the very first attempt, now met from the other side. Getting past it
+    // means not rebuilding that piece at all: splice the new hole into the
+    // face that already exists, the way `split_cylinder_face_by_circle` wires
+    // twin half-edges into an inner loop.
     assert_eq!(
         outer_before, 1,
-        "the host's outer loop is one vertex — that is what triggers it"
+        "the host's outer loop is one vertex — what used to trigger the \
+         polygonisation, and no longer does"
     );
-    assert!(attempt.is_err(), "so the host cut is refused today");
+    let why = attempt.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        why.contains("outer loop has <3 verts"),
+        "the refusal names where the wall is now: {why}"
+    );
+    assert!(
+        !why.contains("not on any loop of face"),
+        "and no longer names a face it made itself: {why}"
+    );
 
     // ── And the refusal is CLEAN, which it was not when this was written ──
     //

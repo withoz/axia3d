@@ -27,6 +27,22 @@ use crate::tolerances::*;
 /// polygonize. `polygonize_closed_curve_face` returns `Ok(None)` if the
 /// face already has polygonal boundary (>1 vert) — in that case we keep
 /// the original face_id.
+/// Are both chain endpoints on an INNER loop of this face?
+///
+/// Used to let a cut across a hole through even when the face's outer loop is
+/// a one-vertex closed curve — the outer loop is not the one being cut.
+fn face_id_has_inner_home(mesh: &Mesh, face_id: FaceId, chain_verts: &[VertId]) -> bool {
+    let Some(face) = mesh.faces.get(face_id).filter(|f| f.is_active()) else {
+        return false;
+    };
+    let (a, b) = (chain_verts[0], *chain_verts.last().unwrap());
+    face.inners().iter().any(|l| {
+        mesh.collect_loop_verts(l.start)
+            .map(|vs| vs.contains(&a) && vs.contains(&b))
+            .unwrap_or(false)
+    })
+}
+
 /// Would `polygonize_if_closed_curve` actually change anything?
 ///
 /// Read-only, and the whole point: polygonisation is a MUTATION that the split
@@ -651,11 +667,49 @@ fn split_face_by_chain_inner(
     // pass 한다 해도 chain endpoint lookup (line 597 pos_on) 이 fail.
     // → silent err 또는 invalid sub-face. K1 진입 시 closed-curve detect
     // → polygonize 자동 호출 → polygon mode 변환 후 split 진행.
-    let face_id = polygonize_if_closed_curve(mesh, face_id)?;
+    // Polygonise only if the chain has nowhere to live yet.
+    //
+    // The hotfix above transforms the face on the way in, which is right when
+    // the chain is meant to cut the closed-curve boundary itself — and wrong
+    // when it is not. A Path B band has three loops (two rims and a hole cut
+    // by an earlier circle); polygonising it keeps ONLY the outer one and
+    // drops the rest, measured `[1, 1, 48] -> [23]`
+    // (`polygonize_keeps_or_drops_the_holes`). A chain sitting on that hole
+    // would have its face rebuilt out from under it — which is exactly what
+    // happened: "chain start vert 50 not on any loop of face 4" while the rim
+    // belonged to face 2.
+    //
+    // So ask first. If both endpoints are already on some loop of the face,
+    // nothing needs transforming.
+    let chain_has_a_home = |mesh: &Mesh, f: FaceId| -> bool {
+        let Some(face) = mesh.faces.get(f).filter(|x| x.is_active()) else {
+            return false;
+        };
+        let a = chain_verts[0];
+        let b = *chain_verts.last().unwrap();
+        let holds = |start| {
+            mesh.collect_loop_verts(start)
+                .map(|vs| vs.contains(&a) && vs.contains(&b))
+                .unwrap_or(false)
+        };
+        holds(face.outer().start) || face.inners().iter().any(|l| holds(l.start))
+    };
+    let face_id = if chain_has_a_home(mesh, face_id) {
+        face_id
+    } else {
+        polygonize_if_closed_curve(mesh, face_id)?
+    };
 
     let outer_start = mesh.faces[face_id].outer().start;
     let outer_boundary = mesh.collect_loop_verts(outer_start)?;
-    ensure!(outer_boundary.len() >= 3, "face boundary has <3 verts");
+    // …and the outer loop only has to be a polygon when it is the one being
+    // cut. It is merely where the search starts; an inner loop replaces it
+    // below, and a band's one-vertex rim is no reason to refuse a cut across
+    // its hole.
+    ensure!(
+        outer_boundary.len() >= 3 || face_id_has_inner_home(mesh, face_id, chain_verts),
+        "face boundary has <3 verts"
+    );
 
     // Locate chain[0] and chain[last]. They may be on the OUTER boundary or
     // on one of the INNER (hole) loops. We pick the first loop that contains
@@ -721,15 +775,31 @@ fn split_face_by_chain_inner(
         }
     }
 
-    // 2026-04-28 — chain endpoints on INNER (hole) loop: not yet implemented in
-    //   the split_into_two-simple-faces path below. The correct topology
-    //   would produce one simple face (chain area) + one face-with-hole (rest).
-    //   Bail with a clear message so caller can route to the alternate fix.
+    // Chain endpoints on an INNER (hole) loop — the topology the comment here
+    // has described since 2026-04-28: "one simple face (chain area) + one
+    // face-with-hole (rest)". Built now, because it is what a second circle
+    // drawn across a first needs on a curved wall (C-2): the cap's rim IS the
+    // host's hole, so cutting the host means cutting across that hole.
+    //
+    // The chain runs from P to Q through the material, both ends on the hole.
+    // It divides the face in two:
+    //
+    //     lune   the chain, closed by one arc of the hole
+    //     rest   the same outer loop, with a hole made of the chain reversed
+    //            and the hole's OTHER arc
+    //
+    // Both pieces use the chain, in opposite directions — which is exactly
+    // what a pair of twin half-edges is.
     if chosen_is_inner {
-        bail!(
-            "split_face_by_chain: chain endpoints on inner (hole) loop of face {} — \
-             not yet supported (would need face-with-hole split)",
-            face_id.raw(),
+        return split_face_across_hole(
+            mesh,
+            face_id,
+            chain_verts,
+            &outer_boundary,
+            &boundary,
+            i_start,
+            i_end,
+            inherit_material,
         );
     }
 
@@ -3967,6 +4037,70 @@ mod tests {
         assert_eq!(m2.snapshot(), snap, "and the refusal changes nothing");
     }
 
+    /// Does polygonising a face keep its HOLES?
+    ///
+    /// "Polygonise the host first" was the obvious next move for the C-2
+    /// materializer, and the route depends on this answer: a Path B band has
+    /// three loops (two rims and the cap's hole), and a refused split earlier
+    /// left a face with ONE. Asked before building on it.
+    #[test]
+    fn polygonize_keeps_or_drops_the_holes() {
+        use crate::curves::AnalyticCurve;
+        let mut m = Mesh::new();
+        let mat = MaterialId::new(0);
+        m.cylinder_path_b_default = true;
+        m.create_cylinder(DVec3::ZERO, 10.0, 20.0, 16, mat).expect("cylinder");
+        let side = m
+            .faces
+            .iter()
+            .find(|(_, f)| {
+                f.is_active()
+                    && f.surface().is_some_and(|s| {
+                        !matches!(s, crate::surfaces::AnalyticSurface::Plane { .. })
+                    })
+            })
+            .map(|(fid, _)| fid)
+            .expect("wall");
+        let circle: Vec<DVec3> = (0..48)
+            .map(|i| {
+                let t = std::f64::consts::TAU * (i as f64) / 48.0;
+                crate::surfaces::cylinder::evaluate(
+                    DVec3::ZERO,
+                    DVec3::Z,
+                    10.0,
+                    DVec3::X,
+                    std::f64::consts::PI + (3.0 * t.cos()) / 10.0,
+                    10.0 + 3.0 * t.sin(),
+                )
+            })
+            .collect();
+        let (_cap, host) = m.split_cylinder_face_by_circle(side, &circle).expect("split");
+        let loops_of = |m: &Mesh, f: FaceId| -> Vec<usize> {
+            let face = m.faces.get(f).unwrap();
+            let mut v = vec![m.collect_loop_verts(face.outer().start).unwrap().len()];
+            for l in face.inners() {
+                v.push(m.collect_loop_verts(l.start).unwrap().len());
+            }
+            v
+        };
+        let before = loops_of(&m, host);
+        assert_eq!(before, vec![1, 1, 48], "the band: rim, rim, and the cap's hole");
+
+        let poly = polygonize_if_closed_curve(&mut m, host).expect("polygonize");
+        let after = loops_of(&m, poly);
+        println!("POLY {:?} -> face {} {:?}", before, poly.raw(), after);
+
+        // PIN whichever it is, so the next attempt does not find out the hard
+        // way. `let _ = AnalyticCurve::Circle` keeps the import honest if the
+        // body changes.
+        let _ = |c: AnalyticCurve| c;
+        assert_eq!(
+            after.len(),
+            1,
+            "TODAY polygonising a multi-loop face keeps only its outer loop              ({before:?} -> {after:?}) — the holes are dropped. When they              survive, retire this pin"
+        );
+    }
+
     /// polygonize_if_closed_curve helper unit — polygon face 는 same face_id 반환
     /// (no-op contract, K1 MVP PR #143 답습).
     #[test]
@@ -4017,4 +4151,163 @@ mod tests {
             "closed-curve polygonized to {} verts (expected >= 3)",
             post_verts.len());
     }
+}
+
+/// Cut a face across one of its own holes.
+///
+/// See the call site in `split_face_by_chain_inner` for the shape. The
+/// bookkeeping mirrors the simple two-face split beside it — save the OTHER
+/// holes, soft-remove, rebuild, redistribute — and differs only in that one of
+/// the two pieces keeps the outer loop and gains a hole, instead of both being
+/// simple.
+#[allow(clippy::too_many_arguments)]
+fn split_face_across_hole(
+    mesh: &mut Mesh,
+    face_id: FaceId,
+    chain_verts: &[VertId],
+    outer_boundary: &[VertId],
+    hole: &[VertId],
+    i_start: usize,
+    i_end: usize,
+    inherit_material: MaterialId,
+) -> Result<FaceSplitResult> {
+    for w in chain_verts.windows(2) {
+        ensure!(
+            mesh.find_edge(w[0], w[1]).is_some(),
+            "split_face_across_hole: edge between verts {} and {} missing — \
+             caller must draw it first",
+            w[0].raw(),
+            w[1].raw()
+        );
+    }
+    let n_h = hole.len();
+    ensure!(n_h >= 3, "split_face_across_hole: hole loop has <3 verts");
+    ensure!(outer_boundary.len() >= 3, "split_face_across_hole: outer loop has <3 verts");
+
+    // Two candidates: the chain closed by one arc of the hole, or by the other.
+    // Which is the LUNE and which becomes the remaining hole is decided by
+    // winding, not by a rule about arcs — a hole is stored clockwise, so the
+    // piece of MATERIAL is the one that comes out counter-clockwise about the
+    // face's normal. Picking the wrong one is easy and looks plausible: the
+    // first attempt returned the hole-plus-a-bump (11,500 mm²) where the lune
+    // was a 1,500 mm² sliver, and the pieces summed to 50,000 against an
+    // annulus of 30,000.
+    let mut cand_a: Vec<VertId> = chain_verts.to_vec();
+    {
+        let mut i = (i_end + 1) % n_h;
+        while i != i_start {
+            cand_a.push(hole[i]);
+            i = (i + 1) % n_h;
+        }
+    }
+    let mut cand_b: Vec<VertId> = chain_verts.iter().rev().copied().collect();
+    {
+        let mut i = (i_start + 1) % n_h;
+        while i != i_end {
+            cand_b.push(hole[i]);
+            i = (i + 1) % n_h;
+        }
+    }
+    let normal = mesh.faces[face_id].normal().normalize_or_zero();
+    let signed = |vs: &[VertId], mesh: &Mesh| -> f64 {
+        let pts: Vec<DVec3> = vs.iter().filter_map(|&v| mesh.vertex_pos(v).ok()).collect();
+        if pts.len() < 3 {
+            return 0.0;
+        }
+        let mut acc = DVec3::ZERO;
+        for i in 0..pts.len() {
+            acc += pts[i].cross(pts[(i + 1) % pts.len()]);
+        }
+        0.5 * acc.dot(normal)
+    };
+    let (lune, other) = if signed(&cand_a, mesh) > signed(&cand_b, mesh) {
+        (cand_a, cand_b)
+    } else {
+        (cand_b, cand_a)
+    };
+    // The hole keeps the clockwise sense it had.
+    let mut new_hole = other;
+    if signed(&new_hole, mesh) > 0.0 {
+        new_hole.reverse();
+    }
+    // A repeated vertex means the walk picked up a loop through a shared
+    // corner — the same figure-8 the simple path guards against. Refuse rather
+    // than build it.
+    for (name, vs) in [("lune", &lune), ("remaining hole", &new_hole)] {
+        let mut seen = std::collections::HashSet::new();
+        ensure!(
+            vs.iter().all(|v| seen.insert(*v)),
+            "split_face_across_hole: the {name} repeats a vertex — the loops \
+             share a corner and the piece would be self-intersecting"
+        );
+        ensure!(vs.len() >= 3, "split_face_across_hole: the {name} has <3 verts");
+    }
+
+    // Every hole EXCEPT the one being cut; that one is replaced by `new_hole`.
+    let cut_start = mesh
+        .faces
+        .get(face_id)
+        .and_then(|f| {
+            f.inners()
+                .iter()
+                .find(|l| {
+                    mesh.collect_loop_verts(l.start)
+                        .map(|vs| vs.len() == n_h && vs.contains(&hole[i_start]))
+                        .unwrap_or(false)
+                })
+                .map(|l| l.start)
+        })
+        .ok_or_else(|| anyhow::anyhow!("split_face_across_hole: the hole is not on the face"))?;
+    let saved_holes: Vec<SavedHole> = save_hole_loops(mesh, face_id)?
+        .into_iter()
+        .filter(|h| h.loop_ref.start != cut_start)
+        .collect();
+
+    let parent_surface = mesh.faces[face_id].surface().cloned();
+    let parent_owner = mesh.face_surface_owner_id(face_id);
+    mesh.faces[face_id].inners_mut().clear();
+    mesh.soft_remove_face(face_id)?;
+
+    let f_lune = mesh.add_face_with_holes(&lune, &[], inherit_material)?;
+    let f_rest = mesh.add_face_with_holes(outer_boundary, &[&new_hole], inherit_material)?;
+    if let Some(ref s) = parent_surface {
+        mesh.faces[f_lune].set_surface(Some(s.clone()));
+        mesh.faces[f_rest].set_surface(Some(s.clone()));
+    }
+    if let Some(owner) = parent_owner {
+        mesh.set_face_surface_owner_id(f_lune, Some(owner));
+        mesh.set_face_surface_owner_id(f_rest, Some(owner));
+    }
+
+    // The other holes go to whichever piece contains them.
+    for h in &saved_holes {
+        let sample = mesh.vertex_pos(h.sample_vert)?;
+        let target = if point_in_face(mesh, f_lune, sample).unwrap_or(false) {
+            f_lune
+        } else {
+            f_rest
+        };
+        if !h.loop_ref.start.is_null() {
+            reassign_loop_face(mesh, h.loop_ref.start, target)?;
+        }
+        mesh.faces[target].add_inner(h.loop_ref);
+    }
+
+    let new_edges: Vec<EdgeId> = chain_verts
+        .windows(2)
+        .filter_map(|w| mesh.find_edge(w[0], w[1]))
+        .collect();
+    // 메타-원칙 #15 — split-induced edges carry HARD, here as everywhere.
+    mesh.mark_chain_edges_hard(chain_verts);
+
+    Ok(FaceSplitResult {
+        new_faces: vec![f_lune, f_rest],
+        new_verts: Vec::new(),
+        new_edges,
+        debug: vec![format!(
+            "split across hole: lune {} verts, remaining hole {} verts",
+            lune.len(),
+            new_hole.len()
+        )],
+    })
 }
