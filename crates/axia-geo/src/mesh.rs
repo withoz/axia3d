@@ -2081,32 +2081,52 @@ impl Mesh {
         u1: f64,
         v0: f64,
         v1: f64,
-        hole_uv: &[(f64, f64)],
+        holes_uv: &[Vec<(f64, f64)>],
         n_u: usize,
         n_v: usize,
         map_back: &dyn Fn(f64, f64) -> DVec3,
     ) -> Option<(Vec<DVec3>, Vec<[f64; 2]>, Vec<[usize; 3]>)> {
-        if hole_uv.len() < 3 || n_u < 2 || n_v < 1 || u1 <= u0 || v1 <= v0 {
+        if holes_uv.is_empty() || holes_uv.iter().any(|h| h.len() < 3) {
+            return None;
+        }
+        if n_u < 2 || n_v < 1 || u1 <= u0 || v1 <= v0 {
             return None;
         }
         let du = (u1 - u0) / n_u as f64;
         let dv = (v1 - v0) / n_v as f64;
-        // The hole's grid-aligned neighbourhood: one cell of margin, so the
-        // local earcut always has room between the hole and its own boundary.
-        let (mut hu0, mut hu1) = (f64::MAX, f64::MIN);
-        let (mut hv0, mut hv1) = (f64::MAX, f64::MIN);
-        for &(u, v) in hole_uv {
-            hu0 = hu0.min(u);
-            hu1 = hu1.max(u);
-            hv0 = hv0.min(v);
-            hv1 = hv1.max(v);
+        // Each hole's grid-aligned neighbourhood: one cell of margin, so the
+        // ring below always has room between the hole and its own outline.
+        let mut cells: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(holes_uv.len());
+        for hole_uv in holes_uv {
+            let (mut hu0, mut hu1) = (f64::MAX, f64::MIN);
+            let (mut hv0, mut hv1) = (f64::MAX, f64::MIN);
+            for &(u, v) in hole_uv {
+                hu0 = hu0.min(u);
+                hu1 = hu1.max(u);
+                hv0 = hv0.min(v);
+                hv1 = hv1.max(v);
+            }
+            let ci0 = (((hu0 - u0) / du).floor() as i64 - 1).clamp(0, n_u as i64) as usize;
+            let ci1 = (((hu1 - u0) / du).ceil() as i64 + 1).clamp(0, n_u as i64) as usize;
+            let cj0 = (((hv0 - v0) / dv).floor() as i64 - 1).clamp(0, n_v as i64) as usize;
+            let cj1 = (((hv1 - v0) / dv).ceil() as i64 + 1).clamp(0, n_v as i64) as usize;
+            if ci1 <= ci0 || cj1 <= cj0 {
+                return None; // a hole is not inside this band — leave it alone
+            }
+            cells.push((ci0, ci1, cj0, cj1));
         }
-        let ci0 = (((hu0 - u0) / du).floor() as i64 - 1).clamp(0, n_u as i64) as usize;
-        let ci1 = (((hu1 - u0) / du).ceil() as i64 + 1).clamp(0, n_u as i64) as usize;
-        let cj0 = (((hv0 - v0) / dv).floor() as i64 - 1).clamp(0, n_v as i64) as usize;
-        let cj1 = (((hv1 - v0) / dv).ceil() as i64 + 1).clamp(0, n_v as i64) as usize;
-        if ci1 <= ci0 || cj1 <= cj0 {
-            return None; // the hole is not inside this band — leave it alone
+        // Two holes whose neighbourhoods meet cannot each get their own ring —
+        // and two holes that actually OVERLAP are a mesh that should not exist
+        // (two faces covering the same ground). Hand those back to the caller
+        // rather than drawing something confident and wrong.
+        for a in 0..cells.len() {
+            for b in (a + 1)..cells.len() {
+                let (a0, a1, a2, a3) = cells[a];
+                let (b0, b1, b2, b3) = cells[b];
+                if a0 < b1 && b0 < a1 && a2 < b3 && b2 < a3 {
+                    return None;
+                }
+            }
         }
 
         let mut verts: Vec<DVec3> = Vec::new();
@@ -2118,11 +2138,14 @@ impl Mesh {
             verts.len() - 1
         };
 
-        // Every cell outside the hole's neighbourhood: two triangles.
+        // Every cell outside every hole's neighbourhood: two triangles.
         for j in 0..n_v {
             for i in 0..n_u {
-                if i >= ci0 && i < ci1 && j >= cj0 && j < cj1 {
-                    continue; // reserved for the local patch below
+                if cells
+                    .iter()
+                    .any(|&(ci0, ci1, cj0, cj1)| i >= ci0 && i < ci1 && j >= cj0 && j < cj1)
+                {
+                    continue; // reserved for that hole's ring below
                 }
                 let (ua, ub) = (u0 + i as f64 * du, u0 + (i + 1) as f64 * du);
                 let (va, vb) = (v0 + j as f64 * dv, v0 + (j + 1) as f64 * dv);
@@ -2135,8 +2158,9 @@ impl Mesh {
             }
         }
 
-        // The hole's neighbourhood, earcut with the hole in it. Its outline is
-        // walked along grid lines so its points coincide with the cells above.
+        for (hole_uv, &(ci0, ci1, cj0, cj1)) in holes_uv.iter().zip(cells.iter()) {
+        // The hole's neighbourhood. Its outline is walked along grid lines so
+        // its points coincide with the surrounding cells'.
         let (pu0, pu1) = (u0 + ci0 as f64 * du, u0 + ci1 as f64 * du);
         let (pv0, pv1) = (v0 + cj0 as f64 * dv, v0 + cj1 as f64 * dv);
         let mut patch: Vec<(f64, f64)> = Vec::new();
@@ -2241,6 +2265,7 @@ impl Mesh {
                 tris.push([base_o + i % m, base_i + (j + 1) % k, base_i + j % k]);
                 j += 1;
             }
+        }
         }
         Some((verts, uvs, tris))
     }
@@ -2701,29 +2726,69 @@ impl Mesh {
         }
 
         // ── REMAINDER: a geodesic split loop is an inner hole → band minus hole ──
-        for inner in face.inners() {
-            if let Some(hole_verts) = split_loop_verts(inner.start) {
-                let hole_3d: Vec<DVec3> =
-                    hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
-                if hole_3d.len() < 3 {
+        // EVERY geodesic hole, not just the first. Drawing a second circle on
+        // one wall used to leave the band covering it: the loop below returned
+        // as soon as it found one hole, so the second cap was drawn AND the
+        // band under it was too. Measured 2026-08-14 on a Ø20 × 20 cylinder —
+        // two circles of r = 3, whether overlapping or a half-turn apart, both
+        // read 1910.417 against a true 1884.956: a whole disc of surface drawn
+        // twice, and the same number either way, which is what showed the
+        // total cannot see an overlap and this was something else.
+        let all_holes_raw: Vec<Vec<(f64, f64)>> = {
+            let mut out = Vec::new();
+            for inner in face.inners() {
+                if let Some(hole_verts) = split_loop_verts(inner.start) {
+                    let hole_3d: Vec<DVec3> =
+                        hole_verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
+                    if hole_3d.len() < 3 {
+                        return None;
+                    }
+                    let mut uv = Vec::with_capacity(hole_3d.len());
+                    for &p in &hole_3d {
+                        uv.push(invert(p)?);
+                    }
+                    out.push(uv);
+                }
+            }
+            out
+        };
+        {
+            {
+                if all_holes_raw.is_empty() {
                     return None;
                 }
-                let hole_raw: Vec<(f64, f64)> = {
-                    let mut out = Vec::with_capacity(hole_3d.len());
-                    for &p in &hole_3d {
-                        out.push(invert(p)?);
+                let hole_raw = all_holes_raw[0].clone();
+                // The seam has to miss EVERY hole, not just one. With a single
+                // hole "opposite its centre" does that; with several, put it in
+                // the middle of the widest gap between them around the turn.
+                // The seam has to miss EVERY hole. Sorting interval ends and
+                // pairing them by index looked like it did and did not — with
+                // two holes it put the seam inside one, whose points then
+                // straddled 0/2π, whose bbox became the whole band. Ask the
+                // obvious question instead: of a few hundred candidate angles,
+                // which one is furthest from the nearest hole point? Cheap,
+                // and there is nothing in it to get subtly wrong.
+                let u_seam = {
+                    const CANDIDATES: usize = 360;
+                    let mut best = (all_holes_raw[0][0].0 + PI, -1.0_f64);
+                    for c in 0..CANDIDATES {
+                        let cand = TAU * (c as f64) / (CANDIDATES as f64);
+                        let mut nearest = f64::MAX;
+                        for h in &all_holes_raw {
+                            for &(u, _) in h {
+                                let mut d = (u - cand).abs() % TAU;
+                                if d > PI {
+                                    d = TAU - d;
+                                }
+                                nearest = nearest.min(d);
+                            }
+                        }
+                        if nearest > best.1 {
+                            best = (cand, nearest);
+                        }
                     }
-                    out
+                    best.0
                 };
-                // Seam OPPOSITE the hole: shift u so the cap sits near π, away
-                // from the band rectangle's 0/2π edges.
-                let (mut sx, mut sy) = (0.0_f64, 0.0_f64);
-                for &(u, _) in &hole_raw {
-                    sx += u.cos();
-                    sy += u.sin();
-                }
-                let u_center = sy.atan2(sx);
-                let u_seam = u_center + PI;
                 let shift = |u: f64| -> f64 {
                     let mut s = u - u_seam;
                     while s < 0.0 {
@@ -2736,6 +2801,10 @@ impl Mesh {
                 };
                 let hole_uv: Vec<(f64, f64)> =
                     hole_raw.iter().map(|&(u, v)| (shift(u), v)).collect();
+                let holes_uv: Vec<Vec<(f64, f64)>> = all_holes_raw
+                    .iter()
+                    .map(|h| h.iter().map(|&(u, v)| (shift(u), v)).collect())
+                    .collect();
                 // Outer band rectangle in shifted-u, finely sampled (the arc).
                 let n_u = crate::curves::circle::segment_count_for_arc(rad, TAU, chord_tol)
                     .clamp(16, 96);
@@ -2788,7 +2857,7 @@ impl Mesh {
                         TAU,
                         v_lo,
                         v_hi,
-                        &hole_uv,
+                        &holes_uv,
                         n_u,
                         n_v,
                         &map_back_shifted,
@@ -3100,7 +3169,13 @@ impl Mesh {
                         TAU,
                         v_lo,
                         v_hi,
-                        &hole_uv,
+                        // ⚠ ONE hole. The cylinder above collects every
+                        // geodesic hole and picks a seam that misses them all;
+                        // the cone's seam is computed differently and has not
+                        // been restructured, so a SECOND circle drawn on a cone
+                        // is still covered by its band. Pinned in
+                        // `two_circles_on_a_curved_host_share_ground.rs`.
+                        std::slice::from_ref(&hole_uv),
                         n_u,
                         n_v,
                         &map_back_shifted,
@@ -3372,7 +3447,9 @@ impl Mesh {
                     map_back(u + u_seam, v + v_seam)
                 };
                 if let Some((verts, uvs, tris)) = Self::band_minus_hole_uv(
-                    0.0, TAU, 0.0, TAU, &hole_uv, n_u, n_v, &map_back_shifted,
+                    // ⚠ ONE hole, as on the cone — see there.
+                    0.0, TAU, 0.0, TAU, std::slice::from_ref(&hole_uv), n_u, n_v,
+                    &map_back_shifted,
                 ) {
                     let uv: Vec<[f64; 2]> =
                         uvs.iter().map(|p| [p[0] + u_seam, p[1] + v_seam]).collect();
