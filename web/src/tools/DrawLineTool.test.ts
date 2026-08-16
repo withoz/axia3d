@@ -582,3 +582,167 @@ describe('DrawLineTool', () => {
     });
   });
 });
+
+/**
+ * C-3 — a line across a cone is a SEAM, so its clicks are collected and handed
+ * over whole rather than committed one at a time.
+ *
+ * Two points cannot divide a curved face: a great circle through two rim
+ * points IS the rim (LOCKED #104, settled). Three is the floor, and the engine
+ * enforces it. What was missing was only that DrawLine committed each segment
+ * as it went and so never had three points to hand over.
+ *
+ * The cone, and not the sphere. `split_curved_face_by_open_seam` trims a
+ * CIRCULAR rim, which the cone's base is; the sphere this app builds is the
+ * axis-native one, a single face with a meridian seam, and it is declined —
+ * measured both ways in `an_open_seam_on_the_shapes_the_app_builds.rs`. The
+ * ADR-284 coverage that reads as sphere support builds its host with
+ * `create_sphere_kernel_native`, the two-hemisphere form the app stopped
+ * making.
+ */
+describe('DrawLineTool — a seam on a curved face (C-3)', () => {
+  let ctx: ReturnType<typeof mockToolContext>;
+  let tool: DrawLineTool;
+
+  /** A click that the tool will read as landing on face 7 of a curved host. */
+  const ev = (alt = false) => ({ button: 0, clientX: 100, clientY: 100, altKey: alt } as MouseEvent);
+
+  /** Where the next pick will say the cursor landed ON the host. */
+  let surfaceAt = new THREE.Vector3();
+
+  function onCurved(kind: 2 | 3 | 4 | 5) {
+    ctx.getDrawPlane.mockReturnValue({
+      normal: new THREE.Vector3(0, 0, 1),
+      up: new THREE.Vector3(0, 1, 0),
+      right: new THREE.Vector3(1, 0, 0),
+      onFace: true,
+      surfaceKind: kind,
+      origin: new THREE.Vector3(0, 0, 0),
+    });
+    ctx.viewport.pick.mockImplementation(() => ({
+      point: surfaceAt.clone(),
+      face: { normal: new THREE.Vector3(0, 0, 1) },
+      faceIndex: 3,
+    }));
+    ctx.getFaceId.mockReturnValue(7);
+  }
+
+  /** Click where the cursor is over `v` on the surface. The point the state
+   *  machine gets is projected onto the locked plane, which is exactly why
+   *  the seam reads the pick instead. */
+  function clickOn(v: THREE.Vector3, alt = false) {
+    surfaceAt = v;
+    tool.onMouseDown(ev(alt), v.clone());
+  }
+
+  beforeEach(() => {
+    ctx = mockToolContext();
+    ctx.bridge.drawOpenSeamOnCurved = vi.fn().mockReturnValue('{"a":11,"b":12}');
+    tool = new DrawLineTool(ctx);
+    tool.onActivate();
+  });
+
+  it('collects the clicks instead of drawing each segment, then hands over one seam', () => {
+    onCurved(4); // cone
+    clickOn(new THREE.Vector3(-10, 0, 0)); // rim
+    clickOn(new THREE.Vector3(0, 0, 10));  // over the pole
+    clickOn(new THREE.Vector3(10, 0, 0));  // the far rim
+
+    // Nothing was drawn segment by segment — that is what "collects" means.
+    expect(ctx.bridge.drawLineAsShape).not.toHaveBeenCalled();
+
+    tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
+    const [host, pts] = ctx.bridge.drawOpenSeamOnCurved.mock.calls[0];
+    expect(host).toBe(7);
+    expect(pts.length).toBe(3);
+    expect(pts[0]).toEqual([-10, 0, 0]);
+    expect(pts[2]).toEqual([10, 0, 0]);
+  });
+
+  /**
+   * A sphere looks like it should qualify and does not. The seam path trims a
+   * CIRCULAR rim, and the sphere this app builds is the axis-native one —
+   * poles and a meridian seam, a single face. Measured over the pole and
+   * meridian-to-meridian, declined both times, mesh untouched both times
+   * (`an_open_seam_on_the_shapes_the_app_builds.rs`). Collecting there would
+   * promise a split that cannot happen.
+   */
+  it('a sphere is not a seam host in this app', () => {
+    onCurved(3);
+    clickOn(new THREE.Vector3(-10, 0, 0));
+    clickOn(new THREE.Vector3(0, 0, 10));
+    clickOn(new THREE.Vector3(10, 0, 0));
+    expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+    tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The engine rejects an open stroke on a cylinder or a torus — they have
+   * more than one rim — so the tool must not collect there. Collecting and
+   * then failing would swallow the user's line.
+   */
+  it('a cylinder and a torus are drawn, not collected', () => {
+    for (const kind of [2, 5] as const) {
+      ctx.bridge.drawLineAsShape.mockClear();
+      ctx.bridge.drawOpenSeamOnCurved.mockClear();
+      onCurved(kind);
+      tool.onActivate();
+      clickOn(new THREE.Vector3(-10, 0, 0));
+      clickOn(new THREE.Vector3(0, 0, 10));
+      expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+      tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+      expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+    }
+  });
+
+  /** Alt means "flat on the tangent plane" here as it does in DrawBezierTool. */
+  it('Alt draws flat instead of collecting a seam', () => {
+    onCurved(4);
+    clickOn(new THREE.Vector3(-10, 0, 0), true);
+    clickOn(new THREE.Vector3(0, 0, 10), true);
+    expect(ctx.bridge.drawLineAsShape).toHaveBeenCalled();
+    tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A chain that ends before it is a seam must not vanish. Collecting is
+   * reversible: what was withheld is drawn as the ordinary segments it looked
+   * like. Written because suppressing a commit is the easy half and undoing
+   * the suppression is the half that gets forgotten.
+   */
+  it('a chain too short to be a seam is drawn as plain lines instead of lost', () => {
+    onCurved(4);
+    clickOn(new THREE.Vector3(-10, 0, 0));
+    clickOn(new THREE.Vector3(10, 0, 0));
+    expect(ctx.bridge.drawLineAsShape).not.toHaveBeenCalled(); // withheld so far
+
+    tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
+    expect(ctx.bridge.drawLineAsShape).toHaveBeenCalledTimes(1); // and given back
+    const call = ctx.bridge.drawLineAsShape.mock.calls[0];
+    expect(call.slice(0, 6)).toEqual([-10, 0, 0, 10, 0, 0]);
+  });
+
+  it('says so when the seam does not reach the far rim', () => {
+    onCurved(4);
+    ctx.bridge.drawOpenSeamOnCurved.mockReturnValue('{"error":"no rim"}');
+    clickOn(new THREE.Vector3(-10, 0, 0));
+    clickOn(new THREE.Vector3(0, 0, 10));
+    clickOn(new THREE.Vector3(2, 0, 9));
+    tool.onKeyDown({ key: 'Escape' } as KeyboardEvent);
+    expect(Toast.warning).toHaveBeenCalled();
+  });
+
+  /** Switching tools ends the chain the same way Escape does. */
+  it('leaving the tool hands over the seam rather than dropping it', () => {
+    onCurved(4);
+    clickOn(new THREE.Vector3(-10, 0, 0));
+    clickOn(new THREE.Vector3(0, 0, 10));
+    clickOn(new THREE.Vector3(10, 0, 0));
+    tool.onDeactivate();
+    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
+  });
+});
