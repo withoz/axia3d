@@ -129,6 +129,32 @@ export class DrawLineTool implements ITool {
   private alongHintShown = false;
   /** ADR-284 β-4-4 — curved-face hint fired once per tool activation. */
   private curvedHintShown = false;
+  /** C-3 — the cone face the chain started on, if it started on one.
+   *
+   *  A line on a curved face is a SEAM, and a seam is only a seam once it has
+   *  reached the far rim: two points are geometrically degenerate (a great
+   *  circle through two rim points IS the rim, so it divides nothing — LOCKED
+   *  #104, settled, not to be re-argued). So while this is set the per-segment
+   *  commit is suppressed and the clicks are collected; the chain is handed to
+   *  the engine whole when the user ends it.
+   *
+   *  Only the cone. A cylinder or a torus has more than one rim and an open
+   *  stroke cannot divide either. A sphere would seem to qualify and does not:
+   *  the seam path trims a circular rim, and this app builds the axis-native
+   *  sphere, which has a meridian seam instead — measured and declined both
+   *  ways in `an_open_seam_on_the_shapes_the_app_builds.rs`. All three keep
+   *  the existing hint. */
+  private seamHostFace = -1;
+  private seamKind: 'cone' | null = null;
+  /** The clicks as they landed ON the surface, not as the chain sees them.
+   *
+   *  The chain's points have been projected onto the plane the first click
+   *  locked, which is a tangent plane here — so an interior click meant to
+   *  ride up toward the apex comes back flattened against the first one. This is
+   *  the same distinction `endSurfacePoint` draws a few fields up, and for
+   *  the same reason; the engine wants the raw stroke and projects it onto
+   *  the host itself. */
+  private seamPoints: THREE.Vector3[] = [];
   /**
    * Drawing plane locked on first click.
    * Subsequent clicks/moves project the mouse ray onto THIS plane instead of
@@ -159,6 +185,9 @@ export class DrawLineTool implements ITool {
     // 기존 snap 설정은 onDeactivate에서 원복.
     this.curvedHintShown = false; // ADR-284 β-4-4 — re-arm the once-per-activation hint
     this.alongHintShown = false;
+    this.seamHostFace = -1; // C-3 — no chain is in progress on activation
+    this.seamKind = null;
+    this.seamPoints = [];
     this._savedSnapModes = this.ctx.snap.saveSnapConfig();
     this.ctx.snap.applyFaceCreationPreset();
 
@@ -237,6 +266,7 @@ export class DrawLineTool implements ITool {
     // Check loop close first (higher priority than regular snap)
     const loopClosePoint = this.checkLoopClose(e);
     if (loopClosePoint) {
+      this.recordSeamPoint(e, loopClosePoint);
       this.handle(LineDrawEvent.LeftClick, loopClosePoint);
       return;
     }
@@ -245,6 +275,7 @@ export class DrawLineTool implements ITool {
     const clickPoint = this.computeClickPoint(e, point);
     if (!clickPoint) return;
 
+    this.recordSeamPoint(e, clickPoint);
     this.handle(LineDrawEvent.LeftClick, clickPoint);
   }
 
@@ -429,6 +460,9 @@ export class DrawLineTool implements ITool {
       case LineDrawState.Drawing:
         // Clean up preview when leaving Drawing
         if (newState !== LineDrawState.Confirmed) {
+          // C-3 — the chain is over, so a collected seam is handed over now,
+          // before Idle's entry action clears the points it is made of.
+          if (newState === LineDrawState.Idle) this.commitCurvedSeam();
           this.removeLinePreview();
           this.removeStartDot();
           this.ctx.clearAxisGuide();
@@ -447,6 +481,12 @@ export class DrawLineTool implements ITool {
         this.previewEnd = null;
         this.chainStartPoint = null;
         this.chainPoints = [];
+        // C-3 — Drawing→Idle already handed the seam over in the exit action;
+        // this covers Armed→Idle, where a host may have been captured by the
+        // click that never became a chain.
+        this.seamHostFace = -1;
+        this.seamKind = null;
+        this.seamPoints = [];
         this.lastCloseKind = null;
         this._lastIntersectionWarn = null;
         this.drawingPlane = null;
@@ -602,6 +642,11 @@ export class DrawLineTool implements ITool {
 
     const len = this.startPoint.distanceTo(this.previewEnd);
     if (len <= 1) return false; // Too short, ignore
+
+    // C-3 — on a cone the segments are not committed one at a time; they are
+    // collected and handed over as one seam when the chain ends. Returning false keeps the chain going (`continuousReenter` is what
+    // appends this point), which is exactly the behaviour wanted.
+    if (this.seamKind !== null && this.seamHostFace >= 0) return false;
 
     // Task 5: Split vs loop-close precedence
     // 규칙: loop close(chainStart/waypoint/free endpoint 근접)가 가장 우선.
@@ -917,6 +962,76 @@ export class DrawLineTool implements ITool {
   }
 
   /**
+   * C-3 — remember where a click landed on the curved host, if one is being
+   * collected. Prefers the surface hit over the plane-projected point, and
+   * falls back to the projected one when the pick misses (a snap can take the
+   * cursor off the face).
+   */
+  private recordSeamPoint(e: MouseEvent, projected: THREE.Vector3): void {
+    if (this.seamKind === null || this.seamHostFace < 0) return;
+    const hit = this.ctx.viewport.pick?.(e.clientX, e.clientY);
+    this.seamPoints.push((hit?.point ?? projected).clone());
+  }
+
+  /**
+   * C-3 — hand a finished chain to the engine as one open seam on a curved
+   * face, and clear the seam state either way.
+   *
+   * Three points is the floor, and it is a geometric one rather than a chosen
+   * threshold: a two-point stroke between rim points is the rim, and divides
+   * nothing. A chain that ends shorter than that is drawn as the ordinary line
+   * segments it looked like, so nothing the user drew is lost — the collection
+   * has to be undone, not merely abandoned.
+   */
+  private commitCurvedSeam(): void {
+    const host = this.seamHostFace;
+    const kind = this.seamKind;
+    const pts = this.seamPoints;
+    this.seamHostFace = -1;
+    this.seamKind = null;
+    this.seamPoints = [];
+    if (kind === null || host < 0) return;
+
+    // Drop repeats — a click that lands on the last point adds nothing and the
+    // engine counts points, not clicks.
+    const flat: Array<[number, number, number]> = [];
+    for (const p of pts) {
+      const last = flat[flat.length - 1];
+      if (!last || Math.hypot(p.x - last[0], p.y - last[1], p.z - last[2]) >= 0.1) {
+        flat.push([p.x, p.y, p.z]);
+      }
+    }
+
+    if (flat.length < 3) {
+      // Not a seam. Replay what was collected as plain lines so the chain that
+      // was suppressed still exists.
+      for (let i = 1; i < flat.length; i++) {
+        this.ctx.bridge.drawLineAsShape(
+          flat[i - 1][0], flat[i - 1][1], flat[i - 1][2],
+          flat[i][0], flat[i][1], flat[i][2],
+          0, 0, 0,
+        );
+      }
+      if (flat.length >= 2) {
+        Toast.info(t('곡면을 나누려면 반대쪽 가장자리까지 3번 이상 클릭하세요.'), 2500);
+        this.ctx.syncMesh();
+      }
+      return;
+    }
+
+    const res = this.ctx.bridge.drawOpenSeamOnCurved?.(host, flat);
+    if (!res || res.includes('"error"')) {
+      // eslint-disable-next-line no-console
+      console.warn(`[Line] open seam on ${kind} failed: ${res}`);
+      Toast.warning(t('곡면이 나뉘지 않았습니다 — 선이 반대쪽 가장자리까지 닿아야 합니다.'), 3000);
+    } else {
+      debugLog(`[Line] open seam split on ${kind} host=${host}, ${flat.length} pts`);
+      Toast.info(t('곡면이 나뉘었습니다.'), 1800);
+    }
+    this.ctx.syncMesh();
+  }
+
+  /**
    * After commit, re-enter Drawing for continuous line drawing.
    * End point becomes next start point (SketchUp style).
    */
@@ -994,7 +1109,35 @@ export class DrawLineTool implements ITool {
       // planar construction line, NOT a surface split (a 2-point straight seam is
       // degenerate — §β-4-1). Hint once toward the tools that DO split a curved
       // face: freehand/bezier (sphere/cone) or a closed circle (cylinder/torus).
-      if (dp.onFace && (dp.surfaceKind ?? 0) >= 2 && !this.curvedHintShown) {
+      // C-3 — except on a cone, where a chain of three or more clicks IS a
+      // seam. Capture the host so the clicks are collected instead of
+      // committed one at a time; Alt still means "flat on the tangent plane",
+      // the same key that means it in DrawBezierTool.
+      //
+      // Not the sphere, though the engine call takes one. The seam path trims
+      // a CIRCULAR rim, and the sphere this app builds no longer has one:
+      // Path B `create_sphere` dispatches to `create_sphere_axis_native` —
+      // poles and one meridian seam, a single face. Measured both ways, over
+      // the pole and meridian-to-meridian, and declined both times
+      // (`an_open_seam_on_the_shapes_the_app_builds.rs`). Offering it here
+      // would promise a split that cannot happen.
+      const sk = dp.surfaceKind ?? 0;
+      const seamable = ({ 4: 'cone' } as const)[sk as 4];
+      if (dp.onFace && seamable && !e.altKey && this.state === LineDrawState.Armed
+          && typeof this.ctx.bridge.drawOpenSeamOnCurved === 'function'
+          && typeof this.ctx.viewport?.pick === 'function') {
+        const p = this.ctx.viewport.pick(e.clientX, e.clientY);
+        const fid = p && p.faceIndex != null ? this.ctx.getFaceId(p.faceIndex) : -1;
+        if (fid >= 0) {
+          this.seamHostFace = fid;
+          this.seamKind = seamable;
+          if (!this.curvedHintShown) {
+            this.curvedHintShown = true;
+            Toast.info(t('곡면 위 선 — 반대쪽 가장자리까지 3번 이상 클릭한 뒤 Esc 를 누르면 면이 나뉩니다.'), 3500);
+          }
+        }
+      }
+      if (dp.onFace && sk >= 2 && this.seamKind === null && !this.curvedHintShown) {
         this.curvedHintShown = true;
         Toast.info(t('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.'), 3000);
       }
