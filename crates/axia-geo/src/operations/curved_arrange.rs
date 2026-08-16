@@ -32,7 +32,7 @@ use crate::boundary_kernel::bentley_ottmann::bentley_ottmann_resolve;
 use crate::boundary_kernel::geom2::Vec2;
 use crate::boundary_kernel::planar::{Lineage, PlanarGraph};
 use crate::boundary_kernel::region::extract_regions;
-use crate::surfaces::{cylinder, AnalyticSurface};
+use crate::surfaces::{cone, cylinder, AnalyticSurface};
 use glam::DVec3;
 
 /// Where a region sits relative to the two loops it came from.
@@ -57,48 +57,138 @@ pub struct CurvedRegion {
     pub area: f64,
 }
 
-/// The unroll chart for a cylinder: world → (arc length, axial).
+/// The unroll chart of a DEVELOPABLE host: world <-> flat, exactly.
+///
+/// A cylinder and a cone can both be flattened without stretching, so the
+/// arrangement computed on the flat chart IS the arrangement on the surface —
+/// not an approximation of it. That is the whole reason the planar machinery
+/// can be reused. The sphere and the torus cannot be flattened, and are not
+/// here.
 ///
 /// `u_seam` is where the chart is cut. It has to miss both loops, or a loop
-/// that straddles it comes back as two pieces with a jump between them — the
-/// same trap the render's band clipper has.
-struct Unroll {
-    axis_origin: DVec3,
-    axis_dir: DVec3,
-    radius: f64,
-    ref_dir: DVec3,
-    u_seam: f64,
+/// that straddles it comes back as two pieces with a jump between them.
+enum Unroll {
+    /// `(u, v) -> (u·R, v)`. Lengths, angles and areas all survive.
+    Cylinder {
+        axis_origin: DVec3,
+        axis_dir: DVec3,
+        radius: f64,
+        ref_dir: DVec3,
+        u_seam: f64,
+    },
+    /// The sector a cone opens into: slant length `L = v / cos α` becomes the
+    /// polar radius, and the sweep narrows to `u · sin α` — which is why a
+    /// cone's development does not close on itself.
+    Cone {
+        apex: DVec3,
+        axis_dir: DVec3,
+        half_angle: f64,
+        ref_dir: DVec3,
+        u_seam: f64,
+    },
 }
 
 impl Unroll {
-    fn to_2d(&self, p: DVec3) -> Option<Vec2> {
-        let (_sp, u, v) = cylinder::project_to_cylinder(
-            self.axis_origin,
-            self.axis_dir,
-            self.radius,
-            self.ref_dir,
-            p,
-        )?;
-        let mut s = u - self.u_seam;
+    fn seam(&self) -> f64 {
+        match self {
+            Unroll::Cylinder { u_seam, .. } | Unroll::Cone { u_seam, .. } => *u_seam,
+        }
+    }
+
+    /// `u` measured from the seam, in `[0, 2π)`.
+    fn from_seam(&self, u: f64) -> f64 {
+        let mut s = u - self.seam();
         while s < 0.0 {
             s += std::f64::consts::TAU;
         }
         while s >= std::f64::consts::TAU {
             s -= std::f64::consts::TAU;
         }
-        Some(Vec2 { x: s * self.radius, y: v })
+        s
+    }
+
+    fn to_2d(&self, p: DVec3) -> Option<Vec2> {
+        match *self {
+            Unroll::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+                let (_sp, u, v) =
+                    cylinder::project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
+                Some(Vec2 { x: self.from_seam(u) * radius, y: v })
+            }
+            Unroll::Cone { apex, axis_dir, half_angle, ref_dir, .. } => {
+                let (_cp, u, v) = cone::project_to_cone(apex, axis_dir, half_angle, ref_dir, p)?;
+                let (sin_a, cos_a) = (half_angle.sin(), half_angle.cos());
+                if !(sin_a > 1e-9 && cos_a > 1e-9) {
+                    return None;
+                }
+                let l = v / cos_a;
+                if l < crate::tolerances::EPSILON_LENGTH {
+                    return None; // at the apex, where the chart has no angle
+                }
+                let phi = self.from_seam(u) * sin_a;
+                Some(Vec2 { x: l * phi.cos(), y: l * phi.sin() })
+            }
+        }
     }
 
     fn to_3d(&self, q: Vec2) -> DVec3 {
-        cylinder::evaluate(
-            self.axis_origin,
-            self.axis_dir,
-            self.radius,
-            self.ref_dir,
-            q.x / self.radius + self.u_seam,
-            q.y,
-        )
+        match *self {
+            Unroll::Cylinder { axis_origin, axis_dir, radius, ref_dir, u_seam } => {
+                cylinder::evaluate(axis_origin, axis_dir, radius, ref_dir, q.x / radius + u_seam, q.y)
+            }
+            Unroll::Cone { apex, axis_dir, half_angle, ref_dir, u_seam } => {
+                let (sin_a, cos_a) = (half_angle.sin(), half_angle.cos());
+                let l = (q.x * q.x + q.y * q.y).sqrt();
+                let phi = q.y.atan2(q.x);
+                cone::evaluate(apex, axis_dir, half_angle, ref_dir, phi / sin_a + u_seam, l * cos_a)
+            }
+        }
     }
+}
+
+/// Build the chart for whichever developable surface this is.
+fn chart_for(surface: &AnalyticSurface, u_seam: f64) -> Option<Unroll> {
+    match surface {
+        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+            Some(Unroll::Cylinder {
+                axis_origin: *axis_origin,
+                axis_dir: *axis_dir,
+                radius: *radius,
+                ref_dir: *ref_dir,
+                u_seam,
+            })
+        }
+        AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } => Some(Unroll::Cone {
+            apex: *apex,
+            axis_dir: *axis_dir,
+            half_angle: *half_angle,
+            ref_dir: *ref_dir,
+            u_seam,
+        }),
+        // A sphere and a torus cannot be flattened without stretching, so an
+        // arrangement computed on a chart of them would be an approximation
+        // wearing an exact answer's clothes. Left out rather than fudged.
+        _ => None,
+    }
+}
+
+/// `(u, v)` on whichever developable host this is, before any seam is chosen.
+fn raw_uv(surface: &AnalyticSurface, p: DVec3) -> Option<(f64, f64)> {
+    let (mut u, v) = match surface {
+        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
+            let (_sp, u, v) =
+                cylinder::project_to_cylinder(*axis_origin, *axis_dir, *radius, *ref_dir, p)?;
+            (u, v)
+        }
+        AnalyticSurface::Cone { apex, axis_dir, half_angle, ref_dir, .. } => {
+            let (_cp, u, v) = cone::project_to_cone(*apex, *axis_dir, *half_angle, *ref_dir, p)?;
+            (u, v)
+        }
+        _ => return None,
+    };
+    if u < 0.0 {
+        u += std::f64::consts::TAU;
+    }
+    Some((u, v))
 }
 
 /// The seam furthest from every point of both loops.
@@ -158,45 +248,26 @@ pub struct CurvedArrangement {
     pub union_boundary: Vec<DVec3>,
 }
 
-/// Resolve two closed loops that meet on a cylinder into the regions they
-/// divide it into.
+/// Resolve two closed loops that meet on a DEVELOPABLE host into the regions
+/// they divide it into.
 ///
-/// Both loops are given as world points ON the cylinder, in order, without a
-/// repeated closing point. Returns `None` when the host is not a cylinder,
-/// when a point is not on it, or when the loops do not in fact overlap — the
-/// caller keeps what it had rather than being handed a rearrangement of
-/// nothing.
-pub fn arrange_two_loops_on_cylinder(
+/// Both loops are given as world points ON the host, in order, without a
+/// repeated closing point. Returns `None` when the host cannot be flattened
+/// (a sphere or a torus), when a point is not on it, or when the loops do not
+/// in fact overlap — the caller keeps what it had rather than being handed a
+/// rearrangement of nothing.
+pub fn arrange_two_loops_on_developable(
     surface: &AnalyticSurface,
     loop_a: &[DVec3],
     loop_b: &[DVec3],
 ) -> Option<CurvedArrangement> {
-    let (axis_origin, axis_dir, radius, ref_dir) = match surface {
-        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
-            (*axis_origin, *axis_dir, *radius, *ref_dir)
-        }
-        _ => return None,
-    };
     if loop_a.len() < 3 || loop_b.len() < 3 {
         return None;
     }
     // Raw (u, v) first, so the seam can be chosen before anything is unrolled.
-    let raw = |p: DVec3| -> Option<(f64, f64)> {
-        let (_sp, mut u, v) = cylinder::project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
-        if u < 0.0 {
-            u += std::f64::consts::TAU;
-        }
-        Some((u, v))
-    };
-    let ra: Vec<(f64, f64)> = loop_a.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
-    let rb: Vec<(f64, f64)> = loop_b.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
-    let chart = Unroll {
-        axis_origin,
-        axis_dir,
-        radius,
-        ref_dir,
-        u_seam: seam_missing_both(&ra, &rb),
-    };
+    let ra: Vec<(f64, f64)> = loop_a.iter().map(|&p| raw_uv(surface, p)).collect::<Option<_>>()?;
+    let rb: Vec<(f64, f64)> = loop_b.iter().map(|&p| raw_uv(surface, p)).collect::<Option<_>>()?;
+    let chart = chart_for(surface, seam_missing_both(&ra, &rb))?;
     let pa: Vec<Vec2> = loop_a.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
     let pb: Vec<Vec2> = loop_b.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
 
@@ -315,38 +386,18 @@ pub struct Crossing {
     pub inside: Vec<DVec3>,
 }
 
-/// Cut loop B where it meets loop A, in the host's unrolled chart.
-pub fn crossing_on_cylinder(
+/// Cut loop B where it meets loop A, in the developable host's unrolled chart.
+pub fn crossing_on_developable(
     surface: &AnalyticSurface,
     loop_a: &[DVec3],
     loop_b: &[DVec3],
 ) -> Option<Crossing> {
-    let (axis_origin, axis_dir, radius, ref_dir) = match surface {
-        AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, ref_dir, .. } => {
-            (*axis_origin, *axis_dir, *radius, *ref_dir)
-        }
-        _ => return None,
-    };
     if loop_a.len() < 3 || loop_b.len() < 3 {
         return None;
     }
-    let raw = |p: DVec3| -> Option<(f64, f64)> {
-        let (_sp, mut u, v) =
-            cylinder::project_to_cylinder(axis_origin, axis_dir, radius, ref_dir, p)?;
-        if u < 0.0 {
-            u += std::f64::consts::TAU;
-        }
-        Some((u, v))
-    };
-    let ra: Vec<(f64, f64)> = loop_a.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
-    let rb: Vec<(f64, f64)> = loop_b.iter().map(|&p| raw(p)).collect::<Option<_>>()?;
-    let chart = Unroll {
-        axis_origin,
-        axis_dir,
-        radius,
-        ref_dir,
-        u_seam: seam_missing_both(&ra, &rb),
-    };
+    let ra: Vec<(f64, f64)> = loop_a.iter().map(|&p| raw_uv(surface, p)).collect::<Option<_>>()?;
+    let rb: Vec<(f64, f64)> = loop_b.iter().map(|&p| raw_uv(surface, p)).collect::<Option<_>>()?;
+    let chart = chart_for(surface, seam_missing_both(&ra, &rb))?;
     let pa: Vec<Vec2> = loop_a.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
     let pb: Vec<Vec2> = loop_b.iter().map(|&p| chart.to_2d(p)).collect::<Option<_>>()?;
 

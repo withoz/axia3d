@@ -17,7 +17,7 @@
 //! Both are possible because a cap's rim IS its host's hole — the same
 //! vertices, wired through twin half-edges.
 
-use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+use axia_geo::operations::curved_arrange::crossing_on_developable;
 use axia_geo::operations::face_split::split_face_by_chain;
 use axia_geo::surfaces::{cylinder, AnalyticSurface};
 use axia_geo::{FaceId, MaterialId, Mesh, VertId};
@@ -75,7 +75,7 @@ fn resolved() -> (Mesh, FaceId, FaceId, Vec<FaceId>) {
         .iter()
         .map(|&v| mesh.vertex_pos(v).unwrap())
         .collect();
-    let x = crossing_on_cylinder(&surface, &rim_pts, &b).expect("the circles cross");
+    let x = crossing_on_developable(&surface, &rim_pts, &b).expect("the circles cross");
 
     // The crossings become vertices on the rim, which is shared, so both the
     // cap and the host gain them at once.
