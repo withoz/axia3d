@@ -10,10 +10,14 @@
 //! Measured rather than asserted from the code, because the same table's D7 and
 //! D9′ turned out not to be defects at all.
 //!
-//! ⚠ This file states TODAY. Two of its three tests pin an open behaviour, and
-//! the fix needs a decision this repo has not taken: when the two merged faces
-//! have DIFFERENT owners, which one inherits. Pinning "nobody" is not endorsing
-//! it — it is making the day it changes visible.
+//! ⚠ This header described an OPEN gap until 2026-08-16, and the gap is
+//! closed: every WASM merge entry goes through `Scene::merge_faces_by_edge_owned`
+//! — measured, zero direct-to-mesh merge call sites remain — and the decision
+//! the header said had not been taken was taken (first-selected inherits,
+//! 사용자 결재 2026-08-13) and is pinned below. The one test still describing
+//! a limit is the solid-top case, and what it pins is a REFUSAL: on that
+//! configuration the two faces do not merge at all, so the ownership question
+//! has no reach there.
 
 use axia_core::scene::Scene;
 use axia_core::Command;
@@ -68,10 +72,15 @@ fn a_bare_box_is_already_unowned_so_measure_the_change() {
 /// Drawing a line across an owned face's top and merging it back.
 ///
 /// The draw gives both halves to whoever owned the face (PR #121). The merge
-/// then removes both and makes a third — and TODAY nothing hands the ownership
-/// on, so the owner is left naming two ids that no longer exist.
+/// then removes both and makes a third, and the third must join the shape the
+/// halves belonged to.
+///
+/// ⚠ This was named `..._leaves_the_survivor_unowned` until 2026-08-16, from
+/// when it pinned the gap rather than the fix. The body had been updated and
+/// the name had not, so a search for the defect found a test that asserts its
+/// absence — the same shape of doc-lag LOCKED #88 exists to prevent.
 #[test]
-fn merging_two_owned_halves_leaves_the_survivor_unowned() {
+fn the_survivor_of_a_merge_keeps_the_shape_that_owned_the_halves() {
     let mut s = Scene::new();
     s.auto_intersect_on_draw = true;
     s.auto_face_synthesis_on_draw = true;
@@ -148,12 +157,16 @@ fn merging_two_owned_halves_leaves_the_survivor_unowned() {
     );
 }
 
-/// The same on a solid, which is where it costs something: an owner naming dead
-/// ids is what made a drilled solid unsliceable (PR #117) and put an orphan
-/// element in an IFC file (PR #118). Those two fixed the carve family; merge
-/// was explicitly out of their scope.
+/// The same on a solid — where, measured, the merge REFUSES.
+///
+/// The body has always allowed both answers and the refusal is the one that
+/// happens, so the name said the wrong half until 2026-08-16
+/// (`..._leaves_dead_ids_behind`). What it actually pins is that a refused
+/// merge is free: the owner's list comes out exactly as it went in. The
+/// merging branch is kept because the day the configuration starts merging is
+/// the day the ownership question reaches here.
 #[test]
-fn merging_on_a_solid_top_leaves_dead_ids_behind() {
+fn a_merge_refused_on_a_solid_top_costs_nothing() {
     let mut s = production_solid();
     s.execute(Command::DrawRectAsShape {
         center: DVec3::new(0.0, 0.0, TOP),
