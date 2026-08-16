@@ -262,34 +262,25 @@ fn what_the_materializers_own_steps_leave_behind() {
     // the loop being cut.
     //
     // That uncovered the real gap — cutting a face ACROSS ONE OF ITS HOLES,
-    // which the engine had described and refused since 2026-04-28. It is built
-    // now (`split_face_across_hole`, verified on a square annulus in
-    // `a_face_can_be_cut_across_its_hole.rs`), so the wall has moved once more,
-    // and this is where it stands:
+    // which the engine had described and refused since 2026-04-28. Built
+    // (`split_face_across_hole`), then met one more wall: the piece that KEEPS
+    // the outer loop was rebuilt with `add_face_with_holes`, and a Path B
+    // band's outer loop is one vertex and a self-loop circle. The answer was
+    // to stop rebuilding — `splice_face_across_hole` reassigns half-edges
+    // instead, so nothing has to be expressible as a vertex list.
     //
-    //     split_face_across_hole: outer loop has <3 verts
-    //
-    // The piece that KEEPS the outer loop is rebuilt with
-    // `add_face_with_holes`, and a Path B band's outer loop is one vertex and a
-    // self-loop circle — there is nothing to rebuild it from. The same wall as
-    // the very first attempt, now met from the other side. Getting past it
-    // means not rebuilding that piece at all: splice the new hole into the
-    // face that already exists, the way `split_cylinder_face_by_circle` wires
-    // twin half-edges into an inner loop.
+    // The cut this file was written to explain now LANDS. What it still
+    // records is the route, because every step of it was a wrong turn caught
+    // by a measurement rather than by reasoning.
     assert_eq!(
         outer_before, 1,
         "the host's outer loop is one vertex — what used to trigger the \
          polygonisation, and no longer does"
     );
-    let why = attempt.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(
-        why.contains("outer loop has <3 verts"),
-        "the refusal names where the wall is now: {why}"
-    );
-    assert!(
-        !why.contains("not on any loop of face"),
-        "and no longer names a face it made itself: {why}"
-    );
+    let cut = attempt.expect("the host is cut across its hole");
+    assert_eq!(cut.new_faces.len(), 1, "the lune comes out as one new face");
+    let v = mesh.verify_face_invariants();
+    assert!(v.is_valid(), "and the mesh is sound — {:?}", v.violations);
 
     // ── And the refusal is CLEAN, which it was not when this was written ──
     //
@@ -305,19 +296,21 @@ fn what_the_materializers_own_steps_leave_behind() {
     // `split_face_by_line` now snapshot before polygonising and restore on any
     // error — and only when polygonising would actually fire, so the ordinary
     // path pays nothing.
+    //
+    // The cut SUCCEEDS now, so this no longer watches a refusal — it watches
+    // that the host survives its own splitting with its identity intact, which
+    // is the whole reason the splice exists. (`snap_before` is kept because
+    // the byte-identical claim still belongs to the refusal path, exercised in
+    // `a_refused_line_split_also_leaves_the_mesh_alone`.)
+    let _ = &snap_before;
     println!(
-        "MAT 5 after the refusal: host still there? {}; faces={:?}",
+        "MAT 5 after the cut: host still there? {}; faces={:?}",
         mesh.faces.get(host).is_some_and(|f| f.is_active()),
         shape(&mesh)
     );
     assert!(
         mesh.faces.get(host).is_some_and(|f| f.is_active()),
-        "a refused split leaves the host where it was"
-    );
-    assert_eq!(
-        mesh.snapshot(),
-        snap_before,
-        "and the mesh byte-identical — not merely close"
+        "the host keeps its id through the cut — nothing is rebuilt"
     );
     let empty: Vec<u32> = mesh
         .faces
@@ -462,4 +455,60 @@ fn a_refused_line_split_also_leaves_the_mesh_alone() {
         before,
         "and the refusal leaves the mesh byte-identical"
     );
+}
+
+/// Before designing the splice: is the cap's rim edge already used on BOTH
+/// sides?
+///
+/// The lune would be bounded partly by that rim, and if both sides are taken —
+/// the host on one, the cap on the other — then it cannot be built with
+/// `add_face_with_holes` at all: there is no free side to make a half-edge on.
+/// The piece has to be REASSIGNED from the host instead. Asked rather than
+/// assumed, because the whole shape of the fix turns on it.
+#[test]
+fn how_many_faces_use_a_cap_rim_edge() {
+    let mut mesh = Mesh::new();
+    mesh.cylinder_path_b_default = true;
+    mesh.create_cylinder(DVec3::ZERO, R, 20.0, 16, MaterialId::new(0)).expect("cylinder");
+    let side = mesh
+        .faces
+        .iter()
+        .find(|(_, f)| {
+            f.is_active()
+                && f.surface().is_some_and(|s| !matches!(s, AnalyticSurface::Plane { .. }))
+        })
+        .map(|(fid, _)| fid)
+        .expect("wall");
+    let a = geodesic_circle(std::f64::consts::PI, 10.0, 3.0, 48);
+    let (cap, host) = mesh.split_cylinder_face_by_circle(side, &a).expect("split");
+
+    let rim = mesh
+        .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)
+        .expect("rim");
+    let e = mesh.find_edge(rim[0], rim[1]).expect("a rim edge");
+    // Which active faces have this edge on one of their loops?
+    let users: Vec<u32> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .filter(|(fid, f)| {
+            let on = |s| {
+                mesh.collect_loop_hes(s)
+                    .map(|hs| hs.iter().any(|&h| mesh.hes.get(h).map(|x| x.edge()) == Some(e)))
+                    .unwrap_or(false)
+            };
+            let _ = fid;
+            on(f.outer().start) || f.inners().iter().any(|l| on(l.start))
+        })
+        .map(|(fid, _)| fid.raw())
+        .collect();
+    println!("RIM edge {:?} is used by faces {users:?}", e);
+
+    assert_eq!(
+        users.len(),
+        2,
+        "both sides are taken — the cap and the host. So a lune bounded by this \
+         rim cannot be BUILT; the piece must be reassigned from the host"
+    );
+    assert!(users.contains(&cap.raw()) && users.contains(&host.raw()));
 }
