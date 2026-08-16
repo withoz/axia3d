@@ -12834,10 +12834,24 @@ impl AxiaEngine {
     #[wasm_bindgen(js_name = "getShapeFaceIds")]
     pub fn get_shape_face_ids(&self, shape_id: u32) -> Vec<u32> {
         let sid = axia_core::ShapeId::new(shape_id);
-        self.scene
+        let owned: Vec<u32> = self
+            .scene
             .get_shape(sid)
             .map(|s| s.face_ids.iter().map(|f| f.raw()).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !owned.is_empty() {
+            return owned;
+        }
+        // A rect drawn inside a closed solid's face belongs to the solid — the
+        // shell has to stay whole — so the Shape owns nothing and would answer
+        // with nothing. It still DREW the region, and this is how every caller
+        // refers to it: `drawRectAsShape → getShapeFaceIds → createSolidExtrude`
+        // is DrawWallTool's wall, SliceTool's faces, and ADR-264's boss.
+        self.scene
+            .shape_drawn_faces(sid)
+            .iter()
+            .map(|f| f.raw())
+            .collect()
     }
 
     /// ADR-050 P-4 — Delete a Shape by id. Returns true if deleted.
