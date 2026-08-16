@@ -2769,6 +2769,16 @@ impl Scene {
         //    for the "kept" half). To avoid stale mappings we reset the XIA's
         //    face_ids entirely from the above set.
         for &fid in face_ids {
+            // Measured 2026-08-16: removing this line fails nothing. Not the
+            // ownership grid, not `the_reverse_index_forgets_them_too`, not the
+            // workspace — and not even with `SlotStorage::insert` mutated to
+            // recycle ids, which is the only way a stale entry could ever be
+            // consulted for a different face. Face ids are never handed out
+            // twice (`a_face_id_is_never_handed_out_twice.rs`), so what this
+            // bounds is the map's SIZE — one entry per consumed face, otherwise
+            // never pruned on this path — rather than any answer it gives.
+            // Kept for that, and written down so the next person does not spend
+            // the afternoon looking for the guard that would catch its removal.
             self.face_to_xia.remove(&fid);
             self.face_to_shape.remove(&fid);
         }
