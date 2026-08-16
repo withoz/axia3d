@@ -455,6 +455,28 @@ pub struct Scene {
     /// - In-memory only — derived from Shape state
     pub face_to_shape: HashMap<FaceId, crate::ShapeId>,
 
+    /// Faces a Shape DREW but does not own.
+    ///
+    /// Ownership and reference are different things. When a rect is drawn
+    /// inside a closed solid's face the region stays the solid's — the shell
+    /// has to keep its shape — but the drawn Shape is still how the user, and
+    /// every caller of `getShapeFaceIds`, refers to what was just drawn.
+    /// `drawRectAsShape → getShapeFaceIds → createSolidExtrude` is how
+    /// DrawWallTool builds a wall, how SliceTool finds its faces, and how
+    /// ADR-264's boss tests find the face to push, and without this the Shape
+    /// answers with nothing.
+    ///
+    /// A Scene-level map rather than a field on `Shape` (ADR-091 D-β):
+    /// `Shape` is bincode-serialised positionally, so a new field there would
+    /// break legacy snapshots. This is in-memory and rebuilt by drawing, the
+    /// same as `face_to_shape` a few lines up.
+    pub(crate) shape_to_drawn_faces: HashMap<crate::ShapeId, Vec<FaceId>>,
+
+    /// Staging for the above, keyed by the Xia the draw makes before it is
+    /// converted into a Shape. `exec_draw_rect` knows the face; only
+    /// `exec_draw_rect_as_shape` knows the ShapeId it will become.
+    pub(crate) xia_to_drawn_faces: HashMap<XiaId, Vec<FaceId>>,
+
     /// ADR-095 Phase 3-β — Reference 시민 storage (Two-Layer Phase 3).
     ///
     /// Form/Property 두 layer 와 직교하는 third citizenship — 사용자
@@ -624,6 +646,8 @@ impl Scene {
             shape_to_xia: HashMap::new(),
             shape_to_standalone_vertex: HashMap::new(),
             face_to_shape: HashMap::new(),
+            shape_to_drawn_faces: HashMap::new(),
+            xia_to_drawn_faces: HashMap::new(),
             xia_to_original_shape: HashMap::new(),
             xia_element_kind: std::collections::BTreeMap::new(),
             shape_element_kind: std::collections::BTreeMap::new(),
@@ -1620,6 +1644,19 @@ impl Scene {
     /// ADR-050 P-1 — Read access to a Shape by id.
     pub fn get_shape(&self, id: crate::ShapeId) -> Option<&crate::Shape> {
         self.shapes.get(&id)
+    }
+
+    /// Faces this Shape drew but does not own.
+    ///
+    /// A rect drawn inside a closed solid's face leaves the region with the
+    /// solid — the shell has to stay whole — and the Shape remembers it here
+    /// so it is still a handle to what was drawn. Empty for a Shape that owns
+    /// its faces outright, which is the ordinary case.
+    pub fn shape_drawn_faces(&self, id: crate::ShapeId) -> Vec<FaceId> {
+        self.shape_to_drawn_faces
+            .get(&id)
+            .map(|v| v.iter().copied().filter(|f| self.face_is_live(*f)).collect())
+            .unwrap_or_default()
     }
 
     /// ADR-050 P-1 — All currently-stored ShapeIds, sorted ascending.
@@ -4131,6 +4168,26 @@ impl Scene {
     /// Adopt every face that became active since `before` into the given owner
     /// (Shape XOR Xia) — the §36-amendment ownership reconcile shared by the
     /// carve/drill opening ops. No-op if the host had no owner (demo/script).
+    /// Does this owner's geometry form a closed solid right now?
+    ///
+    /// The test that separates "I drew inside a solid's face" (the shell must
+    /// stay whole, so the piece is the solid's) from "I drew inside a sheet"
+    /// (nothing to keep closed, so the piece is the drawn object's).
+    fn host_is_closed_solid(
+        &self,
+        host_shape: Option<crate::ShapeId>,
+        host_xia: Option<XiaId>,
+    ) -> bool {
+        let faces = if let Some(sid) = host_shape {
+            self.shapes.get(&sid).map(|s| s.face_ids.clone())
+        } else if let Some(xid) = host_xia {
+            self.xias.get(&xid).map(|x| x.face_ids.clone())
+        } else {
+            None
+        };
+        faces.is_some_and(|f| self.mesh.face_set_manifold_info(&f).is_closed_solid)
+    }
+
     /// Hand a face to the element that owned the face it came from.
     ///
     /// Shape XOR Xia, the same either/or the rest of the reconcile uses.
@@ -8556,13 +8613,50 @@ impl Scene {
                 // Atomic: add 4 vertices, add_face.
                 match self.mesh.draw_rectangle(center, normal, up, width, height, FORM_MATERIAL) {
                     Ok((inner_fid, _verts)) => {
+                        // 사용자 결재 2026-08-11 — (a) 솔리드 것.
+                        //
+                        // Dividing somebody's face does not hand a piece of it
+                        // over. If the face we drew inside already has an owner,
+                        // the region we cut out of it stays theirs and the drawn
+                        // entity keeps only its identity — the same rule the line
+                        // path follows, where a line across a box's top leaves the
+                        // box owning both halves.
+                        //
+                        // Without this the box's shell was short one piece:
+                        // measured, a rect on a 200³ box left the box owning 6 of
+                        // 7 faces, `isSolid` false and its volume 7,666,666
+                        // against a true 8,000,000, with the geometry untouched.
+                        // ⚠ Only when the host is a CLOSED SOLID. On a flat sheet
+                        // there is no shell to keep closed, and a rect drawn
+                        // inside a bigger rect is its own object — that is
+                        // LOCKED #1 P7, and six of its regressions say so
+                        // ("두 stacked inner rect 모두 면을 가진다"). The user's
+                        // decision was about a solid's face; applying it to every
+                        // owned face broke those six.
+                        let host_shape = self.face_to_shape.get(&container_fid).copied();
+                        let host_xia = self.face_to_xia.get(&container_fid).copied();
+                        let host_owned = self.host_is_closed_solid(host_shape, host_xia);
+
                         let xia_id = self.create_xia("Rectangle".to_string());
                         if let Some(xia) = self.xias.get_mut(&xia_id) {
                             xia.position = center;
                             xia.surface_normal = Some(n_norm);
-                            xia.face_ids.push(inner_fid);
+                            if !host_owned {
+                                xia.face_ids.push(inner_fid);
+                            }
                         }
-                        self.register_faces_to_xia(xia_id, &[inner_fid]);
+                        if host_owned {
+                            self.give_face_to_host(inner_fid, host_shape, host_xia);
+                            // The host owns it; the drawer still refers to it.
+                            // Staged against the Xia because the Shape it will
+                            // become does not exist yet.
+                            self.xia_to_drawn_faces
+                                .entry(xia_id)
+                                .or_default()
+                                .push(inner_fid);
+                        } else {
+                            self.register_faces_to_xia(xia_id, &[inner_fid]);
+                        }
 
                         // ADR-016 conditional B1 promote.
                         let mut b1_fired = false;
@@ -8862,6 +8956,10 @@ impl Scene {
         for fid in &face_ids {
             self.face_to_xia.remove(fid);
         }
+        // Carry the drawn-but-not-owned faces across to the Shape. Staged on
+        // the Xia by `exec_draw_rect`, which knows the face; this is the first
+        // place that knows the ShapeId.
+        let staged = self.xia_to_drawn_faces.remove(&xia_id).unwrap_or_default();
 
         // ADR-079 W-1-α / ADR-086 follow-up — attach Plane AnalyticSurface
         // to created face_ids so kernel-aware ops (createSolidExtrude /
@@ -8916,6 +9014,9 @@ impl Scene {
 
         // Create the form-layer Shape with the inherited metadata.
         let shape_id = self.create_shape(name, face_ids);
+        if !staged.is_empty() {
+            self.shape_to_drawn_faces.insert(shape_id, staged);
+        }
         if let Some(shape) = self.shapes.get_mut(&shape_id) {
             shape.position = position;
             shape.surface_normal = surface_normal;
