@@ -154,7 +154,7 @@ fn splitting_a_rim_edge_and_who_still_owns_it() {
 /// face the refusal names must be one this sequence CREATES.
 #[test]
 fn what_the_materializers_own_steps_leave_behind() {
-    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    use axia_geo::operations::curved_arrange::crossing_on_developable;
     use axia_geo::operations::face_split::split_face_by_chain;
 
     let mut mesh = Mesh::new();
@@ -181,7 +181,7 @@ fn what_the_materializers_own_steps_leave_behind() {
         .iter()
         .map(|&v| mesh.vertex_pos(v).unwrap())
         .collect();
-    let x = crossing_on_cylinder(&surface, &loop_a, &b).expect("they cross");
+    let x = crossing_on_developable(&surface, &loop_a, &b).expect("they cross");
 
     // (1) the two crossings become vertices on the rim
     let rim: Vec<VertId> = mesh
@@ -335,7 +335,7 @@ fn what_the_materializers_own_steps_leave_behind() {
 /// crossings and chains are built, so they are made on the face that survives.
 #[test]
 fn the_cap_cuts_cleanly_because_its_boundary_is_already_a_polygon() {
-    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    use axia_geo::operations::curved_arrange::crossing_on_developable;
     use axia_geo::operations::face_split::split_face_by_chain;
 
     let mut mesh = Mesh::new();
@@ -361,7 +361,7 @@ fn the_cap_cuts_cleanly_because_its_boundary_is_already_a_polygon() {
         .iter()
         .map(|&v| mesh.vertex_pos(v).unwrap())
         .collect();
-    let x = crossing_on_cylinder(&surface, &loop_a, &b).expect("cross");
+    let x = crossing_on_developable(&surface, &loop_a, &b).expect("cross");
 
     let rim: Vec<VertId> = mesh
         .collect_loop_verts(mesh.faces.get(cap).unwrap().outer().start)

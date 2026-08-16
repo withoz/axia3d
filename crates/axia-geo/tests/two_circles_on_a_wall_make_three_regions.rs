@@ -20,7 +20,7 @@
 //! `two_circles_on_a_curved_host_share_ground.rs`); this is what the fix will
 //! be built on, verified before it is relied on.
 
-use axia_geo::operations::curved_arrange::{arrange_two_loops_on_cylinder, Share};
+use axia_geo::operations::curved_arrange::{arrange_two_loops_on_developable, Share};
 use axia_geo::surfaces::{cylinder, AnalyticSurface};
 use glam::DVec3;
 
@@ -59,7 +59,7 @@ fn two_crossing_circles_give_three_regions_of_the_right_size() {
     let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 96);
     let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 96);
 
-    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("they cross, so they arrange").regions;
+    let regions = arrange_two_loops_on_developable(&wall(), &a, &b).expect("they cross, so they arrange").regions;
     assert_eq!(regions.len(), 3, "A-only, the lens, B-only");
 
     let lens_exact =
@@ -102,7 +102,7 @@ fn the_regions_come_back_onto_the_wall() {
     let (r, d) = (3.0_f64, 3.6_f64);
     let a = geodesic_circle(1.0, 10.0, r, 64);
     let b = geodesic_circle(1.0 + d / R, 10.0, r, 64);
-    let regions = arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("arrange").regions;
+    let regions = arrange_two_loops_on_developable(&wall(), &a, &b).expect("arrange").regions;
     for reg in &regions {
         assert!(reg.boundary.len() >= 3, "a region has a boundary");
         for p in &reg.boundary {
@@ -126,7 +126,7 @@ fn circles_that_do_not_cross_are_refused() {
         geodesic_circle(1.0 + std::f64::consts::PI, 10.0, 3.0, 64),
     );
     assert!(
-        arrange_two_loops_on_cylinder(&wall(), &far.0, &far.1).is_none(),
+        arrange_two_loops_on_developable(&wall(), &far.0, &far.1).is_none(),
         "half a turn apart: nothing to arrange"
     );
     let nested = (
@@ -134,7 +134,7 @@ fn circles_that_do_not_cross_are_refused() {
         geodesic_circle(1.0, 10.0, 1.0, 64),
     );
     assert!(
-        arrange_two_loops_on_cylinder(&wall(), &nested.0, &nested.1).is_none(),
+        arrange_two_loops_on_developable(&wall(), &nested.0, &nested.1).is_none(),
         "one inside the other: containment, not a crossing"
     );
 }
@@ -151,13 +151,13 @@ fn a_pair_straddling_the_seam_arranges_the_same() {
     let middle = {
         let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 96);
         let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 96);
-        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("middle").regions
+        arrange_two_loops_on_developable(&wall(), &a, &b).expect("middle").regions
     };
     let on_seam = {
         // Centred on u = 0, where the chart would be cut by default.
         let a = geodesic_circle(0.0, 10.0, r, 96);
         let b = geodesic_circle(d / R, 10.0, r, 96);
-        arrange_two_loops_on_cylinder(&wall(), &a, &b).expect("on the seam").regions
+        arrange_two_loops_on_developable(&wall(), &a, &b).expect("on the seam").regions
     };
     let area_of = |v: &[axia_geo::operations::curved_arrange::CurvedRegion], s: Share| {
         v.iter().find(|x| x.share == s).expect("region").area
@@ -230,11 +230,11 @@ fn the_cap_rim_is_also_the_hosts_hole() {
 /// two it is.
 #[test]
 fn the_second_circle_is_cut_where_it_meets_the_first() {
-    use axia_geo::operations::curved_arrange::crossing_on_cylinder;
+    use axia_geo::operations::curved_arrange::crossing_on_developable;
     let (r, d) = (3.0_f64, 3.6_f64);
     let a = geodesic_circle(std::f64::consts::PI, 10.0, r, 48);
     let b = geodesic_circle(std::f64::consts::PI + d / R, 10.0, r, 48);
-    let x = crossing_on_cylinder(&wall(), &a, &b).expect("they cross");
+    let x = crossing_on_developable(&wall(), &a, &b).expect("they cross");
 
     // Each crossing sits on the segment of A it says it does.
     for k in 0..2 {
