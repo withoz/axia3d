@@ -4182,7 +4182,28 @@ fn split_face_across_hole(
     }
     let n_h = hole.len();
     ensure!(n_h >= 3, "split_face_across_hole: hole loop has <3 verts");
-    ensure!(outer_boundary.len() >= 3, "split_face_across_hole: outer loop has <3 verts");
+
+    // An outer loop that cannot be rebuilt — a Path B band's is one vertex and
+    // a self-loop circle — is not a reason to refuse. It is a reason not to
+    // rebuild: splice instead, reassigning half-edges rather than making new
+    // faces out of vertex lists.
+    if outer_boundary.len() < 3 {
+        let hole_start = mesh
+            .faces
+            .get(face_id)
+            .and_then(|f| {
+                f.inners()
+                    .iter()
+                    .find(|l| {
+                        mesh.collect_loop_verts(l.start)
+                            .map(|vs| vs.len() == n_h && vs.contains(&hole[i_start]))
+                            .unwrap_or(false)
+                    })
+                    .map(|l| l.start)
+            })
+            .ok_or_else(|| anyhow::anyhow!("split_face_across_hole: the hole is not on the face"))?;
+        return splice_face_across_hole(mesh, face_id, chain_verts, hole_start, inherit_material);
+    }
 
     // Two candidates: the chain closed by one arc of the hole, or by the other.
     // Which is the LUNE and which becomes the remaining hole is decided by
@@ -4220,11 +4241,19 @@ fn split_face_across_hole(
         }
         0.5 * acc.dot(normal)
     };
-    let (lune, other) = if signed(&cand_a, mesh) > signed(&cand_b, mesh) {
-        (cand_a, cand_b)
-    } else {
-        (cand_b, cand_a)
+    // The SMALLER of the two positive candidates is the material — the other
+    // closes the long way round and swallows the hole. On the annulus the two
+    // happened to differ in SIGN, so "the positive one" was enough; on a
+    // cylinder band both come out positive and it is not (measured: the union,
+    // 48.381 mm2, where B-only is 20.223 — a whole hole too much).
+    let (sa, sb) = (signed(&cand_a, mesh), signed(&cand_b, mesh));
+    let take_a = match (sa > 0.0, sb > 0.0) {
+        (true, true) => sa < sb,
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => sa > sb,
     };
+    let (lune, other) = if take_a { (cand_a, cand_b) } else { (cand_b, cand_a) };
     // The hole keeps the clockwise sense it had.
     let mut new_hole = other;
     if signed(&new_hole, mesh) > 0.0 {
@@ -4308,6 +4337,234 @@ fn split_face_across_hole(
             "split across hole: lune {} verts, remaining hole {} verts",
             lune.len(),
             new_hole.len()
+        )],
+    })
+}
+
+/// The same cut, made by REASSIGNING half-edges instead of rebuilding faces.
+///
+/// `split_face_across_hole` rebuilds both pieces with `add_face_with_holes`,
+/// which cannot express a Path B band: its outer loop is one vertex and a
+/// self-loop circle, so there is nothing to rebuild it from ("outer loop has
+/// <3 verts"). And the lune cannot be BUILT either — measured
+/// (`how_many_faces_use_a_cap_rim_edge`), a cap's rim edge already has both
+/// sides taken, the cap on one and the host on the other, so there is no free
+/// side to make a half-edge on.
+///
+/// So nothing is built. The host keeps its outer loop and its other holes; the
+/// half-edges along one arc of the cut hole are handed to a new face, the chain
+/// supplies the two sides that close each piece, and the host's inner loop is
+/// re-wired around what is left. Edge identity, curve metadata and HARD flags
+/// all survive, because no edge is replaced.
+fn splice_face_across_hole(
+    mesh: &mut Mesh,
+    face_id: FaceId,
+    chain_verts: &[VertId],
+    hole_start: HeId,
+    inherit_material: MaterialId,
+) -> Result<FaceSplitResult> {
+    let (p, q) = (chain_verts[0], *chain_verts.last().unwrap());
+    ensure!(p != q, "splice_face_across_hole: the chain is a loop, not a cut");
+    let hole_hes = mesh.collect_loop_hes(hole_start)?;
+    let n_h = hole_hes.len();
+    ensure!(n_h >= 3, "splice_face_across_hole: hole loop has <3 half-edges");
+
+    // A half-edge ENDS at its `dst`, so the index that "arrives at P" is where
+    // an arc leaving P begins.
+    let idx_ending_at = |mesh: &Mesh, v: VertId| -> Option<usize> {
+        hole_hes.iter().position(|&h| mesh.hes[h].dst() == v)
+    };
+    let ip = idx_ending_at(mesh, p)
+        .ok_or_else(|| anyhow::anyhow!("splice_face_across_hole: {:?} is not on the hole", p))?;
+    let iq = idx_ending_at(mesh, q)
+        .ok_or_else(|| anyhow::anyhow!("splice_face_across_hole: {:?} is not on the hole", q))?;
+    ensure!(ip != iq, "splice_face_across_hole: both ends land on one half-edge");
+
+    // The two arcs, as half-edge runs. `arc_pq` leaves P and arrives at Q.
+    let run = |from: usize, to: usize| -> Vec<HeId> {
+        let mut out = Vec::new();
+        let mut i = (from + 1) % n_h;
+        loop {
+            out.push(hole_hes[i]);
+            if i == to {
+                break;
+            }
+            i = (i + 1) % n_h;
+        }
+        out
+    };
+    let arc_pq = run(ip, iq);
+    let arc_qp = run(iq, ip);
+    ensure!(
+        !arc_pq.is_empty() && !arc_qp.is_empty(),
+        "splice_face_across_hole: an arc is empty"
+    );
+
+    // The chain's own half-edges, both ways. They are free — the caller drew
+    // the edges and nothing has claimed a side yet.
+    let mut chain_fwd: Vec<HeId> = Vec::with_capacity(chain_verts.len() - 1);
+    let mut chain_bwd: Vec<HeId> = Vec::with_capacity(chain_verts.len() - 1);
+    for w in chain_verts.windows(2) {
+        let e = mesh.find_edge(w[0], w[1]).ok_or_else(|| {
+            anyhow::anyhow!(
+                "splice_face_across_hole: edge between verts {} and {} missing — caller must draw it first",
+                w[0].raw(),
+                w[1].raw()
+            )
+        })?;
+        let h0 = mesh.edges[e].any_he();
+        ensure!(!h0.is_null(), "splice_face_across_hole: edge has no half-edge");
+        let h1 = mesh.hes[h0].next_rad();
+        let (f, b) = if mesh.hes[h0].dst() == w[1] { (h0, h1) } else { (h1, h0) };
+        ensure!(
+            mesh.hes[f].dst() == w[1] && mesh.hes[b].dst() == w[0],
+            "splice_face_across_hole: the chain edge's half-edges do not run between its endpoints"
+        );
+        for h in [f, b] {
+            ensure!(
+                mesh.hes[h].face().is_null(),
+                "splice_face_across_hole: a chain edge already borders a face — the chain must be new"
+            );
+        }
+        chain_fwd.push(f);
+        chain_bwd.push(b);
+    }
+    chain_bwd.reverse();
+
+    // Which side is the material? The lune is the loop that comes out
+    // counter-clockwise about the face's normal — a hole is stored clockwise,
+    // so the arc that closes into a CCW loop is the one bounding material.
+    // Getting this by a rule instead of by winding gave the hole-plus-a-bump
+    // when `split_face_across_hole` was first written.
+    // Area MAGNITUDE, deliberately not projected onto the face's normal. A
+    // Path B band's cached normal is axial — its two rims are circles, so the
+    // Newell sum points along the axis — and projecting a loop on the WALL
+    // onto that gives a number with no bearing on which piece is which
+    // (measured: the choice did not move at all). Trap #6, for the third time
+    // in this file's history.
+    let normal = mesh.faces[face_id].normal().normalize_or_zero();
+    let area_of = |mesh: &Mesh, hes: &[HeId]| -> f64 {
+        let pts: Vec<DVec3> = hes
+            .iter()
+            .filter_map(|&h| mesh.vertex_pos(mesh.hes[h].dst()).ok())
+            .collect();
+        if pts.len() < 3 {
+            return 0.0;
+        }
+        let mut acc = DVec3::ZERO;
+        for i in 0..pts.len() {
+            acc += pts[i].cross(pts[(i + 1) % pts.len()]);
+        }
+        0.5 * acc.length()
+    };
+    // A: leave P along the chain, come back along the arc Q->P.
+    let cand_a: Vec<HeId> = chain_fwd.iter().copied().chain(arc_qp.iter().copied()).collect();
+    // B: leave Q along the chain reversed, come back along the arc P->Q.
+    let cand_b: Vec<HeId> = chain_bwd.iter().copied().chain(arc_pq.iter().copied()).collect();
+    // The SMALLER candidate is the material. The other closes the long way
+    // round and swallows the hole — it is the right piece PLUS the hole, which
+    // is why the difference between them is exactly the hole's area. Measured
+    // when it went wrong: 48.381 mm2 where B-only is 20.223, and 28.274 is a
+    // whole cap.
+    let take_a = area_of(mesh, &cand_a) < area_of(mesh, &cand_b);
+    let (lune_hes, rest_hes): (Vec<HeId>, Vec<HeId>) = if take_a {
+        (
+            cand_a,
+            chain_bwd.iter().copied().chain(arc_pq.iter().copied()).collect(),
+        )
+    } else {
+        (
+            cand_b,
+            chain_fwd.iter().copied().chain(arc_qp.iter().copied()).collect(),
+        )
+    };
+    ensure!(lune_hes.len() >= 3, "splice_face_across_hole: the lune has <3 edges");
+    ensure!(rest_hes.len() >= 3, "splice_face_across_hole: the remaining hole has <3 edges");
+
+    // Hand the lune its own face.
+    let parent_surface = mesh.faces[face_id].surface().cloned();
+    let parent_owner = mesh.face_surface_owner_id(face_id);
+    // A face with no loop yet; the wiring below gives it one. Mirrors how the
+    // primitives create theirs (`Face::new(LoopRef::default(), …)`).
+    //
+    // Its normal comes from its OWN boundary, not from the host's. A Path B
+    // band's cached normal is axial — its two rims are circles, so the Newell
+    // sum points along the axis — and handing that to a lune on the wall gives
+    // a normal perpendicular to the piece it belongs to (measured: "cached
+    // normal opposite to winding (dot=0.000)"). Trap #6 again, one layer in.
+    let lune_normal = {
+        let pts: Vec<DVec3> = lune_hes
+            .iter()
+            .filter_map(|&h| mesh.vertex_pos(mesh.hes[h].dst()).ok())
+            .collect();
+        let mut acc = DVec3::ZERO;
+        for i in 0..pts.len() {
+            acc += pts[i].cross(pts[(i + 1) % pts.len()]);
+        }
+        let n = acc.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            normal
+        } else {
+            n
+        }
+    };
+    let lune = mesh.faces.insert(Face::new(
+        LoopRef::default(),
+        lune_normal,
+        crate::tolerances::FACE_TOLERANCE,
+        inherit_material,
+    ));
+    let m = lune_hes.len();
+    for k in 0..m {
+        let (cur, nxt) = (lune_hes[k], lune_hes[(k + 1) % m]);
+        mesh.hes[cur].set_face(lune);
+        mesh.hes[cur].set_outer(true);
+        mesh.hes[cur].set_next(nxt);
+        mesh.hes[nxt].set_prev(cur);
+    }
+    mesh.faces[lune].set_outer(LoopRef { start: lune_hes[0], is_outer: true });
+
+    // Re-wire what is left as the host's hole.
+    let r = rest_hes.len();
+    for k in 0..r {
+        let (cur, nxt) = (rest_hes[k], rest_hes[(k + 1) % r]);
+        mesh.hes[cur].set_face(face_id);
+        mesh.hes[cur].set_outer(false);
+        mesh.hes[cur].set_next(nxt);
+        mesh.hes[nxt].set_prev(cur);
+    }
+    {
+        let inners = mesh.faces[face_id].inners().to_vec();
+        mesh.faces[face_id].inners_mut().clear();
+        for l in inners {
+            if l.start == hole_start {
+                mesh.faces[face_id].add_inner(LoopRef { start: rest_hes[0], is_outer: false });
+            } else {
+                mesh.faces[face_id].add_inner(l);
+            }
+        }
+    }
+
+    if let Some(ref s) = parent_surface {
+        mesh.faces[lune].set_surface(Some(s.clone()));
+    }
+    if let Some(owner) = parent_owner {
+        mesh.set_face_surface_owner_id(lune, Some(owner));
+    }
+    let new_edges: Vec<EdgeId> = chain_verts
+        .windows(2)
+        .filter_map(|w| mesh.find_edge(w[0], w[1]))
+        .collect();
+    // 메타-원칙 #15 — split-induced edges carry HARD, here as everywhere.
+    mesh.mark_chain_edges_hard(chain_verts);
+
+    Ok(FaceSplitResult {
+        new_faces: vec![lune],
+        new_verts: Vec::new(),
+        new_edges,
+        debug: vec![format!(
+            "spliced across a hole: lune {} half-edges, remaining hole {}",
+            m, r
         )],
     })
 }
