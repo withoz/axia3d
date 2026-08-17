@@ -28,11 +28,20 @@
 //! reaches more than one perimeter, which `face_rederive.rs` documents as a case
 //! it cannot carry ("a face belongs to one owner"), with its own measurements.
 //!
-//! Removing that decline fixes THIS and breaks two others —
-//! `drawing_across_a_hole_rim_keeps_the_solid_closed` and
-//! `two_boxes_sharing_the_ground_stay_twelve_whole_faces` — so the rule is
-//! load-bearing and the fix is not "decline less". It is for the re-tile to
-//! carry one solid's two rims, which is a larger piece of work than this file.
+//! Fixed by counting OWNERS instead of components. The decline is about two
+//! solids — "a face belongs to one owner" — and a ring-topped solid is one
+//! owner with two rims. Re-measured before changing it, because the note said a
+//! shell test had been tried and was worse, and that had stopped being true:
+//!
+//! ```text
+//!   carrying both perimeters
+//!   drilled box + rect across the rim   13 faces  closed  0 boundary  0 nm
+//!   two boxes sharing the ground        13 faces  OPEN    8 boundary
+//! ```
+//!
+//! One owner is sound and only its face count moves — the rim divides the drawn
+//! rect, which is the division being asked for. Two owners is what the rule is
+//! for, and still is.
 
 use axia_core::scene::Scene;
 use axia_core::{Command, FORM_MATERIAL};
@@ -92,13 +101,12 @@ fn a_circle_over_two_solid_tops_is_sound() {
     assert!(st.is_empty(), "a draw reaching two solids must not stack: {st:?}");
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
-/// `KNOWN_BREAKS`.
+/// The four operations that used to leave the circle lying on the solid's top.
 ///
-/// The circle lies over the solid's top because the re-tile declined to divide
-/// it. Pinned so the day that stops, this says so instead of passing quietly.
+/// Mutation-checked: counting components again — `active.len() >= 2` — puts the
+/// stack back.
 #[test]
-fn the_shrunk_session_10_still_stacks() {
+fn the_shrunk_session_10_is_sound() {
     let mut s = prod();
     s.execute(Command::DrawRectAsShape {
         center: DVec3::new(0.0, 100.0, TOP),
@@ -129,13 +137,14 @@ fn the_shrunk_session_10_still_stacks() {
     for t in &st {
         println!("    ✗ {t}");
     }
-    assert!(
-        !st.is_empty(),
-        "세션 10 no longer stacks — if somebody taught the re-tile to carry one          solid's two rims, say so, strike it from KNOWN_BREAKS, and turn this          into the test that proves it"
-    );
+    assert!(st.is_empty(), "the four-operation repro has to stay sound: {st:?}");
 }
 
-/// What the two stacked faces actually are.
+/// What the two stacked faces WERE.
+///
+/// Kept as the account of the defect, now asserting there is nothing left to
+/// describe. The circle used to survive as one whole face over the solid's top;
+/// the re-tile divides it against that top now.
 ///
 /// The repair in `guard_imprint` handles a straddle (two crossings) and a
 /// containment (a lens with none). A pair that is neither — one face lying
@@ -221,7 +230,10 @@ fn what_the_two_stacked_faces_are() {
             .collect();
         println!("  {eid:?} → {}", live.join(" · "));
     }
-    assert!(!pairs.is_empty(), "the repro has to leave a stacked pair to describe");
+    assert!(
+        pairs.is_empty(),
+        "nothing may be left stacked — the circle is divided against the top it          lies on, instead of surviving whole on top of it: {pairs:?}"
+    );
 }
 
 /// Two operations: a small rectangle, then a bigger one drawn AROUND it.

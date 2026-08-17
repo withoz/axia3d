@@ -1570,7 +1570,76 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
         // self-intersection is the drawn shape passing over the hole, which is
         // real geometry and may be what was wanted. So the simpler rule stands
         // and the shell helper is gone — measure, then simplify.
-        let feeds_more_than_one_perimeter = active.len() >= 2;
+        // Count OWNERS, not components.
+        //
+        // The reason this declines is about two solids — "the re-tile cannot
+        // keep both whole ... a face belongs to one owner" — and that reason
+        // does not apply to one solid whose on-plane face has a hole, which
+        // reaches two components on its own. Counting components caught both.
+        //
+        // A shell test was written first and measured WORSE, and that
+        // measurement is now stale: the one-solid case has been fixed since by
+        // other work, and re-measuring says so. Carrying both perimeters:
+        //
+        //     drilled box + rect across the rim   13 faces  closed  0 boundary
+        //                                                   0 nm    0 violations
+        //     two boxes sharing the ground        13 faces  OPEN    8 boundary
+        //
+        // One owner is sound and only its face COUNT moved (11 → 13, the rim
+        // dividing the drawn rect, which is the division being asked for). Two
+        // owners is the case the rule exists for, and it still is.
+        //
+        // Owners are found by walking the mesh rather than the plane: faces
+        // joined through shared edges are one body, so two boxes that merely
+        // interpenetrate are two, and a solid's top and its walls are one.
+        // Measured in `the_retile_carries_one_solids_two_rims.rs`; session 10 of
+        // the fuzz is what this buys — a circle over a ring-topped solid is now
+        // divided against that top instead of lying on it.
+        let mut shell: HashMap<FaceId, FaceId> = HashMap::new();
+        fn shell_root(shell: &mut HashMap<FaceId, FaceId>, f: FaceId) -> FaceId {
+            let mut cur = f;
+            while let Some(&p) = shell.get(&cur) {
+                if p == cur {
+                    break;
+                }
+                cur = p;
+            }
+            shell.insert(f, cur);
+            cur
+        }
+        for (eid, edge) in mesh.edges.iter() {
+            if !edge.is_active() {
+                continue;
+            }
+            let (adj, _) = mesh.get_faces_sharing_edge(eid);
+            let live: Vec<FaceId> = adj
+                .iter()
+                .copied()
+                .filter(|f| mesh.faces.get(*f).map_or(false, |x| x.is_active()))
+                .collect();
+            for w in live.windows(2) {
+                shell.entry(w[0]).or_insert(w[0]);
+                shell.entry(w[1]).or_insert(w[1]);
+                let (ra, rb) = (shell_root(&mut shell, w[0]), shell_root(&mut shell, w[1]));
+                if ra != rb {
+                    shell.insert(ra, rb);
+                }
+            }
+        }
+        let mut owners: HashSet<FaceId> = HashSet::new();
+        for (i, &e) in onp_ve.iter().enumerate() {
+            if !active.contains(&comp_of[i]) {
+                continue;
+            }
+            let (adj, _) = mesh.get_faces_sharing_edge(e);
+            for f in adj {
+                if mesh.faces.get(f).map_or(false, |x| x.is_active()) {
+                    let r = shell_root(&mut shell, f);
+                    owners.insert(r);
+                }
+            }
+        }
+        let feeds_more_than_one_perimeter = owners.len() >= 2;
         if feeds_more_than_one_perimeter {
             // empty ⇒ `retile_is_planar` is false ⇒ the draw-onto-solid guard
             // below skips this re-derive. No new branch needed there.

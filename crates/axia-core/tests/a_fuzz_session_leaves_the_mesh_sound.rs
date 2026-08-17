@@ -220,16 +220,15 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repair is sheets-only now; solids have the coplanar re-tile. Two
     // operations reproduce the old behaviour in
     // `a_draw_on_a_solids_face_must_not_open_it.rs`.
-    // Sharpened rather than fixed. The four violating edges each carry the ring,
-    // a wall of the pushed solid, its top, and the DRAWN CIRCLE — which is one
-    // anchor and one self-loop, never divided against the top it lies on. The
-    // coplanar re-tile is what would have divided it and it declined: the plane
-    // reaches more than one perimeter, a case `face_rederive.rs` documents as
-    // one it cannot carry. Removing that decline fixes this and breaks two other
-    // tests, so the fix is for the re-tile to carry one solid's two rims.
-    // Reduced to four operations, with two refuted guesses kept as guards, in
-    // `a_draw_reaching_two_solids_must_not_stack.rs`.
-    (10, "edge EdgeId(18): FaceId(5) / FaceId(15) cover the same ground.           The drawn circle lies over a solid top the re-tile declined to divide."),
+    // The op-7 break — the drawn circle lying whole on a ring-topped solid — is
+    // FIXED: the re-tile counts owners now, so one solid's two rims are carried
+    // and the circle is divided against the top (`a_draw_reaching_two_solids_
+    // must_not_stack.rs`, and the reason is written where the rule is).
+    //
+    // The session gets four operations further and stops at a different one:
+    // three push-ins deep, on a scene that already holds four solids and two
+    // drawn circles. Same family, not the same defect, and not yet reduced.
+    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces, FaceId(26) /           FaceId(49) covering the same ground. Was op 7 before the re-tile           learned to carry one solid's two rims."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {

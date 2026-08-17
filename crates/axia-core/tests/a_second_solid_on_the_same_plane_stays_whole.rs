@@ -151,7 +151,16 @@ fn drawing_across_a_hole_rim_keeps_the_solid_closed() {
     assert!(!matches!(r, CommandResult::Error(_)), "{r:?}");
 
     let h = health(&s);
-    assert_eq!(h.faces, 11, "the drawn rect is one face on the ring");
+    // 13, not 11: the re-tile carries this plane now. It used to decline —
+    // the plane reaches two perimeters, the ring's outer rim and its hole rim —
+    // and the rule counted components rather than owners, so one solid with a
+    // hole was declined for a reason that is about two solids. Counting owners
+    // instead, this is carried and the RIM DIVIDES THE DRAWN RECT, which is the
+    // division being asked for. The health is what it always was.
+    //
+    // "was 5 when the re-tile ran here" below is stale as an argument and kept
+    // as history: re-measured 2026-08-17, carrying gives 0 and 0.
+    assert_eq!(h.faces, 13, "the rim divides the drawn rect into two");
     assert!(h.closed, "the solid must not be opened by drawing on it");
     assert_eq!(h.boundary, 0, "no free edge is left behind");
     assert_eq!(h.non_manifold, 0, "was 5 when the re-tile ran here");
