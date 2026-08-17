@@ -32,14 +32,29 @@ import { fileURLToPath } from 'url';
 import { StepIgesImporter } from './StepIgesImporter';
 
 // ADR-265 Phase 0.2 — npm workspace 도입 후 node_modules 가 루트로 hoist 됨.
-// cwd(=web) 기준 하드코딩 대신 web/root 양쪽 node_modules 를 탐색해 위치 무관하게 찾는다.
+// cwd(=web) 기준 하드코딩 대신 탐색해서 위치 무관하게 찾는다.
+//
+// ⚠ Walk UP rather than trying a fixed list. The list stopped at the repo root,
+// which is right when the checkout IS the repo and wrong in a git worktree:
+// a worktree lives at `<repo>/.claude/worktrees/<name>/`, three levels below the
+// hoisted `node_modules`, so all three candidates missed and the guard reported
+// a missing package that was installed all along. Node resolves imports by
+// walking up; this now asks the same question the same way.
 const _HERE = dirname(fileURLToPath(import.meta.url));
-const _PKG_CANDIDATES = [
-  resolve('node_modules/opencascade.js/package.json'),
-  resolve(_HERE, '../../node_modules/opencascade.js/package.json'),
-  resolve(_HERE, '../../../node_modules/opencascade.js/package.json'),
-];
-const PKG_PATH = _PKG_CANDIDATES.find(existsSync) ?? _PKG_CANDIDATES[0];
+function findHoisted(start: string): string | null {
+  let dir = start;
+  for (;;) {
+    const hit = resolve(dir, 'node_modules/opencascade.js/package.json');
+    if (existsSync(hit)) return hit;
+    const up = dirname(dir);
+    if (up === dir) return null; // drive root
+    dir = up;
+  }
+}
+const PKG_PATH =
+  findHoisted(process.cwd()) ??
+  findHoisted(_HERE) ??
+  resolve('node_modules/opencascade.js/package.json');
 const EXPECTED_NAME = 'opencascade.js';
 const EXPECTED_MAJOR_PREFIX = '2.0.0-beta';
 
