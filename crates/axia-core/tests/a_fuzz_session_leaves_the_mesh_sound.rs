@@ -226,26 +226,30 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repro is a guard now (`pushing_in_three_deep_stacks_faces.rs`), and so is
     // the comparison that located it.
     //
-    // Session 3's op-10 break IS FIXED, and it was never what the change cost.
-    // Reduced to two operations — a box, and a square drawn at a height inside
-    // it — which broke the same way on main with the rollbacks nowhere in sight,
-    // then followed down to a function with no meshes in it: `split_polygon_2d`
-    // took every crossing segment at once and paired the intersection points
-    // along the direction of the FIRST one, so with two lines it paired across
-    // them and the walk came back with the whole polygon, twice.
+    // Session 3 has moved twice. Its op-10 break was `split_polygon_2d` pairing
+    // intersection points across two cut lines; its op-13 break was the
+    // coplanar re-derive's own rollback being ARMED and BLIND — it asks about
+    // self-intersections, and two faces covering the same patch of a plane are
+    // coincident rather than crossing:
     //
-    //     one line    2 pieces  [6000, 4000]           sums to 10,000
-    //     two lines   2 pieces  [10000, 10000]         sums to 20,000   was
-    //     two lines   3 pieces  [3000, 4000, 3000]     sums to 10,000   is
+    //     z=0 위 솔리드 면 — 평면 3, 곡면 0     the guard's condition holds
+    //     자기교차   19 → 19                    what it asks about: unchanged
+    //     불변식위반  0 → 1                     what actually happened
     //
-    // It cuts by one connected path at a time now. Guards in
-    // `session_3_when_the_rollbacks_are_in.rs` and
-    // `split_polygon_2d_two_cuts_give_three_pieces`.
+    // It asks the invariant checker too now, relative, the way its siblings do.
+    // Both are guarded in `session_3_when_the_rollbacks_are_in.rs`.
     //
-    // The stream carried on four operations further and stopped somewhere else,
-    // which is what this inventory is for: a fix moves the wall, it does not
-    // always remove it.
-    (3, "op 14 of fifteen: circleCurve(200,0,0,r=110) on a mesh five draws and           three extrudes deep. Not reduced."),
+    // What is left is op 15, reduced to six operations ending in a push whose
+    // cap lands on a circle face that earlier operations had already divided.
+    // The repair cannot MEASURE that overlap — `coplanar_intersection_segments`
+    // refuses non-convex subjects, so every branch of
+    // `subtract_double_covered_faces` falls through. Relaxing the subject
+    // requirement was tried (Sutherland-Hodgman only needs the CLIP convex): it
+    // does let the measurement through — 4 crossings, an 8-vertex lens — but the
+    // difference walk handles exactly 2, so nothing acts. Reverted rather than
+    // left in earning nothing. General non-convex clipping is ADR-101 §5's own
+    // item.
+    (3, "op 15 of sixteen: a push whose cap lands on a circle face earlier           operations made concave. The repair cannot measure the overlap."),
     // Session 10's op-11 break IS FIXED. Re-reduced to seven operations ending
     // in three push-ins, and the pair was not two copies of one region: an OLD
     // sheet triangle — one of the four segments the circle leaves outside the

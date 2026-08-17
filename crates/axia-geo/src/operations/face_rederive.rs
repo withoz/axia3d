@@ -1294,6 +1294,18 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     }
     let backup = mesh.clone();
     let si_before = mesh.detect_self_intersections().count();
+    // Coincident is not crossing.
+    //
+    // The self-intersection scan below cannot see two faces covering the same
+    // patch of a plane — they lie on each other rather than pass through each
+    // other. Session 3's op 13: the guard was armed (three planar solid faces on
+    // z=0, no curved one) and read 19 self-intersections before and 19 after,
+    // while the invariant checker went from 0 violations to 1.
+    //
+    // So ask that too. Relative, because a plane may already be objecting before
+    // the re-derive touches it and demanding a clean result outright would
+    // decline work on any scene with a standing problem.
+    let bad_before = mesh.verify_face_invariants().violations.len();
     let curved_before: Vec<FaceId> = mesh
         .faces
         .iter()
@@ -1315,6 +1327,7 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     let worse = match &report {
         Ok(_) => {
             curved_lost
+                || mesh.verify_face_invariants().violations.len() > bad_before
                 || (planar_solid
                     && !curved_solid
                     && mesh.detect_self_intersections().count() > si_before)
