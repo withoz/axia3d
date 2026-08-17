@@ -222,3 +222,79 @@ fn what_sits_on_the_drawing_plane() {
         "the box's bottom is on this plane and faces away from the draw — that          is the geometry the re-tile's side rule reads"
     );
 }
+
+/// Three formulations of "carry it when there is only one body", all refused.
+///
+/// The obvious fix is to let the side rule stand down when there is nothing to
+/// disambiguate against. Three ways of saying that were written and measured,
+/// and each one put `a_face_whose_normal_faces_the_other_way.rs` — defect 3, two
+/// solids on one plane — back:
+///
+/// 1. **One shell.** Bodies joined through shared edges are one body. Two solids
+///    that MEET on a plane share the edges they meet on, so this calls them one
+///    and stands the rule down exactly where it is needed.
+/// 2. **Walls reaching both ways.** Never fires: in defect 3's scene no on-plane
+///    volume edge has a wall reaching the far side at all.
+/// 3. **Counting near-side bodies by shared endpoints.** Reads 1 there too — the
+///    two solids' perimeters are welded at the plane into one component.
+///
+/// By every structural measure tried, defect 3's scene and this one look the
+/// same on the near side: one body above the plane. So the difference that makes
+/// feeding right in one and wrong in the other is NOT the number of bodies, and
+/// the next attempt should start by finding what it is rather than by trying a
+/// fourth way to count them.
+///
+/// This test holds the finding rather than a behaviour: it asserts the two
+/// scenes really are alike in the way the measurements said, so that if one of
+/// them changes shape the note above stops being true out loud.
+#[test]
+fn the_two_scenes_look_alike_on_the_near_side() {
+    let mut a = prod();
+    for op in &shrunk()[..shrunk().len() - 1] {
+        apply(&mut a, *op);
+    }
+
+    // Defect 3's scene, up to just before its circle.
+    let mut b = prod();
+    b.execute(Command::DrawRectAsShape {
+        center: DVec3::new(0.0, 100.0, 100.0),
+        normal: DVec3::Z, up: DVec3::X, width: 100.0, height: 75.0,
+    });
+    b.execute(Command::DrawRectAsShape {
+        center: DVec3::new(0.0, 100.0, 100.0),
+        normal: DVec3::Z, up: DVec3::X, width: 180.0, height: 135.0,
+    });
+    let _ = b.mesh.create_box(
+        DVec3::new(-50.0, 50.0, 160.0), 180.0, 120.0, 180.0, FORM_MATERIAL,
+    );
+    b.execute(Command::CreateSolid {
+        face_id: FaceId::new(10),
+        mode: CreateSolidMode::Extrude { distance: 50.0 },
+    });
+
+    let mut readings: Vec<(usize, usize)> = Vec::new();
+    for (name, s) in [("이 결함", &a), ("결함 3", &b)] {
+        let mut above = 0;
+        let mut below = 0;
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() {
+                continue;
+            }
+            let Ok(vv) = s.mesh.collect_loop_verts(f.outer().start) else { continue };
+            let on_plane = !vv.is_empty()
+                && vv.iter().all(|v| {
+                    s.mesh.verts.get(*v).map_or(false, |p| (p.pos().z - 100.0).abs() < 1e-6)
+                });
+            if !on_plane || !s.mesh.is_face_in_volume(fid) {
+                continue;
+            }
+            if f.normal().normalize_or_zero().dot(DVec3::Z) < 0.0 { below += 1 } else { above += 1 }
+        }
+        println!("  {name}: z=100 위 솔리드 면 — 그리기 반대쪽 {below}, 같은 쪽 {above}");
+        readings.push((below, above));
+    }
+    assert_eq!(
+        readings[0], readings[1],
+        "the two scenes read the same on the plane the draw lands on — which is          why counting bodies cannot tell them apart. If they stop reading the          same, the note above is stale and the fourth attempt has something new          to work with"
+    );
+}
