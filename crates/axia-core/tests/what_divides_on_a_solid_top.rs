@@ -690,12 +690,13 @@ fn the_ellipse_loss_is_the_same_with_only_the_rederive_running() {
     // rows were partly this artifact — the real defect was that the ellipse
     // never reached the arrangement, and with that fixed the count moves to 5
     // above while the geometry is right.
-    assert_eq!(neither.2, 4, "the same 4 with every auto behaviour off");
+    assert_eq!(neither.2, 6, "all six, now that the repair declines to open the box");
     assert!(
-        (neither.0 - 36_891.08).abs() < 1.0,
-        "and the top is carved to the SAME 36,891 with every auto behaviour \
-         off — got {:.4}. So neither the re-derive nor the auto-intersect is \
-         doing it: the post-draw repair is ungated and runs regardless",
+        (neither.0 - 40_000.0).abs() < 1.0,
+        "and the top is now left WHOLE with every auto behaviour off — got \
+         {:.4}. It used to be carved to 36,891 by the post-draw repair, which \
+         no flag controlled; the repair now checks whether it left a solid open \
+         and rolls back when it did, and carving this top opened the box",
         neither.0
     );
 }
@@ -738,10 +739,10 @@ fn the_post_draw_repair_carves_the_host_with_every_flag_off() {
         .collect();
     assert_eq!(
         still_there.len(),
-        5,
-        "TODAY the top is replaced even with every flag off — the repair is \
-         not gated by them. At 6 the repair has learned to leave a host alone \
-         and this pin retires"
+        6,
+        "the pin retired, as it said it would. The repair now measures whether \
+         it left a solid open and rolls back if it did, so a floating ellipse \
+         leaves all six of the box's faces alone"
     );
     assert!(
         s.mesh.verify_face_invariants().is_valid(),

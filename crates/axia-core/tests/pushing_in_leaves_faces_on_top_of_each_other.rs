@@ -206,10 +206,18 @@ fn shrink(name: &str, full: Vec<Op>) -> Vec<Op> {
     ops
 }
 
+/// The reducer, which now has one sequence left to reduce.
+///
+/// Session 9's transcription is sound, so there is nothing to shrink — asserted
+/// here rather than dropped, because "the fuzz's session passes" is the claim
+/// that matters and `shrunk_9` alone would not make it.
 #[test]
-fn both_sessions_shrink_to_something_readable() {
+fn session_10_shrinks_and_session_9_no_longer_fails() {
     shrink("세션 10", session_10());
-    shrink("세션 9", session_9());
+    let r = run(&session_9());
+    println!("
+  세션 9 전체 {} 연산 → {r:?}", session_9().len());
+    assert!(r.is_none(), "session 9 of the fuzz has to stay sound: {r:?}");
 }
 
 /// Session 10's four operations, kept as the repro.
@@ -337,7 +345,14 @@ fn what_the_push_leaves_stacked() {
             };
             println!("    {} / {}", tag(a), tag(b));
         }
-        assert!(!seen.is_empty(), "{name}: the repro has to leave stacked pairs");
+        if name == "세션 9" {
+            assert!(
+                seen.is_empty(),
+                "세션 9 leaves nothing stacked now that the double-cover repair                  keeps off solids: {seen:?}"
+            );
+        } else {
+            assert!(!seen.is_empty(), "{name}: the repro still leaves stacked pairs");
+        }
     }
 }
 
@@ -398,10 +413,20 @@ fn which_arrangement_each_break_needs() {
             assert!(!broke("face_rederive off"), "세션 10 needs the re-derive");
             assert!(!broke("all four off (engine default)"), "세션 10 is the arrangement's");
         } else {
-            // Needs nothing: this one is `create_solid` on its own.
+            // Was "needs nothing — `create_solid` on its own", which is what
+            // made it the one to fix first. With the double-cover repair kept
+            // off solids it is sound in production AND with everything off.
+            //
+            // One combination is not, and it is recorded rather than asserted
+            // away: re-derive OFF with the other three ON still stacks. The app
+            // does not run that (ADR-176 turns all four on), and the residue is
+            // the same shape as session 10 — the arrangement laying a face over
+            // a solid's — so it belongs with that fix, not this one.
+            assert!(!broke("all four on (production)"), "세션 9 must be sound in production");
+            assert!(!broke("all four off (engine default)"), "세션 9 must be sound bare");
             assert!(
-                broke("all four off (engine default)"),
-                "세션 9 breaks with every automatic behaviour off — if it stops                  doing that, it has become a different defect and the account in                  this file is wrong"
+                broke("face_rederive off"),
+                "the one combination that still breaks is re-derive off with the                  others on — if that changes, this note is stale and should say                  what fixed it"
             );
         }
     }
@@ -414,7 +439,7 @@ fn which_arrangement_each_break_needs() {
 /// being pushed, and whether the engine classifies it as move-only (ADR-196),
 /// decides whether this is a dispatch question or an extrude question.
 #[test]
-fn session_9_pushes_a_wall_the_engine_thinks_is_a_sheet() {
+fn session_9_pushes_a_wall_that_is_still_part_of_its_box() {
     let ops = shrunk_9();
     let mut s = Scene::new(); // engine default: every automatic behaviour off
     for op in &ops[..ops.len() - 1] {
@@ -481,6 +506,7 @@ fn session_9_pushes_a_wall_the_engine_thinks_is_a_sheet() {
     for t in v.iter().take(4) {
         println!("    ✗ {t}");
     }
+    assert!(v.is_empty(), "and the push leaves the mesh sound: {v:?}");
     assert!(described.is_some(), "the pushed face has to exist before the push");
     let (active, in_volume, _, _, _) = described.unwrap();
     assert!(active, "the pushed face has to be live");
@@ -493,23 +519,27 @@ fn session_9_pushes_a_wall_the_engine_thinks_is_a_sheet() {
     // edges. The two walls that stood on those edges lost their neighbour, so
     // they read as sheets; pushing one is therefore not move-only, and
     // `create_solid` extrudes it into a second box on top of the first.
+    // The fix, stated where the defect was measured. FaceId(13) is a wall of
+    // the second box; the circle drawn on that box's bottom used to replace the
+    // bottom with a free sheet, leaving this wall without a neighbour.
     assert!(
-        !in_volume,
-        "FaceId(13) is a wall of a box that the engine no longer sees as closed.          If this starts reporting `solid`, the draw has stopped opening the box          and the push should be move-only — which is the fix, and this assertion          is how it announces itself"
+        in_volume,
+        "FaceId(13) is a wall of a box, so the box has to still be closed around          it — reporting `sheet` here is the draw having taken the box apart"
     );
     assert!(
-        !move_only_before,
-        "and so the push is not move-only — same signal, one layer up. Read          BEFORE the push: afterwards the wall has become part of the second box          this defect builds, and reports move-only again"
+        move_only_before,
+        "and so pushing it moves the wall instead of extruding a second box          onto the first — same signal, one layer up"
     );
 }
 
-/// ⚠ PINNED AS MEASURED — two OPEN defects.
+/// One fixed, one open.
 ///
-/// Both are inventoried in the fuzz's `KNOWN_BREAKS` as well. These assert the
-/// reduced sequences still fail, so the day either stops, the test says so
+/// Session 9 is sound since the double-cover repair stopped reshaping solid
+/// faces. Session 10 is still inventoried in the fuzz's `KNOWN_BREAKS`, and its
+/// half of this asserts it still fails, so the day it stops the test says so
 /// instead of passing quietly.
 #[test]
-fn both_reduced_sequences_still_break() {
+fn session_9_is_sound_and_session_10_still_breaks() {
     let a = run(&shrunk_10());
     let b = run(&shrunk_9());
     println!("
@@ -519,5 +549,5 @@ fn both_reduced_sequences_still_break() {
         a.is_some(),
         "세션 10 no longer leaves faces on top of each other — if somebody fixed          it, say what, strike it from KNOWN_BREAKS, and turn this into the test          that proves it"
     );
-    assert!(b.is_some(), "세션 9 likewise");
+    assert!(b.is_none(), "세션 9 has to stay sound: {b:?}");
 }

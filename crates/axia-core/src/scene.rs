@@ -2575,6 +2575,33 @@ impl Scene {
         if pairs.is_empty() {
             return 0;
         }
+        // Every repair below REPLACES a face — the difference walk re-walks its
+        // boundary, the containment punch rebuilds it with a hole. That is free
+        // for a sheet, and for a solid's face it depends on whether the
+        // replacement gives the walls back the edges they stand on. Measured
+        // both ways in `a_draw_on_a_solids_face_must_not_open_it.rs`:
+        //
+        //     rect straddling a box's ground   overlap resolved, box still closed
+        //     circle straddling its bottom     overlap resolved, box OPEN — its
+        //                                      walls become sheets, 6 solid → 3
+        //
+        // So "keep off solids" would be too blunt; it would decline the first
+        // one too, and that repair is what the pinned pair
+        // `..._over_a_one_shot_face_now_resolves_too` exists for. What is not
+        // acceptable is the second, and it announces itself: a face that was
+        // part of a solid is still there and no longer bounds one.
+        //
+        // The fuzz found it through the damage that follows — the engine reads
+        // an opened box's walls as sheets, so pushing one is not move-only and
+        // `create_solid` extrudes a second box onto the first (session 9).
+        let solid_before: std::collections::HashSet<axia_geo::FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(fid, f)| f.is_active() && self.mesh.is_face_in_volume(*fid))
+            .map(|(fid, _)| fid)
+            .collect();
+        let before_repairs = self.scene_snapshot();
         let mut repaired = 0usize;
         for (fa, fb) in pairs {
             if already_overlapping.contains(&(fa, fb)) || already_overlapping.contains(&(fb, fa)) {
@@ -2720,6 +2747,31 @@ impl Scene {
                     return repaired;
                 }
             }
+        }
+        // Did any of it open a solid? Rolled back together rather than per
+        // pair: a draw makes few of these, and a repair that leaves a box in
+        // pieces is worse than an overlap the arrangement can still divide.
+        // ⚠ The `is_active` clause below is uncovered. Mutation-checked:
+        // removing the rollback fails the two-operation repro, and rolling back
+        // unconditionally fails the pinned pair — but counting a REPLACED face
+        // as opened changes nothing any test can see, because the coplanar
+        // re-tile runs inside `draw()` and is finished before this function
+        // starts, so nothing here consumes a solid's face in the cases we have.
+        // It stays because "gone" and "still there and no longer solid" are
+        // different states and only the second is this repair's doing, and it
+        // is said out loud because an uncovered line should not read as a
+        // tested one.
+        let opened: Vec<axia_geo::FaceId> = solid_before
+            .iter()
+            .copied()
+            .filter(|f| {
+                self.mesh.faces.get(*f).map_or(false, |x| x.is_active())
+                    && !self.mesh.is_face_in_volume(*f)
+            })
+            .collect();
+        if !opened.is_empty() {
+            self.restore_scene_snapshot(&before_repairs);
+            return 0;
         }
         repaired
     }
