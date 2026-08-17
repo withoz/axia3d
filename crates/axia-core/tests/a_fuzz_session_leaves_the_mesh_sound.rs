@@ -212,7 +212,14 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     //   sound. The circle reaches two solid perimeters at once, which the
     //   re-tile deliberately declines to carry (see `face_rederive.rs`), and the
     //   synthesis then lays a sheet over the solid's top face anyway.
-    (9, "edge EdgeId(24): FaceId(11) / FaceId(35) cover the same ground.          A wall of an opened box, pushed in and extruded instead of moved."),
+    // Session 9 was here — a wall of an opened box, pushed in and extruded
+    // instead of moved — and is struck because it is fixed. The double-cover
+    // repair in `guard_imprint` was reshaping a SOLID's face: it re-walks a
+    // boundary, and the walls standing on the old edges lose their neighbour,
+    // so the face that comes back is a free sheet and the box is open. The
+    // repair is sheets-only now; solids have the coplanar re-tile. Two
+    // operations reproduce the old behaviour in
+    // `a_draw_on_a_solids_face_must_not_open_it.rs`.
     (10, "edge EdgeId(18): FaceId(5) / FaceId(23) cover the same ground.           A sheet synthesised over a solid top the re-tile declined to carry."),
 ];
 
