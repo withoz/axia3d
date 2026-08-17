@@ -40,6 +40,34 @@ pub struct SelfIntersectionReport {
     pub intersecting_pairs: Vec<(FaceId, FaceId)>,
 }
 
+/// Which of the three ways two faces can be in contact.
+///
+/// The detector reports all three the same way, and every caller used to
+/// re-derive the difference for itself — measured 2026-08-16, five places did,
+/// four in production and one in a grid, and no two the same way. Only two of
+/// the three are defects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactKind {
+    /// Two faces meeting at an ANGLE along a line, neither passing through the
+    /// other. A wall standing on a floor; a sheet drawn past a box's corner
+    /// resting on the walls below. Nothing is enclosed between them and
+    /// nothing is drawn twice. **Not damage.**
+    Touching,
+    /// Two faces on the SAME plane covering the same ground, so the region is
+    /// drawn twice. **Damage.**
+    CoplanarOverlap,
+    /// Each face passes through the other's plane — poking through, the flap
+    /// class. **Damage.**
+    Crossing,
+}
+
+impl ContactKind {
+    /// Whether this kind is a defect.
+    pub fn is_damage(self) -> bool {
+        !matches!(self, ContactKind::Touching)
+    }
+}
+
 impl SelfIntersectionReport {
     /// True when no self-intersection was found.
     pub fn is_clean(&self) -> bool {
@@ -79,6 +107,71 @@ impl Mesh {
     ///
     /// Read-only. See the module docs for the algorithm and MVP scope. Returns
     /// the list of intersecting face pairs; empty means clean.
+    /// Which way two faces are in contact — and therefore whether it is a
+    /// defect. See [`ContactKind`].
+    ///
+    /// The crossing test is mutual on purpose: a wall standing on a floor does
+    /// not reach below it, but the FLOOR does span the wall's plane, because
+    /// the wall is a slice through the middle of it. Asking "does either cross
+    /// the other" calls that contact a defect — measured. A genuine crossing is
+    /// each face passing through the other's plane, which is what poking
+    /// through means and what touching does not do.
+    pub fn classify_contact(&self, a: FaceId, b: FaceId) -> Option<ContactKind> {
+        // 1 µm. The dedup floor is 1.5 µm (LOCKED #5), so a vertex nearer than
+        // this to a plane cannot meaningfully be on a side of it.
+        const ON_PLANE: f64 = 1e-3;
+
+        let (fa, fb) = (self.faces.get(a)?, self.faces.get(b)?);
+        let na = fa.normal().normalize_or_zero();
+        let nb = fb.normal().normalize_or_zero();
+        if na.length_squared() < 0.5 || nb.length_squared() < 0.5 {
+            return None; // a face with no normal is a different problem
+        }
+        if na.dot(nb).abs() > 0.999 {
+            return Some(ContactKind::CoplanarOverlap);
+        }
+
+        let pts = |f: FaceId| -> Vec<DVec3> {
+            self.faces
+                .get(f)
+                .and_then(|face| self.collect_loop_verts(face.outer().start).ok())
+                .map(|vs| vs.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect())
+                .unwrap_or_default()
+        };
+        let (pa, pb) = (pts(a), pts(b));
+        let (oa, ob) = (*pa.first()?, *pb.first()?);
+        let spans = |n: DVec3, origin: DVec3, ps: &[DVec3]| -> bool {
+            let (mut above, mut below) = (false, false);
+            for p in ps {
+                let d = n.dot(*p - origin);
+                if d > ON_PLANE {
+                    above = true;
+                } else if d < -ON_PLANE {
+                    below = true;
+                }
+            }
+            above && below
+        };
+        Some(if spans(na, oa, &pb) && spans(nb, ob, &pa) {
+            ContactKind::Crossing
+        } else {
+            ContactKind::Touching
+        })
+    }
+
+    /// The pairs that are actually defects — [`ContactKind::is_damage`] over
+    /// [`Self::detect_self_intersections`].
+    pub fn damaging_contacts(&self) -> Vec<(FaceId, FaceId)> {
+        self.detect_self_intersections()
+            .intersecting_pairs
+            .into_iter()
+            .filter(|&(a, b)| {
+                self.classify_contact(a, b)
+                    .is_some_and(ContactKind::is_damage)
+            })
+            .collect()
+    }
+
     pub fn detect_self_intersections(&self) -> SelfIntersectionReport {
         let geoms: Vec<FaceGeom> = self
             .faces
