@@ -151,12 +151,19 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             // configurations: sessions 1, 6 and 10 break with "shared by 4 (and
             // 6) active faces — cover the same ground".
             //
-            // It stays out for one more round because putting it back changes
-            // every session's operation sequence, and seeds 6 and 10 are what
-            // currently reproduce the two findings in KNOWN_BREAKS. Losing
-            // those before they are fixed would cost more than the coverage
-            // gains. The branch comes back with the inventory rewritten once
-            // they are.
+            // It stayed out because putting it back changes every session's
+            // operation sequence, and seeds 6 and 10 were what reproduced the
+            // two findings in KNOWN_BREAKS. That reason has mostly expired:
+            // seed 10 is fixed, and seed 6 no longer depends on the fuzz —
+            // its ten-operation repro is pinned in
+            // `a_face_naming_a_gone_half_edge.rs` and fails there on its own.
+            //
+            // What is left is a scope decision rather than a blocker. Restoring
+            // the branch surfaces breaks in sessions 1, 6 and 10 ("shared by 4
+            // and 6 active faces — cover the same ground"), each of which wants
+            // the same treatment the other three got: reduce, pin, fix. It
+            // comes back with that work, not before it, so the inventory never
+            // holds a break nobody is looking at.
             "pushIn(excluded: see the note here)".into()
         }
         8 => {
@@ -194,7 +201,13 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // `a_face_naming_a_gone_half_edge.rs`). The face survives its edges now and
     // the loop still does not close — same face, narrower break.
     (6, "face FaceId(20): cannot collect outer loop — the loop never closes.          Reached by 18 ordinary draws, no push, no carve."),
-    (10, "face FaceId(39): cached normal opposite to winding (dot = −1.000),           alongside two faces covering the same ground. 13 draws in."),
+    // Session 10 was here — "cached normal opposite to winding, alongside two
+    // faces covering the same ground, 13 draws in" — and is struck because it
+    // is fixed. Two solids met on one plane and the rebuild re-tiled BOTH
+    // perimeters, laying the upper solid's tiles (wound against the draw) on
+    // top of the lower one's. It now decides which solid the draw is on from
+    // the walls reaching away from the plane. The five-operation repro is kept
+    // as a guard in `a_face_whose_normal_faces_the_other_way.rs`.
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {

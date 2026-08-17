@@ -1415,16 +1415,76 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     // (ADR-281 β-1); a disjoint solid elsewhere does not (the disjoint-coplanar
     // draw fix — otherwise its perimeter fed the arrange → 3-face non-manifold
     // edges → guard_imprint rejected the whole draw).
+    //
+    // ...and, when two solids MEET on the plane, only the one the draw is on.
+    // "Top/bottom perimeter" above is honest about what this collected: both.
+    // A plane can hold one solid's top and another's bottom at once, and
+    // re-tiling both lays two sets of tiles on the same ground, the upper
+    // solid's wound against the draw:
+    //
+    //     face FaceId(28): cached normal opposite to winding (dot=-1.000)
+    //     edge EdgeId(69): shared by 4 active faces (non-manifold) —
+    //                      FaceId(20) / FaceId(28) cover the same ground
+    //
+    // Found by the fuzz on seed 0x5EED000A, reduced to five operations in
+    // `a_face_whose_normal_faces_the_other_way.rs`, where one circle takes a
+    // sound mesh to twenty-four violations.
+    //
+    // Which side a solid is on is read from its WALLS reaching away from the
+    // plane, not from the on-plane face: between draws that face is DCEL-absent
+    // and only the wall bears these edges, so asking the face would drop the
+    // very case ADR-281 β-1 exists for.
+    //
+    // And the split only happens when walls reach BOTH ways. With solids on one
+    // side only there is nothing to disambiguate, and choosing anyway would be
+    // reading the plane normal as "out of the solid" — which it is for a draw
+    // on a solid's top and is NOT for a patch drawn on a sphere, whose plane
+    // normal can point into the body. `curved-surface-osnap.spec.ts` is what
+    // noticed that; the earlier version of this filter dropped that patch's rim
+    // and left the click landing on a coarser piece of the sphere.
     let onp_ve: Vec<EdgeId> = volume_edges
         .iter()
         .copied()
         .filter(|&e| {
-            mesh.edges.get(e).map_or(false, |ed| {
+            let ends_on_plane = mesh.edges.get(e).map_or(false, |ed| {
                 matches!(
                     (mesh.verts.get(ed.v_small()), mesh.verts.get(ed.v_large())),
                     (Some(a), Some(bb)) if on_plane(a.pos()) && on_plane(bb.pos())
                 )
-            })
+            });
+            if !ends_on_plane {
+                return false;
+            }
+            let (adj, _) = mesh.get_faces_sharing_edge(e);
+            let mut saw_a_wall = false;
+            let mut reaches_below = false;
+            for &f in &adj {
+                let Some(face) = mesh.faces.get(f) else { continue };
+                if !face.is_active() {
+                    continue;
+                }
+                let Ok(vv) = mesh.collect_loop_verts(face.outer().start) else {
+                    continue;
+                };
+                for vid in vv {
+                    if let Some(vt) = mesh.verts.get(vid) {
+                        let p = vt.pos();
+                        if !on_plane(p) {
+                            saw_a_wall = true;
+                            if (p - plane_origin).dot(n_unit) < 0.0 {
+                                reaches_below = true;
+                            }
+                        }
+                    }
+                }
+            }
+            // No wall evidence at all means every face on this edge has its
+            // whole boundary on the plane — a kernel-native sphere's equator,
+            // where both hemispheres are bounded by the same self-loop and the
+            // body is in the surface rather than in the loop. Nothing there says
+            // which side anything is on, so keep the prior behaviour rather than
+            // guess.
+            !saw_a_wall || reaches_below
         })
         .collect();
     let solid_top_boundary: HashSet<EdgeId> = if scope.is_none() {
