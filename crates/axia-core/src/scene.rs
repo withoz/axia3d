@@ -2677,7 +2677,21 @@ impl Scene {
             let Ok(ci) = cop::coplanar_intersection_segments(&self.mesh, big, small) else {
                 continue;
             };
-            if ci.crossings.len() != 2 {
+            // Entry/exit pairs, so an even number. Two is a shape straddling an
+            // edge; four is a shape biting a face earlier operations already
+            // divided.
+            //
+            // ⚠ NO SCENE TEST HOLDS THIS. Mutation-checked: narrowing it back to
+            // `!= 2` leaves the fuzz green, so nothing we have produces a
+            // four-crossing overlap that also needs repairing. What DID carry
+            // session 3 through op 15 is the line below — walking the CLIP
+            // rather than the lens — which the fuzz catches on its own. The
+            // four-crossing capability is guarded at the unit level
+            // (`a_concave_subject_bitten_twice_by_a_convex_clip`) and this gate
+            // is the wiring that lets a scene reach it; it is kept rather than
+            // narrowed because refusing an overlap we can now measure is a worse
+            // answer than measuring it.
+            if ci.crossings.len() < 2 || ci.crossings.len() % 2 != 0 {
                 continue;
             }
             let Ok(base_v) = self.mesh.collect_loop_verts(self.mesh.faces[big].outer().start)
@@ -2692,14 +2706,35 @@ impl Scene {
             if base2d.len() != base_v.len() {
                 continue;
             }
-            let lens2d: Vec<(f64, f64)> =
-                ci.lens_polygon.iter().map(|p| ci.plane.project(*p)).collect();
-            let cr: Vec<(usize, f64, (f64, f64))> = ci
+            // The bite is bounded by the base on one side and the SMALL face on
+            // the other, so the small face is what the walk splices from. The
+            // lens is those bites as a polygon, and for a concave base it is not
+            // one polygon at all — Sutherland-Hodgman joins the parts with
+            // zero-width connectors.
+            let Ok(clip_v) = self.mesh.collect_loop_verts(self.mesh.faces[small].outer().start)
+            else {
+                continue;
+            };
+            let clip2d: Vec<(f64, f64)> = clip_v
+                .iter()
+                .filter_map(|v| self.mesh.vertex_pos(*v).ok())
+                .map(|p| ci.plane.project(p))
+                .collect();
+            if clip2d.len() != clip_v.len() {
+                continue;
+            }
+            let cr: Vec<cop::Crossing2d> = ci
                 .crossings
                 .iter()
-                .map(|c| (c.face_a_edge, c.face_a_t, ci.plane.project(c.point)))
+                .map(|c| cop::Crossing2d {
+                    base_edge: c.face_a_edge,
+                    base_t: c.face_a_t,
+                    clip_edge: c.face_b_edge,
+                    clip_t: c.face_b_t,
+                    point: ci.plane.project(c.point),
+                })
                 .collect();
-            let Ok(poly2d) = cop::polygon_difference_walking(&base2d, &lens2d, &cr) else {
+            let Ok(poly2d) = cop::polygon_difference_by_clip(&base2d, &clip2d, &cr) else {
                 continue;
             };
             if poly2d.len() < 3 {

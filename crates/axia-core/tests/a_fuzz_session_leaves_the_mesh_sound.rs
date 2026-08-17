@@ -196,83 +196,24 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// IS here must still fail. Fix one and this test tells you to strike it from
 /// the list, which is how the harness gets stricter on its own instead of
 /// rotting into a set of permanently-tolerated failures.
-const KNOWN_BREAKS: &[(u64, &str)] = &[
-    // Both entries came back with push-in, and both are reduced and pinned in
-    // `pushing_in_leaves_faces_on_top_of_each_other.rs` — 15 operations to 6 and
-    // 7 to 4 — with the measurement that they are NOT one defect:
-    //
-    //   session 9 breaks with every automatic behaviour turned OFF, so the
-    //   arrangement is not making these faces. A circle drawn on a plane a box's
-    //   bottom already occupies replaces that bottom with a 47-vertex sheet that
-    //   does not reuse the box's own boundary edges. The two walls standing on
-    //   those edges lose their neighbour and read as sheets, so pushing one is
-    //   not move-only and `create_solid` extrudes a second box onto the first.
-    //
-    //   session 10 needs face-synthesis AND the re-derive; either off and it is
-    //   sound. The circle reaches two solid perimeters at once, which the
-    //   re-tile deliberately declines to carry (see `face_rederive.rs`), and the
-    //   synthesis then lays a sheet over the solid's top face anyway.
-    // Session 9 was here — a wall of an opened box, pushed in and extruded
-    // instead of moved — and is struck because it is fixed. The double-cover
-    // repair in `guard_imprint` was reshaping a SOLID's face: it re-walks a
-    // boundary, and the walls standing on the old edges lose their neighbour,
-    // so the face that comes back is a free sheet and the box is open. The
-    // repair is sheets-only now; solids have the coplanar re-tile. Two
-    // operations reproduce the old behaviour in
-    // `a_draw_on_a_solids_face_must_not_open_it.rs`.
-    // Session 10's op-3-of-four break is FIXED — the re-derive runs on a plane a
-    // solid shares and is undone only if it made things worse, and the post-draw
-    // repair is undone when it leaves the plane objecting. Its four-operation
-    // repro is a guard now (`pushing_in_three_deep_stacks_faces.rs`), and so is
-    // the comparison that located it.
-    //
-    // Session 3 has moved twice. Its op-10 break was `split_polygon_2d` pairing
-    // intersection points across two cut lines; its op-13 break was the
-    // coplanar re-derive's own rollback being ARMED and BLIND — it asks about
-    // self-intersections, and two faces covering the same patch of a plane are
-    // coincident rather than crossing:
-    //
-    //     z=0 위 솔리드 면 — 평면 3, 곡면 0     the guard's condition holds
-    //     자기교차   19 → 19                    what it asks about: unchanged
-    //     불변식위반  0 → 1                     what actually happened
-    //
-    // It asks the invariant checker too now, relative, the way its siblings do.
-    // Both are guarded in `session_3_when_the_rollbacks_are_in.rs`.
-    //
-    // What is left is op 15, reduced to six operations ending in a push whose
-    // cap lands on a circle face that earlier operations had already divided.
-    // The repair cannot MEASURE that overlap — `coplanar_intersection_segments`
-    // refuses non-convex subjects, so every branch of
-    // `subtract_double_covered_faces` falls through. Relaxing the subject
-    // requirement was tried (Sutherland-Hodgman only needs the CLIP convex): it
-    // does let the measurement through — 4 crossings, an 8-vertex lens — but the
-    // difference walk handles exactly 2, so nothing acts. Reverted rather than
-    // left in earning nothing. General non-convex clipping is ADR-101 §5's own
-    // item.
-    (3, "op 15 of sixteen: a push whose cap lands on a circle face earlier           operations made concave. The repair cannot measure the overlap."),
-    // Session 10's op-11 break IS FIXED. Re-reduced to seven operations ending
-    // in three push-ins, and the pair was not two copies of one region: an OLD
-    // sheet triangle — one of the four segments the circle leaves outside the
-    // rectangle on z=100 — and the NEW solid cap the third push brings down
-    // over it.
-    //
-    // Nothing looked. `guard_imprint` runs the double-cover repair after every
-    // DRAW, and a push is not a draw. It runs after a push now, but only when
-    // the push left the mesh objecting: repairing overlaps that were not
-    // objecting yet hands out fresh face ids, and running it after EVERY push
-    // made the last operation fail outright with "face FaceId(16) not found or
-    // inactive". Readings in `pushing_in_three_deep_stacks_faces.rs`.
-    // Session 9's op-13 break IS FIXED. Reduced to three operations — a box,
-    // then a pentagon and a circle on the plane its BOTTOM occupies — and
-    // located to the pass that runs after the coplanar re-derive:
-    // `split_faces_crossing_other_planes` was handed a box WALL against a piece
-    // lying on the plane the wall stands on. They touch along a line rather than
-    // cross, so there was nothing to divide and the split handed the same region
-    // back three times. That pass undoes itself now when it leaves the mesh
-    // objecting where it did not before, the same judgement the re-derive and
-    // the post-draw repair already make. Readings in
-    // `two_draws_on_the_plane_under_a_box.rs`.
-];
+/// Sessions that do not finish, and why.
+///
+/// Two-way: a session listed here MUST break, and one not listed MUST NOT. A fix
+/// that quietly stops reaching a defect fails this as loudly as a regression.
+///
+/// **Empty since 2026-08-17** — all twelve run their twenty operations. The four
+/// that used to stop are recorded in CLAUDE.md LOCKED #105 with their readings,
+/// and each has its own guard file:
+///
+/// ```text
+///   session 10 op 3   split_polygon_2d paired across two cut lines
+///   session  9 op 13  a wall standing on a plane read as crossing it
+///   session 10 op 11  a push's cap covered a sheet; no pass looked
+///   session  3 op 13  the re-derive's rollback asked only about crossings
+///   session  3 op 15  the repair could not measure a concave overlap
+/// ```
+const KNOWN_BREAKS: &[(u64, &str)] = &[];
+
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
     let seed = 0x5EED_0000_u64 + seed_index;
