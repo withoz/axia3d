@@ -261,3 +261,65 @@ fn a_circle_over_a_ring_shaped_sheet() {
     );
     assert!(v.is_empty(), "and nothing is left stacked: {v:?}");
 }
+
+/// A fourth attempt, and what it measured.
+///
+/// The comparison above localises the break to one early return: the side rule
+/// drops a near-side solid's perimeter, `solid_top_boundary` goes empty, and
+/// `rebuild_coplanar_faces_analytic_scoped` returns without arranging anything —
+/// so sheets that merely share the plane with a box are left overlapping.
+///
+/// The obvious narrowing is to separate two things that set is doing at once:
+/// an edge in it is FED to the arrange *and* its face is removed and re-derived.
+/// Telling the arrange where a solid's face is does not require re-tiling it, so
+/// feed every on-plane volume edge, keep `solid_top_boundary` for the removal
+/// decision alone, and let the return fire only when the arrange would be
+/// working blind.
+///
+/// Measured: **the two are not separable that way**. Feeding a boundary is how
+/// the arrange is told to rebuild along it, so handing it the solid's perimeter
+/// makes it produce faces there — seven tests in the scene suite, plus defect 3,
+/// the two-rim carry and the second-solid guard. Reverted.
+///
+/// So the next attempt is not another way to choose what to feed. It is either
+/// to make the arrange able to receive a boundary it must respect but not
+/// rebuild, or to let the re-derive run and undo it when it covers a preserved
+/// solid face — the shape of the repair rollback in `guard_imprint`.
+///
+/// This test holds the boundary of the finding: the early return is what
+/// silences the arrange, and it fires exactly when a solid shares the plane.
+#[test]
+fn the_early_return_is_what_silences_it() {
+    // With a box on the plane: the circle survives whole.
+    let mut with_box = scene_a();
+    with_box.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(0.0, 100.0, TOP),
+        normal: DVec3::Z,
+        radius: 110.0,
+    });
+    let a = with_box.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+    // Without one: the same draw divides.
+    let mut no_box = prod();
+    no_box.execute(Command::DrawRectAsShape {
+        center: DVec3::new(0.0, 100.0, TOP),
+        normal: DVec3::Z, up: DVec3::X, width: 100.0, height: 75.0,
+    });
+    no_box.execute(Command::DrawRectAsShape {
+        center: DVec3::new(0.0, 100.0, TOP),
+        normal: DVec3::Z, up: DVec3::X, width: 180.0, height: 135.0,
+    });
+    no_box.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(0.0, 100.0, TOP),
+        normal: DVec3::Z,
+        radius: 110.0,
+    });
+    let b = no_box.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+    println!("\n  상자 있음 {a}면, 상자 없음 {b}면");
+    assert!(
+        b > a,
+        "the same draw makes MORE faces when no solid shares the plane — the \
+         box is not being drawn on, it is silencing the arrange"
+    );
+}
