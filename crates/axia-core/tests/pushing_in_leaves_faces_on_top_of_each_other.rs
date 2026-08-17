@@ -206,18 +206,21 @@ fn shrink(name: &str, full: Vec<Op>) -> Vec<Op> {
     ops
 }
 
-/// The reducer, which now has one sequence left to reduce.
+/// Both transcriptions are sound.
 ///
-/// Session 9's transcription is sound, so there is nothing to shrink — asserted
-/// here rather than dropped, because "the fuzz's session passes" is the claim
-/// that matters and `shrunk_9` alone would not make it.
+/// This started as the reducer for two failing sessions. Session 9 stopped
+/// failing when the post-draw repair was kept from leaving a solid open, and
+/// session 10 when the re-tile learned to carry one solid's two rims. What it
+/// produced along the way is `shrunk_9` and `shrunk_10` below, kept as the
+/// repros; there is nothing left to reduce.
 #[test]
-fn session_10_shrinks_and_session_9_no_longer_fails() {
-    shrink("세션 10", session_10());
-    let r = run(&session_9());
-    println!("
-  세션 9 전체 {} 연산 → {r:?}", session_9().len());
-    assert!(r.is_none(), "session 9 of the fuzz has to stay sound: {r:?}");
+fn both_transcribed_sessions_are_sound() {
+    for (name, ops) in [("세션 10", session_10()), ("세션 9", session_9())] {
+        let r = run(&ops);
+        println!("
+  {name} 전체 {} 연산 → {r:?}", ops.len());
+        assert!(r.is_none(), "{name} of the fuzz has to stay sound: {r:?}");
+    }
 }
 
 /// Session 10's four operations, kept as the repro.
@@ -345,14 +348,10 @@ fn what_the_push_leaves_stacked() {
             };
             println!("    {} / {}", tag(a), tag(b));
         }
-        if name == "세션 9" {
-            assert!(
-                seen.is_empty(),
-                "세션 9 leaves nothing stacked now that the double-cover repair                  keeps off solids: {seen:?}"
-            );
-        } else {
-            assert!(!seen.is_empty(), "{name}: the repro still leaves stacked pairs");
-        }
+        assert!(
+            seen.is_empty(),
+            "{name} leaves nothing stacked: {seen:?}"
+        );
     }
 }
 
@@ -406,24 +405,21 @@ fn which_arrangement_each_break_needs() {
             seen.push((label, r.is_some()));
         }
         let broke = |l: &str| seen.iter().find(|(x, _)| *x == l).map(|(_, b)| *b).unwrap();
+        // Both were measured needing different things — session 10 the face
+        // synthesis AND the re-derive, session 9 nothing at all — and that is
+        // how they were told apart.
+        assert!(!broke("all four on (production)"), "{name} must be sound in production");
+        assert!(!broke("all four off (engine default)"), "{name} must be sound bare");
         if name == "세션 10" {
-            // Needs the arrangement: either of these two off and it is sound.
-            assert!(broke("all four on (production)"), "세션 10 must still break");
-            assert!(!broke("auto_face_synthesis off"), "세션 10 needs face synthesis");
-            assert!(!broke("face_rederive off"), "세션 10 needs the re-derive");
-            assert!(!broke("all four off (engine default)"), "세션 10 is the arrangement's");
+            assert!(
+                seen.iter().all(|(_, b)| !b),
+                "세션 10 is sound in every combination since the re-tile counts                  owners"
+            );
         } else {
-            // Was "needs nothing — `create_solid` on its own", which is what
-            // made it the one to fix first. With the double-cover repair kept
-            // off solids it is sound in production AND with everything off.
-            //
-            // One combination is not, and it is recorded rather than asserted
-            // away: re-derive OFF with the other three ON still stacks. The app
-            // does not run that (ADR-176 turns all four on), and the residue is
-            // the same shape as session 10 — the arrangement laying a face over
-            // a solid's — so it belongs with that fix, not this one.
-            assert!(!broke("all four on (production)"), "세션 9 must be sound in production");
-            assert!(!broke("all four off (engine default)"), "세션 9 must be sound bare");
+            // Recorded rather than asserted away, and still true: re-derive OFF
+            // with the other three ON stacks. The app does not run that
+            // (ADR-176 turns all four on), and it wants the re-derive it has
+            // been denied rather than a fix of its own.
             assert!(
                 broke("face_rederive off"),
                 "the one combination that still breaks is re-derive off with the                  others on — if that changes, this note is stale and should say                  what fixed it"
@@ -532,22 +528,17 @@ fn session_9_pushes_a_wall_that_is_still_part_of_its_box() {
     );
 }
 
-/// One fixed, one open.
+/// Both reduced sequences are sound.
 ///
-/// Session 9 is sound since the double-cover repair stopped reshaping solid
-/// faces. Session 10 is still inventoried in the fuzz's `KNOWN_BREAKS`, and its
-/// half of this asserts it still fails, so the day it stops the test says so
-/// instead of passing quietly.
+/// Session 9 since the post-draw repair stopped leaving a solid open; session 10
+/// since the re-tile started counting owners rather than components.
 #[test]
-fn session_9_is_sound_and_session_10_still_breaks() {
+fn both_reduced_sequences_are_sound() {
     let a = run(&shrunk_10());
     let b = run(&shrunk_9());
     println!("
   세션 10 → {a:?}
   세션 9  → {b:?}");
-    assert!(
-        a.is_some(),
-        "세션 10 no longer leaves faces on top of each other — if somebody fixed          it, say what, strike it from KNOWN_BREAKS, and turn this into the test          that proves it"
-    );
+    assert!(a.is_none(), "세션 10 has to stay sound: {a:?}");
     assert!(b.is_none(), "세션 9 has to stay sound: {b:?}");
 }
