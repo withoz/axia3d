@@ -233,11 +233,15 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // the mesh, so a change to how many faces a draw makes shifts every later
     // one; session 3's stream moved onto a defect that was already there.
     (3, "op 1 of two: a square drawn at a height INSIDE a box leaves           EdgeId(22) bearing three faces. Pre-existing; the fuzz reached it           when the stream shifted."),
-    // Session 10's four-operation reduction is SOUND now, and is kept as a
-    // guard. The full twenty still stops at op 11 on the same edge, so the
-    // reduction was not the whole story — the longer sequence reaches a
-    // configuration the shorter one does not, and that has not been reduced.
-    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces. Its           four-operation reduction is fixed; this longer one is not."),
+    // Re-reduced after the re-derive learned to run on a solid's plane, and the
+    // new four are not the old four. One rectangle and a box on z=100, a circle
+    // over them, and then a small circle on **z=0** — a plane nothing else is on.
+    //
+    // Both faces the violation names are at z=100 and both were there BEFORE
+    // that last circle. So a draw on one plane made two faces on another start
+    // covering each other, and that is where to look: not at z=0, where the
+    // drawing happened.
+    (10, "op 3 of four: a circle drawn on z=0 leaves FaceId(2) and FaceId(19),           both on z=100 and both older than the draw, sharing EdgeId(48)           with a third face."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {

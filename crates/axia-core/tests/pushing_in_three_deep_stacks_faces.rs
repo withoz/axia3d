@@ -109,6 +109,12 @@ fn session_10() -> Vec<Op> {
     ]
 }
 
+/// Re-shrunk after the re-derive learned to run on a solid's plane.
+///
+/// The first reduction of this session — four operations, no push-in among them
+/// — is SOUND now and kept below as a guard. The full eleven still stop at the
+/// same place, so the reducer runs again from the whole session to find what is
+/// left.
 #[test]
 fn the_sequence_shrinks_to_something_readable() {
     let full = session_10();
@@ -294,5 +300,92 @@ fn the_two_scenes_look_alike_on_the_near_side() {
     assert_eq!(
         readings[0], readings[1],
         "the two scenes read the same on the plane the draw lands on — which is          why counting bodies cannot tell them apart. If they stop reading the          same, the note above is stale and the fourth attempt has something new          to work with"
+    );
+}
+
+/// What is left of session 10 after the re-derive learned to run.
+///
+/// Four operations again, but not the same four. The first reduction was all on
+/// z=100; this one ends with a circle on **z=0**, a plane nothing else is on —
+/// one rectangle and a box at z=100, a circle over them, and then a small circle
+/// somewhere else entirely.
+fn shrunk_op11() -> Vec<Op> {
+    vec![
+        Op::Rect { x: 0.0, y: 100.0, z: 100.0, w: 180.0 },
+        Op::Box { x: -50.0, y: 50.0, z: 100.0, w: 180.0 },
+        Op::CircleCurve { x: 0.0, y: 100.0, z: 100.0, r: 110.0 },
+        Op::CircleCurve { x: -50.0, y: -100.0, z: 0.0, r: 30.0 },
+    ]
+}
+
+/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
+/// `KNOWN_BREAKS`.
+#[test]
+fn the_op11_reduction_still_stacks() {
+    let got = run(&shrunk_op11());
+    println!("\n  op11 축소 4 연산 → {got:?}");
+    assert!(
+        got.is_some(),
+        "the four-operation reduction of the op-11 break has to reproduce it: {got:?}"
+    );
+}
+
+/// Which two faces cover each other, and where they are.
+///
+/// The last operation draws on z=0 and nothing else is there, so a stack it
+/// leaves has to involve something from another plane — which is worth knowing
+/// before anyone looks for the cause on z=0.
+#[test]
+fn what_the_last_circle_stacks_with() {
+    let ops = shrunk_op11();
+    let mut s = prod();
+    for op in &ops[..ops.len() - 1] {
+        apply(&mut s, *op);
+    }
+    let before: Vec<FaceId> = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(i, _)| i)
+        .collect();
+    apply(&mut s, *ops.last().unwrap());
+
+    let z_of = |s: &Scene, f: FaceId| -> Option<f64> {
+        let face = s.mesh.faces.get(f)?;
+        let vv = s.mesh.collect_loop_verts(face.outer().start).ok()?;
+        let zs: Vec<f64> = vv
+            .iter()
+            .filter_map(|v| s.mesh.verts.get(*v).map(|p| p.pos().z))
+            .collect();
+        let first = *zs.first()?;
+        zs.iter().all(|z| (z - first).abs() < 1e-6).then_some(first)
+    };
+
+    println!("\n  마지막 원은 z=0 에, 나머지는 z=100 에\n");
+    for v in s.mesh.verify_face_invariants().violations.iter() {
+        let t = format!("{v:?}");
+        if !t.contains(STACKED) {
+            continue;
+        }
+        let ids: Vec<usize> = t
+            .split("FaceId(")
+            .skip(1)
+            .filter_map(|p| p.split(')').next())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        for id in ids {
+            let f = FaceId::new(id as u32);
+            println!(
+                "    {f:?}  z={:?}  {}  {}",
+                z_of(&s, f),
+                if s.mesh.is_face_in_volume(f) { "solid" } else { "sheet" },
+                if before.contains(&f) { "old" } else { "new" }
+            );
+        }
+    }
+    assert!(
+        !s.mesh.verify_face_invariants().violations.is_empty(),
+        "the repro has to leave something to describe"
     );
 }
