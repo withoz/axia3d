@@ -2734,55 +2734,84 @@ impl Scene {
                     point: ci.plane.project(c.point),
                 })
                 .collect();
-            let Ok(poly2d) = cop::polygon_difference_by_clip(&base2d, &clip2d, &cr) else {
+            let Ok(pieces) = cop::polygon_difference_by_clip(&base2d, &clip2d, &cr) else {
                 continue;
             };
-            if poly2d.len() < 3 {
+            // A difference can be more than one region. The base is concave by
+            // the time earlier operations have divided it, and a clip that bites
+            // it twice can leave the remainder pinched at a point — which is two
+            // rings, not one (`split_ring_at_self_touches`). Handing that back as
+            // a single loop made a face nothing could read: the clipper reported
+            // no overlap at all while the invariant checker reported a double
+            // cover, and both were right about a boundary that crosses itself.
+            let pieces: Vec<Vec<(f64, f64)>> =
+                pieces.into_iter().filter(|p| p.len() >= 3).collect();
+            if pieces.is_empty() {
                 continue;
             }
             // Rebuild. Every corner is a vertex that already exists — the
-            // original ones plus the two switch points — so `add_vertex` dedups
-            // onto them rather than making new ones.
+            // original ones plus the switch points — so `add_vertex` dedups onto
+            // them rather than making new ones.
             let material = self.mesh.faces[big].material();
             let surface = self.mesh.faces[big].surface().cloned();
             let owner_xia = self.face_to_xia.get(&big).copied();
             let owner_shape = self.face_to_shape.get(&big).copied();
-            let vids: Vec<axia_geo::VertId> = poly2d
+            let vid_lists: Vec<Vec<axia_geo::VertId>> = pieces
                 .iter()
-                .map(|&(x, y)| self.mesh.add_vertex(ci.plane.lift(x, y)))
+                .map(|poly| {
+                    poly.iter()
+                        .map(|&(x, y)| self.mesh.add_vertex(ci.plane.lift(x, y)))
+                        .collect()
+                })
                 .collect();
             if self.mesh.remove_face(big).is_err() {
                 continue;
             }
-            match self.mesh.add_face_with_holes(&vids, &[], material) {
-                Ok(new_fid) => {
-                    if let Some(su) = surface {
-                        self.mesh.set_face_surface(new_fid, Some(su));
-                    }
-                    self.face_to_xia.remove(&big);
-                    self.face_to_shape.remove(&big);
-                    if let Some(x) = owner_xia {
-                        self.face_to_xia.insert(new_fid, x);
-                        if let Some(xia) = self.xias.get_mut(&x) {
-                            xia.face_ids.retain(|&f| f != big);
-                            xia.face_ids.push(new_fid);
-                        }
-                    }
-                    if let Some(sh) = owner_shape {
-                        self.face_to_shape.insert(new_fid, sh);
-                        if let Some(shape) = self.shapes.get_mut(&sh) {
-                            shape.face_ids.retain(|&f| f != big);
-                            shape.face_ids.push(new_fid);
-                        }
-                    }
-                    repaired += 1;
-                }
-                Err(_) => {
-                    // Could not rebuild — the face is gone and putting it back is
-                    // not possible here, so let the caller's rollback handle it.
-                    return repaired;
+            self.face_to_xia.remove(&big);
+            self.face_to_shape.remove(&big);
+            if let Some(x) = owner_xia {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.face_ids.retain(|&f| f != big);
                 }
             }
+            if let Some(sh) = owner_shape {
+                if let Some(shape) = self.shapes.get_mut(&sh) {
+                    shape.face_ids.retain(|&f| f != big);
+                }
+            }
+            let mut made = 0usize;
+            for vids in &vid_lists {
+                match self.mesh.add_face_with_holes(vids, &[], material) {
+                    Ok(new_fid) => {
+                        made += 1;
+                        if let Some(su) = &surface {
+                            self.mesh.set_face_surface(new_fid, Some(su.clone()));
+                        }
+                        // Every piece came out of one face, so every piece keeps
+                        // that face's owner.
+                        if let Some(x) = owner_xia {
+                            self.face_to_xia.insert(new_fid, x);
+                            if let Some(xia) = self.xias.get_mut(&x) {
+                                xia.face_ids.push(new_fid);
+                            }
+                        }
+                        if let Some(sh) = owner_shape {
+                            self.face_to_shape.insert(new_fid, sh);
+                            if let Some(shape) = self.shapes.get_mut(&sh) {
+                                shape.face_ids.push(new_fid);
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            if made == 0 {
+                // Could not rebuild any of it — the face is gone and putting it
+                // back is not possible here, so let the caller's rollback handle
+                // it.
+                return repaired;
+            }
+            repaired += 1;
         }
         // Did any of it open a solid? Rolled back together rather than per
         // pair: a draw makes few of these, and a repair that leaves a box in

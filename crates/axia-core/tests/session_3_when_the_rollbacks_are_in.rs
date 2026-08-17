@@ -254,7 +254,7 @@ fn the_sequence_shrinks_to_something_readable() {
 /// one. Sound through op 14 — everything the two fixes above closed — and then
 /// the last push lands on a face too concave for the repair to measure.
 #[test]
-fn the_whole_session_is_sound_until_the_last_push() {
+fn the_whole_session_is_sound() {
     let ops = session_3();
     let v = violations(&ops);
     println!("
@@ -263,11 +263,9 @@ fn the_whole_session_is_sound_until_the_last_push() {
         println!("    ✗ op {at}: {t}");
     }
     println!();
-    let first_bad = v.iter().map(|(at, _)| *at).min();
-    assert_eq!(
-        first_bad,
-        Some(ops.len() - 1),
-        "everything before the last operation has to stay sound — if something          earlier starts objecting, one of the two fixes above has come undone"
+    assert!(
+        v.is_empty(),
+        "session 3 runs all of its operations sound now: {v:?}"
     );
 }
 
@@ -477,7 +475,7 @@ fn shrunk_op15() -> Vec<Op> {
 /// cover the same ground and the clipper says they do not meet at all. One of
 /// them is wrong about this pair, and that is where to start.
 #[test]
-fn the_op15_reduction_still_stacks() {
+fn the_op15_reduction_is_sound() {
     let v: Vec<(usize, String)> = violations(&shrunk_op15())
         .into_iter()
         .filter(|(_, t)| t.contains(STACKED))
@@ -487,10 +485,7 @@ fn the_op15_reduction_still_stacks() {
     for (at, t) in v.iter().take(2) {
         println!("    ✗ op {at}: {t}");
     }
-    assert!(
-        !v.is_empty(),
-        "the six-operation reduction has to reproduce it — if it stops, say what          fixed it and strike session 3 from KNOWN_BREAKS"
-    );
+    assert!(v.is_empty(), "the six-operation reduction has to stay sound: {v:?}");
 }
 
 /// Which of the four production behaviours makes the pair, and what the two
@@ -565,7 +560,10 @@ fn which_behaviour_makes_the_op15_pair() {
         }
     }
     println!();
-    assert!(!text.is_empty(), "the reduction has to still reproduce it");
+    assert!(
+        text.is_empty(),
+        "the reduction has to stay sound whichever behaviour is off: {text:?}"
+    );
 }
 
 /// Is the re-derive itself what makes the pair, or the pass after it?
@@ -623,7 +621,7 @@ fn the_rederive_by_hand_against_the_draw_pipeline() {
     }
     println!();
 
-    assert!(rows[0].2 > 0, "production has to still show it: {rows:?}");
+    assert_eq!(rows[0].2, 0, "production has to stay sound: {rows:?}");
 }
 
 

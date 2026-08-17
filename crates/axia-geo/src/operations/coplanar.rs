@@ -1078,7 +1078,7 @@ pub fn polygon_difference_by_clip(
     base_polygon: &[(f64, f64)],
     clip_polygon: &[(f64, f64)],
     crossings: &[Crossing2d],
-) -> Result<Vec<(f64, f64)>> {
+) -> Result<Vec<Vec<(f64, f64)>>> {
     if base_polygon.len() < 3 {
         bail!("polygon_difference_by_clip: base polygon has fewer than 3 vertices");
     }
@@ -1166,33 +1166,80 @@ pub fn polygon_difference_by_clip(
     if out.len() < 3 {
         bail!("polygon_difference_by_clip: result has fewer than 3 vertices");
     }
-    // A ring that comes back to a point it already visited is not one polygon.
+    // A ring that comes back to a point it already visited is not ONE polygon —
+    // it is two, pinched at that point, and it splits there exactly.
     //
     // `dedup_ring_2d` only drops CONSECUTIVE repeats. A spliced clip arc can
     // pass through somewhere the base boundary already went — the two are
-    // coplanar and the clip's corners may sit on the base's edges — and the
-    // result then touches itself. The caller rebuilds the face by handing every
-    // corner to `add_vertex`, which dedups at 0.15 μm (LOCKED #5), so the repeat
-    // becomes one VertId visited twice and the face's outer loop crosses itself.
-    // Measured: session 3's op 5 left `FaceId(37)` with 31 corners and two
-    // repeats, after which nothing could read it — the clipper reported no
-    // overlap at all while the invariant checker reported a double cover.
+    // coplanar and the clip's corners may sit on the base's edges. The caller
+    // rebuilds the face by handing every corner to `add_vertex`, which dedups at
+    // 0.15 μm (LOCKED #5), so a repeat would become one VertId visited twice and
+    // the face's outer loop would cross itself. Measured: session 3's op 5 left
+    // `FaceId(37)` with 31 corners and two repeats, after which nothing could
+    // read it — the clipper reported no overlap at all while the invariant
+    // checker reported a double cover, and both were right.
     //
-    // Such a difference is genuinely two regions pinched at a point, not one, so
-    // say so rather than hand back a ring that cannot be a face.
-    for i in 0..out.len() {
-        for j in (i + 1)..out.len() {
-            if (out[i].0 - out[j].0).abs() < DEDUP_EPS_2D
-                && (out[i].1 - out[j].1).abs() < DEDUP_EPS_2D
-            {
-                bail!(
-                    "polygon_difference_by_clip: the result touches itself at                      ({:.6}, {:.6}) — the difference is two regions pinched at a                      point, not one polygon",
-                    out[i].0, out[i].1
-                );
+    // Refusing it was the first answer and it left the overlap unresolved. The
+    // pieces ARE the answer: a ring visiting P twice is the ring from the first
+    // P to the second, plus the ring from the second P round to the first, and
+    // their areas add up to the whole.
+    let pieces = split_ring_at_self_touches(out);
+    if pieces.is_empty() {
+        bail!("polygon_difference_by_clip: nothing left after splitting the result");
+    }
+    Ok(pieces)
+}
+
+/// Split a ring wherever it comes back to a point it already visited.
+///
+/// One pass finds the FIRST repeat and cuts there, then both halves go round
+/// again — a ring can pinch more than once. Pieces below three corners, or with
+/// no area, are the zero-width connectors a pinch leaves behind and are dropped.
+fn split_ring_at_self_touches(ring: Vec<(f64, f64)>) -> Vec<Vec<(f64, f64)>> {
+    let near = |a: (f64, f64), b: (f64, f64)| {
+        (a.0 - b.0).abs() < DEDUP_EPS_2D && (a.1 - b.1).abs() < DEDUP_EPS_2D
+    };
+    let area = |p: &[(f64, f64)]| {
+        let mut acc = 0.0;
+        for i in 0..p.len() {
+            let j = (i + 1) % p.len();
+            acc += p[i].0 * p[j].1 - p[j].0 * p[i].1;
+        }
+        (acc / 2.0).abs()
+    };
+
+    let mut todo = vec![ring];
+    let mut done: Vec<Vec<(f64, f64)>> = Vec::new();
+    // A ring of N corners can pinch at most N times; the bound is a backstop
+    // against a tolerance that lets two "repeats" chase each other.
+    for _ in 0..64 {
+        let Some(r) = todo.pop() else { break };
+        if r.len() < 3 || area(&r) <= DEDUP_EPS_2D {
+            continue;
+        }
+        let mut cut: Option<(usize, usize)> = None;
+        'find: for i in 0..r.len() {
+            for j in (i + 1)..r.len() {
+                if near(r[i], r[j]) {
+                    cut = Some((i, j));
+                    break 'find;
+                }
+            }
+        }
+        match cut {
+            None => done.push(r),
+            Some((i, j)) => {
+                // [i..j) is one closed ring; the rest, wrapping past the end
+                // back to i, is the other.
+                let a: Vec<(f64, f64)> = r[i..j].to_vec();
+                let b: Vec<(f64, f64)> = r[j..].iter().chain(r[..i].iter()).copied().collect();
+                todo.push(a);
+                todo.push(b);
             }
         }
     }
-    Ok(out)
+    done.extend(todo.into_iter().filter(|r| r.len() >= 3 && area(r) > DEDUP_EPS_2D));
+    done
 }
 
 /// How near a base vertex may sit to a clip vertex and still be ambiguous.
@@ -1728,7 +1775,9 @@ mod tests {
 
         let lens = sutherland_hodgman(&base, &clip).expect("they do overlap");
         let by_lens = polygon_difference_walking(&base, &lens, &xs).expect("the old walk");
-        let by_clip = polygon_difference_by_clip(&base, &clip, &cs).expect("the new walk");
+        let by_clip_pieces = polygon_difference_by_clip(&base, &clip, &cs).expect("the new walk");
+        assert_eq!(by_clip_pieces.len(), 1, "one bite, one piece: {by_clip_pieces:?}");
+        let by_clip = by_clip_pieces[0].clone();
 
         println!(
             "
@@ -1756,6 +1805,53 @@ mod tests {
                    clip: {by_clip:?}"
             );
         }
+    }
+
+    /// A ring that comes back to a point it already visited is two rings.
+    ///
+    /// This is what the difference walk hands back when a spliced clip arc
+    /// passes through somewhere the base boundary already went. The caller
+    /// rebuilds a face from every corner, and `add_vertex` dedups at 0.15 μm, so
+    /// one ring here would become a face whose outer loop crosses itself — and
+    /// nothing can read that (measured: the clipper said "no overlap", the
+    /// invariant checker said "double cover", both correct).
+    ///
+    /// Splitting at the repeat is exact: the areas add up to the ring's own.
+    #[test]
+    fn a_ring_pinched_at_a_point_splits_into_two() {
+        // Two 50×50 squares meeting at (50,50) only.
+        let ring: Vec<(f64, f64)> = vec![
+            (0.0, 0.0), (50.0, 0.0), (50.0, 50.0),
+            (100.0, 50.0), (100.0, 100.0), (50.0, 100.0),
+            (50.0, 50.0), (0.0, 50.0),
+        ];
+        let area = |p: &[(f64, f64)]| {
+            let mut acc = 0.0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                acc += p[i].0 * p[j].1 - p[j].0 * p[i].1;
+            }
+            (acc / 2.0).abs()
+        };
+        let pieces = split_ring_at_self_touches(ring.clone());
+        let areas: Vec<f64> = pieces.iter().map(|p| area(p)).collect();
+        let sum: f64 = areas.iter().sum();
+        println!("
+  꼬집힌 고리 {} 정점 → 조각 {}개 {areas:?} 합 {sum}
+", ring.len(), pieces.len());
+
+        assert_eq!(pieces.len(), 2, "pinched at one point, so two rings: {pieces:?}");
+        for p in &pieces {
+            let mut seen: Vec<(f64, f64)> = Vec::new();
+            for q in p {
+                assert!(
+                    !seen.iter().any(|r| (r.0 - q.0).abs() < 1e-9 && (r.1 - q.1).abs() < 1e-9),
+                    "and each piece has to be simple: {p:?}"
+                );
+                seen.push(*q);
+            }
+        }
+        assert!((sum - area(&ring)).abs() < 1e-9, "the areas add up: {sum} vs {}", area(&ring));
     }
 
     /// A CONCAVE subject and a convex clip that bites it twice.
@@ -1849,10 +1945,13 @@ mod tests {
             }
         }
         match polygon_difference_by_clip(&a, &b, &cs) {
-            Ok(out) => {
-                println!("  clip walk → {} 정점, 넓이 {:.1}", out.len(), area(&out));
-                for q in out.iter() {
-                    println!("        ({:.0},{:.0})", q.0, q.1);
+            Ok(ps) => {
+                println!("  clip walk → 조각 {}개", ps.len());
+                for out in ps.iter() {
+                    println!("      {} 정점, 넓이 {:.1}", out.len(), area(out));
+                    for q in out.iter() {
+                        println!("        ({:.0},{:.0})", q.0, q.1);
+                    }
                 }
             }
             Err(e) => println!("  clip walk → Err({e})"),
@@ -1860,8 +1959,10 @@ mod tests {
         println!();
 
         assert_eq!(xs.len(), 4, "the fixture has to make four crossings: {xs:?}");
-        let diff = polygon_difference_by_clip(&a, &b, &cs)
+        let pieces = polygon_difference_by_clip(&a, &b, &cs)
             .expect("four crossings have to walk");
+        assert_eq!(pieces.len(), 1, "two bites out of one connected C: {pieces:?}");
+        let diff = pieces[0].clone();
 
         // ⚠ AREA IS NOT ENOUGH. An arc that doubles back along the clip adds
         // vertices whose excursion encloses nothing, so the shoelace still reads
