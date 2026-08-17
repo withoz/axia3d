@@ -232,7 +232,12 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // (`session_3_when_the_rollbacks_are_in.rs`). The fuzz's operations depend on
     // the mesh, so a change to how many faces a draw makes shifts every later
     // one; session 3's stream moved onto a defect that was already there.
-    (3, "op 1 of two: a square drawn at a height INSIDE a box leaves           EdgeId(22) bearing three faces. Pre-existing; the fuzz reached it           when the stream shifted."),
+    // Located: `split_faces_crossing_other_planes` takes the plane from seven
+    // faces and no violations to ten and two, and it is the SECOND wall that
+    // does it — a square crossing one wall of a box comes out clean at eight
+    // faces, crossing two comes out with the middle piece twice. The scene layer
+    // enters `intersect_faces_with_model` once; the duplicate is inside it.
+    (3, "op 1 of two: a square drawn at a height INSIDE a box, crossing two of           its walls, gets its middle piece twice. One wall is clean."),
     // Re-reduced after the re-derive learned to run on a solid's plane, and the
     // new four are not the old four. One rectangle and a box on z=100, a circle
     // over them, and then a small circle on **z=0** — a plane nothing else is on.

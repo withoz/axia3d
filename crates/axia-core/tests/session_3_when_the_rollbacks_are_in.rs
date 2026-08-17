@@ -1,5 +1,20 @@
 //! The session the two rollbacks looked like they cost — and did not.
 //!
+//! ── Located, 2026-08-17 ──────────────────────────────────────────────────
+//!
+//! Probed through the draw: the plane is clean at every stage until
+//! `split_faces_crossing_other_planes`, which takes it from seven faces and no
+//! violations to ten and two. It queues the square once — `crossing` refuses to
+//! add a face whose partner is already queued — so `intersect_faces_with_model`
+//! is entered ONCE and returns the middle piece twice.
+//!
+//! And it is the SECOND wall that does it:
+//!
+//! ```text
+//!   square crossing one wall    8 faces   0 violations
+//!   square crossing two walls  10 faces   2 violations
+//! ```
+//!
 //! The fix that follows from locating the downstream step — the re-derive undone
 //! when self-intersections rise, the post-draw repair undone when invariant
 //! violations rise — makes defect 3 and session 10's four-operation repro both
@@ -183,5 +198,100 @@ fn the_shrunk_sequence_stacks() {
     assert!(
         got.is_some(),
         "the two-operation reduction has to reproduce it: {got:?}"
+    );
+}
+
+/// What the two faces are, and which step makes them cover each other.
+#[test]
+fn what_stacks_when_a_square_is_drawn_inside_a_box() {
+    let ops = shrunk();
+    let mut s = prod();
+    apply(&mut s, ops[0]);
+    let before: Vec<FaceId> = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(i, _)| i)
+        .collect();
+    println!("\n  상자만: {}면", before.len());
+    for f in &before {
+        let Some(face) = s.mesh.faces.get(*f) else { continue };
+        let n = face.normal().normalize_or_zero();
+        let z = s
+            .mesh
+            .collect_loop_verts(face.outer().start)
+            .ok()
+            .and_then(|v| v.first().and_then(|x| s.mesh.verts.get(*x)).map(|p| p.pos().z));
+        println!("    {f:?}  n=({:+.0},{:+.0},{:+.0})  z={:?}", n.x, n.y, n.z, z);
+    }
+
+    apply(&mut s, ops[1]);
+    println!("\n  사각형(z=200, 상자 속) 그린 뒤");
+    for v in s.mesh.verify_face_invariants().violations.iter() {
+        let t = format!("{v:?}");
+        println!("    ✗ {t}");
+        let ids: Vec<usize> = t
+            .split("FaceId(")
+            .skip(1)
+            .filter_map(|p| p.split(')').next())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        for id in ids {
+            let f = FaceId::new(id as u32);
+            let Some(face) = s.mesh.faces.get(f) else { continue };
+            let n = face.normal().normalize_or_zero();
+            let vv = s.mesh.collect_loop_verts(face.outer().start).unwrap_or_default();
+            let z = vv.first().and_then(|x| s.mesh.verts.get(*x)).map(|p| p.pos().z);
+            println!(
+                "        {f:?}  n=({:+.0},{:+.0},{:+.0})  z={:?}  verts={}  {}  {}",
+                n.x, n.y, n.z, z, vv.len(),
+                if s.mesh.is_face_in_volume(f) { "solid" } else { "sheet" },
+                if before.contains(&f) { "old" } else { "new" }
+            );
+        }
+    }
+    assert!(!s.mesh.verify_face_invariants().violations.is_empty());
+}
+
+/// One wall or two?
+///
+/// The square in the repro sticks out of the box on TWO sides — its `(100,170)`
+/// corner past the +Y wall and its `(30,100)` corner past the −X wall. The
+/// scene layer queues the face once (`crossing` refuses to add a face whose
+/// partner is already there) and calls `intersect_faces_with_model` a single
+/// time, so if a second wall is what duplicates the piece, moving the square to
+/// cross only one should come out clean.
+#[test]
+fn crossing_one_wall_against_crossing_two() {
+    let mut readings: Vec<(&str, usize, usize)> = Vec::new();
+    for (name, cx, cy) in [("벽 하나", 150.0, 100.0), ("벽 둘", 100.0, 100.0)] {
+        let mut s = prod();
+        apply(&mut s, Op::Box { x: 150.0, y: 50.0, z: 100.0, w: 180.0 });
+        apply(&mut s, Op::Polygon { x: cx, y: cy, z: 200.0, r: 70.0, n: 4 });
+        let v: Vec<String> = s
+            .mesh
+            .verify_face_invariants()
+            .violations
+            .iter()
+            .map(|x| format!("{x:?}"))
+            .collect();
+        let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        println!("\n  {name}: 면 {faces}, 위반 {}", v.len());
+        for t in v.iter().take(2) {
+            println!("      ✗ {t}");
+        }
+        readings.push((name, faces, v.len()));
+    }
+
+    // The control and the defect, side by side. One wall is clean; the second
+    // wall is what duplicates the piece, and the scene layer is not calling
+    // twice — `crossing` refuses to queue a face whose partner is already there,
+    // so `intersect_faces_with_model` is entered ONCE and comes back with the
+    // middle piece twice over.
+    assert_eq!(readings[0].2, 0, "one wall: {} faces, and nothing stacked", readings[0].1);
+    assert!(
+        readings[1].2 > 0,
+        "two walls still duplicate the piece — if that stops, say what fixed it          and strike session 3 from KNOWN_BREAKS"
     );
 }
