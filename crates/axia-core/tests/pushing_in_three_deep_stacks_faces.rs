@@ -332,6 +332,34 @@ fn the_op11_reduction_still_stacks() {
 
 /// Which two faces cover each other, and where they are.
 ///
+/// ── Probed to the step, 2026-08-17 ──────────────────────────────────────
+///
+/// The last draw is on z=0 and the rebuild it triggers is on z=0 too:
+///
+/// ```text
+///   PLANE origin=(67.5, 10, 100) normal=+Z  seeds=1   → viol=0
+///   PLANE origin=(110, 100, 100) normal=+Z  seeds=1   → viol=0
+///   PLANE origin=(-20, -100, 0)  normal=+Z  seeds=1   → viol=2
+/// ```
+///
+/// Inside that third rebuild, split finer:
+///
+/// ```text
+///   after the re-derive        viol=0
+///   after assign_circle_holes  viol=0
+///   after assign_polygon_holes viol=2   ← here
+/// ```
+///
+/// `assign_polygon_holes` is handed EVERY active face in the scene — the call
+/// site collects `self.mesh.faces` and filters only on `is_active` — so a
+/// rebuild of z=0 reparents among faces on z=100. That is how a draw on one
+/// plane changes another.
+///
+/// Scoping that list to the plane being rebuilt is the obvious next move and is
+/// NOT the whole fix, measured: the reduction below still stacks (something else
+/// takes over), and the fuzz answers with session 9 breaking at op 13. So the
+/// containment pass wants scoping AND whatever it was compensating for.
+///
 /// The last operation draws on z=0 and nothing else is there, so a stack it
 /// leaves has to involve something from another plane — which is worth knowing
 /// before anyone looks for the cause on z=0.
