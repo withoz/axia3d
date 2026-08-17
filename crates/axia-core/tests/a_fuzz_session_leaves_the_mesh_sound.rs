@@ -232,11 +232,18 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // (`session_3_when_the_rollbacks_are_in.rs`). The fuzz's operations depend on
     // the mesh, so a change to how many faces a draw makes shifts every later
     // one; session 3's stream moved onto a defect that was already there.
-    // Located: `split_faces_crossing_other_planes` takes the plane from seven
-    // faces and no violations to ten and two, and it is the SECOND wall that
-    // does it — a square crossing one wall of a box comes out clean at eight
-    // faces, crossing two comes out with the middle piece twice. The scene layer
-    // enters `intersect_faces_with_model` once; the duplicate is inside it.
+    // Located to a pure function. `split_polygon_2d` takes one polygon and every
+    // segment crossing it; with ONE cut it returns two pieces summing to the
+    // square, with TWO it returns the whole square twice:
+    //
+    //     one cut    2 pieces  [6000, 4000]     sums to 10,000
+    //     two cuts   2 pieces  [10000, 10000]   sums to 20,000
+    //
+    // Its walk jumps at any intersection to that intersection's partner. One
+    // pair, and the jump closes the loop; two, and it jumps across the other cut
+    // as well and traverses the whole boundary. Pinned in
+    // `split_polygon_2d_two_cuts_return_the_square_twice`; the fix is a proper
+    // arrangement walk.
     (3, "op 1 of two: a square drawn at a height INSIDE a box, crossing two of           its walls, gets its middle piece twice. One wall is clean."),
     // Session 10's four-operation reduction of the op-11 break is FIXED — the
     // containment pass is scoped to the plane being rebuilt, so a draw on z=0 no

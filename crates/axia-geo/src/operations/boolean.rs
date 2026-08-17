@@ -21088,6 +21088,76 @@ mod tests {
 
     // ── Face Split 단위 테스트 ──────────────────────
 
+    /// ⚠ PINNED AS MEASURED — a square cut by TWO lines comes back as ITSELF,
+    /// twice.
+    ///
+    /// The scene layer hands this one face and every segment where another face
+    /// crosses it, so a square drawn at a height inside a box — crossing two of
+    /// its walls — arrives as one polygon and two segments:
+    ///
+    /// ```text
+    ///   one cut    2 pieces  [6000, 4000]     sums to 10,000  ✓
+    ///   two cuts   2 pieces  [10000, 10000]   sums to 20,000  ✗
+    /// ```
+    ///
+    /// Three pieces summing to 10,000 is the answer. What comes back is the
+    /// whole square twice, and that is the two identical faces covering the same
+    /// ground in `session_3_when_the_rollbacks_are_in.rs`.
+    ///
+    /// The walk is why. It starts at an intersection, runs forward, and on
+    /// reaching an intersection JUMPS to that intersection's partner and keeps
+    /// going. With one cut there is only one pair, so a jump closes the loop.
+    /// With two, the walk meets the OTHER pair's intersection, jumps across that
+    /// cut as well, and traverses the whole boundary back to where it began.
+    ///
+    /// Fixing it is a proper arrangement walk, not a patch to the jump rule, so
+    /// this pins what is there until that lands.
+    #[test]
+    fn split_polygon_2d_two_cuts_return_the_square_twice() {
+        let poly = vec![
+            Pt2::new(0.0, 0.0),
+            Pt2::new(100.0, 0.0),
+            Pt2::new(100.0, 100.0),
+            Pt2::new(0.0, 100.0),
+        ];
+        let area = |p: &Vec<Pt2>| -> f64 {
+            let mut a = 0.0;
+            for i in 0..p.len() {
+                let (u, v) = (p[i], p[(i + 1) % p.len()]);
+                a += u.x * v.y - v.x * u.y;
+            }
+            (a / 2.0).abs()
+        };
+
+        let one = split_polygon_2d(&poly, &[(Pt2::new(40.0, -10.0), Pt2::new(40.0, 110.0))])
+            .expect("one cut divides the square");
+        let one_areas: Vec<f64> = one.iter().map(area).collect();
+        println!("
+  한 선: {} 조각 {one_areas:?}", one.len());
+        assert_eq!(one.len(), 2, "one cut, two pieces: {one_areas:?}");
+
+        let two = split_polygon_2d(
+            &poly,
+            &[
+                (Pt2::new(30.0, -10.0), Pt2::new(30.0, 110.0)),
+                (Pt2::new(70.0, -10.0), Pt2::new(70.0, 110.0)),
+            ],
+        )
+        .expect("two cuts divide the square");
+        let two_areas: Vec<f64> = two.iter().map(area).collect();
+        let sum: f64 = two_areas.iter().sum();
+        println!("  두 선: {} 조각 {two_areas:?} 합 {sum}", two.len());
+        // TODAY: two pieces, each the whole square. When this reads three
+        // pieces summing to 10,000, the arrangement walk landed — strike
+        // session 3 from the fuzz's KNOWN_BREAKS and turn this into the test
+        // that proves it.
+        assert_eq!(two.len(), 2, "two cuts still give two: {two_areas:?}");
+        assert!(
+            (sum - 20_000.0).abs() < 1.0,
+            "and each is the whole square — {two_areas:?} sums to {sum}, where              10,000 would mean they are real pieces"
+        );
+    }
+
     #[test]
     fn split_polygon_2d_horizontal_cut() {
         // Pt2 available via `use super::*`
