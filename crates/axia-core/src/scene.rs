@@ -5029,9 +5029,31 @@ impl Scene {
         if crossing.is_empty() {
             return Ok(0);
         }
+
+        // A pair that only TOUCHES reads the same as one that crosses.
+        //
+        // The re-derive runs first and divides the plane along a solid's rim, so
+        // the pieces it leaves END at the wall rather than passing through it —
+        // and the wall's own foot is on that plane. `detect_self_intersections`
+        // reports the pair either way, and there is nothing left to divide, so
+        // the split works on a degenerate case and hands back the same region
+        // twice (session 9's op 13: a circle straddling the rim of the plane a
+        // box's bottom is on, two draws deep).
+        //
+        // Telling touching from crossing before the fact is its own problem. What
+        // is not in doubt is the result, so this is judged the way the re-derive
+        // and the post-draw repair are judged: it undoes itself if it left the
+        // mesh objecting where it did not before.
+        let bad_before = self.mesh.verify_face_invariants().violations.len();
+        let before_split = self.scene_snapshot();
         let out = self
             .mesh
             .intersect_faces_with_model(&crossing, FORM_MATERIAL)?;
+        let bad_after = self.mesh.verify_face_invariants().violations.len();
+        if bad_after > bad_before {
+            self.restore_scene_snapshot(&before_split);
+            return Ok(0);
+        }
 
         // 사용자: "선은 별개의 객체로 존재하도록 합니다."
         //

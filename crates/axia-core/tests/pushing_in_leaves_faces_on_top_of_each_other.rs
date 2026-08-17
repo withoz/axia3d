@@ -206,26 +206,29 @@ fn shrink(name: &str, full: Vec<Op>) -> Vec<Op> {
     ops
 }
 
-/// One transcription is sound; the other reaches a defect that was already there.
+/// Both transcriptions are sound.
 ///
 /// This started as the reducer for two failing sessions. Session 9 stopped
 /// failing when the post-draw repair was kept from leaving a solid open, and
 /// session 10 when the re-tile learned to carry one solid's two rims. What it
 /// produced along the way is `shrunk_9` and `shrunk_10` below, kept as the
 /// repros; there is nothing left to reduce.
+///
+/// Session 9 then reached a SECOND, pre-existing defect at op 13 when the
+/// containment pass was scoped — the fuzz's operations depend on the mesh, so a
+/// change to how many faces a draw makes shifts every later one. That one is
+/// reduced in `shrunk_9_op13` and located in
+/// `two_draws_on_the_plane_under_a_box.rs`; it is fixed too, so the fifteen come
+/// back clean.
 #[test]
 fn both_transcribed_sessions_are_sound() {
-    // Session 10's seven are sound. Session 9's fifteen are not any more —
-    // scoping the containment pass shifted its stream onto a defect that was
-    // already there, reduced to three operations in `shrunk_9_op13` and
-    // measured breaking the same way on main.
     let ten = run(&session_10());
     println!("
   세션 10 전체 {} 연산 → {ten:?}", session_10().len());
     assert!(ten.is_none(), "session 10's transcription has to stay sound: {ten:?}");
     let nine = run(&session_9());
     println!("  세션 9 전체 {} 연산 → {nine:?}", session_9().len());
-    assert!(nine.is_some(), "session 9's fifteen reach the pre-existing defect");
+    assert!(nine.is_none(), "session 9's transcription has to stay sound: {nine:?}");
 }
 
 /// Session 10's four operations, kept as the repro.
@@ -548,15 +551,16 @@ fn both_reduced_sequences_are_sound() {
     assert!(b.is_none(), "세션 9 has to stay sound: {b:?}");
 }
 
-/// Session 9's op-13 break, reduced to three operations.
+/// Session 9's op-13 break, reduced to three operations, now sound.
 ///
 /// A box, and then a pentagon and a circle drawn on the plane its BOTTOM
 /// occupies. Surfaced when the containment pass was scoped to the plane being
 /// rebuilt — the fuzz's operations depend on the mesh, so any change to how many
-/// faces a draw makes shifts every later one.
+/// faces a draw makes shifts every later one — but not caused by it: these three
+/// broke the same way on main, same edge and same two faces.
 ///
-/// Not caused by that change: these three break the same way on main, same edge
-/// and same two faces, with the scoping nowhere in sight.
+/// Located and fixed in `two_draws_on_the_plane_under_a_box.rs`, which carries
+/// the readings. The reduction stays here beside the other two.
 fn shrunk_9_op13() -> Vec<Op> {
     vec![
         Op::Box { x: -50.0, y: -150.0, z: 200.0, w: 140.0 },
@@ -565,15 +569,13 @@ fn shrunk_9_op13() -> Vec<Op> {
     ]
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
-/// `KNOWN_BREAKS`.
 #[test]
-fn session_9_op13_reduction_still_stacks() {
+fn session_9_op13_reduction_is_sound() {
     let got = run(&shrunk_9_op13());
     println!("
   세션 9 op13 축소 3 연산 → {got:?}");
     assert!(
-        got.is_some(),
-        "the three-operation reduction has to reproduce it: {got:?}"
+        got.is_none(),
+        "the three-operation reduction has to stay sound: {got:?}"
     );
 }
