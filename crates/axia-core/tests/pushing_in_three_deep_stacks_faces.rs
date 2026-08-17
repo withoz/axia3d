@@ -118,11 +118,14 @@ fn session_10() -> Vec<Op> {
 #[test]
 fn the_sequence_shrinks_to_something_readable() {
     let full = session_10();
-    assert!(
-        run(&full).is_some(),
-        "the transcription does not reproduce the stacked faces — check it \
-         against the fuzz log before shrinking anything"
-    );
+    let repro = run(&full);
+    println!("
+  전체 세션 → {repro:?}");
+    if repro.is_none() {
+        // Fixed. The reducer has nothing left to shrink; the seven it produced
+        // are kept below as the repro.
+        return;
+    }
 
     let n0 = full.len();
     let mut ops = full;
@@ -417,4 +420,237 @@ fn what_the_last_circle_stacks_with() {
         s.mesh.verify_face_invariants().violations.is_empty(),
         "nothing is left stacked — the containment pass is scoped to the plane          being rebuilt, so a draw on z=0 no longer reparents among faces on z=100"
     );
+}
+
+// ── The seven that were left, and the push that broke them ────────────────
+//
+// Re-shrunk after two more fixes landed (`split_polygon_2d` cutting by one
+// connected path at a time, and `split_faces_crossing_other_planes` undoing
+// itself when it makes the mesh object). The reducer went from eleven to seven,
+// and the four that used to be the reduction were gone from it — what was left
+// ended with THREE push-ins, which is what this file is named for.
+//
+// The pair was not two copies of one region:
+//
+//     FaceId(28)  3 verts  sheet  old   (0,-10,100) (63,10,100) (-63,10,100)
+//     FaceId(39)  4 verts  solid  new   (-63,10,100) (-63,-40,100)
+//                                       (63,-40,100) (63,10,100)
+//
+// The triangle is one of the four segments the circle at op 4 leaves outside the
+// rectangle on z=100 — a legitimate sheet, and the mesh was sound with it there.
+// The quad is the cap of the box the third push brings down, and it covers the
+// triangle completely.
+//
+// Nothing looked. `guard_imprint` runs the double-cover repair after every DRAW,
+// and a push is not a draw, so `Command::CreateSolid` went straight to
+// `exec_create_solid` and back. It runs the repair now — but only when the push
+// actually left the mesh objecting, because repairing overlaps that were not
+// objecting yet hands out fresh face ids, and the next operation names the face
+// it wants. Measured: running it on every push made op 6 fail outright with
+// "face FaceId(16) not found or inactive".
+
+/// Session 10's op-11 break, re-reduced to seven operations.
+fn shrunk_three_pushes() -> Vec<Op> {
+    vec![
+        Op::Rect { x: 0.0, y: 100.0, z: 100.0, w: 100.0 },
+        Op::Rect { x: 0.0, y: 100.0, z: 100.0, w: 180.0 },
+        Op::Box { x: -50.0, y: 50.0, z: 100.0, w: 180.0 },
+        Op::PushIn { face: 4, d: -100.0 },
+        Op::CircleCurve { x: 0.0, y: 100.0, z: 100.0, r: 110.0 },
+        Op::PushIn { face: 27, d: -50.0 },
+        Op::PushIn { face: 16, d: -50.0 },
+    ]
+}
+
+/// The seven operations, sound.
+///
+/// Mutation-checked: dropping the repair after a push brings the pair back and
+/// fails this.
+#[test]
+fn the_seven_operation_reduction_is_sound() {
+    let got = run(&shrunk_three_pushes());
+    println!("\n  7 연산 축소 → {got:?}");
+    assert!(
+        got.is_none(),
+        "the seven-operation reduction has to stay sound: {got:?}"
+    );
+}
+
+/// Every step, with the face count and what each one leaves.
+#[test]
+fn no_step_of_the_seven_leaves_a_violation() {
+    let ops = shrunk_three_pushes();
+    let mut s = prod();
+    let mut bad: Vec<String> = Vec::new();
+
+    println!("\n  연산별\n");
+    for (i, op) in ops.iter().enumerate() {
+        apply(&mut s, *op);
+        let v: Vec<String> = s
+            .mesh
+            .verify_face_invariants()
+            .violations
+            .iter()
+            .map(|x| format!("{x:?}"))
+            .collect();
+        let live = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        println!(
+            "    op {i} {:<48} 면 {live:>3}  위반 {:>2}",
+            format!("{op:?}"),
+            v.len()
+        );
+        for t in v.iter().take(2) {
+            println!("        ✗ {t}");
+        }
+        if !v.is_empty() {
+            bad.push(format!("op {i} ({op:?}): {}", v.join("; ")));
+        }
+    }
+    println!();
+    assert!(bad.is_empty(), "every step has to leave the mesh sound: {bad:?}");
+}
+
+/// The push survives the repair.
+///
+/// Face counts alone cannot tell "the pair was resolved" from "the push was
+/// undone", and the first attempt at this fix did the second — it ran the repair
+/// after EVERY push, which renamed faces, and the last operation then failed
+/// with "face FaceId(16) not found or inactive" rather than being repaired. So
+/// this reads the command result, not the count.
+#[test]
+fn the_third_push_still_creates_its_solid() {
+    let mut s = prod();
+    println!("\n  연산별 결과\n");
+    let mut last = String::new();
+    let mut grew = false;
+    for (i, op) in shrunk_three_pushes().iter().enumerate() {
+        let before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let r = match *op {
+            Op::Rect { x, y, z, w } => s.execute(Command::DrawRectAsShape {
+                center: glam::DVec3::new(x, y, z),
+                normal: glam::DVec3::Z,
+                up: glam::DVec3::X,
+                width: w,
+                height: w * 0.75,
+            }),
+            Op::CircleCurve { x, y, z, r } => s.execute(Command::DrawCircleAsCurve {
+                center: glam::DVec3::new(x, y, z),
+                normal: glam::DVec3::Z,
+                radius: r,
+            }),
+            Op::PushIn { face, d } => s.execute(Command::CreateSolid {
+                face_id: FaceId::new(face),
+                mode: axia_geo::CreateSolidMode::Extrude { distance: d },
+            }),
+            _ => {
+                apply(&mut s, *op);
+                axia_core::CommandResult::None
+            }
+        };
+        let after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let tag: String = format!("{r:?}").chars().take(48).collect();
+        println!("    op {i} {:<44} {before:>3} → {after:>3}   {tag}", format!("{op:?}"));
+        last = tag;
+        grew = after > before;
+    }
+    println!();
+    assert!(
+        last.starts_with("SolidCreated"),
+        "the third push has to make its solid — it read `{last}`"
+    );
+    assert!(grew, "and the mesh has to gain the faces it made");
+}
+
+/// Where the sliver comes from, and what covers it.
+///
+/// The circle at op 4 leaves four segments on z=100 outside the rectangle, all
+/// of them sheets, and the mesh is sound with them there. The third push brings
+/// a solid cap down over one of them. Kept as the reading that named it, and as
+/// a guard that the segments are still there — a version that stopped making
+/// them would pass every other test in this file while drawing a different
+/// circle.
+#[test]
+fn the_circle_leaves_its_segments_on_the_plane() {
+    let ops = shrunk_three_pushes();
+    let mut s = prod();
+    let mut segments_after_the_circle = 0;
+    for (i, op) in ops.iter().enumerate() {
+        apply(&mut s, *op);
+        if i != 4 && i != 6 {
+            continue;
+        }
+        println!("\n  ── op {i} {:?} ──", op);
+        let mut n = 0;
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() {
+                continue;
+            }
+            let vv = s.mesh.collect_loop_verts(f.outer().start).unwrap_or_default();
+            let pts: Vec<glam::DVec3> = vv
+                .iter()
+                .filter_map(|x| s.mesh.verts.get(*x))
+                .map(|p| p.pos())
+                .collect();
+            if pts.is_empty() || !pts.iter().all(|p| (p.z - 100.0).abs() < 1e-6) {
+                continue;
+            }
+            n += 1;
+            if i == 4 && pts.len() == 3 && !s.mesh.is_face_in_volume(fid) {
+                segments_after_the_circle += 1;
+            }
+            let corners: Vec<String> = pts
+                .iter()
+                .take(4)
+                .map(|p| format!("({:.0},{:.0})", p.x, p.y))
+                .collect();
+            println!(
+                "      {fid:?}  verts={:<3} {}  {}{}",
+                pts.len(),
+                if s.mesh.is_face_in_volume(fid) { "solid" } else { "sheet" },
+                corners.join(" "),
+                if pts.len() > 4 { " …" } else { "" }
+            );
+        }
+        println!("      (z=100 위 {n}면)");
+    }
+    println!("\n  원이 남긴 활꼴 시트 {segments_after_the_circle}개\n");
+    assert!(
+        segments_after_the_circle >= 3,
+        "the circle has to still leave its segments outside the rectangle — \
+         {segments_after_the_circle} of them means it is drawing something else"
+    );
+    assert!(
+        s.mesh.verify_face_invariants().violations.is_empty(),
+        "and the seven have to end sound"
+    );
+}
+
+/// The pushes that broke nothing are left alone.
+///
+/// The narrow rule is not caution for its own sake: the repair replaces faces,
+/// and the operation after it names the face it wants. Running it after every
+/// push made the last one fail with "face FaceId(16) not found or inactive",
+/// which is a worse answer than the pair it was trying to prevent.
+#[test]
+fn the_pushes_that_broke_nothing_are_left_alone() {
+    let ops = shrunk_three_pushes();
+    let mut s = prod();
+    let mut rows: Vec<(usize, usize, usize)> = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        apply(&mut s, *op);
+        if matches!(op, Op::PushIn { .. }) {
+            let live = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let v = s.mesh.verify_face_invariants().violations.len();
+            rows.push((i, live, v));
+        }
+    }
+    println!("\n  밀어넣기별\n");
+    for (i, live, v) in &rows {
+        println!("    op {i}  면 {live:>3}  위반 {v}");
+    }
+    println!();
+    assert_eq!(rows.len(), 3, "three pushes: {rows:?}");
+    for (i, live, v) in &rows {
+        assert_eq!(*v, 0, "op {i} left {v} violations at {live} faces");
+    }
 }

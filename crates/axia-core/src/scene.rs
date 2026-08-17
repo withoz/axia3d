@@ -5874,7 +5874,37 @@ impl Scene {
                 self.guard_imprint(|s| s.exec_draw_closed_nurbs_as_curve(control_pts, weights, knots, degree))
             }
             Command::CreateSolid { face_id, mode } => {
-                self.exec_create_solid(face_id, mode)
+                // A push can land a solid face on top of a coplanar sheet.
+                //
+                // `guard_imprint` runs the double-cover repair after every DRAW,
+                // and a push is not a draw, so nothing resolved what a push
+                // covered. Session 10's op 11: a circle drawn on a box's top
+                // leaves its four segments there as sheets, and the third push
+                // brings a solid face down over one of them — an old sliver and
+                // a new solid face on the same ground, with no pass looking.
+                //
+                // Only the repair, not the whole guard: a push has its own
+                // refusal rules and its own rollback, and this is the one thing
+                // it was missing.
+                let pre_pairs: std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)> =
+                    self
+                        .mesh
+                        .detect_self_intersections()
+                        .intersecting_pairs
+                        .into_iter()
+                        .collect();
+                let bad_before = self.mesh.verify_face_invariants().violations.len();
+                let result = self.exec_create_solid(face_id, mode);
+                // Only when the push actually broke something. Running it on
+                // every push repairs overlaps that were not objecting yet, and
+                // that hands out fresh face ids — which is a real cost, because
+                // the next operation names the face it wants.
+                let broke = !matches!(result, CommandResult::Error(_))
+                    && self.mesh.verify_face_invariants().violations.len() > bad_before;
+                if broke {
+                    self.subtract_double_covered_faces(&pre_pairs);
+                }
+                result
             }
             Command::Undo => {
                 if let Some(frame) = self.transactions.undo() {
