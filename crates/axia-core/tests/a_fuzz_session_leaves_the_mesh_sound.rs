@@ -246,11 +246,18 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // which is what this inventory is for: a fix moves the wall, it does not
     // always remove it.
     (3, "op 14 of fifteen: circleCurve(200,0,0,r=110) on a mesh five draws and           three extrudes deep. Not reduced."),
-    // Session 10's four-operation reduction of the op-11 break is FIXED — the
-    // containment pass is scoped to the plane being rebuilt, so a draw on z=0 no
-    // longer reparents among faces on z=100. The full eleven still stop at op 11,
-    // so the reduction was not the whole story.
-    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces. Its           four-operation reduction is fixed; this longer one is not."),
+    // Session 10's op-11 break IS FIXED. Re-reduced to seven operations ending
+    // in three push-ins, and the pair was not two copies of one region: an OLD
+    // sheet triangle — one of the four segments the circle leaves outside the
+    // rectangle on z=100 — and the NEW solid cap the third push brings down
+    // over it.
+    //
+    // Nothing looked. `guard_imprint` runs the double-cover repair after every
+    // DRAW, and a push is not a draw. It runs after a push now, but only when
+    // the push left the mesh objecting: repairing overlaps that were not
+    // objecting yet hands out fresh face ids, and running it after EVERY push
+    // made the last operation fail outright with "face FaceId(16) not found or
+    // inactive". Readings in `pushing_in_three_deep_stacks_faces.rs`.
     // Session 9's op-13 break IS FIXED. Reduced to three operations — a box,
     // then a pentagon and a circle on the plane its BOTTOM occupies — and
     // located to the pass that runs after the coplanar re-derive:

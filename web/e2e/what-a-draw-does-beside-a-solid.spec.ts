@@ -12,9 +12,21 @@
  *
  * ⚠ The app's scenes are not the Rust fixtures. `bridge.create_box` goes through
  * the scene layer, so a box dropped onto existing coplanar faces is auto-split
- * against them and starts life with more than six faces. One of the four reads
+ * against them and starts life with more than six faces. One case reads
  * differently here because of that, and it says so rather than being tuned until
  * it agrees.
+ *
+ * ⚠ And one defect has NO case here. Session 10's op-11 break — a push whose cap
+ * lands on a segment a circle left lying on the same plane — reduces to seven
+ * operations that name their faces BY ID, the way the fuzz generates them. The
+ * ids diverge at the third operation, because the Rust fixture calls
+ * `mesh.create_box` directly and the bridge's goes through the scene layer and
+ * gets auto-split. Replaying it here gives a scene where all three pushes fail
+ * to find their face, which tests nothing. Rebuilding the situation by
+ * construction was tried too: the handle rectangle is shattered into fifteen
+ * pieces by the arrangement before the push, so pushing one shard is a different
+ * operation. The eleven guards in `pushing_in_three_deep_stacks_faces.rs` cover
+ * it through `Scene::execute`, which is the call the bridge makes.
  *
  * Rebuild (`npm run build:wasm && npm run build`) before running: Playwright
  * serves the production build.
