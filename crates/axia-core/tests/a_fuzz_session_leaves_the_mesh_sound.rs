@@ -136,20 +136,22 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             format!("extrude({f:?},{d}){}", if e { " REFUSED" } else { "" })
         }
         7 => {
-            // ⚠ push-in is NOT generated, and the reason is a defect this
-            // harness found on its first session: pushing a side panel of a
-            // many-sided extruded solid inward is accepted and leaves two
-            // faces covering the same ground. 23 of 25 faces, at −10 mm as
-            // surely as at −60, while a box is clean at every depth. It is
-            // pinned with its numbers in
-            // `pushing_a_wall_in_leaves_it_stacked.rs`.
+            // ⚠ push-in is still not generated, and the reason has changed.
             //
-            // Excluded rather than tolerated: a fuzz that kept generating it
-            // would fail every run for a defect already recorded, and one that
-            // matched the violation text to excuse it would go quiet on
-            // regressions that happen to look similar. When the pinned test
-            // starts failing because somebody fixed it, this branch comes back.
-            "pushIn(excluded: see pushing_a_wall_in_leaves_it_stacked)".into()
+            // The defect it first exposed — a wall of a many-sided prism going
+            // to `create_solid` and patching the caps beside themselves — is
+            // FIXED (`pushing_a_wall_in_moves_it.rs`). Restoring the branch and
+            // measuring shows push-in still stacks faces in other, unanalysed
+            // configurations: sessions 1, 6 and 10 break with "shared by 4 (and
+            // 6) active faces — cover the same ground".
+            //
+            // It stays out for one more round because putting it back changes
+            // every session's operation sequence, and seeds 6 and 10 are what
+            // currently reproduce the two findings in KNOWN_BREAKS. Losing
+            // those before they are fixed would cost more than the coverage
+            // gains. The branch comes back with the inventory rewritten once
+            // they are.
+            "pushIn(excluded: see the note here)".into()
         }
         8 => {
             // A box, so a solid exists without needing a draw to succeed first.

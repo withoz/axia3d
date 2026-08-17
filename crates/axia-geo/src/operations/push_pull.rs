@@ -161,6 +161,38 @@ fn is_move_only_inner(mesh: &Mesh, face_id: FaceId, collect_debug: bool) -> Move
     }
     dbg_push!("non_face_edges={}", non_face_edges.len());
 
+    // A face of a closed volume whose neighbours all lean away from it is a
+    // WALL of that solid, and pushing a wall moves it — the neighbours skew to
+    // follow, and no face is created.
+    //
+    // The "all connecting edges parallel to the normal" test below gets a box
+    // right by coincidence of the square: a box side's connecting ring edges
+    // happen to run along its own normal. On a 24-sided prism they run
+    // tangentially, so every panel failed the test and went to `create_solid`,
+    // which preserves the profile and patches the caps beside themselves —
+    // three faces on one edge (`pushing_a_wall_in_leaves_it_stacked.rs`).
+    //
+    // The coplanar clause is what keeps an EMBEDDED face out: a rect drawn on
+    // a solid's top is also part of a closed volume, but its neighbour is the
+    // ring around it, on the same plane. Pushing that is a boss, and a boss
+    // creates faces (ADR-264). A wall has no coplanar neighbour.
+    if mesh.is_face_in_volume(face_id) {
+        let coplanar_neighbour = face_edges.iter().any(|&eid| {
+            let (sharing, _) = mesh.get_faces_sharing_edge(eid);
+            sharing.iter().any(|&other| {
+                other != face_id
+                    && mesh.faces.get(other).is_some_and(|f| {
+                        f.is_active()
+                            && f.normal().normalize_or_zero().dot(face_normal).abs() > 0.999
+                    })
+            })
+        });
+        if !coplanar_neighbour {
+            dbg_push!("RESULT: MoveOnly (wall of a closed volume, no coplanar neighbour)");
+            return MoveOnlyResult { is_move_only: true, debug };
+        }
+        dbg_push!("a coplanar neighbour → not a wall; fall through");
+    }
     // 4. 연결 edge가 없으면 평면 → CreateFace
     if non_face_edges.is_empty() {
         dbg_push!("RESULT: CreateFace (no connecting edges → flat face)");
@@ -834,10 +866,54 @@ impl Mesh {
             self.verts[vid].set_pos(new_pos);
         }
 
-        // face 노멀 갱신
-        let new_boundary = self.collect_loop_verts(outer_start)?;
-        if let Ok(new_n) = self.compute_normal(&new_boundary) {
-            self.faces[face_id].set_normal(new_n);
+        // Normals: the pushed face AND every face a moved vertex belongs to.
+        //
+        // Only the pushed face used to be refreshed, and on a box that is
+        // enough — its neighbours stay planar and keep pointing the same way.
+        // On a prism with more sides the neighbours SKEW to follow the wall,
+        // so their cached normals turn while the cache does not, and the
+        // invariant checker reads "cached normal opposite to winding". Found
+        // by the fuzz on sessions 0 and 3 the moment walls started routing
+        // here (`a_fuzz_session_leaves_the_mesh_sound.rs`).
+        // No vertex→faces index exists, so the faces are found by walking the
+        // active ones and asking whether any moved vertex is on their boundary.
+        // Edit-time meshes are small and this runs once per push.
+        let mut touched: Vec<FaceId> = vec![face_id];
+        let candidates: Vec<FaceId> = self
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(fid, _)| fid)
+            .collect();
+        for f in candidates {
+            if f == face_id {
+                continue;
+            }
+            let Some(face) = self.faces.get(f) else { continue };
+            let start = face.outer().start;
+            if start.is_null() {
+                continue;
+            }
+            if let Ok(vs) = self.collect_loop_verts(start) {
+                if vs.iter().any(|v| all_verts.contains(v)) {
+                    touched.push(f);
+                }
+            }
+        }
+        for f in touched {
+            let Some(face) = self.faces.get(f) else { continue };
+            if !face.is_active() {
+                continue;
+            }
+            let start = face.outer().start;
+            if start.is_null() {
+                continue;
+            }
+            if let Ok(vs) = self.collect_loop_verts(start) {
+                if let Ok(n) = self.compute_normal(&vs) {
+                    self.faces[f].set_normal(n);
+                }
+            }
         }
 
         Ok(PushPullResult {
