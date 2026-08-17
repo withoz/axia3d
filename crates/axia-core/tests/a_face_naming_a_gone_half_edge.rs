@@ -1,4 +1,5 @@
-//! The fuzz's second find, minimised.
+//! A spur split twice, and the loop that never came home. The fuzz's second
+//! find — now the guard that it is fixed.
 //!
 //! Seed `0x5EED0006` broke at operation 17 of 20 with
 //!
@@ -10,11 +11,23 @@
 //! geometric one. Eighteen ordinary draws got there: ellipses, circles,
 //! kernel-native circles, lines and rects at three heights. No push, no carve.
 //!
-//! Eighteen operations is not a bug report, so this file shrinks it. The
-//! reducer drops one operation at a time and keeps the drop whenever the
-//! failure survives — plain delta debugging, deterministic, and the shrunk
-//! sequence is printed so the next person starts from it rather than from the
-//! session log.
+//! Eighteen operations is not a bug report, so this file shrank it to ten by
+//! plain delta debugging — drop one operation, keep the drop if the failure
+//! survives. It took two goes to fix, and the first was not enough:
+//!
+//! 1. The coplanar rebuild removed every edge on the plane it was rebuilding,
+//!    including edges a face it had chosen to PRESERVE was still standing on.
+//!    Narrowing that turned "half-edge not found" into "Loop traversal exceeded
+//!    10000" — the face kept its edges and its ring still did not close.
+//! 2. Walking the ring by hand said where. `Mesh::split_edge` copies `prev` and
+//!    `next` from the half-edge it replaces, which is right when the neighbour
+//!    outlives the call. A **dangling spur** puts both half-edges of an edge in
+//!    the same loop, consecutively, so each names the other — and this call
+//!    deactivates both. The ring was left running through a dead half-edge
+//!    whose own `next` re-entered the middle of the ring.
+//!
+//! The walk is kept below as a guard, because "the loop closes" is the property
+//! and "no violation is reported" is only the symptom.
 
 use axia_core::scene::Scene;
 use axia_core::{Command, CommandResult};
@@ -110,58 +123,22 @@ fn session_6() -> Vec<Op> {
     ]
 }
 
-/// Drop what can be dropped, and print what is left.
+/// The transcribed session is sound.
 ///
-/// ⚠ This reproduces the SHAPE of the fuzz's session, not its exact operation
-/// stream — the fuzz's sizes come from its generator and are re-derived here
-/// from the printed log. If the sequence below stops failing, that is worth
-/// knowing on its own and the test says so rather than passing quietly.
+/// This used to be the reducer. It ran while the sequence still failed, and
+/// what it produced is `shrunk()` below; there is nothing left to shrink.
+///
+/// ⚠ It reproduces the SHAPE of the fuzz's session, not its exact operation
+/// stream — the sizes come from the printed log rather than the generator.
 #[test]
-fn the_sequence_shrinks_to_something_readable() {
+fn the_transcribed_session_is_sound() {
     let full = session_6();
-    let Some((at, why)) = run(&full) else {
-        panic!(
-            "the transcribed session no longer fails — the operation stream was \
-             reconstructed from the fuzz's printed log, so a size or a coordinate \
-             is off, or the defect moved. Re-derive it from \
-             `a_fuzz_session_leaves_the_mesh_sound.rs` seed 0x5EED0006 before \
-             concluding anything from this file."
-        );
-    };
-    println!("FULL: {} ops, breaks at {at} — {why}", full.len());
-
-    // Greedy delta debugging: try without each op, keep the drop if it still
-    // breaks. One pass is enough to get from eighteen to a handful; repeat
-    // until nothing more can go.
-    let mut ops = full.clone();
-    loop {
-        let mut dropped_any = false;
-        let mut i = 0;
-        while i < ops.len() {
-            let mut candidate = ops.clone();
-            candidate.remove(i);
-            if run(&candidate).is_some() {
-                ops = candidate;
-                dropped_any = true;
-            } else {
-                i += 1;
-            }
-        }
-        if !dropped_any {
-            break;
-        }
-    }
-
-    let (at, why) = run(&ops).expect("the shrunk sequence still fails");
-    println!("\nSHRUNK to {} ops, breaks at {at}:", ops.len());
-    for (i, op) in ops.iter().enumerate() {
-        println!("  {i}: {op:?}");
-    }
-    println!("  → {why}");
-
+    let got = run(&full);
+    println!("
+  전체 세션 {} 연산 → {got:?}", full.len());
     assert!(
-        ops.len() < full.len(),
-        "the reducer must actually reduce something"
+        got.is_none(),
+        "session 6 of the fuzz has to stay sound: {got:?}"
     );
 }
 
@@ -189,33 +166,23 @@ fn shrunk() -> Vec<Op> {
     ]
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect.
+/// The ten operations that used to leave a face naming a gone half-edge, and
+/// then a ring that never closed.
 ///
-/// The last operation leaves a face naming a half-edge that no longer exists.
-/// Pinned so the day it stops happening, this says so.
+/// Mutation-checked twice: widening `edges_to_remove` back to "remove every
+/// edge on the plane" brings back the missing half-edge, and dropping
+/// `split_edge`'s fix-up pass brings back the endless ring.
 #[test]
-fn the_shrunk_sequence_still_breaks() {
+fn the_shrunk_sequence_is_sound() {
     let ops = shrunk();
-    let broke = run(&ops);
-    println!("SHRUNK REPRO: {:?}", broke);
-    let (at, why) = broke.expect(
-        "the shrunk sequence no longer breaks — if that is because somebody          fixed it, say what, and turn this into the test that proves it",
-    );
-    assert_eq!(at, ops.len() - 1, "it is the last operation that breaks it");
-    assert!(
-        why.contains("cannot collect outer loop"),
-        "the signature is a face naming a half-edge that is gone, got: {why}"
-    );
+    let got = run(&ops);
+    println!("
+  줄인 순서 {} 연산 → {got:?}", ops.len());
+    assert!(got.is_none(), "the ten-operation repro has to stay sound: {got:?}");
 }
 
-/// Which path does the last operation take?
-///
-/// Narrowing before touching any code: the flags the engine runs with are the
-/// four the app sets, and turning each one off in turn says which of them the
-/// break needs. A defect that survives all four off is in the plain draw; one
-/// that needs a particular flag is in that flag's arrangement.
 #[test]
-fn which_arrangement_the_break_needs() {
+fn every_arrangement_is_sound() {
     let ops = shrunk();
     let run_with = |ai: bool, afs: bool, fr: bool, fo: bool| -> Option<(usize, String)> {
         let mut s = Scene::new();
@@ -240,6 +207,7 @@ fn which_arrangement_the_break_needs() {
         ("freeform_overlap off", true, true, true, false),
         ("all four off (engine default)", false, false, false, false),
     ];
+    let mut bad: Vec<String> = Vec::new();
     for (name, a, b, c, d) in cases {
         let r = run_with(a, b, c, d);
         println!(
@@ -249,7 +217,14 @@ fn which_arrangement_the_break_needs() {
                 None => "sound".to_string(),
             }
         );
+        if let Some((i, why)) = r {
+            bad.push(format!("{name}: op {i} — {why}"));
+        }
     }
+    // This began as "which arrangement does the break need"; every combination
+    // broke except the engine default with all four off. Now every combination
+    // has to stay sound, which is the stronger statement and costs nothing.
+    assert!(bad.is_empty(), "every flag combination has to stay sound: {bad:?}");
 }
 
 /// Where is the face that ends up broken?
@@ -328,8 +303,8 @@ fn the_broken_face_is_on_the_plane_that_was_rebuilt() {
         "the broken face was measured on the rebuilt plane (z = 0). If it has          moved off it, the scope question is open again — got z = {z}"
     );
     assert!(
-        !inv.is_valid(),
-        "the last operation still has to break it, or this file is measuring          a defect that is gone"
+        inv.is_valid(),
+        "the last operation has to leave it sound — this is where the break          used to land, and the file would be measuring nothing if the face          moved off this plane"
     );
 }
 
@@ -346,11 +321,10 @@ fn the_broken_face_is_on_the_plane_that_was_rebuilt() {
 /// after the repro sequence, walk every live face's boundary and check that
 /// every edge it names is still there.
 ///
-/// Two failure classes are counted separately on purpose. A *gone* edge is the
-/// one this narrowing is responsible for and must be zero. A loop that never
-/// closes is a different break — the same face, still open, pinned by
-/// `the_shrunk_sequence_still_breaks` above — and this test deliberately does
-/// not assert it away, because nothing here fixed it.
+/// Two failure classes are counted separately, because they were fixed by two
+/// different changes: a *gone* edge by this narrowing, and a loop that never
+/// closes by `split_edge`'s fix-up pass. Both must now be zero, and keeping
+/// them apart is what makes a future failure say which change regressed.
 ///
 /// Mutation-checked: widening the retain back to "remove every edge on the
 /// plane" puts the gone-edge count back above zero and fails this test.
@@ -406,4 +380,147 @@ fn no_surviving_face_names_an_edge_that_was_removed() {
         gone.is_empty(),
         "a face the rebuild chose to keep must still have every edge it names: {gone:?}"
     );
+    assert!(
+        never_closes.is_empty(),
+        "and its ring must close: {never_closes:?}"
+    );
+}
+
+/// Walk the half-edge chain by hand and say where it stops being a loop.
+///
+/// `collect_loop_verts` reports "Loop traversal exceeded 10000" and nothing
+/// else, which names the symptom and not the place. This steps `next` from the
+/// face's start, before the last operation and after it, and prints both
+/// chains: which half-edges they visit, which face each one claims, and where
+/// the second chain leaves the first.
+///
+/// Reading it: a chain that returns to its start is a loop. A chain that
+/// revisits some OTHER half-edge has been spliced into a second loop, and the
+/// half-edge just before the revisit is where the splice happened.
+#[test]
+fn where_the_loop_stops_being_a_loop() {
+    let ops = shrunk();
+    let broken = axia_geo::FaceId::new(11);
+
+    let walk = |s: &axia_core::scene::Scene| -> (Vec<String>, Option<usize>) {
+        let Some(face) = s.mesh.faces.get(broken) else {
+            return (vec!["(면 없음)".into()], None);
+        };
+        let start = face.outer().start;
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: Vec<axia_geo::HeId> = Vec::new();
+        let mut he = start;
+        let mut revisit_at = None;
+        for step in 0..2000 {
+            if let Some(pos) = seen.iter().position(|x| *x == he) {
+                revisit_at = Some(pos);
+                out.push(format!("  {step}: {he:?} ← 이미 {pos} 번째에서 지남"));
+                break;
+            }
+            seen.push(he);
+            let Some(h) = s.mesh.hes.get(he) else {
+                out.push(format!("  {step}: {he:?} 없음"));
+                break;
+            };
+            out.push(format!(
+                "  {step}: {he:?} face={:?} edge={:?} dst={:?} active={}",
+                h.face(),
+                h.edge(),
+                h.dst(),
+                h.is_active()
+            ));
+            he = h.next();
+        }
+        (out, revisit_at)
+    };
+
+    let mut s = prod();
+    for op in &ops[..ops.len() - 1] {
+        apply(&mut s, *op);
+    }
+    let (before, before_revisit) = walk(&s);
+    println!("\n마지막 연산 전 — FaceId(11) 사슬");
+    for l in &before {
+        println!("{l}");
+    }
+    println!("  (되돌아온 지점: {before_revisit:?})");
+
+    apply(&mut s, *ops.last().unwrap());
+    let (after, after_revisit) = walk(&s);
+    println!("\n마지막 연산 후 — FaceId(11) 사슬");
+    for l in &after {
+        println!("{l}");
+    }
+    println!("  (되돌아온 지점: {after_revisit:?})");
+
+    assert_eq!(
+        before_revisit,
+        Some(0),
+        "before the last operation the chain has to be a loop — returning to \
+         its own start, not to some half-edge in the middle"
+    );
+    // FaceId(11) is GONE after the fix, and that is the point: the rebuild now
+    // removes and re-derives it instead of preserving a face whose edges it was
+    // taking away. So the guard cannot be about that id — it is below.
+    println!("  (수정 후 FaceId(11) 은 재유도되어 사라짐 — 아래 가드가 본체)");
+}
+
+/// Every live face's ring comes home.
+///
+/// Walked by hand, stepping `next`, rather than through `collect_loop_verts` —
+/// the engine's own walker is what reported the break, and a guard that shares
+/// its code path cannot tell "the ring is fine" from "the walker agrees with
+/// itself". A ring that revisits some half-edge OTHER than its start has been
+/// spliced into a second loop.
+///
+/// Mutation-checked: removing `split_edge`'s fix-up pass fails this.
+#[test]
+fn every_live_face_ring_comes_home() {
+    let mut s = prod();
+    for op in shrunk() {
+        apply(&mut s, op);
+    }
+
+    let live: Vec<_> = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| fid)
+        .collect();
+
+    let mut bad: Vec<String> = Vec::new();
+    for fid in &live {
+        let Some(face) = s.mesh.faces.get(*fid) else { continue };
+        let start = face.outer().start;
+        let mut seen: Vec<axia_geo::HeId> = Vec::new();
+        let mut he = start;
+        let mut verdict = String::from("2000 걸음 안에 안 돌아옴");
+        for _ in 0..2000 {
+            if let Some(pos) = seen.iter().position(|x| *x == he) {
+                verdict = if pos == 0 {
+                    String::new()
+                } else {
+                    format!("{he:?} 로 되돌아감 — 고리 중간 {pos} 번째")
+                };
+                break;
+            }
+            seen.push(he);
+            let Some(h) = s.mesh.hes.get(he) else {
+                verdict = format!("{he:?} 없음");
+                break;
+            };
+            he = h.next();
+        }
+        if !verdict.is_empty() {
+            bad.push(format!("{fid:?}: {verdict}"));
+        }
+    }
+
+    println!("
+  살아 있는 면 {}개, 고리가 안 닫히는 면 {}개", live.len(), bad.len());
+    for b in &bad {
+        println!("    ✗ {b}");
+    }
+    assert!(bad.is_empty(), "every live face's ring has to close: {bad:?}");
 }

@@ -151,18 +151,21 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             // configurations: sessions 1, 6 and 10 break with "shared by 4 (and
             // 6) active faces — cover the same ground".
             //
-            // It stayed out because putting it back changes every session's
-            // operation sequence, and seeds 6 and 10 were what reproduced the
-            // two findings in KNOWN_BREAKS. That reason has mostly expired:
-            // seed 10 is fixed, and seed 6 no longer depends on the fuzz —
-            // its ten-operation repro is pinned in
-            // `a_face_naming_a_gone_half_edge.rs` and fails there on its own.
+            // Both reasons it stayed out are gone: seeds 6 and 10 were the
+            // only reproductions of the two known breaks, and both are fixed,
+            // with their reduced sequences kept as guards in their own files.
+            // KNOWN_BREAKS is empty.
             //
-            // What is left is a scope decision rather than a blocker. Restoring
-            // the branch surfaces breaks in sessions 1, 6 and 10 ("shared by 4
-            // and 6 active faces — cover the same ground"), each of which wants
-            // the same treatment the other three got: reduce, pin, fix. It
-            // comes back with that work, not before it, so the inventory never
+            // What restoring it costs was MEASURED rather than remembered, by
+            // putting the branch back and running the twelve sessions: **two**
+            // of them break — session 9 at op 14 and session 10 at op 7, both
+            // "shared by 3 (and 4) active faces — cover the same ground". Not
+            // the three the earlier note claimed; two of those were the breaks
+            // this work has since closed.
+            //
+            // So this is now a scope decision with a number on it. Those two
+            // want the same treatment the other three got — reduce, pin, fix —
+            // and the branch comes back with that work, so the inventory never
             // holds a break nobody is looking at.
             "pushIn(excluded: see the note here)".into()
         }
@@ -196,11 +199,12 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// the list, which is how the harness gets stricter on its own instead of
 /// rotting into a set of permanently-tolerated failures.
 const KNOWN_BREAKS: &[(u64, &str)] = &[
-    // Was "a half-edge the face still names is gone" until the rebuild stopped
-    // removing edges that a preserved face is still on (see
-    // `a_face_naming_a_gone_half_edge.rs`). The face survives its edges now and
-    // the loop still does not close — same face, narrower break.
-    (6, "face FaceId(20): cannot collect outer loop — the loop never closes.          Reached by 18 ordinary draws, no push, no carve."),
+    // Empty, and that is the point: this list is an inventory, not a set of
+    // excuses. Session 6 was struck when a spur's two half-edges stopped being
+    // wired to each other's corpses in `Mesh::split_edge` (its ten-operation
+    // repro is kept as a guard in `a_face_naming_a_gone_half_edge.rs`), and
+    // session 10 when the coplanar rebuild stopped re-tiling both solids that
+    // meet on one plane (`a_face_whose_normal_faces_the_other_way.rs`).
     // Session 10 was here — "cached normal opposite to winding, alongside two
     // faces covering the same ground, 13 draws in" — and is struck because it
     // is fixed. Two solids met on one plane and the rebuild re-tiled BOTH
