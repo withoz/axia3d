@@ -154,18 +154,16 @@ fn shrunk() -> Vec<Op> {
     ]
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
-/// `KNOWN_BREAKS`.
+/// The four operations that used to leave the circle lying on the rectangles.
+///
+/// Mutation-checked: putting the re-derive's early return back stacks them
+/// again, and so does dropping the repair's violation check.
 #[test]
-fn the_shrunk_sequence_still_stacks() {
+fn the_shrunk_sequence_is_sound() {
     let got = run(&shrunk());
-    println!("\n  줄인 순서 4 연산 → {got:?}");
-    assert!(
-        got.is_some(),
-        "the four-operation repro no longer stacks — if somebody fixed it, say \
-         what, strike it from KNOWN_BREAKS, and turn this into the test that \
-         proves it"
-    );
+    println!("
+  줄인 순서 4 연산 → {got:?}");
+    assert!(got.is_none(), "the four-operation repro has to stay sound: {got:?}");
 }
 
 /// What sits on the drawing plane before the circle, reported honestly.

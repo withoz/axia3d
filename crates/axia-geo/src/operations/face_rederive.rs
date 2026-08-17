@@ -1207,7 +1207,128 @@ pub fn rebuild_coplanar_faces_analytic_with_overlap(
 /// to the historical behavior). Correctness vs full: untouched components are
 /// byte-identical because the full path recreates them idempotently (B6) —
 /// skipping == recreating.
+/// What kind of solid faces this plane holds: planar, curved, or neither.
+///
+/// The two need different judgements. A planar solid face is what the re-tile
+/// could not carry, and tiling across it shows up as faces covering each other.
+/// A CURVED one — a Path B sphere's hemisphere, bounded by its equator and so
+/// "on" that plane — is a different thing entirely: a sheet drawn through a
+/// sphere is SUPPOSED to intersect it, and what must not happen is the sphere
+/// being flattened.
+fn plane_solid_kinds(
+    mesh: &Mesh,
+    plane_origin: DVec3,
+    n_unit: DVec3,
+    tol: f64,
+) -> (bool, bool) {
+    let on_plane = |p: DVec3| -> bool { (p - plane_origin).dot(n_unit).abs() < tol };
+    let (mut planar, mut curved) = (false, false);
+    for (fid, f) in mesh.faces.iter() {
+        if !f.is_active() || !mesh.is_face_in_volume(fid) {
+            continue;
+        }
+        let sits_here = mesh
+            .collect_loop_verts(f.outer().start)
+            .map(|vv| {
+                !vv.is_empty()
+                    && vv
+                        .iter()
+                        .all(|v| mesh.verts.get(*v).map_or(false, |x| on_plane(x.pos())))
+            })
+            .unwrap_or(false);
+        if !sits_here {
+            continue;
+        }
+        match f.surface() {
+            None | Some(crate::surfaces::AnalyticSurface::Plane { .. }) => planar = true,
+            Some(_) => curved = true,
+        }
+    }
+    (planar, curved)
+}
+
+/// Re-derive the plane, and undo it if it made things worse.
+///
+/// This used to decline outright when a solid shared the plane and could not be
+/// re-tiled. Declining kept it from tiling across the solid's face — and also
+/// from arranging the SHEETS there:
+///
+/// ```text
+///   session 10's four operations   declining: stacked   running: sound
+///   a shape overlapping a solid    declining: sound     running: 2 overlaps
+///   a sheet meeting a solid        declining: sound     running: 2 overlaps
+/// ```
+///
+/// Neither answer is right for both, and the input does not say which case it
+/// is — three ways of counting bodies could not tell the scenes apart. The
+/// result does. Two judgements, because two things can go wrong here and each is
+/// invisible to the other's measure:
+///
+/// * a **curved** solid face must survive. The re-derive used to flatten a Path
+///   B sphere whose equator lies on the scanned plane, and the early return was
+///   what stopped it (`adr186_coplanar_rederive_protects_sphere_equator`).
+/// * with only **planar** solid faces on the plane, the count of faces covering
+///   each other must not rise. That is tiling across the solid's face.
+///
+/// The self-intersection test is deliberately NOT applied when a curved solid is
+/// there: a sheet drawn through a sphere is supposed to intersect it, and
+/// counting that as damage undid the division
+/// (`a_sheet_through_a_sphere_splits_the_same_as_it_always_did`, four faces to
+/// three).
+///
+/// Tiles wound against the draw are invariant violations rather than overlaps,
+/// and in the scene that produces them the re-derive leaves the plane clean —
+/// they appear later, in the post-draw repair, which checks for exactly that.
 pub fn rebuild_coplanar_faces_analytic_scoped(
+    mesh: &mut Mesh,
+    plane_origin: DVec3,
+    plane_normal: DVec3,
+    tol: f64,
+    enable_freeform_overlap: bool,
+    seed: Option<&[FaceId]>,
+) -> Result<RebuildReport> {
+    let n_unit = plane_normal.normalize_or_zero();
+    let (planar_solid, curved_solid) = plane_solid_kinds(mesh, plane_origin, n_unit, tol);
+    if !planar_solid && !curved_solid {
+        return rebuild_inner(mesh, plane_origin, plane_normal, tol, enable_freeform_overlap, seed);
+    }
+    let backup = mesh.clone();
+    let si_before = mesh.detect_self_intersections().count();
+    let curved_before: Vec<FaceId> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active() && !matches!(f.surface(), None | Some(crate::surfaces::AnalyticSurface::Plane { .. })))
+        .map(|(fid, _)| fid)
+        .collect();
+    let report = rebuild_inner(mesh, plane_origin, plane_normal, tol, enable_freeform_overlap, seed);
+    let curved_lost = curved_before
+        .iter()
+        .any(|&f| mesh.faces.get(f).map_or(true, |x| !x.is_active()));
+    // ⚠ The `!curved_solid` clause below is uncovered. Mutation-checked:
+    // removing the whole rollback, the curved-survives half, the overlap half,
+    // or the repair's check each fail a guard — but dropping `!curved_solid`
+    // changes nothing any test can see, because no scene we have puts a planar
+    // solid face and a curved one on the SAME plane, and `planar_solid` already
+    // gates the count. It stays as the conservative direction (fewer rollbacks
+    // where a curved solid is involved, so divisions through one survive) and is
+    // said out loud because an uncovered line should not read as a tested one.
+    let worse = match &report {
+        Ok(_) => {
+            curved_lost
+                || (planar_solid
+                    && !curved_solid
+                    && mesh.detect_self_intersections().count() > si_before)
+        }
+        Err(_) => true,
+    };
+    if worse {
+        *mesh = backup;
+        return Ok(RebuildReport::default());
+    }
+    report
+}
+
+fn rebuild_inner(
     mesh: &mut Mesh,
     plane_origin: DVec3,
     plane_normal: DVec3,
@@ -1705,9 +1826,10 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
             // full-plane rederive with a solid present → conservatively skip.
             None => true,
         };
-        if region_touches_solid {
-            return Ok(RebuildReport::default());
-        }
+        // Was: return without arranging anything. That kept the arrange from
+        // tiling across a solid's face — and also from arranging the SHEETS on
+        // that plane. The wrapper below decides by the result instead.
+        let _ = region_touches_solid;
     }
 
     // ── Phase 0.5 (B4b-1, gated) — freeform-freeform overlap detection +

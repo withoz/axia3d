@@ -220,18 +220,24 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repair is sheets-only now; solids have the coplanar re-tile. Two
     // operations reproduce the old behaviour in
     // `a_draw_on_a_solids_face_must_not_open_it.rs`.
-    // Reduced to FOUR operations, and not one push-in among them — the reducer
-    // dropped all three. What is left is a ring and its inner face on z=100, a
-    // box whose BOTTOM is on that plane, and a circle over the lot
-    // (`pushing_in_three_deep_stacks_faces.rs`). The op-7 break before it — a
-    // drawn circle lying whole on a ring-topped solid — is fixed; the re-tile
-    // counts owners now, which is what let the session get this far.
+    // Session 10's op-3-of-four break is FIXED — the re-derive runs on a plane a
+    // solid shares and is undone only if it made things worse, and the post-draw
+    // repair is undone when it leaves the plane objecting. Its four-operation
+    // repro is a guard now (`pushing_in_three_deep_stacks_faces.rs`), and so is
+    // the comparison that located it.
     //
-    // The box sits ABOVE the plane, so its bottom faces away from the draw, and
-    // the re-tile's side rule drops a solid whose body is on the near side.
-    // That rule is what keeps two solids meeting on one plane from both being
-    // re-tiled; there is no second solid here for it to be protecting against.
-    (10, "op 3 of four: edge EdgeId(18) bears three faces, FaceId(5) / FaceId(12)           covering the same ground. A circle over a box that sits ON the           drawing plane, bottom down."),
+    // Session 3 takes its place, and it is NOT what the change cost. Reduced to
+    // two operations — a box, and a square drawn at a height inside it — which
+    // break the same way on main with the rollbacks nowhere in sight
+    // (`session_3_when_the_rollbacks_are_in.rs`). The fuzz's operations depend on
+    // the mesh, so a change to how many faces a draw makes shifts every later
+    // one; session 3's stream moved onto a defect that was already there.
+    (3, "op 1 of two: a square drawn at a height INSIDE a box leaves           EdgeId(22) bearing three faces. Pre-existing; the fuzz reached it           when the stream shifted."),
+    // Session 10's four-operation reduction is SOUND now, and is kept as a
+    // guard. The full twenty still stops at op 11 on the same edge, so the
+    // reduction was not the whole story — the longer sequence reaches a
+    // configuration the shorter one does not, and that has not been reduced.
+    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces. Its           four-operation reduction is fixed; this longer one is not."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
