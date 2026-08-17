@@ -134,6 +134,40 @@ test.describe('a draw beside a solid', () => {
   });
 
   /**
+   * A circle straddling the rim of the plane a box's BOTTOM is on, with another
+   * draw already beside it on that plane.
+   *
+   * The coplanar re-derive divides the circle correctly along the rim, and the
+   * pass after it — the one that splits faces crossing other planes — used to be
+   * handed the box's WALL against a piece lying flat on the plane that wall
+   * stands on. They touch along a line rather than cross, so there was nothing
+   * to divide, and it handed the same region back three times. That pass undoes
+   * itself now when it leaves the mesh objecting.
+   */
+  test('a circle across the rim of the plane a box stands on stays sound', async ({ page }) => {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const b = (window as any).__axia.get('bridge');
+      // Bottom at z=200, x ∈ [-120,20], y ∈ [-220,-80].
+      b.create_box(-50, -150, 260, 140, 120, 140);
+      b.drawPolygonAsShape(-100, -50, 200, 0, 0, 1, 30, 5); // beside the box
+      const before = b.getStats().faces;
+      b.drawCircleAsCurve(-100, -100, 200, 0, 0, 1, 30); // across the rim
+      const inv = b.verifyInvariants();
+      return {
+        before,
+        after: b.getStats().faces,
+        valid: inv.valid,
+        violations: inv.violations.length,
+      };
+    });
+    expect(r.after).toBeGreaterThan(r.before); // the circle lands
+    expect(r.valid).toBe(true);
+    expect(r.violations).toBe(0);
+  });
+
+  /**
    * A circle drawn beside a box, on a plane two rectangles already share.
    *
    * ⚠ THE ONE THAT READS DIFFERENTLY HERE. In the Rust fixture the box is built

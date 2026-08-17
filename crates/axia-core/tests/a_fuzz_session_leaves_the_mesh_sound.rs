@@ -251,13 +251,16 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // longer reparents among faces on z=100. The full eleven still stop at op 11,
     // so the reduction was not the whole story.
     (10, "op 11, three pushes in: edge EdgeId(69) bears four faces. Its           four-operation reduction is fixed; this longer one is not."),
-    // Session 9 arrives with the scoping and is not what it cost: reduced to
-    // three operations — a box, then a pentagon and a circle on the plane its
-    // BOTTOM occupies — which break the same way on main, same edge and same two
-    // faces (`pushing_in_leaves_faces_on_top_of_each_other.rs`). The fuzz's
-    // operations depend on the mesh, so its stream moved onto a defect that was
-    // already there. Third time that has happened; it is how this harness works.
-    (9, "op 2 of three: a pentagon and a circle on the plane a box's bottom          occupies leave EdgeId(44) bearing four faces. Pre-existing."),
+    // Session 9's op-13 break IS FIXED. Reduced to three operations — a box,
+    // then a pentagon and a circle on the plane its BOTTOM occupies — and
+    // located to the pass that runs after the coplanar re-derive:
+    // `split_faces_crossing_other_planes` was handed a box WALL against a piece
+    // lying on the plane the wall stands on. They touch along a line rather than
+    // cross, so there was nothing to divide and the split handed the same region
+    // back three times. That pass undoes itself now when it leaves the mesh
+    // objecting where it did not before, the same judgement the re-derive and
+    // the post-draw repair already make. Readings in
+    // `two_draws_on_the_plane_under_a_box.rs`.
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {

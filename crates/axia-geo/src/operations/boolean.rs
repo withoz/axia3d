@@ -21273,6 +21273,118 @@ mod tests {
         );
     }
 
+    /// A square cut by an L — two segments meeting at a point inside it.
+    ///
+    /// This is a solid's CORNER poking into a drawn face: the two walls each
+    /// cross the face and meet at the corner, which sits in the middle. The two
+    /// segments share that endpoint, so they are one connected path and go to
+    /// `split_polygon_2d_one_line` together — the code that pairs intersection
+    /// points along the direction of the first segment.
+    ///
+    /// Two pieces is the answer: the wedge the corner cuts off, and the rest.
+    #[test]
+    fn split_polygon_2d_corner_cut_gives_two_pieces() {
+        let poly = vec![
+            Pt2::new(0.0, 0.0),
+            Pt2::new(100.0, 0.0),
+            Pt2::new(100.0, 100.0),
+            Pt2::new(0.0, 100.0),
+        ];
+        let area = |p: &Vec<Pt2>| {
+            let mut a = 0.0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                a += p[i].x * p[j].y - p[j].x * p[i].y;
+            }
+            (a / 2.0).abs()
+        };
+
+        // In at (40,0), turn at (40,60), out at (100,60): a 40x60 corner piece.
+        let pieces = split_polygon_2d(
+            &poly,
+            &[
+                (Pt2::new(40.0, -10.0), Pt2::new(40.0, 60.0)),
+                (Pt2::new(40.0, 60.0), Pt2::new(110.0, 60.0)),
+            ],
+        )
+        .expect("an L through the middle divides the square");
+        let areas: Vec<f64> = pieces.iter().map(area).collect();
+        let sum: f64 = areas.iter().sum();
+        println!("
+  L 절단: {} 조각 {areas:?} 합 {sum}", pieces.len());
+
+        assert_eq!(pieces.len(), 2, "an L, two pieces: {areas:?}");
+        assert!(
+            (sum - 10_000.0).abs() < 1.0,
+            "and they add up to the square — {areas:?} sums to {sum}"
+        );
+    }
+
+    /// A cut segment lying ON the polygon's own boundary.
+    ///
+    /// This is what a face meets after the coplanar re-derive has already
+    /// divided it along a solid's rim: the wall planes still cross that plane,
+    /// so `split_faces_crossing_other_planes` runs next and hands over segments
+    /// that follow edges the face already has. There is nothing left to divide.
+    #[test]
+    fn split_polygon_2d_a_cut_along_an_edge_divides_nothing() {
+        let poly = vec![
+            Pt2::new(0.0, 0.0),
+            Pt2::new(100.0, 0.0),
+            Pt2::new(100.0, 100.0),
+            Pt2::new(0.0, 100.0),
+        ];
+        let along_the_bottom = split_polygon_2d(
+            &poly,
+            &[(Pt2::new(-10.0, 0.0), Pt2::new(110.0, 0.0))],
+        );
+        println!(
+            "
+  아래 변 위 절단 → {}",
+            match &along_the_bottom {
+                None => "None (안 자름)".to_string(),
+                Some(p) => format!("{} 조각", p.len()),
+            }
+        );
+
+        // And the corner case: two edges of the polygon at once, meeting at its
+        // own corner — a solid's corner sitting exactly on the face's corner.
+        let two_edges = split_polygon_2d(
+            &poly,
+            &[
+                (Pt2::new(-10.0, 0.0), Pt2::new(110.0, 0.0)),
+                (Pt2::new(100.0, -10.0), Pt2::new(100.0, 110.0)),
+            ],
+        );
+        println!(
+            "  두 변 위 절단 → {}",
+            match &two_edges {
+                None => "None (안 자름)".to_string(),
+                Some(p) => {
+                    let area = |q: &Vec<Pt2>| {
+                        let mut a = 0.0;
+                        for i in 0..q.len() {
+                            let j = (i + 1) % q.len();
+                            a += q[i].x * q[j].y - q[j].x * q[i].y;
+                        }
+                        (a / 2.0).abs()
+                    };
+                    let areas: Vec<f64> = p.iter().map(area).collect();
+                    format!("{} 조각 {areas:?}", p.len())
+                }
+            }
+        );
+
+        assert!(
+            along_the_bottom.is_none(),
+            "a cut that runs along an edge divides nothing — {along_the_bottom:?}"
+        );
+        assert!(
+            two_edges.is_none(),
+            "and neither do two of them: {two_edges:?}"
+        );
+    }
+
     #[test]
     fn split_polygon_2d_horizontal_cut() {
         // Pt2 available via `use super::*`
