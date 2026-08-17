@@ -223,10 +223,12 @@ fn what_each_draw_makes() {
     // The measured difference, pinned. One new face each — the circle survives
     // whole in both — and only the one whose circle overlaps the rectangles
     // leaves anything stacked.
-    assert_eq!(results[0].1, 1, "A adds one face: the circle, undivided");
-    assert_eq!(results[1].1, 1, "B adds one face too");
-    assert!(results[0].2 > 0, "A stacks — its circle overlaps the rectangles");
-    assert_eq!(results[1].2, 0, "B does not — its circle is off to the side");
+    // A used to add ONE face — the circle, undivided — and leave four
+    // violations. Both scenes divide now.
+    assert!(results[0].1 > 1, "A's circle is divided against what it overlaps");
+    assert_eq!(results[0].2, 0, "and leaves nothing stacked");
+    assert!(results[1].1 >= 1, "B's circle is divided too");
+    assert_eq!(results[1].2, 0, "and never did stack");
 }
 
 /// No solid at all: a ring-shaped sheet and a circle drawn over it.
@@ -360,9 +362,12 @@ fn the_early_return_is_what_silences_it() {
     let b = no_box.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
 
     println!("\n  상자 있음 {a}면, 상자 없음 {b}면");
+    // Was: b > a, because a solid sharing the plane silenced the arrange
+    // entirely. It divides either way now, and with the box there it divides
+    // FURTHER — the box's own boundary is one more thing to divide against.
     assert!(
-        b > a,
-        "the same draw makes MORE faces when no solid shares the plane — the          box is not being drawn on, it is silencing the arrange"
+        a >= b,
+        "the draw divides whether or not a solid shares the plane — {a} with a          box, {b} without"
     );
 }
 
@@ -416,6 +421,6 @@ fn neither_scene_may_be_traded_for_the_other() {
     let b_bad = b.mesh.verify_face_invariants().violations.len();
 
     println!("\n  세션 10 위반 {a_bad}, 결함 3 위반 {b_bad}");
-    assert!(a_bad > 0, "session 10 still stacks — if it stops, say what fixed it");
-    assert_eq!(b_bad, 0, "defect 3 must stay fixed; trading it away is not progress");
+    assert_eq!(a_bad, 0, "session 10 is sound now");
+    assert_eq!(b_bad, 0, "and defect 3 stayed fixed — neither was traded for the other");
 }

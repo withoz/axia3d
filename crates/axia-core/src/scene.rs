@@ -2602,6 +2602,7 @@ impl Scene {
             .map(|(fid, _)| fid)
             .collect();
         let before_repairs = self.scene_snapshot();
+        let violations_before = self.mesh.verify_face_invariants().violations.len();
         let mut repaired = 0usize;
         for (fa, fb) in pairs {
             if already_overlapping.contains(&(fa, fb)) || already_overlapping.contains(&(fb, fa)) {
@@ -2769,7 +2770,10 @@ impl Scene {
                     && !self.mesh.is_face_in_volume(*f)
             })
             .collect();
-        if !opened.is_empty() {
+        // ...or leave the plane objecting where it did not before. A repair can
+        // rebuild a face wound against the draw, which opens nothing.
+        let violations_after = self.mesh.verify_face_invariants().violations.len();
+        if !opened.is_empty() || violations_after > violations_before {
             self.restore_scene_snapshot(&before_repairs);
             return 0;
         }
