@@ -1,37 +1,45 @@
 //! The session the two rollbacks looked like they cost — and did not.
 //!
-//! ── Located, 2026-08-17 ──────────────────────────────────────────────────
+//! The fuzz answered that session 3 was sound and is not any more, right after
+//! the re-derive and the post-draw repair learned to undo themselves. That looked
+//! like a regression. Transcribed and shrunk the way the other four were, it is
+//! **two operations** — a box, and a square drawn at a height inside it — and
+//! those two broke the SAME WAY on main, with the rollbacks nowhere in sight.
 //!
-//! Probed through the draw: the plane is clean at every stage until
-//! `split_faces_crossing_other_planes`, which takes it from seven faces and no
-//! violations to ten and two. It queues the square once — `crossing` refuses to
-//! add a face whose partner is already queued — so `intersect_faces_with_model`
-//! is entered ONCE and returns the middle piece twice.
+//! The fuzz's operations depend on the mesh: a push or an extrude picks its face
+//! out of the live set, so any change to how many faces a draw makes shifts every
+//! later operation. Session 3 did not start breaking; its stream moved onto a
+//! defect that was already there.
 //!
-//! And it is the SECOND wall that does it:
+//! ── Located, then fixed ──────────────────────────────────────────────────
+//!
+//! Probed through the draw: the plane was clean at every stage until
+//! `split_faces_crossing_other_planes`, which took it from seven faces and no
+//! violations to ten and two. And it was the SECOND wall that did it:
 //!
 //! ```text
 //!   square crossing one wall    8 faces   0 violations
 //!   square crossing two walls  10 faces   2 violations
 //! ```
 //!
-//! The fix that follows from locating the downstream step — the re-derive undone
-//! when self-intersections rise, the post-draw repair undone when invariant
-//! violations rise — makes defect 3 and session 10's four-operation repro both
-//! sound. The fuzz answers that session 3 was sound and is not any more, which
-//! looked like a regression. Transcribed and shrunk the way the other four were,
-//! it is two operations — and those two break the SAME WAY on main, with the
-//! rollbacks nowhere in sight.
-//!
-//! The fuzz's operations depend on the mesh: a push or an extrude picks its face
-//! out of the live set, so any change to how many faces a draw makes shifts
-//! every later operation. Session 3 did not start breaking; its stream moved
-//! onto a defect that was already there.
+//! The scene layer was not calling twice — `crossing` refuses to queue a face
+//! whose partner is already there, so `intersect_faces_with_model` is entered
+//! ONCE. It came back with the middle piece twice, and the chain ran down to a
+//! function with no meshes in it at all: `split_polygon_2d` took every crossing
+//! segment at once and paired the intersection points by projecting them all
+//! onto the direction of the FIRST segment. With two lines that paired one
+//! line's end with the other line's end, and the walk following those pairings
+//! went round the outside and returned the whole polygon.
 //!
 //! ```text
-//!   op 10: edge EdgeId(106): shared by 3 active faces (non-manifold) —
-//!          FaceId(46) / FaceId(44) cover the same ground (stacked)
+//!   one line    2 pieces  [6000, 4000]           sums to 10,000
+//!   two lines   2 pieces  [10000, 10000]         sums to 20,000   ← was
+//!   two lines   3 pieces  [3000, 4000, 3000]     sums to 10,000   ← is
 //! ```
+//!
+//! It cuts by one line at a time now, each piece from the previous line offered
+//! to the next, which reuses the one-line path exactly as it was — measured
+//! correct all along. Pinned in `split_polygon_2d_two_cuts_give_three_pieces`.
 
 use axia_core::scene::Scene;
 use axia_core::{Command, FORM_MATERIAL};
@@ -110,22 +118,17 @@ fn apply(s: &mut Scene, op: Op) {
     }
 }
 
-fn run(ops: &[Op]) -> Option<(usize, String)> {
+/// Every violation the list leaves, whatever kind, with the step it appeared at.
+fn violations(ops: &[Op]) -> Vec<(usize, String)> {
     let mut s = prod();
+    let mut out = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         apply(&mut s, *op);
-        if let Some(v) = s
-            .mesh
-            .verify_face_invariants()
-            .violations
-            .iter()
-            .map(|v| format!("{v:?}"))
-            .find(|t| t.contains(STACKED))
-        {
-            return Some((i, v));
+        for v in s.mesh.verify_face_invariants().violations.iter() {
+            out.push((i, format!("{v:?}")));
         }
     }
-    None
+    out
 }
 
 /// Session 3 as the fuzz generates it. Its op 0 is `pushIn(skip: nothing there)`
@@ -145,39 +148,10 @@ fn session_3() -> Vec<Op> {
     ]
 }
 
-#[test]
-fn the_sequence_shrinks_to_something_readable() {
-    let full = session_3();
-    assert!(
-        run(&full).is_some(),
-        "the transcription does not reproduce the stacked faces — check it \
-         against the fuzz log before shrinking anything"
-    );
-    let n0 = full.len();
-    let mut ops = full;
-    let mut i = 0;
-    while i < ops.len() {
-        let mut without = ops.clone();
-        without.remove(i);
-        if run(&without).is_some() {
-            ops = without;
-        } else {
-            i += 1;
-        }
-    }
-    println!("\n  {n0} 연산 → {} 연산\n", ops.len());
-    for (i, op) in ops.iter().enumerate() {
-        println!("    {i}: {op:?}");
-    }
-    let (at, why) = run(&ops).expect("still fails");
-    println!("\n  op {at} 에서 {why}\n");
-    assert!(ops.len() <= n0);
-}
-
 /// The shrunk sequence: a box, and a square drawn at a height INSIDE it.
 ///
 /// z=200 is not a face of the box — it spans 100 to 220 — so the square is a
-/// sheet passing through the solid's middle, crossing its walls.
+/// sheet passing through the solid's middle, crossing two of its walls.
 fn shrunk() -> Vec<Op> {
     vec![
         Op::Box { x: 150.0, y: 50.0, z: 100.0, w: 180.0 },
@@ -185,85 +159,45 @@ fn shrunk() -> Vec<Op> {
     ]
 }
 
-/// Not a regression: measured both ways.
+/// The two operations that used to leave a stacked pair.
 ///
-/// With the rollbacks in and with them out, the two operations leave the same
-/// violation on the same edge between the same two faces — `EdgeId(22)`,
-/// `FaceId(11)` and `FaceId(9)`. So this is a defect the fuzz's session 3 had
-/// not been reaching, not one the rollbacks made.
+/// Mutation-checked: making `group_collinear_cuts` return one group for
+/// everything — the old behaviour of handing every segment over at once — brings
+/// the pair back and fails this.
 #[test]
-fn the_shrunk_sequence_stacks() {
-    let got = run(&shrunk());
-    println!("\n  줄인 순서 2 연산 → {got:?}");
+fn the_shrunk_sequence_is_sound() {
+    let v = violations(&shrunk());
+    println!("\n  줄인 순서 2 연산 → 위반 {}건", v.len());
+    for (at, t) in &v {
+        println!("    ✗ op {at}: {t}");
+    }
     assert!(
-        got.is_some(),
-        "the two-operation reduction has to reproduce it: {got:?}"
+        v.is_empty(),
+        "a square drawn inside a box has to stay sound — it used to come back \
+         with its middle piece twice: {v:?}"
     );
 }
 
-/// What the two faces are, and which step makes them cover each other.
+/// And the whole session it was reduced from, which is the fuzz's own case.
 #[test]
-fn what_stacks_when_a_square_is_drawn_inside_a_box() {
-    let ops = shrunk();
-    let mut s = prod();
-    apply(&mut s, ops[0]);
-    let before: Vec<FaceId> = s
-        .mesh
-        .faces
-        .iter()
-        .filter(|(_, f)| f.is_active())
-        .map(|(i, _)| i)
-        .collect();
-    println!("\n  상자만: {}면", before.len());
-    for f in &before {
-        let Some(face) = s.mesh.faces.get(*f) else { continue };
-        let n = face.normal().normalize_or_zero();
-        let z = s
-            .mesh
-            .collect_loop_verts(face.outer().start)
-            .ok()
-            .and_then(|v| v.first().and_then(|x| s.mesh.verts.get(*x)).map(|p| p.pos().z));
-        println!("    {f:?}  n=({:+.0},{:+.0},{:+.0})  z={:?}", n.x, n.y, n.z, z);
+fn the_whole_session_is_sound() {
+    let v = violations(&session_3());
+    println!("\n  전체 세션 위반 {}건", v.len());
+    for (at, t) in &v {
+        println!("    ✗ op {at}: {t}");
     }
-
-    apply(&mut s, ops[1]);
-    println!("\n  사각형(z=200, 상자 속) 그린 뒤");
-    for v in s.mesh.verify_face_invariants().violations.iter() {
-        let t = format!("{v:?}");
-        println!("    ✗ {t}");
-        let ids: Vec<usize> = t
-            .split("FaceId(")
-            .skip(1)
-            .filter_map(|p| p.split(')').next())
-            .filter_map(|n| n.parse().ok())
-            .collect();
-        for id in ids {
-            let f = FaceId::new(id as u32);
-            let Some(face) = s.mesh.faces.get(f) else { continue };
-            let n = face.normal().normalize_or_zero();
-            let vv = s.mesh.collect_loop_verts(face.outer().start).unwrap_or_default();
-            let z = vv.first().and_then(|x| s.mesh.verts.get(*x)).map(|p| p.pos().z);
-            println!(
-                "        {f:?}  n=({:+.0},{:+.0},{:+.0})  z={:?}  verts={}  {}  {}",
-                n.x, n.y, n.z, z, vv.len(),
-                if s.mesh.is_face_in_volume(f) { "solid" } else { "sheet" },
-                if before.contains(&f) { "old" } else { "new" }
-            );
-        }
-    }
-    assert!(!s.mesh.verify_face_invariants().violations.is_empty());
+    assert!(v.is_empty(), "session 3 of the fuzz has to stay sound: {v:?}");
 }
 
-/// One wall or two?
+/// One wall or two — the reading that located it, kept as the guard.
 ///
-/// The square in the repro sticks out of the box on TWO sides — its `(100,170)`
-/// corner past the +Y wall and its `(30,100)` corner past the −X wall. The
-/// scene layer queues the face once (`crossing` refuses to add a face whose
-/// partner is already there) and calls `intersect_faces_with_model` a single
-/// time, so if a second wall is what duplicates the piece, moving the square to
-/// cross only one should come out clean.
+/// The square in the repro sticks out of the box on TWO sides: its `(100,170)`
+/// corner past the +Y wall and its `(30,100)` corner past the −X wall. Moving it
+/// to `(150,100)` leaves it crossing one. One wall was always clean and two
+/// duplicated the middle piece; both are clean now, and the one-wall row stays
+/// so a fix that trades one case for the other fails here.
 #[test]
-fn crossing_one_wall_against_crossing_two() {
+fn crossing_one_wall_and_crossing_two_are_both_clean() {
     let mut readings: Vec<(&str, usize, usize)> = Vec::new();
     for (name, cx, cy) in [("벽 하나", 150.0, 100.0), ("벽 둘", 100.0, 100.0)] {
         let mut s = prod();
@@ -284,14 +218,66 @@ fn crossing_one_wall_against_crossing_two() {
         readings.push((name, faces, v.len()));
     }
 
-    // The control and the defect, side by side. One wall is clean; the second
-    // wall is what duplicates the piece, and the scene layer is not calling
-    // twice — `crossing` refuses to queue a face whose partner is already there,
-    // so `intersect_faces_with_model` is entered ONCE and comes back with the
-    // middle piece twice over.
-    assert_eq!(readings[0].2, 0, "one wall: {} faces, and nothing stacked", readings[0].1);
+    for (name, faces, bad) in &readings {
+        assert_eq!(*bad, 0, "{name}: {faces} faces and {bad} violations");
+    }
+    // Two walls divide the square into three, so it has to leave MORE faces than
+    // one wall does. Without this the test would still pass on a version that
+    // stopped cutting altogether.
     assert!(
-        readings[1].2 > 0,
-        "two walls still duplicate the piece — if that stops, say what fixed it          and strike session 3 from KNOWN_BREAKS"
+        readings[1].1 > readings[0].1,
+        "two walls have to leave more faces than one — {} against {}, which \
+         would mean the second wall stopped cutting rather than stopped \
+         duplicating",
+        readings[1].1,
+        readings[0].1
+    );
+}
+
+/// What the square becomes, so a later change that leaves it whole is visible.
+///
+/// The box is six faces; the square crosses two walls, so it arrives as three
+/// pieces and every one of them is a sheet, not a solid face.
+#[test]
+fn the_square_arrives_as_three_pieces() {
+    let ops = shrunk();
+    let mut s = prod();
+    apply(&mut s, ops[0]);
+    let before: Vec<FaceId> = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(i, _)| i)
+        .collect();
+    println!("\n  상자만: {}면", before.len());
+
+    apply(&mut s, ops[1]);
+    println!("\n  사각형(z=200, 상자 속) 그린 뒤\n");
+    let mut new_at_z200 = 0;
+    for (fid, face) in s.mesh.faces.iter() {
+        if !face.is_active() || before.contains(&fid) {
+            continue;
+        }
+        let vv = s.mesh.collect_loop_verts(face.outer().start).unwrap_or_default();
+        let on_plane = !vv.is_empty()
+            && vv.iter().all(|v| {
+                s.mesh.verts.get(*v).map_or(false, |p| (p.pos().z - 200.0).abs() < 1e-6)
+            });
+        if !on_plane {
+            continue;
+        }
+        new_at_z200 += 1;
+        let n = face.normal().normalize_or_zero();
+        println!(
+            "    {fid:?}  n=({:+.0},{:+.0},{:+.0})  verts={}",
+            n.x, n.y, n.z, vv.len()
+        );
+    }
+    println!("\n  z=200 위 새 면 {new_at_z200}개");
+    assert_eq!(
+        new_at_z200, 3,
+        "the square crosses two walls, so it lands as three pieces — two would \
+         mean one line stopped cutting, four that a piece is duplicated again"
     );
 }

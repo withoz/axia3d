@@ -226,18 +226,26 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repro is a guard now (`pushing_in_three_deep_stacks_faces.rs`), and so is
     // the comparison that located it.
     //
-    // Session 3 takes its place, and it is NOT what the change cost. Reduced to
-    // two operations — a box, and a square drawn at a height inside it — which
-    // break the same way on main with the rollbacks nowhere in sight
-    // (`session_3_when_the_rollbacks_are_in.rs`). The fuzz's operations depend on
-    // the mesh, so a change to how many faces a draw makes shifts every later
-    // one; session 3's stream moved onto a defect that was already there.
-    // Located: `split_faces_crossing_other_planes` takes the plane from seven
-    // faces and no violations to ten and two, and it is the SECOND wall that
-    // does it — a square crossing one wall of a box comes out clean at eight
-    // faces, crossing two comes out with the middle piece twice. The scene layer
-    // enters `intersect_faces_with_model` once; the duplicate is inside it.
-    (3, "op 1 of two: a square drawn at a height INSIDE a box, crossing two of           its walls, gets its middle piece twice. One wall is clean."),
+    // Session 3's op-10 break IS FIXED, and it was never what the change cost.
+    // Reduced to two operations — a box, and a square drawn at a height inside
+    // it — which broke the same way on main with the rollbacks nowhere in sight,
+    // then followed down to a function with no meshes in it: `split_polygon_2d`
+    // took every crossing segment at once and paired the intersection points
+    // along the direction of the FIRST one, so with two lines it paired across
+    // them and the walk came back with the whole polygon, twice.
+    //
+    //     one line    2 pieces  [6000, 4000]           sums to 10,000
+    //     two lines   2 pieces  [10000, 10000]         sums to 20,000   was
+    //     two lines   3 pieces  [3000, 4000, 3000]     sums to 10,000   is
+    //
+    // It cuts by one connected path at a time now. Guards in
+    // `session_3_when_the_rollbacks_are_in.rs` and
+    // `split_polygon_2d_two_cuts_give_three_pieces`.
+    //
+    // The stream carried on four operations further and stopped somewhere else,
+    // which is what this inventory is for: a fix moves the wall, it does not
+    // always remove it.
+    (3, "op 14 of fifteen: circleCurve(200,0,0,r=110) on a mesh five draws and           three extrudes deep. Not reduced."),
     // Session 10's four-operation reduction of the op-11 break is FIXED — the
     // containment pass is scoped to the plane being rebuilt, so a draw on z=0 no
     // longer reparents among faces on z=100. The full eleven still stop at op 11,
