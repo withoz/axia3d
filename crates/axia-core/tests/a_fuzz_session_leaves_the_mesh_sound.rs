@@ -189,7 +189,11 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// the list, which is how the harness gets stricter on its own instead of
 /// rotting into a set of permanently-tolerated failures.
 const KNOWN_BREAKS: &[(u64, &str)] = &[
-    (6, "face FaceId(20): cannot collect outer loop — a half-edge the face          still names is gone. Reached by 18 ordinary draws, no push, no carve."),
+    // Was "a half-edge the face still names is gone" until the rebuild stopped
+    // removing edges that a preserved face is still on (see
+    // `a_face_naming_a_gone_half_edge.rs`). The face survives its edges now and
+    // the loop still does not close — same face, narrower break.
+    (6, "face FaceId(20): cannot collect outer loop — the loop never closes.          Reached by 18 ordinary draws, no push, no carve."),
     (10, "face FaceId(39): cached normal opposite to winding (dot = −1.000),           alongside two faces covering the same ground. 13 draws in."),
 ];
 

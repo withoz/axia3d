@@ -288,6 +288,30 @@ fn the_broken_face_is_on_the_plane_that_was_rebuilt() {
     let broken = axia_geo::FaceId::new(11);
     let before_z = z_of(&s, broken);
     println!("BEFORE last op: FaceId(11) sits at z = {before_z:?}");
+    // What kind of face is it? A self-loop with a freeform curve is preserved
+    // by the rebuild (A1); a polygon is rebuilt. Which one it is decides where
+    // the fault can be.
+    if let Some(face) = s.mesh.faces.get(broken) {
+        let start = face.outer().start;
+        let n = s.mesh.collect_loop_verts(start).map(|v| v.len()).unwrap_or(0);
+        let curve = s
+            .mesh
+            .hes
+            .get(start)
+            .map(|he| he.edge())
+            .and_then(|e| s.mesh.edges.get(e))
+            .map(|e| format!("{:?}", e.curve().map(std::mem::discriminant)));
+        println!("  FaceId(11): {n} boundary verts, first edge curve = {curve:?}");
+        // Load-bearing, not decoration: the rebuild preserves a single-vertex
+        // self-loop carrying a freeform curve (A1) and rebuilds everything
+        // else. This face is an ordinary polygon, so it is on the rebuild's
+        // side of that line — which is why "the rebuild preserved it wrongly"
+        // is not an available explanation for the break.
+        assert!(
+            n >= 3,
+            "FaceId(11) is supposed to be an ordinary polygon — if it has become          a self-loop the repro has moved and this file explains the wrong thing"
+        );
+    }
     assert!(
         before_z.is_some(),
         "FaceId(11) must exist before the last operation, or the repro has moved"
@@ -306,5 +330,80 @@ fn the_broken_face_is_on_the_plane_that_was_rebuilt() {
     assert!(
         !inv.is_valid(),
         "the last operation still has to break it, or this file is measuring          a defect that is gone"
+    );
+}
+
+/// What the narrowing in `face_rederive` fixed, stated as its own measurement.
+///
+/// The rebuild removed every edge on the plane it was rebuilding, including
+/// edges that a face it had chosen to PRESERVE was still using — the preserved
+/// face then named a half-edge that no longer existed:
+///
+///     face FaceId(11): cannot collect outer loop: HalfEdge HeId(56) not found
+///
+/// `edges_to_remove` now keeps any edge that a face outside the removal list is
+/// still on. This asks the thing directly rather than reading the error text:
+/// after the repro sequence, walk every live face's boundary and check that
+/// every edge it names is still there.
+///
+/// Two failure classes are counted separately on purpose. A *gone* edge is the
+/// one this narrowing is responsible for and must be zero. A loop that never
+/// closes is a different break — the same face, still open, pinned by
+/// `the_shrunk_sequence_still_breaks` above — and this test deliberately does
+/// not assert it away, because nothing here fixed it.
+///
+/// Mutation-checked: widening the retain back to "remove every edge on the
+/// plane" puts the gone-edge count back above zero and fails this test.
+#[test]
+fn no_surviving_face_names_an_edge_that_was_removed() {
+    let mut s = prod();
+    for op in shrunk() {
+        apply(&mut s, op);
+    }
+
+    let live: Vec<_> = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| fid)
+        .collect();
+
+    let mut gone: Vec<String> = Vec::new();
+    let mut never_closes: Vec<String> = Vec::new();
+
+    for fid in live {
+        match s.mesh.face_outer_edges(fid) {
+            Ok(edges) => {
+                for eid in edges {
+                    let there = s.mesh.edges.get(eid).map_or(false, |e| e.is_active());
+                    if !there {
+                        gone.push(format!("{fid:?} still names {eid:?}, which is gone"));
+                    }
+                }
+            }
+            Err(e) => {
+                let why = format!("{e}");
+                if why.contains("not found") {
+                    gone.push(format!("{fid:?}: {why}"));
+                } else {
+                    never_closes.push(format!("{fid:?}: {why}"));
+                }
+            }
+        }
+    }
+
+    println!("\n  사라진 엣지를 부르는 면 {}건", gone.len());
+    for g in &gone {
+        println!("    ✗ {g}");
+    }
+    println!("  루프가 닫히지 않는 면 {}건 (별개 결함, 위에서 고정)", never_closes.len());
+    for n in &never_closes {
+        println!("    · {n}");
+    }
+
+    assert!(
+        gone.is_empty(),
+        "a face the rebuild chose to keep must still have every edge it names: {gone:?}"
     );
 }
