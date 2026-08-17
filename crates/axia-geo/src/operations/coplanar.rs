@@ -1166,6 +1166,32 @@ pub fn polygon_difference_by_clip(
     if out.len() < 3 {
         bail!("polygon_difference_by_clip: result has fewer than 3 vertices");
     }
+    // A ring that comes back to a point it already visited is not one polygon.
+    //
+    // `dedup_ring_2d` only drops CONSECUTIVE repeats. A spliced clip arc can
+    // pass through somewhere the base boundary already went — the two are
+    // coplanar and the clip's corners may sit on the base's edges — and the
+    // result then touches itself. The caller rebuilds the face by handing every
+    // corner to `add_vertex`, which dedups at 0.15 μm (LOCKED #5), so the repeat
+    // becomes one VertId visited twice and the face's outer loop crosses itself.
+    // Measured: session 3's op 5 left `FaceId(37)` with 31 corners and two
+    // repeats, after which nothing could read it — the clipper reported no
+    // overlap at all while the invariant checker reported a double cover.
+    //
+    // Such a difference is genuinely two regions pinched at a point, not one, so
+    // say so rather than hand back a ring that cannot be a face.
+    for i in 0..out.len() {
+        for j in (i + 1)..out.len() {
+            if (out[i].0 - out[j].0).abs() < DEDUP_EPS_2D
+                && (out[i].1 - out[j].1).abs() < DEDUP_EPS_2D
+            {
+                bail!(
+                    "polygon_difference_by_clip: the result touches itself at                      ({:.6}, {:.6}) — the difference is two regions pinched at a                      point, not one polygon",
+                    out[i].0, out[i].1
+                );
+            }
+        }
+    }
     Ok(out)
 }
 
