@@ -220,15 +220,18 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repair is sheets-only now; solids have the coplanar re-tile. Two
     // operations reproduce the old behaviour in
     // `a_draw_on_a_solids_face_must_not_open_it.rs`.
-    // The op-7 break — the drawn circle lying whole on a ring-topped solid — is
-    // FIXED: the re-tile counts owners now, so one solid's two rims are carried
-    // and the circle is divided against the top (`a_draw_reaching_two_solids_
-    // must_not_stack.rs`, and the reason is written where the rule is).
+    // Reduced to FOUR operations, and not one push-in among them — the reducer
+    // dropped all three. What is left is a ring and its inner face on z=100, a
+    // box whose BOTTOM is on that plane, and a circle over the lot
+    // (`pushing_in_three_deep_stacks_faces.rs`). The op-7 break before it — a
+    // drawn circle lying whole on a ring-topped solid — is fixed; the re-tile
+    // counts owners now, which is what let the session get this far.
     //
-    // The session gets four operations further and stops at a different one:
-    // three push-ins deep, on a scene that already holds four solids and two
-    // drawn circles. Same family, not the same defect, and not yet reduced.
-    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces, FaceId(26) /           FaceId(49) covering the same ground. Was op 7 before the re-tile           learned to carry one solid's two rims."),
+    // The box sits ABOVE the plane, so its bottom faces away from the draw, and
+    // the re-tile's side rule drops a solid whose body is on the near side.
+    // That rule is what keeps two solids meeting on one plane from both being
+    // re-tiled; there is no second solid here for it to be protecting against.
+    (10, "op 3 of four: edge EdgeId(18) bears three faces, FaceId(5) / FaceId(12)           covering the same ground. A circle over a box that sits ON the           drawing plane, bottom down."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
