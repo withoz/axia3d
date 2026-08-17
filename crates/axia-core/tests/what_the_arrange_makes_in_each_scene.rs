@@ -323,3 +323,57 @@ fn the_early_return_is_what_silences_it() {
          box is not being drawn on, it is silencing the arrange"
     );
 }
+
+/// The fifth attempt: run the re-derive and undo it if the plane came out
+/// worse. Measured at two depths, and refused at both.
+///
+/// The comparison says neither answer — declining or running — is right for both
+/// scenes, and that the input cannot tell them apart. The result can, so: let it
+/// run, compare the plane before and after, put it back if it is worse. Two
+/// instruments, because each damage is invisible to the other's — faces covering
+/// each other (`detect_self_intersections`) for a shape tiled across a solid,
+/// invariant violations for tiles wound against the draw.
+///
+/// ```text
+///                                        session 10     defect 3
+///   around the re-derive itself          FIXED          back
+///   after the containment post-process   FIXED          back
+/// ```
+///
+/// So in defect 3's scene the damage does not exist yet at either point. The
+/// re-derive leaves the plane clean by both instruments, the containment
+/// post-process leaves it clean, and the stacked faces appear somewhere further
+/// down — the XIA and shape reconciles, the auto-intersect, or the repair in
+/// `guard_imprint`, which has a rollback of its own that restores when a solid
+/// opens and could be undoing a repair that would have fixed this.
+///
+/// That is where the next attempt starts: not another place to put a rollback,
+/// but finding which downstream step turns a clean plane into a stacked one.
+///
+/// This test holds the ground the attempts have to keep: both scenes as they
+/// stand today, so a fix that trades one for the other fails here rather than
+/// looking like progress.
+#[test]
+fn neither_scene_may_be_traded_for_the_other() {
+    // Session 10's reduced break: still stacks, and is inventoried as such.
+    let mut a = scene_a();
+    a.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(0.0, 100.0, TOP),
+        normal: DVec3::Z,
+        radius: 110.0,
+    });
+    let a_bad = a.mesh.verify_face_invariants().violations.len();
+
+    // Defect 3: fixed, and must stay fixed.
+    let mut b = scene_b();
+    b.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(0.0, -50.0, TOP),
+        normal: DVec3::Z,
+        radius: 70.0,
+    });
+    let b_bad = b.mesh.verify_face_invariants().violations.len();
+
+    println!("\n  세션 10 위반 {a_bad}, 결함 3 위반 {b_bad}");
+    assert!(a_bad > 0, "session 10 still stacks — if it stops, say what fixed it");
+    assert_eq!(b_bad, 0, "defect 3 must stay fixed; trading it away is not progress");
+}
