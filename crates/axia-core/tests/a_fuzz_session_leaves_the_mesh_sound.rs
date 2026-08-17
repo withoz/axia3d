@@ -142,32 +142,30 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             format!("extrude({f:?},{d}){}", if e { " REFUSED" } else { "" })
         }
         7 => {
-            // ⚠ push-in is still not generated, and the reason has changed.
+            // Push a face IN. Held out of the generator while seeds 6 and 10
+            // were the only reproductions of the two breaks then in
+            // KNOWN_BREAKS; both are fixed and pinned in their own files
+            // (`a_face_naming_a_gone_half_edge.rs`,
+            // `a_face_whose_normal_faces_the_other_way.rs`), so the fuzz no
+            // longer has to carry them and this came back.
             //
-            // The defect it first exposed — a wall of a many-sided prism going
-            // to `create_solid` and patching the caps beside themselves — is
-            // FIXED (`pushing_a_wall_in_moves_it.rs`). Restoring the branch and
-            // measuring shows push-in still stacks faces in other, unanalysed
-            // configurations: sessions 1, 6 and 10 break with "shared by 4 (and
-            // 6) active faces — cover the same ground".
-            //
-            // Both reasons it stayed out are gone: seeds 6 and 10 were the
-            // only reproductions of the two known breaks, and both are fixed,
-            // with their reduced sequences kept as guards in their own files.
-            // KNOWN_BREAKS is empty.
-            //
-            // What restoring it costs was MEASURED rather than remembered, by
-            // putting the branch back and running the twelve sessions: **two**
-            // of them break — session 9 at op 14 and session 10 at op 7, both
-            // "shared by 3 (and 4) active faces — cover the same ground". Not
-            // the three the earlier note claimed; two of those were the breaks
-            // this work has since closed.
-            //
-            // So this is now a scope decision with a number on it. Those two
-            // want the same treatment the other three got — reduce, pin, fix —
-            // and the branch comes back with that work, so the inventory never
-            // holds a break nobody is looking at.
-            "pushIn(excluded: see the note here)".into()
+            // It brought two breaks with it, which is the whole reason to want
+            // it back — they are inventoried above, reduced to 6 and 4
+            // operations, and measured apart rather than lumped together.
+            let faces = active_faces(s);
+            if faces.is_empty() {
+                return "pushIn(skip: nothing there)".into();
+            }
+            let f = faces[r.below(faces.len())];
+            let d = -(50.0 + r.below(3) as f64 * 50.0);
+            let e = matches!(
+                s.execute(Command::CreateSolid {
+                    face_id: f,
+                    mode: CreateSolidMode::Extrude { distance: d },
+                }),
+                CommandResult::Error(_)
+            );
+            format!("pushIn({f:?},{d}){}", if e { " REFUSED" } else { "" })
         }
         8 => {
             // A box, so a solid exists without needing a draw to succeed first.
@@ -199,19 +197,23 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// the list, which is how the harness gets stricter on its own instead of
 /// rotting into a set of permanently-tolerated failures.
 const KNOWN_BREAKS: &[(u64, &str)] = &[
-    // Empty, and that is the point: this list is an inventory, not a set of
-    // excuses. Session 6 was struck when a spur's two half-edges stopped being
-    // wired to each other's corpses in `Mesh::split_edge` (its ten-operation
-    // repro is kept as a guard in `a_face_naming_a_gone_half_edge.rs`), and
-    // session 10 when the coplanar rebuild stopped re-tiling both solids that
-    // meet on one plane (`a_face_whose_normal_faces_the_other_way.rs`).
-    // Session 10 was here — "cached normal opposite to winding, alongside two
-    // faces covering the same ground, 13 draws in" — and is struck because it
-    // is fixed. Two solids met on one plane and the rebuild re-tiled BOTH
-    // perimeters, laying the upper solid's tiles (wound against the draw) on
-    // top of the lower one's. It now decides which solid the draw is on from
-    // the walls reaching away from the plane. The five-operation repro is kept
-    // as a guard in `a_face_whose_normal_faces_the_other_way.rs`.
+    // Both entries came back with push-in, and both are reduced and pinned in
+    // `pushing_in_leaves_faces_on_top_of_each_other.rs` — 15 operations to 6 and
+    // 7 to 4 — with the measurement that they are NOT one defect:
+    //
+    //   session 9 breaks with every automatic behaviour turned OFF, so the
+    //   arrangement is not making these faces. A circle drawn on a plane a box's
+    //   bottom already occupies replaces that bottom with a 47-vertex sheet that
+    //   does not reuse the box's own boundary edges. The two walls standing on
+    //   those edges lose their neighbour and read as sheets, so pushing one is
+    //   not move-only and `create_solid` extrudes a second box onto the first.
+    //
+    //   session 10 needs face-synthesis AND the re-derive; either off and it is
+    //   sound. The circle reaches two solid perimeters at once, which the
+    //   re-tile deliberately declines to carry (see `face_rederive.rs`), and the
+    //   synthesis then lays a sheet over the solid's top face anyway.
+    (9, "edge EdgeId(24): FaceId(11) / FaceId(35) cover the same ground.          A wall of an opened box, pushed in and extruded instead of moved."),
+    (10, "edge EdgeId(18): FaceId(5) / FaceId(23) cover the same ground.           A sheet synthesised over a solid top the re-tile declined to carry."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
