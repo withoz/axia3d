@@ -11,6 +11,11 @@
 //! seed and the exact operation list, and re-running that seed replays it
 //! exactly. No `rand`, no clock, nothing that changes between runs.
 //!
+//! ⚠ The log prints every parameter, not just the position. It used to print
+//! a circle as `circle(x,y,z,ok)` — no radius — and a report you cannot re-type
+//! is a rumour with coordinates. Found by trying to transcribe session 6 into a
+//! standalone repro and getting a scene that did not fail.
+//!
 //! Size: 12 sessions × 20 operations by default, which is what fits a test
 //! suite. `AXIA_FUZZ_SESSIONS` and `AXIA_FUZZ_OPS` raise it — the plan's
 //! 100 × 50 is `AXIA_FUZZ_SESSIONS=100 AXIA_FUZZ_OPS=50`, and it is worth
@@ -89,12 +94,12 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
                 center: c, normal: DVec3::Z, radius: w * 0.5, segments: 24,
             };
             let e = matches!(s.execute(cmd), CommandResult::Error(_));
-            format!("circle({x},{y},{z},{})", if e { "REFUSED" } else { "ok" })
+            format!("circle({x},{y},{z},r={}){}", w * 0.5, if e { " REFUSED" } else { "" })
         }
         2 => {
             let cmd = Command::DrawCircleAsCurve { center: c, normal: DVec3::Z, radius: w * 0.5 };
             let e = matches!(s.execute(cmd), CommandResult::Error(_));
-            format!("circleCurve({x},{y},{z},{})", if e { "REFUSED" } else { "ok" })
+            format!("circleCurve({x},{y},{z},r={}){}", w * 0.5, if e { " REFUSED" } else { "" })
         }
         3 => {
             let cmd = Command::DrawEllipseAsCurve {
@@ -102,14 +107,15 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
                 radius_x: w * 0.5, radius_y: w * 0.3,
             };
             let e = matches!(s.execute(cmd), CommandResult::Error(_));
-            format!("ellipse({x},{y},{z},{})", if e { "REFUSED" } else { "ok" })
+            format!("ellipse({x},{y},{z},rx={},ry={}){}", w * 0.5, w * 0.3, if e { " REFUSED" } else { "" })
         }
         4 => {
+            let sides = 3 + r.below(5) as u32;
             let cmd = Command::DrawPolygonAsShape {
-                center: c, normal: DVec3::Z, radius: w * 0.5, sides: 3 + r.below(5) as u32,
+                center: c, normal: DVec3::Z, radius: w * 0.5, sides,
             };
             let e = matches!(s.execute(cmd), CommandResult::Error(_));
-            format!("polygon({x},{y},{z},{})", if e { "REFUSED" } else { "ok" })
+            format!("polygon({x},{y},{z},r={},n={}){}", w * 0.5, sides, if e { " REFUSED" } else { "" })
         }
         5 => {
             // A line across whatever is there — one of the paths the draw gate
@@ -120,7 +126,7 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
                 surface_normal: Some(DVec3::Z),
             };
             let e = matches!(s.execute(cmd), CommandResult::Error(_));
-            format!("line({x},{y},{z},{})", if e { "REFUSED" } else { "ok" })
+            format!("line({x},{y},{z},len=300){}", if e { " REFUSED" } else { "" })
         }
         6 => {
             let faces = active_faces(s);
@@ -183,7 +189,11 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// the list, which is how the harness gets stricter on its own instead of
 /// rotting into a set of permanently-tolerated failures.
 const KNOWN_BREAKS: &[(u64, &str)] = &[
-    (6, "face FaceId(20): cannot collect outer loop — a half-edge the face          still names is gone. Reached by 18 ordinary draws, no push, no carve."),
+    // Was "a half-edge the face still names is gone" until the rebuild stopped
+    // removing edges that a preserved face is still on (see
+    // `a_face_naming_a_gone_half_edge.rs`). The face survives its edges now and
+    // the loop still does not close — same face, narrower break.
+    (6, "face FaceId(20): cannot collect outer loop — the loop never closes.          Reached by 18 ordinary draws, no push, no carve."),
     (10, "face FaceId(39): cached normal opposite to winding (dot = −1.000),           alongside two faces covering the same ground. 13 draws in."),
 ];
 
@@ -231,6 +241,12 @@ fn a_fuzz_session_leaves_the_mesh_sound() {
             }
             Err((op, why, log)) => {
                 println!("  세션 {session:>3}  op {op} 에서 위반 — {why}");
+                // An inventoried break prints its operations too. A known
+                // failure nobody can re-type is not much better than an
+                // unknown one, and this is what a repro is transcribed from.
+                for (i, l) in log.iter().enumerate() {
+                    println!("        {i}: {l}");
+                }
                 if !known.contains(&session) {
                     new_breaks.push(format!(
                         "session {session} (seed 0x{:X}) at op {op}: {why}

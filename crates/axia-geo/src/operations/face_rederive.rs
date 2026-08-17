@@ -1746,10 +1746,25 @@ pub fn rebuild_coplanar_faces_analytic_scoped(
     // outside a circle it was drawn over) are not faces, so they would be lost.
     // ADR-016 §2: wires stay until the user deletes them. Edges that DO bound a
     // face are still removed + rebuilt as before.
+    //
+    // ⚠ And an edge may only go if EVERY active face on it is going too. Asking
+    // whether *any* of them is active kept an edge shared between a face being
+    // rebuilt and one that is not, removed it, and left the survivor naming a
+    // half-edge that no longer existed —
+    //
+    //     face FaceId(11): cannot collect outer loop: HalfEdge HeId(56) not found
+    //
+    // which is what the fuzz found on seed 0x5EED0006 and what
+    // `a_face_naming_a_gone_half_edge.rs` reproduces in ten operations.
+    let removing: HashSet<FaceId> = faces_to_remove.iter().copied().collect();
     edges_to_remove.retain(|&eid| {
         let (adj, _) = mesh.get_faces_sharing_edge(eid);
-        adj.iter()
-            .any(|&f| mesh.faces.get(f).map(|fc| fc.is_active()).unwrap_or(false))
+        let live: Vec<FaceId> = adj
+            .iter()
+            .copied()
+            .filter(|&f| mesh.faces.get(f).map(|fc| fc.is_active()).unwrap_or(false))
+            .collect();
+        !live.is_empty() && live.iter().all(|f| removing.contains(f))
     });
 
     // ── Phase 2 — analytic arrangement.
