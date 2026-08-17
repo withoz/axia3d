@@ -220,7 +220,16 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // repair is sheets-only now; solids have the coplanar re-tile. Two
     // operations reproduce the old behaviour in
     // `a_draw_on_a_solids_face_must_not_open_it.rs`.
-    (10, "edge EdgeId(18): FaceId(5) / FaceId(23) cover the same ground.           A sheet synthesised over a solid top the re-tile declined to carry."),
+    // Sharpened rather than fixed. The four violating edges each carry the ring,
+    // a wall of the pushed solid, its top, and the DRAWN CIRCLE — which is one
+    // anchor and one self-loop, never divided against the top it lies on. The
+    // coplanar re-tile is what would have divided it and it declined: the plane
+    // reaches more than one perimeter, a case `face_rederive.rs` documents as
+    // one it cannot carry. Removing that decline fixes this and breaks two other
+    // tests, so the fix is for the re-tile to carry one solid's two rims.
+    // Reduced to four operations, with two refuted guesses kept as guards, in
+    // `a_draw_reaching_two_solids_must_not_stack.rs`.
+    (10, "edge EdgeId(18): FaceId(5) / FaceId(15) cover the same ground.           The drawn circle lies over a solid top the re-tile declined to divide."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
