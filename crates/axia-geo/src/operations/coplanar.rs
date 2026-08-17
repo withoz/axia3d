@@ -178,13 +178,25 @@ pub fn coplanar_intersection_segments(
         b_2d_raw.clone()
     };
 
-    // Both polygons must be convex (ADR-101 §B-1 L-B1-1/2).
-    if !is_convex_ccw_2d(&a_2d) {
-        bail!(
-            "coplanar clipping requires convex faces; face {:?} is non-convex",
-            face_a
-        );
-    }
+    // The CLIP must be convex; the SUBJECT need not be.
+    //
+    // Sutherland-Hodgman clips a subject against a convex region by cutting it
+    // once per clip edge, so `b` has to be convex and `a` does not. ADR-101 §B-1
+    // required both, which was safe while every caller had convex faces and
+    // stopped being so the moment earlier operations divided one: a face that
+    // has been cut is usually concave, and the repair could not so much as
+    // MEASURE an overlap involving it — every branch of
+    // `subtract_double_covered_faces` falls through when this returns Err.
+    //
+    // ⚠ SH's real caveat, and why the difference walk stopped using the lens:
+    // if A ∩ B is DISCONNECTED — a concave A reaching around B — the lens comes
+    // back as one ring with zero-width connectors joining the parts. Its AREA is
+    // right and its boundary cannot be walked pairwise. `polygon_difference_by_
+    // clip` walks B instead, which has no such problem. Measured in
+    // `a_concave_subject_bitten_twice_by_a_convex_clip`.
+    //
+    // The crossings below are pairwise segment intersections and were never
+    // convexity-bound at all.
     if !is_convex_ccw_2d(&b_2d) {
         bail!(
             "coplanar clipping requires convex faces; face {:?} is non-convex",
@@ -1037,6 +1049,193 @@ fn segment_segment_intersect_2d(
 }
 
 // ─── B-3a: polygon_difference_walking (pure 2D utility) ──────────────
+/// A − B for ANY number of crossings, walking B rather than the lens.
+///
+/// `polygon_difference_walking` below takes exactly two crossings and splices
+/// the LENS between them. That is enough while the base is convex, and it stops
+/// being enough the moment earlier operations have made it concave: a convex
+/// clip can then bite a concave base TWICE, and there are four crossings.
+///
+/// Two things change here. Crossings come in entry/exit pairs, so any even
+/// number walks the same way — toggle at each one. And the arc spliced between
+/// an entry and its exit is taken from **B itself**, not from the lens:
+///
+/// ```text
+///   the boundary of a bite  =  base's part  +  clip's part
+/// ```
+///
+/// The lens is those bites as a polygon, and for a concave base it is not one
+/// polygon at all. Sutherland-Hodgman returns them JOINED by zero-width
+/// connectors — measured in `a_concave_subject_bitten_twice_by_a_convex_clip`:
+/// two 20×20 squares came back as one 8-vertex ring with the right area (800)
+/// and a boundary you cannot walk pairwise. B's own boundary has no such
+/// problem, and it is what the bite is bounded by.
+///
+/// Both polygons CCW. The arc inside the base runs BACKWARDS along B from the
+/// entry to the exit, which is the same direction the two-crossing version
+/// already walked.
+pub fn polygon_difference_by_clip(
+    base_polygon: &[(f64, f64)],
+    clip_polygon: &[(f64, f64)],
+    crossings: &[Crossing2d],
+) -> Result<Vec<(f64, f64)>> {
+    if base_polygon.len() < 3 {
+        bail!("polygon_difference_by_clip: base polygon has fewer than 3 vertices");
+    }
+    if clip_polygon.len() < 3 {
+        bail!("polygon_difference_by_clip: clip polygon has fewer than 3 vertices");
+    }
+    if crossings.len() < 2 || crossings.len() % 2 != 0 {
+        bail!(
+            "polygon_difference_by_clip: crossings must be a non-zero even number              (entry/exit pairs), got {}",
+            crossings.len()
+        );
+    }
+
+    let n_base = base_polygon.len();
+    let n_clip = clip_polygon.len();
+
+    // ── Insert the crossings into the base, in order along each edge ──
+    let mut on_edge: Vec<Vec<&Crossing2d>> = vec![Vec::new(); n_base];
+    for c in crossings {
+        if c.base_edge >= n_base {
+            bail!(
+                "polygon_difference_by_clip: crossing base_edge {} out of range ({n_base})",
+                c.base_edge
+            );
+        }
+        if c.clip_edge >= n_clip {
+            bail!(
+                "polygon_difference_by_clip: crossing clip_edge {} out of range ({n_clip})",
+                c.clip_edge
+            );
+        }
+        on_edge[c.base_edge].push(c);
+    }
+    for e in on_edge.iter_mut() {
+        e.sort_by(|a, b| a.base_t.partial_cmp(&b.base_t).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut walk: Vec<((f64, f64), Option<&Crossing2d>)> = Vec::with_capacity(n_base + crossings.len());
+    for i in 0..n_base {
+        walk.push((base_polygon[i], None));
+        for c in &on_edge[i] {
+            walk.push((c.point, Some(*c)));
+        }
+    }
+
+    // ── Start somewhere unambiguously outside the clip ──
+    let start = (0..walk.len())
+        .find(|&i| {
+            let (pt, xing) = walk[i];
+            xing.is_none()
+                && !point_in_polygon_2d_strict(pt, clip_polygon)
+                && !clip_polygon.iter().any(|q| {
+                    (q.0 - pt.0).abs() < ON_CLIP_VERT_EPS && (q.1 - pt.1).abs() < ON_CLIP_VERT_EPS
+                })
+        })
+        .ok_or_else(|| anyhow::anyhow!(
+            "polygon_difference_by_clip: no base vertex strictly outside the clip —              this is containment, not a partial overlap"
+        ))?;
+
+    // ── Walk ──
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    let mut entry: Option<&Crossing2d> = None;
+    for k in 0..walk.len() {
+        let (pt, xing) = walk[(start + k) % walk.len()];
+        match (xing, entry) {
+            (Some(c), None) => {
+                out.push(pt);
+                entry = Some(c);
+            }
+            (Some(c), Some(e)) => {
+                splice_clip_arc_backwards(clip_polygon, e, c, &mut out)?;
+                out.push(pt);
+                entry = None;
+            }
+            (None, None) => out.push(pt),
+            (None, Some(_)) => {} // inside the clip — this base vertex is bitten off
+        }
+    }
+    if entry.is_some() {
+        bail!(
+            "polygon_difference_by_clip: walk ended inside the clip — the crossings              do not pair up along the base boundary"
+        );
+    }
+
+    let out = dedup_ring_2d(out);
+    if out.len() < 3 {
+        bail!("polygon_difference_by_clip: result has fewer than 3 vertices");
+    }
+    Ok(out)
+}
+
+/// How near a base vertex may sit to a clip vertex and still be ambiguous.
+const ON_CLIP_VERT_EPS: f64 = 1e-6;
+
+/// One crossing, as both polygons see it.
+#[derive(Clone, Copy, Debug)]
+pub struct Crossing2d {
+    pub base_edge: usize,
+    pub base_t: f64,
+    pub clip_edge: usize,
+    pub clip_t: f64,
+    pub point: (f64, f64),
+}
+
+/// Append the clip vertices strictly between `entry` and `exit`, walking the
+/// clip BACKWARDS — which for a CCW clip is the side lying inside the base.
+fn splice_clip_arc_backwards(
+    clip: &[(f64, f64)],
+    entry: &Crossing2d,
+    exit: &Crossing2d,
+    out: &mut Vec<(f64, f64)>,
+) -> Result<()> {
+    // Going backwards from a point on edge e, the next clip VERTEX is that
+    // edge's start, `clip[e]`; then `clip[e-1]`, and so on. The exit lies part
+    // way along `clip[exit.clip_edge]`'s edge, so the last vertex to push is the
+    // one BEFORE that edge — stop when the index reaches it rather than after,
+    // or the exit's own edge start gets pushed and the arc doubles back
+    // (measured: `(80,60) → (80,80) → (120,80) → (100,80)` where `(120,80)`
+    // does not belong).
+    let n = clip.len();
+    let mut idx = entry.clip_edge;
+    let mut first = true;
+    for _ in 0..=n {
+        if idx == exit.clip_edge {
+            // On the first step this means both crossings share an edge. Going
+            // backwards reaches the exit directly only if it sits BEHIND the
+            // entry; if it is ahead, the arc is the whole way round.
+            if !first || exit.clip_t <= entry.clip_t {
+                return Ok(());
+            }
+        }
+        out.push(clip[idx]);
+        idx = (idx + n - 1) % n;
+        first = false;
+    }
+    bail!("polygon_difference_by_clip: could not walk the clip from entry to exit")
+}
+
+/// Drop consecutive duplicates, and a last point equal to the first.
+fn dedup_ring_2d(pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if let Some(last) = out.last() {
+            if (p.0 - last.0).abs() < DEDUP_EPS_2D && (p.1 - last.1).abs() < DEDUP_EPS_2D {
+                continue;
+            }
+        }
+        out.push(p);
+    }
+    if out.len() >= 2 {
+        let (a, b) = (out[0], *out.last().unwrap());
+        if (a.0 - b.0).abs() < DEDUP_EPS_2D && (a.1 - b.1).abs() < DEDUP_EPS_2D {
+            out.pop();
+        }
+    }
+    out
+}
+
 
 /// ADR-101 §B-3a pure 2D utility — boundary walking for `base \ lens`.
 ///
@@ -1464,10 +1663,209 @@ mod tests {
     }
 
     // ── Non-convex face rejected ──
+    /// The two-crossing case, both ways, on the same input.
+    ///
+    /// `polygon_difference_by_clip` has to agree with the walk it generalises
+    /// wherever that one applies, or the generalisation is a second answer
+    /// rather than the same one reaching further. A rectangle straddling
+    /// another's edge is the shape ADR-101 §B-3a was written for.
+    #[test]
+    fn the_two_crossing_case_reads_the_same_walked_either_way() {
+        // Base: 0..10 square. Clip: 5..15 × 3..7 — in through the right edge and
+        // back out through it, taking a bite out of the middle of that side.
+        let base: Vec<(f64, f64)> =
+            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let clip: Vec<(f64, f64)> =
+            vec![(5.0, 3.0), (15.0, 3.0), (15.0, 7.0), (5.0, 7.0)];
+        let area = |p: &[(f64, f64)]| {
+            let mut acc = 0.0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                acc += p[i].0 * p[j].1 - p[j].0 * p[i].1;
+            }
+            (acc / 2.0).abs()
+        };
+
+        let mut xs: Vec<(usize, f64, (f64, f64))> = Vec::new();
+        let mut cs: Vec<Crossing2d> = Vec::new();
+        for i in 0..base.len() {
+            let (a0, a1) = (base[i], base[(i + 1) % base.len()]);
+            for j in 0..clip.len() {
+                let (b0, b1) = (clip[j], clip[(j + 1) % clip.len()]);
+                if let Some((pt, ta, tb)) = segment_segment_intersect_2d(a0, a1, b0, b1) {
+                    xs.push((i, ta, pt));
+                    cs.push(Crossing2d { base_edge: i, base_t: ta, clip_edge: j, clip_t: tb, point: pt });
+                }
+            }
+        }
+        assert_eq!(xs.len(), 2, "the fixture is the two-crossing shape: {xs:?}");
+
+        let lens = sutherland_hodgman(&base, &clip).expect("they do overlap");
+        let by_lens = polygon_difference_walking(&base, &lens, &xs).expect("the old walk");
+        let by_clip = polygon_difference_by_clip(&base, &clip, &cs).expect("the new walk");
+
+        println!(
+            "
+  lens walk → {} 정점 넓이 {:.1}
+  clip walk → {} 정점 넓이 {:.1}
+",
+            by_lens.len(), area(&by_lens), by_clip.len(), area(&by_clip)
+        );
+
+        // 100 minus the 5×4 bite.
+        assert!((area(&by_lens) - 80.0).abs() < 1e-6, "old: {by_lens:?}");
+        // ⚠ Compare the POLYGONS, not the areas. A spurious corner that doubles
+        // back encloses nothing, so two different answers can weigh the same.
+        assert_eq!(
+            by_clip.len(), by_lens.len(),
+            "the two walks have to agree where both apply
+  lens: {by_lens:?}
+               clip: {by_clip:?}"
+        );
+        for (c, l) in by_clip.iter().zip(by_lens.iter()) {
+            assert!(
+                (c.0 - l.0).abs() < 1e-9 && (c.1 - l.1).abs() < 1e-9,
+                "corner mismatch: clip {c:?} lens {l:?}
+  lens: {by_lens:?}
+                   clip: {by_clip:?}"
+            );
+        }
+    }
+
+    /// A CONCAVE subject and a convex clip that bites it twice.
+    ///
+    /// This is the shape session 3's op 15 lands in: a face earlier operations
+    /// divided is concave, and the push's cap crosses it at FOUR points rather
+    /// than two. The "C" below opens to the right and the rectangle reaches into
+    /// both arms, so `A ∩ B` is two DISCONNECTED squares:
+    ///
+    /// ```text
+    ///     A (CCW)                       B (CCW)
+    ///     (0,0) (100,0) (100,40)        (80,20) (120,20)
+    ///     (40,40) (40,60) (100,60)      (120,80) (80,80)
+    ///     (100,100) (0,100)
+    ///
+    ///     A ∩ B  =  [80,100]×[20,40]  and  [80,100]×[60,80]     2 × 400
+    ///     A − B  =  8000 − 800 = 7200, still one connected polygon
+    /// ```
+    ///
+    /// Measuring rather than asserting a fix: what Sutherland-Hodgman returns for
+    /// a lens that is not connected, and what the difference walk does with four
+    /// crossings, are the two facts the next step needs.
+    #[test]
+    fn a_concave_subject_bitten_twice_by_a_convex_clip() {
+        let a: Vec<(f64, f64)> = vec![
+            (0.0, 0.0), (100.0, 0.0), (100.0, 40.0), (40.0, 40.0),
+            (40.0, 60.0), (100.0, 60.0), (100.0, 100.0), (0.0, 100.0),
+        ];
+        let b: Vec<(f64, f64)> = vec![
+            (80.0, 20.0), (120.0, 20.0), (120.0, 80.0), (80.0, 80.0),
+        ];
+        let area = |p: &[(f64, f64)]| {
+            let mut acc = 0.0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                acc += p[i].0 * p[j].1 - p[j].0 * p[i].1;
+            }
+            (acc / 2.0).abs()
+        };
+        println!("
+  A 넓이 {:.0}  (C 자, 오목)   B 넓이 {:.0}", area(&a), area(&b));
+
+        // What the clipper makes of a disconnected intersection.
+        match sutherland_hodgman(&a, &b) {
+            None => println!("  SH → None"),
+            Some(lens) => {
+                println!("  SH → {} 정점, 넓이 {:.1}", lens.len(), area(&lens));
+                for q in lens.iter() {
+                    println!("        ({:.0},{:.0})", q.0, q.1);
+                }
+            }
+        }
+
+        // The crossings, computed the way `coplanar_intersection_segments` does.
+        let mut xs: Vec<(usize, f64, (f64, f64))> = Vec::new();
+        for i in 0..a.len() {
+            let (a0, a1) = (a[i], a[(i + 1) % a.len()]);
+            for j in 0..b.len() {
+                let (b0, b1) = (b[j], b[(j + 1) % b.len()]);
+                if let Some((pt, ta, _tb)) =
+                    segment_segment_intersect_2d(a0, a1, b0, b1)
+                {
+                    xs.push((i, ta, pt));
+                }
+            }
+        }
+        println!("
+  교차점 {}개", xs.len());
+        for (e, t, pt) in xs.iter() {
+            println!("      edge {e} t={t:.3}  ({:.0},{:.0})", pt.0, pt.1);
+        }
+
+        // The lens-based walk, which is what used to be asked.
+        let lens = sutherland_hodgman(&a, &b).unwrap_or_default();
+        match polygon_difference_walking(&a, &lens, &xs) {
+            Ok(out) => println!("
+  lens walk → {} 정점, 넓이 {:.1}", out.len(), area(&out)),
+            Err(e) => println!("
+  lens walk → Err({e})"),
+        }
+
+        // And walking B instead.
+        let mut cs: Vec<Crossing2d> = Vec::new();
+        for i in 0..a.len() {
+            let (a0, a1) = (a[i], a[(i + 1) % a.len()]);
+            for j in 0..b.len() {
+                let (b0, b1) = (b[j], b[(j + 1) % b.len()]);
+                if let Some((pt, ta, tb)) = segment_segment_intersect_2d(a0, a1, b0, b1) {
+                    cs.push(Crossing2d { base_edge: i, base_t: ta, clip_edge: j, clip_t: tb, point: pt });
+                }
+            }
+        }
+        match polygon_difference_by_clip(&a, &b, &cs) {
+            Ok(out) => {
+                println!("  clip walk → {} 정점, 넓이 {:.1}", out.len(), area(&out));
+                for q in out.iter() {
+                    println!("        ({:.0},{:.0})", q.0, q.1);
+                }
+            }
+            Err(e) => println!("  clip walk → Err({e})"),
+        }
+        println!();
+
+        assert_eq!(xs.len(), 4, "the fixture has to make four crossings: {xs:?}");
+        let diff = polygon_difference_by_clip(&a, &b, &cs)
+            .expect("four crossings have to walk");
+
+        // ⚠ AREA IS NOT ENOUGH. An arc that doubles back along the clip adds
+        // vertices whose excursion encloses nothing, so the shoelace still reads
+        // 8000 — measured: an off-by-one in the splice gave
+        // `(80,60) → (80,80) → (120,80) → (100,80)`, area unchanged. Assert the
+        // polygon.
+        let want: Vec<(f64, f64)> = vec![
+            (0.0, 0.0), (100.0, 0.0), (100.0, 20.0), (80.0, 20.0), (80.0, 40.0),
+            (40.0, 40.0), (40.0, 60.0), (80.0, 60.0), (80.0, 80.0), (100.0, 80.0),
+            (100.0, 100.0), (0.0, 100.0),
+        ];
+        assert_eq!(
+            diff.len(), want.len(),
+            "A − B is A with two bites out of it, {} corners: got {} — {diff:?}",
+            want.len(), diff.len()
+        );
+        for (got, exp) in diff.iter().zip(want.iter()) {
+            assert!(
+                (got.0 - exp.0).abs() < 1e-9 && (got.1 - exp.1).abs() < 1e-9,
+                "corner mismatch: got {got:?} want {exp:?}
+  full: {diff:?}"
+            );
+        }
+        assert!((area(&diff) - 8000.0).abs() < 1e-9, "and 8800 − 800: {:.3}", area(&diff));
+    }
+
     #[test]
     fn adr101_phase_b2_non_convex_face_errors() {
         let mut mesh = Mesh::new();
-        // L-shape (5 verts, concave at index 2).
+        // L-shape (concave at index 2).
         let verts = [
             xy(0.0, 0.0), xy(4.0, 0.0), xy(4.0, 2.0),
             xy(2.0, 2.0), xy(2.0, 4.0), xy(0.0, 4.0),
@@ -1477,10 +1875,33 @@ mod tests {
         let convex = add_quad(&mut mesh, [
             xy(1.0, 1.0), xy(5.0, 1.0), xy(5.0, 5.0), xy(1.0, 5.0),
         ]);
-        let err = coplanar_intersection_segments(&mesh, l_shape, convex)
-            .expect_err("expected non-convex error");
-        let msg = format!("{}", err);
-        assert!(msg.contains("non-convex"), "got error: {}", msg);
+
+        // A non-convex CLIP is still refused — Sutherland-Hodgman cuts the
+        // subject once per clip edge, which only describes an intersection when
+        // the clip is convex.
+        let err = coplanar_intersection_segments(&mesh, convex, l_shape)
+            .expect_err("a non-convex clip has to be refused");
+        assert!(
+            format!("{err}").contains("non-convex"),
+            "got error: {err}"
+        );
+
+        // A non-convex SUBJECT is fine, and used to be refused with it. That
+        // refusal is what left `subtract_double_covered_faces` unable to measure
+        // an overlap with any face earlier operations had divided.
+        let ok = coplanar_intersection_segments(&mesh, l_shape, convex)
+            .expect("a concave subject is what SH is for");
+        println!(
+            "
+  오목 대상 × 볼록 클립 → 교차점 {}개, lens {}정점
+",
+            ok.crossings.len(),
+            ok.lens_polygon.len()
+        );
+        assert!(
+            !ok.crossings.is_empty(),
+            "and it has to actually measure something: {ok:?}"
+        );
     }
 
     // ── Edge ownership info: crossings carry valid (edge_index, t) ──

@@ -51,24 +51,33 @@
 //! and the self-intersection scan does not count them. It asks the invariant
 //! checker too now, relative, the way its siblings do.
 //!
-//! ── op 15, open ──────────────────────────────────────────────────────────
+//! ── op 15, and what carried the session through ──────────────────────────
 //!
 //! Two more operations further on. Reduced to six, ending in a push whose cap
-//! lands on a circle face that earlier operations had already divided:
+//! lands on a circle face that earlier operations had already divided — so it is
+//! concave, and the repair could not so much as MEASURE the overlap:
 //!
 //! ```text
 //!   coplanar_intersection_segments → Err(coplanar clipping requires convex
 //!                                        faces; face FaceId(4) is non-convex)
 //! ```
 //!
-//! Every branch of `subtract_double_covered_faces` falls through when that
-//! errors — it cannot so much as MEASURE the overlap. Relaxing the SUBJECT
-//! convexity requirement was tried (Sutherland-Hodgman only needs the CLIP
-//! convex) and it does let the measurement through — 4 crossings, an 8-vertex
-//! lens — but the difference walk handles exactly 2, so no branch acts and
-//! nothing changes. Reverted rather than left in earning nothing, and the
-//! reading is here so the next pass starts from it. General non-convex clipping
-//! is ADR-101 §5's own item.
+//! Two things were wrong with that. Sutherland-Hodgman needs only the CLIP
+//! convex — the subject is what it cuts — and the difference walk took the arc
+//! between two crossings from the LENS, which for a concave base is not one
+//! polygon at all (SH joins the disconnected parts with zero-width connectors;
+//! measured in `a_concave_subject_bitten_twice_by_a_convex_clip`, two 20×20
+//! squares as one 8-vertex ring).
+//!
+//! Both are fixed: the subject may be concave, and `polygon_difference_by_clip`
+//! walks the CLIP's own boundary for any even number of crossings. Session 3
+//! runs all twenty of its operations now, and the fuzz's `KNOWN_BREAKS` is
+//! empty for the first time.
+//!
+//! ⚠ The six-operation reduction below still leaves a pair, on a DIFFERENT pair
+//! of faces, where the clipper reports no meeting at all and the invariant
+//! checker reports a double cover. That disagreement is the next lead; it is
+//! pinned rather than chased.
 
 use axia_core::scene::Scene;
 use axia_core::{Command, FORM_MATERIAL};
@@ -450,10 +459,23 @@ fn shrunk_op15() -> Vec<Op> {
     ]
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
-/// `KNOWN_BREAKS`. The repair cannot measure this overlap: the circle face is
-/// non-convex by the time the push lands on it, and
-/// `coplanar_intersection_segments` refuses non-convex subjects.
+/// ⚠ PINNED AS MEASURED — still stacks, and the fuzz no longer reaches it.
+///
+/// The concave overlap IS measured now (`coplanar_intersection_segments` takes a
+/// non-convex subject, and `polygon_difference_by_clip` walks four crossings),
+/// which is what carried session 3 through all twenty of its operations. These
+/// six still leave a pair, and it is a DIFFERENT one:
+///
+/// ```text
+///   was   FaceId(4)  넓이 1224  ×  FaceId(36) 넓이 408
+///         → Err(coplanar clipping requires convex faces)
+///   is    FaceId(37) 넓이  970  ×  FaceId(36) 넓이 408
+///         → 교차점 0개, lens 0정점 — 어느 갈래도 아님
+/// ```
+///
+/// So the next question is a different one: the invariant checker says these two
+/// cover the same ground and the clipper says they do not meet at all. One of
+/// them is wrong about this pair, and that is where to start.
 #[test]
 fn the_op15_reduction_still_stacks() {
     let v: Vec<(usize, String)> = violations(&shrunk_op15())
@@ -839,9 +861,15 @@ fn coincident_is_not_crossing() {
         planar_solid > 0 && curved_solid == 0,
         "the guard's condition has to hold, or this scene does not exercise it"
     );
-    assert_eq!(
-        si_before, si_after,
-        "the self-intersection scan cannot see coincident faces — if it starts          to, the invariant half of the rollback is no longer what catches this"
+    // The reading that named it was `19 → 19` while violations went `0 → 1`.
+    // Both numbers moved once the repair could measure a concave overlap (the
+    // scene reaching the re-derive is a different one now), so what is asserted
+    // is the part that carries the meaning: self-intersections do not RISE, so
+    // the rollback's original half would not have fired, and the plane comes out
+    // sound anyway because the invariant half does the work.
+    assert!(
+        si_after <= si_before,
+        "self-intersections must not rise ({si_before} → {si_after}) — if they          do, the SI half of the rollback is what catches this and the invariant          half is no longer what this test is about"
     );
     assert_eq!(bad_after, bad_before, "and the re-derive leaves the plane sound");
 }
