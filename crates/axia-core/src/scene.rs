@@ -3661,12 +3661,41 @@ impl Scene {
         // innermost`, 메타-원칙 #4 SSOT): each circle hole → its INNERMOST parent
         // ONLY (smallest enclosing face). Manifold at any nesting depth.
         {
+            // Only the faces on the plane being rebuilt.
+            //
+            // This list is handed to `assign_circle_holes_innermost` and
+            // `assign_polygon_holes`, which reparent a contained face into its
+            // innermost container. Unfiltered it is every active face in the
+            // scene, so a rebuild of one plane reparents among faces on another:
+            // a small circle drawn on z=0 left two faces at z=100 — both older
+            // than the draw — sharing an edge with a third
+            // (`pushing_in_three_deep_stacks_faces.rs`, session 10 op 11).
+            //
+            // Containment is a question about one plane. Asking it across all of
+            // them was never intended; the call site simply collected everything
+            // active.
+            let n_unit = normal.normalize_or_zero();
             let fids: Vec<FaceId> = self
                 .mesh
                 .faces
                 .iter()
                 .filter(|(_, f)| f.is_active())
                 .map(|(f, _)| f)
+                .filter(|&f| {
+                    self.mesh
+                        .faces
+                        .get(f)
+                        .and_then(|x| self.mesh.collect_loop_verts(x.outer().start).ok())
+                        .map(|vv| {
+                            !vv.is_empty()
+                                && vv.iter().all(|v| {
+                                    self.mesh.verts.get(*v).map_or(false, |p| {
+                                        (p.pos() - origin).dot(n_unit).abs() < 1e-3
+                                    })
+                                })
+                        })
+                        .unwrap_or(false)
+                })
                 .collect();
             let _ = axia_geo::operations::annulus::assign_circle_holes_innermost(
                 &mut self.mesh,

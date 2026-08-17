@@ -318,16 +318,17 @@ fn shrunk_op11() -> Vec<Op> {
     ]
 }
 
-/// ⚠ PINNED AS MEASURED — an OPEN defect, inventoried in the fuzz's
-/// `KNOWN_BREAKS`.
+/// The four operations that used to leave two faces on z=100 covering each
+/// other after a circle was drawn on z=0.
+///
+/// Mutation-checked: unscoping the containment pass — handing it every active
+/// face in the scene again — puts them back.
 #[test]
-fn the_op11_reduction_still_stacks() {
+fn the_op11_reduction_is_sound() {
     let got = run(&shrunk_op11());
-    println!("\n  op11 축소 4 연산 → {got:?}");
-    assert!(
-        got.is_some(),
-        "the four-operation reduction of the op-11 break has to reproduce it: {got:?}"
-    );
+    println!("
+  op11 축소 4 연산 → {got:?}");
+    assert!(got.is_none(), "the four-operation reduction has to stay sound: {got:?}");
 }
 
 /// Which two faces cover each other, and where they are.
@@ -413,7 +414,7 @@ fn what_the_last_circle_stacks_with() {
         }
     }
     assert!(
-        !s.mesh.verify_face_invariants().violations.is_empty(),
-        "the repro has to leave something to describe"
+        s.mesh.verify_face_invariants().violations.is_empty(),
+        "nothing is left stacked — the containment pass is scoped to the plane          being rebuilt, so a draw on z=0 no longer reparents among faces on z=100"
     );
 }

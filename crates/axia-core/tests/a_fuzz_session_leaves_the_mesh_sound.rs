@@ -238,15 +238,18 @@ const KNOWN_BREAKS: &[(u64, &str)] = &[
     // faces, crossing two comes out with the middle piece twice. The scene layer
     // enters `intersect_faces_with_model` once; the duplicate is inside it.
     (3, "op 1 of two: a square drawn at a height INSIDE a box, crossing two of           its walls, gets its middle piece twice. One wall is clean."),
-    // Re-reduced after the re-derive learned to run on a solid's plane, and the
-    // new four are not the old four. One rectangle and a box on z=100, a circle
-    // over them, and then a small circle on **z=0** — a plane nothing else is on.
-    //
-    // Both faces the violation names are at z=100 and both were there BEFORE
-    // that last circle. So a draw on one plane made two faces on another start
-    // covering each other, and that is where to look: not at z=0, where the
-    // drawing happened.
-    (10, "op 3 of four: a circle drawn on z=0 leaves FaceId(2) and FaceId(19),           both on z=100 and both older than the draw, sharing EdgeId(48)           with a third face."),
+    // Session 10's four-operation reduction of the op-11 break is FIXED — the
+    // containment pass is scoped to the plane being rebuilt, so a draw on z=0 no
+    // longer reparents among faces on z=100. The full eleven still stop at op 11,
+    // so the reduction was not the whole story.
+    (10, "op 11, three pushes in: edge EdgeId(69) bears four faces. Its           four-operation reduction is fixed; this longer one is not."),
+    // Session 9 arrives with the scoping and is not what it cost: reduced to
+    // three operations — a box, then a pentagon and a circle on the plane its
+    // BOTTOM occupies — which break the same way on main, same edge and same two
+    // faces (`pushing_in_leaves_faces_on_top_of_each_other.rs`). The fuzz's
+    // operations depend on the mesh, so its stream moved onto a defect that was
+    // already there. Third time that has happened; it is how this harness works.
+    (9, "op 2 of three: a pentagon and a circle on the plane a box's bottom          occupies leave EdgeId(44) bearing four faces. Pre-existing."),
 ];
 
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
