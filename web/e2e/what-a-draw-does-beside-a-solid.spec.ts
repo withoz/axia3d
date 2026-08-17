@@ -182,17 +182,29 @@ test.describe('a draw beside a solid', () => {
   /**
    * A circle drawn beside a box, on a plane two rectangles already share.
    *
-   * ⚠ THE ONE THAT READS DIFFERENTLY HERE. In the Rust fixture the box is built
-   * straight into the mesh and the same draw comes out sound; through the bridge
-   * the box is auto-split against the rectangles it lands on and starts with ten
-   * faces instead of six, and the draw still leaves two stacked.
+   * ⚠ THE ONE THAT READS DIFFERENTLY HERE, and it has now changed twice. In the
+   * Rust fixture the box is built straight into the mesh and this comes out
+   * sound; through the bridge the box is auto-split against the rectangles it
+   * lands on and starts with ten faces instead of six.
    *
-   * So the fix holds for the scene it was reduced from and not for the app's own
-   * richer one. That is worth having in front of us rather than tuned away: the
-   * circle IS divided — ten faces to twenty — and what is left over is the same
-   * kind of stack, in a scene one step more tangled than the repro.
+   *     before        10 → 20 faces, a stacked pair
+   *     after         10 → 11 faces, sound, and NOT divided
+   *
+   * The re-derive undoes itself now when it leaves the mesh objecting, and its
+   * division of this scene was one of those — so it declines, and the circle
+   * lands as one face rather than dividing what is under it. Sound instead of
+   * corrupt, and less than the draw should do.
+   *
+   * That is the same trade the re-derive already made for self-intersections;
+   * what is new is that it can now see two faces covering one patch of ground,
+   * which that scan cannot. Making the division RIGHT here rather than declining
+   * it is the non-convex clipping work — `coplanar_intersection_segments`
+   * refuses non-convex subjects, and a face earlier operations have divided is
+   * usually concave (ADR-101 §5).
+   *
+   * Kept reading what it reads rather than tuned to agree.
    */
-  test('a circle beside a box divides, and still leaves a stack here', async ({ page }) => {
+  test('a circle beside a box: sound here now, and not divided', async ({ page }) => {
     await boot(page);
     const r = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -206,14 +218,18 @@ test.describe('a draw beside a solid', () => {
       return {
         before,
         after: b.getStats().faces,
+        valid: inv.valid,
         violations: inv.violations.length,
-        first: inv.violations[0] ?? null,
       };
     });
-    // The division happens.
-    expect(r.after).toBeGreaterThan(r.before + 1);
-    // And this scene still stacks. When that stops, say what fixed it.
-    expect(r.violations).toBeGreaterThan(0);
-    expect(String(r.first)).toContain('cover the same ground');
+    // The draw lands.
+    expect(r.after).toBeGreaterThan(r.before);
+    // And leaves nothing objecting — which it did not before.
+    expect(r.valid).toBe(true);
+    expect(r.violations).toBe(0);
+    // ⚠ But it does not divide. When this starts reading more than one added
+    // face, the arrangement has learned to divide this scene correctly and the
+    // rollback is no longer declining it — say what fixed it.
+    expect(r.after).toBe(r.before + 1);
   });
 });
