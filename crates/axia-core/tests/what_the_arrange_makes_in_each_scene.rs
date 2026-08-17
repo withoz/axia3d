@@ -37,6 +37,49 @@
 //! `a_shape_overlapping_a_drawn_solid_splits_three_ways` and
 //! `a_sheet_may_meet_a_solid_along_a_shared_edge`.
 
+//! ── Where downstream it stacks, located ──────────────────────────────────
+//!
+//! Probed through the whole draw wiring on defect 3's scene, with the
+//! re-derive's early return turned off so it runs:
+//!
+//! ```text
+//!   guard_imprint entry              si=4  viol=0
+//!   intersect_faces_inner entry      si=7  viol=0
+//!   ...re-derive                     si=7  viol=0
+//!   ...containment post-process      si=7  viol=0
+//!   ...end of rebuild                si=7  viol=0
+//!   before subtract_double_covered   si=7  viol=0
+//!   AFTER  subtract_double_covered   si=6  viol=3   ← here
+//! ```
+//!
+//! Every stage of the rebuild leaves the plane clean by both instruments. The
+//! post-draw repair in `guard_imprint` fixes one overlap and makes three
+//! violations — it rebuilds a face wound against the draw. That is the step, and
+//! it is the same function session 9's rollback went into; that rollback only
+//! fires when a face that bounded a solid stops bounding one, which this does
+//! not do.
+//!
+//! ── The fix that follows, measured, and its cost ─────────────────────────
+//!
+//! Two rollbacks, each reading the instrument that can see its own damage:
+//! the re-derive undone when self-intersections rise, the repair undone when
+//! invariant violations rise. Measured with both in place:
+//!
+//! ```text
+//!   defect 3                                    ok
+//!   session 10's four-operation repro           SOUND (was stacked)
+//!   the two solid-sharing guards                ok
+//!   axia-core --lib                             467 passed, 0 failed
+//!   every other scene suite                     ok
+//! ```
+//!
+//! And the cost, which is why it is not in this commit: the fuzz says **session
+//! 3 was sound and is not any more**. That is the harness working — a newly
+//! broken session is a regression, not an inventory item, and it wants reducing
+//! and pinning the way the other four did before this can land.
+//!
+//! ── The comparison this file started as ──────────────────────────────────
+//!
 use axia_core::scene::Scene;
 use axia_core::{Command, FORM_MATERIAL};
 use axia_geo::{CreateSolidMode, FaceId};
@@ -319,8 +362,7 @@ fn the_early_return_is_what_silences_it() {
     println!("\n  상자 있음 {a}면, 상자 없음 {b}면");
     assert!(
         b > a,
-        "the same draw makes MORE faces when no solid shares the plane — the \
-         box is not being drawn on, it is silencing the arrange"
+        "the same draw makes MORE faces when no solid shares the plane — the          box is not being drawn on, it is silencing the arrange"
     );
 }
 
