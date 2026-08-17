@@ -101,8 +101,11 @@ test.describe('a draw beside a solid', () => {
   /**
    * A square drawn at a height INSIDE a box — one side out, then two.
    *
-   * Still open, and here so the demo does not read as "everything works". One
-   * side is clean; the second duplicates the middle piece.
+   * The second one used to duplicate the middle piece: the split took every
+   * crossing segment at once and paired the intersection points along the
+   * direction of the first, so with two walls it paired across them and handed
+   * back the whole square twice. It cuts by one connected path at a time now,
+   * and both read clean.
    */
   test('a square through a box: one side clean', async ({ page }) => {
     await boot(page);
@@ -117,7 +120,7 @@ test.describe('a draw beside a solid', () => {
     expect(r.violations).toBe(0);
   });
 
-  test('a square through a box: two sides still duplicate', async ({ page }) => {
+  test('a square through a box: two sides clean too', async ({ page }) => {
     await boot(page);
     const r = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -127,7 +130,7 @@ test.describe('a draw beside a solid', () => {
       const inv = b.verifyInvariants();
       return { faces: b.getStats().faces, violations: inv.violations.length };
     });
-    expect(r.violations).toBeGreaterThan(0);
+    expect(r.violations).toBe(0);
   });
 
   /**

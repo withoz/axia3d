@@ -9247,7 +9247,130 @@ fn assemble_closed_loops(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
 ///
 /// MVP: 단일 직선(세그먼트 체인)에 의한 분할만 지원.
 /// (2개 이상의 독립 분할선은 향후 확장)
+/// Split a polygon by every line crossing it.
+///
+/// The segments arriving here are whatever the caller found crossing this one
+/// face, and one crossing wall can hand over several of them — so they are first
+/// gathered into CONNECTED PATHS — segments sharing endpoints belong together —
+/// and the polygon is then cut by one path at a time, each piece from the
+/// previous path being offered to the next.
+///
+/// This is not how it worked. `split_polygon_2d_one_line` took every segment at
+/// once and paired the intersection points by projecting them all onto the
+/// direction of the FIRST segment — so with two lines it paired one line's end
+/// with the other line's end, and the walk that follows those pairings went
+/// right round the outside and returned the whole polygon, twice:
+///
+/// ```text
+///   one line    2 pieces  [6000, 4000]     sums to 10,000
+///   two lines   2 pieces  [10000, 10000]   sums to 20,000
+/// ```
+///
+/// Cutting once at a time reuses the one-line path exactly as it is — measured
+/// correct, and the control in its one-line row
+/// fails if that ever stops being true.
 fn split_polygon_2d(
+    poly: &[Pt2],
+    cut_segments: &[(Pt2, Pt2)],
+) -> Option<Vec<Vec<Pt2>>> {
+    let lines = group_connected_cuts(cut_segments);
+
+    // One line — hand it straight over, so nothing about the case that always
+    // worked goes through new code.
+    if lines.len() < 2 {
+        return split_polygon_2d_one_line(poly, cut_segments);
+    }
+
+    let mut pieces: Vec<Vec<Pt2>> = vec![poly.to_vec()];
+    let mut ever_split = false;
+
+    for line in &lines {
+        let mut next: Vec<Vec<Pt2>> = Vec::with_capacity(pieces.len() + 1);
+        for piece in pieces {
+            match split_polygon_2d_one_line(&piece, line) {
+                // A line that misses this piece, or leaves it whole, hands it on
+                // unchanged — the piece on the far side of the first line is
+                // usually untouched by the second.
+                Some(parts) if parts.len() >= 2 => {
+                    ever_split = true;
+                    next.extend(parts);
+                }
+                _ => next.push(piece),
+            }
+        }
+        pieces = next;
+    }
+
+    if ever_split && pieces.len() >= 2 { Some(pieces) } else { None }
+}
+
+/// Gather cut segments into one group per connected cut PATH.
+///
+/// ⚠ The criterion is connectivity, not collinearity. Grouping by line was tried
+/// first and broke the corner-poke case in
+/// `adr276_phase0_sim_general_intersection_and_split`: a cut that turns a corner
+/// arrives as six segments on six different lines, and cut one line at a time
+/// none of them reaches across the face, so `12 -> 12 faces`. The old code got
+/// that right by taking every segment at once, and segments sharing endpoints
+/// are exactly the ones it needed together.
+///
+/// Two walls a draw sticks out past are two paths that touch nowhere, so they
+/// come out as two groups — which is the case this whole thing exists for.
+fn group_connected_cuts(cut_segments: &[(Pt2, Pt2)]) -> Vec<Vec<(Pt2, Pt2)>> {
+    /// How near two endpoints must be to count as the same point, in mm. Well
+    /// under the 0.15 μm the mesh dedups at (LOCKED #5) — these come from
+    /// analytic plane intersections and should meet to f64.
+    const SAME_END_MM: f64 = 1e-6;
+
+    let n = cut_segments.len();
+    if n < 2 {
+        return if n == 1 { vec![cut_segments.to_vec()] } else { Vec::new() };
+    }
+
+    let near = |a: Pt2, b: Pt2| {
+        let (dx, dy) = (a.x - b.x, a.y - b.y);
+        dx * dx + dy * dy <= SAME_END_MM * SAME_END_MM
+    };
+    let touch = |i: usize, j: usize| {
+        let (a0, a1) = cut_segments[i];
+        let (b0, b1) = cut_segments[j];
+        near(a0, b0) || near(a0, b1) || near(a1, b0) || near(a1, b1)
+    };
+
+    // Union-find over segments.
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut Vec<usize>, mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if touch(i, j) {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+
+    let mut by_root: FxHashMap<usize, Vec<(Pt2, Pt2)>> = FxHashMap::default();
+    let mut order: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        if !by_root.contains_key(&r) {
+            order.push(r);
+        }
+        by_root.entry(r).or_default().push(cut_segments[i]);
+    }
+    // Keep the order the segments arrived in, so the split is deterministic.
+    order.into_iter().filter_map(|r| by_root.remove(&r)).collect()
+}
+
+fn split_polygon_2d_one_line(
     poly: &[Pt2],
     cut_segments: &[(Pt2, Pt2)],
 ) -> Option<Vec<Vec<Pt2>>> {
@@ -21088,32 +21211,28 @@ mod tests {
 
     // ── Face Split 단위 테스트 ──────────────────────
 
-    /// ⚠ PINNED AS MEASURED — a square cut by TWO lines comes back as ITSELF,
-    /// twice.
+    /// A square cut by TWO lines: three pieces, summing to the square.
     ///
     /// The scene layer hands this one face and every segment where another face
     /// crosses it, so a square drawn at a height inside a box — crossing two of
     /// its walls — arrives as one polygon and two segments:
     ///
     /// ```text
-    ///   one cut    2 pieces  [6000, 4000]     sums to 10,000  ✓
-    ///   two cuts   2 pieces  [10000, 10000]   sums to 20,000  ✗
+    ///   one line    2 pieces  [6000, 4000]           sums to 10,000
+    ///   two lines   3 pieces  [3000, 4000, 3000]     sums to 10,000
     /// ```
     ///
-    /// Three pieces summing to 10,000 is the answer. What comes back is the
-    /// whole square twice, and that is the two identical faces covering the same
-    /// ground in `session_3_when_the_rollbacks_are_in.rs`.
+    /// The second row used to read `[10000, 10000]` — the whole square, twice —
+    /// which is what left two identical faces covering the same ground in
+    /// `session_3_when_the_rollbacks_are_in.rs`. Crossing one wall was always
+    /// clean, and the first row is here so a fix that trades one for the other
+    /// fails.
     ///
-    /// The walk is why. It starts at an intersection, runs forward, and on
-    /// reaching an intersection JUMPS to that intersection's partner and keeps
-    /// going. With one cut there is only one pair, so a jump closes the loop.
-    /// With two, the walk meets the OTHER pair's intersection, jumps across that
-    /// cut as well, and traverses the whole boundary back to where it began.
-    ///
-    /// Fixing it is a proper arrangement walk, not a patch to the jump rule, so
-    /// this pins what is there until that lands.
+    /// Mutation-checked: making `group_connected_cuts` return one group for
+    /// everything — the old behaviour of taking all segments at once — puts the
+    /// second row back to `[10000, 10000]` and fails this test.
     #[test]
-    fn split_polygon_2d_two_cuts_return_the_square_twice() {
+    fn split_polygon_2d_two_cuts_give_three_pieces() {
         let poly = vec![
             Pt2::new(0.0, 0.0),
             Pt2::new(100.0, 0.0),
@@ -21147,14 +21266,10 @@ mod tests {
         let two_areas: Vec<f64> = two.iter().map(area).collect();
         let sum: f64 = two_areas.iter().sum();
         println!("  두 선: {} 조각 {two_areas:?} 합 {sum}", two.len());
-        // TODAY: two pieces, each the whole square. When this reads three
-        // pieces summing to 10,000, the arrangement walk landed — strike
-        // session 3 from the fuzz's KNOWN_BREAKS and turn this into the test
-        // that proves it.
-        assert_eq!(two.len(), 2, "two cuts still give two: {two_areas:?}");
+        assert_eq!(two.len(), 3, "two lines, three pieces: {two_areas:?}");
         assert!(
-            (sum - 20_000.0).abs() < 1.0,
-            "and each is the whole square — {two_areas:?} sums to {sum}, where              10,000 would mean they are real pieces"
+            (sum - 10_000.0).abs() < 1.0,
+            "and they add up to the square — {two_areas:?} sums to {sum}; 20,000              means each piece is the whole square again"
         );
     }
 
