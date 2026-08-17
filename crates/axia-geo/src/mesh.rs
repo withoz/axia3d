@@ -11080,6 +11080,12 @@ impl Mesh {
         // ─── 4. For each old HE, create two replacement HEs ────────
         let mut e1_hes: Vec<HeId> = Vec::new();
         let mut e2_hes: Vec<HeId> = Vec::new();
+        // old HE → (first, last) of the pair that takes its place in the loop.
+        // A dangling spur puts BOTH half-edges of the edge in one face loop,
+        // next to each other, so each one's captured `prev`/`next` names the
+        // other — which this same call is about to deactivate. See the fix-up
+        // pass after the loop.
+        let mut replaced: FxHashMap<HeId, (HeId, HeId)> = FxHashMap::default();
 
         for info in &old_hes_info {
             if info.dst == vb {
@@ -11134,6 +11140,7 @@ impl Mesh {
                     }
                 }
 
+                replaced.insert(info.id, (he_ap, he_pb));
                 e1_hes.push(he_ap);
                 e2_hes.push(he_pb);
 
@@ -11184,6 +11191,7 @@ impl Mesh {
                     }
                 }
 
+                replaced.insert(info.id, (he_bp, he_pa));
                 e2_hes.push(he_bp);
                 e1_hes.push(he_pa);
             } else {
@@ -11193,6 +11201,42 @@ impl Mesh {
 
             // Deactivate old half-edge
             self.hes[info.id].set_active(false);
+        }
+
+        // ─── 4b. Point the new wiring at replacements, not at the dead ──
+        //
+        // The wiring above copies `prev`/`next` from the half-edge it replaces,
+        // captured before any mutation. That is right when the neighbour
+        // survives the call and wrong when it does not. A dangling spur is
+        // exactly the case where it does not: both half-edges of the edge lie
+        // in the SAME face loop, consecutively, so each names the other, and
+        // both are deactivated at the end of the loop above. The ring is then
+        // left running through a dead half-edge whose own `next` points back
+        // into the middle of the ring, and walking it never comes home:
+        //
+        //     face FaceId(11): cannot collect outer loop:
+        //                      Loop traversal exceeded 10000
+        //
+        // Found by the fuzz on seed 0x5EED0006 and reduced to ten operations in
+        // `a_face_naming_a_gone_half_edge.rs`, where the chain visits the dead
+        // half-edge and re-enters at its fourth step.
+        // ⚠ Only the `next` remap below is covered. Mutation-checked: deleting
+        // the pass fails the repro, deleting the `prev` remap alone does not —
+        // both the invariant checker and the guard walk the ring forwards, so a
+        // `prev` left pointing at a dead half-edge is not observable from here.
+        // It is kept because a half-ring is worse to debug than a whole one,
+        // and said out loud because an uncovered line should not read as a
+        // tested one.
+        let new_hes: Vec<HeId> = replaced.values().flat_map(|&(f, l)| [f, l]).collect();
+        for h in new_hes {
+            let n = self.hes[h].next();
+            if let Some(&(first, _)) = replaced.get(&n) {
+                self.hes[h].set_next(first);
+            }
+            let pv = self.hes[h].prev();
+            if let Some(&(_, last)) = replaced.get(&pv) {
+                self.hes[h].set_prev(last);
+            }
         }
 
         // ─── 5. Build radial chains for E1 and E2 ──────────────────
