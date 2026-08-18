@@ -10759,7 +10759,14 @@ impl Scene {
     /// second call site.
     ///
     /// It also buys nothing there: the stacked pair's producer reports
-    /// `PushPullDone`, so it is the fallback arm that creates it.
+    /// `PushPullDone`, and wiring the fallback arm is what cleared it — which is
+    /// the proof of which arm it takes.
+    ///
+    /// Two other paths reach `exec_push_pull` from here and neither is wired:
+    /// the ADR-196 `is_move_only` dispatch, which moves vertices and creates no
+    /// cap to stack, and the ADR-191 multi-loop ring path, which could in
+    /// principle but was never measured to. Wire that one when something
+    /// measures it, not before.
     pub fn reconcile_new_solid_with_coplanar_neighbours(&mut self, new_faces: &[FaceId]) {
         use std::collections::HashSet;
         if new_faces.is_empty() {
