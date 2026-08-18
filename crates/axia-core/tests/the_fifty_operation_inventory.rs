@@ -630,3 +630,160 @@ fn what_the_inward_clamp_sees() {
     );
     println!("    요청한 거리            -100\n");
 }
+
+// ── Would the re-derive have cleared it? ─────────────────────────────────────
+//
+// The producer is `create_solid` building a cap on a plane that already holds
+// one. A DRAW on that plane would not leave the pair, because a draw runs the
+// coplanar re-derive afterwards and that reconciles everything sharing a plane.
+// `create_solid` does not.
+//
+// Before changing the push/pull path — which carries 245+ regression tests —
+// ask whether the re-derive would even have helped. Engine changes: none. If it
+// does not clear the pair, the answer is that the fix is elsewhere, and that
+// negative is worth more than a wiring change made on a guess.
+
+/// The five-operation scene, built.
+fn stacked_scene() -> Scene {
+    let keep = [2usize, 4, 18, 22];
+    let mut s = prod();
+    for (i, op) in S18_OPS.iter().enumerate() {
+        if !keep.contains(&i) {
+            continue;
+        }
+        play18(&mut s, *op);
+    }
+    play18(&mut s, S18_BREAK);
+    s
+}
+
+/// Does running the coplanar re-derive on the plane the push landed on clear it?
+#[test]
+#[ignore = "a simulation — run by hand"]
+fn the_re_derive_on_that_plane_would_have_cleared_it() {
+    let mut s = stacked_scene();
+    let before = stacked_pairs(&s);
+    let faces_before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let inv_before = s.mesh.verify_face_invariants().violations.len();
+    println!("\n  민 상태     면 {faces_before}  겹침 {before}  위반 {inv_before}");
+
+    // The plane both caps sit on.
+    let t0 = std::time::Instant::now();
+    let r = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+        &mut s.mesh,
+        DVec3::new(0.0, 0.0, 300.0),
+        DVec3::Z,
+        1e-3,
+        true,
+        None,
+    );
+    let secs = t0.elapsed().as_secs_f64();
+    let after = stacked_pairs(&s);
+    let faces_after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let inv_after = s.mesh.verify_face_invariants().violations.len();
+    println!(
+        "  재유도 후   면 {faces_after}  겹침 {after}  위반 {inv_after}   ({secs:.3} 초, {})",
+        if r.is_ok() { "ok" } else { "Err" }
+    );
+    println!(
+        "\n  -> {}\n",
+        if after < before {
+            "재유도가 치운다 — 배선할 가치가 있다"
+        } else {
+            "재유도로는 안 된다 — 고칠 곳이 다른 데 있다"
+        }
+    );
+}
+
+/// Which arm of `exec_create_solid` the break takes.
+///
+/// The reconcile was wired onto the SolidCreated arm and did not clear the
+/// pair, so the first question is whether the push ever reaches that arm. Q3
+/// (ADR-190) falls back to the legacy `push_pull` when `create_solid` returns
+/// NotYetSupported, and that arm returns `PushPullDone`, not `SolidCreated`.
+#[test]
+#[ignore = "a description — run by hand"]
+fn which_arm_the_break_takes() {
+    let keep = [2usize, 4, 18, 22];
+    let mut s = prod();
+    for (i, op) in S18_OPS.iter().enumerate() {
+        if !keep.contains(&i) {
+            continue;
+        }
+        play18(&mut s, *op);
+    }
+    // The break, but executed directly so its result can be read.
+    let target = DVec3::new(-52.0, 70.0, 200.0);
+    let mut best: Option<(f64, FaceId)> = None;
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() {
+            continue;
+        }
+        let d = (face_centre(&s, fid) - target).length();
+        if best.map(|(bd, _)| d < bd).unwrap_or(true) {
+            best = Some((d, fid));
+        }
+    }
+    let (_, f) = best.expect("a face");
+    let r = s.execute(Command::CreateSolid {
+        face_id: f,
+        mode: CreateSolidMode::Extrude { distance: -100.0 },
+    });
+    println!("\n  결과: {r:?}");
+    println!("  겹침 {}\n", stacked_pairs(&s));
+}
+
+/// ⚠ Wiring the re-derive into the push was TRIED, and reverted. Measured.
+///
+/// The simulation above says the re-derive clears the reduced case, so it was
+/// wired: after a push, for every plane where a face the push created shares an
+/// edge with a coplanar one, run `rebuild_coplanar_faces_analytic_scoped`.
+/// Gated on the damage (nothing happens unless a new face is on a stacked pair)
+/// and snapshot-guarded.
+///
+/// It worked on the reduced case — 32 faces and one violation became 34 and
+/// none — and it broke the GATE:
+///
+/// ```text
+///   12 x 20, session 10, op 15
+///     face FaceId(22): normal is not finite (NaN, NaN, NaN)
+///     face FaceId(66): normal is not finite (NaN, NaN, NaN)
+/// ```
+///
+/// A session that had been sound. Two attempts at the guard:
+///
+///   1. roll back unless the violation COUNT came down — traded one stacked
+///      pair for two NaN faces, which the count called an improvement
+///   2. roll back unless the stacking came down AND the total did not rise AND
+///      no new non-finite normal appeared — still broke, because the NaN faces
+///      are not produced by the re-derive itself. They appear two operations
+///      LATER, out of a mesh the re-derive left in a state the next push
+///      mishandles.
+///
+/// A guard on the immediate result cannot see that. Reverted.
+///
+/// ── Which is worth knowing ───────────────────────────────────────────────
+///
+/// Three things came out of the attempt and they are what the next go should
+/// start from:
+///
+///   - The producer takes the Q3 FALLBACK, not the `SolidCreated` arm. The
+///     reduced case reports `PushPullDone { MODE=CreateFace }`, so a reconcile
+///     wired to `create_solid`'s success arm never runs. That cost one full
+///     round of "wired it, nothing changed".
+///   - The re-derive DOES clear the pair, in 10 ms, on the plane the push
+///     landed on. The idea is sound; the placement is not.
+///   - Whatever the re-derive leaves behind destabilises the NEXT push. That is
+///     the thing to understand before trying again — not the stacking.
+#[test]
+fn the_stacking_is_still_here() {
+    let s = stacked_scene();
+    let n = stacked_pairs(&s);
+    println!("
+  다섯 연산 — 겹침 {n}
+");
+    assert!(
+        n > 0,
+        "the reduced case still stacks; if it stops, say what fixed it and          rewrite this around the new reading"
+    );
+}
