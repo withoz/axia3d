@@ -241,39 +241,89 @@ fn a_clockwise_arc_can_be_asked_where_it_meets_a_line() {
     );
 }
 
-/// A clockwise arc still cannot be split at a point. Measured, not fixed.
+/// A clockwise arc can now be split at a point.
 ///
-/// The same conflation, one layer over: `parameter_at_3d_point` walks the
-/// angle into `[start_angle, end_angle]` with two `while` loops that fight when
-/// start > end, so it returns `PointOffCurve` for a point that is exactly on the
-/// arc. `split_at` refuses the same way — `t < start_angle || t > end_angle` is
-/// true for every t on a backwards arc.
+/// The same conflation, one layer over, and it was recorded here as "measured,
+/// not fixed" when the crash was: `parameter_at_3d_point` walked the angle into
+/// `[start_angle, end_angle]` with two `while` loops that fight each other when
+/// start > end, so it returned `PointOffCurve` for a point exactly ON the arc,
+/// and `split_at` refused the same way — `t < start || t > end` is true for
+/// every t on a backwards arc.
 ///
-/// Left alone deliberately. Refusing is safe where crashing was not, and making
-/// arc splitting direction-aware is a bigger change than the crash needed. This
-/// pins the current answer so the day it changes, it says so.
+/// Both now order the interval first. Neither reverses anything: the two halves
+/// a split produces each keep the endpoint they started from, so a clockwise arc
+/// splits into two clockwise arcs.
+///
+/// Mutation-checked: restore either `[start_angle, end_angle]` comparison and
+/// this fails — `parameter_at_3d_point` with `PointOffCurve`, `split_at` with
+/// "outside arc range".
 #[test]
-fn splitting_a_clockwise_arc_is_still_refused() {
+fn a_clockwise_arc_can_be_split_at_a_point() {
     let m = axia_geo::Mesh::new();
+    let (sa, ea) = (9.433953182702224, 6.746832916180392);
     let cw = AnalyticCurve::Arc {
         center: DVec3::ZERO,
         radius: 50.0,
         normal: DVec3::Z,
         basis_u: DVec3::X,
-        start_angle: 9.433953182702224,
-        end_angle: 6.746832916180392,
+        start_angle: sa,
+        end_angle: ea,
     };
-    // Dead centre of the arc, by its own midpoint angle — as on the curve as a
-    // point can be.
-    let mid = (9.433953182702224 + 6.746832916180392) * 0.5;
+    // Dead centre of the arc, by its own midpoint angle.
+    let mid = (sa + ea) * 0.5;
     let on_it = DVec3::new(50.0 * f64::cos(mid), 50.0 * f64::sin(mid), 0.0);
-    let got = cw.parameter_at_3d_point(on_it, &m);
+
+    let t = cw
+        .parameter_at_3d_point(on_it, &m)
+        .expect("a point exactly on the arc has a parameter");
     println!("
   point on the arc: ({:.3}, {:.3})", on_it.x, on_it.y);
-    println!("  parameter_at_3d_point -> {got:?}
+    println!("  parameter        {t:.6}   (arc runs {sa:.4} -> {ea:.4})");
+
+    let (a, b) = cw
+        .split_at(t, axia_geo::VertId::new(0))
+        .expect("and can be split there");
+    let (AnalyticCurve::Arc { start_angle: a0, end_angle: a1, .. }, 
+         AnalyticCurve::Arc { start_angle: b0, end_angle: b1, .. }) = (&a, &b)
+    else {
+        panic!("two arcs, not {a:?} / {b:?}");
+    };
+    println!("  halves           {a0:.4} -> {a1:.4}   and   {b0:.4} -> {b1:.4}
 ");
-    assert!(
-        got.is_err(),
-        "if this starts working, arc splitting became direction-aware — say so \n         and strike this test"
-    );
+
+    assert!((t - mid).abs() < 1e-6, "the parameter is the midpoint angle: {t}");
+    assert!((*a0 - sa).abs() < 1e-12 && (*a1 - t).abs() < 1e-12, "first half starts where the arc did");
+    assert!((*b0 - t).abs() < 1e-12 && (*b1 - ea).abs() < 1e-12, "second half ends where the arc did");
+    assert!(a0 > a1 && b0 > b1, "and BOTH halves still run clockwise");
+}
+
+/// A counter-clockwise arc is unchanged by the ordering.
+///
+/// The control the fix needs: whatever the backwards case gained, the ordinary
+/// case has to behave exactly as it did.
+#[test]
+fn a_counter_clockwise_arc_splits_as_it_always_did() {
+    let m = axia_geo::Mesh::new();
+    let ccw = AnalyticCurve::Arc {
+        center: DVec3::ZERO,
+        radius: 50.0,
+        normal: DVec3::Z,
+        basis_u: DVec3::X,
+        start_angle: 0.5,
+        end_angle: 2.5,
+    };
+    let mid = 1.5;
+    let on_it = DVec3::new(50.0 * f64::cos(mid), 50.0 * f64::sin(mid), 0.0);
+    let t = ccw.parameter_at_3d_point(on_it, &m).expect("on the arc");
+    let (a, b) = ccw.split_at(t, axia_geo::VertId::new(0)).expect("splits");
+    let (AnalyticCurve::Arc { start_angle: a0, end_angle: a1, .. },
+         AnalyticCurve::Arc { start_angle: b0, end_angle: b1, .. }) = (&a, &b)
+    else {
+        panic!("two arcs");
+    };
+    println!("
+  ccw halves  {a0:.4} -> {a1:.4}   and   {b0:.4} -> {b1:.4}
+");
+    assert!((t - mid).abs() < 1e-6);
+    assert!(a0 < a1 && b0 < b1, "still counter-clockwise");
 }

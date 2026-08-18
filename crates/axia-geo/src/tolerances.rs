@@ -125,7 +125,14 @@ pub const EDGE_VISIBILITY_ANGLE_DEG: f64 = 20.1;
 /// Smooth group 그룹핑 임계 각도 (도). BFS로 인접 면을 묶을 때 이보다
 /// 작은 각도 차이를 가진 면들을 하나의 곡면 그룹으로 취급.
 ///
-/// 값: `EDGE_VISIBILITY_ANGLE_DEG + 0.1°` (저분할 원통/원뿔 경계 안정화를 위한 epsilon)
+/// ⚠ 이 주석은 `EDGE_VISIBILITY_ANGLE_DEG + 0.1°` 라고 적혀 있었다. 그 값은
+/// 2026-04-22 에 30° → 20.1° 로 내려갔고 이쪽은 30.1 에 남았다. 즉 공식은
+/// 그때부터 거짓이었다 (20.1 + 0.1 = 20.2 ≠ 30.1).
+///
+/// 값 자체는 안전하다 — 의도는 "숨긴 엣지의 두 면은 반드시 한 그룹"이고,
+/// 30.1 > 20.1 이므로 그 의도는 여전히 성립한다. 여유가 `+0.1` 이 아니라
+/// `+10` 일 뿐. 임계값을 20.2 로 내리는 건 모든 모델의 음영이 바뀌는
+/// 별개 변경이라 하지 않는다. 고친 것은 값이 아니라 말이다.
 pub const SMOOTH_GROUP_ANGLE_DEG: f64 = 30.1;
 
 /// 완전 코플래너 판정 임계 각도 (도). 두 면의 법선 각도 차이가 이보다
@@ -142,16 +149,17 @@ pub const EXACT_COPLANAR_ANGLE_DEG: f64 = 0.1;
 /// point → curve.evaluate refinement) converges in ≤2 iterations for
 /// typical edge curves (arcs / Bezier / B-spline).
 ///
-/// LOCKED #5 정합: 1.5μm spatial-hash dedup 보다 큼 → polyline 점 사이
-/// vertex collapse 위험 없음.
+/// LOCKED #5 정합: spatial-hash dedup (0.15μm — ADR-147 이 1.5μm 에서 10×
+/// 조였다) 보다 훨씬 큼 → polyline 점 사이 vertex collapse 위험 없음.
 pub const HOVER_CHORD_TOL: f64 = 0.01;
 
 /// ADR-062 Phase L₂ Path Z — Default tolerance for
 /// `Mesh::attach_surface_validated` boundary-fit check.
 ///
-/// 1μm absolute (mm). Above LOCKED #5 1.5μm dedup floor — drift below
-/// this threshold is geometrically indistinguishable from numerical
-/// noise. Caller can override per-call (positive value); WASM endpoints
+/// 1μm absolute (mm). Above the LOCKED #5 dedup floor — which is 0.15μm,
+/// not the 1.5μm this comment used to say (ADR-147 tightened
+/// `SPATIAL_HASH_CELL` 1e-3 -> 1e-4). Drift below this threshold is
+/// geometrically indistinguishable from numerical noise. Caller can override per-call (positive value); WASM endpoints
 /// treat `tol ≤ 0` as "use this default".
 pub const ATTACH_VALIDATE_TOL: f64 = 1e-3;
 
