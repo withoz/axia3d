@@ -13,18 +13,28 @@
 //!   Inspector     / 1e6, / 1e9      area 6 m²            volume 1 m³
 //!   weight        m³ × kg/m³        2400 kg at concrete density
 //!   IFC export    × 0.001, .METRE.  side 1.0 in the file
+//!   glTF export   × 0.001, spec m   side 1.0 in the file
 //! ```
+//!
+//! ⚠ glTF was the one that lied, and it is fixed here. It handed the scene over
+//! unscaled while its specification states metres, so a one-metre cube left as
+//! 1000 and a conforming reader saw a kilometre. DXF gets away without a scale
+//! only because it DECLARES millimetres (`$INSUNITS = 4`); OBJ and STL are
+//! unitless, so nothing there can disagree.
 //!
 //! ⚠ Constants copied out of the TypeScript assert nothing about the
 //! TypeScript. `the_conversions_here_are_the_ones_the_app_performs` reads the
 //! real files; without it every test here is arithmetic wearing a
 //! measurement's clothes.
 //!
-//! ⚠ The Inspector prints LENGTHS in raw millimetres with a hardcoded "mm"
-//! label, and AREA and VOLUME in m² and m³. Three scales on one panel. Each is
-//! labelled, so none of them lies — but nothing there follows the app's unit
-//! setting, which `MeasureTool` and the VCB do follow. Measured below and left
-//! alone: which way the Inspector should go is a product decision.
+//! ⚠ Still open, and deliberately: the Inspector prints LENGTHS in raw
+//! millimetres with a hardcoded "mm" label, and AREA and VOLUME in m² and m³.
+//! Three scales on one panel. Each is labelled, so none of them lies, but
+//! nothing there follows the app's unit setting the way `MeasureTool` and the
+//! VCB do. Which way it should go is NOT obvious — a building's surface in
+//! millimetres squared is unreadable, so the hardcoded m² may well be the
+//! considered choice rather than an oversight. Measured, and left for a
+//! decision rather than guessed at.
 
 use axia_core::scene::Scene;
 use axia_core::FORM_MATERIAL;
@@ -180,43 +190,53 @@ fn the_conversions_here_are_the_ones_the_app_performs() {
     }
 }
 
-/// glTF says metres. We write millimetres into it, unscaled.
+/// glTF says metres, and now we write metres.
 ///
-/// ⚠ This is a finding, not a passing check dressed as one. IFC declares
-/// `.METRE.` and scales by `MM_TO_M`; glTF's specification also states metres
-/// ("The units for all linear distances are meters") and the exporter hands
-/// `viewport.scene` — kernel units, millimetres — straight to `GLTFExporter`
-/// with no scale anywhere on the way:
+/// ⚠ This test was landed asserting the OPPOSITE — that the exporter handed
+/// `viewport.scene` (kernel units, millimetres) straight to `GLTFExporter` with
+/// no scale, so a one-metre cube left as 1000 and a conforming reader saw a
+/// cube a kilometre across. It said "rewrite this to assert the new scale
+/// instead of deleting it" if that ever changed. It changed.
 ///
 /// ```text
 ///   IFC     declares METRE   x 0.001   ->  1 m cube exports as 1.0      ok
 ///   DXF     $INSUNITS = 4    none      ->  ...as 1000, and 4 IS mm      ok
 ///   OBJ/STL unitless         none      ->  nothing to disagree with     ok
-///   glTF    spec says METRE  none      ->  ...as 1000  = ONE KILOMETRE
+///   glTF    spec says METRE  x 0.001   ->  ...as 1.0                    ok now
 /// ```
 ///
-/// Whether to fix it is a product decision, because changing it changes every
-/// glTF this app will ever write. Recorded here so it is a measurement rather
-/// than a rumour, and so the day someone scales it, this test says so.
+/// The scale goes on a CLONE. Scaling the live scene and restoring it would
+/// work, but `parseAsync` is async and the render loop would draw the model a
+/// thousand times smaller for however many frames the export takes.
+///
+/// Mutation-checked: remove `forExport.scale.setScalar(MM_TO_M)` and this fails.
 #[test]
-fn gltf_is_exported_unscaled_although_its_spec_says_metres() {
+fn gltf_is_exported_in_metres_as_its_spec_says() {
     let menubar = repo_file("web/src/ui/MenuBar.ts");
-    let hands_raw_scene = menubar.contains("lazyExportGltf(viewport.scene");
-    let exporter_gets_scene = menubar.contains("exporter.parseAsync(scene3d");
-    // No conversion constant anywhere near the mesh exporters.
-    let scales_anywhere = menubar.contains("MM_TO_M") || menubar.contains("0.001");
+    let has_const = menubar.contains("const MM_TO_M = 0.001;");
+    let scales = menubar.contains("forExport.scale.setScalar(MM_TO_M)");
+    let on_a_clone = menubar.contains("scene3d.clone(true)");
+    let exports_the_clone = menubar.contains("exporter.parseAsync(forExport");
+    let updates_matrices = menubar.contains("forExport.updateMatrixWorld(true)");
 
-    println!("\n  glTF export");
-    println!("    hands viewport.scene straight over   {hands_raw_scene}");
-    println!("    exporter receives it unchanged       {exporter_gets_scene}");
-    println!("    any mm->m conversion in MenuBar      {scales_anywhere}");
-    println!("    -> a 1 m cube leaves as 1000, and glTF reads that as 1 km\n");
+    println!("
+  glTF export");
+    println!("    MM_TO_M = 0.001            {has_const}");
+    println!("    scale applied              {scales}");
+    println!("    on a clone, not the scene  {on_a_clone}");
+    println!("    the clone is what is sent  {exports_the_clone}");
+    println!("    world matrices refreshed   {updates_matrices}");
+    println!("    -> a 1 m cube leaves as {}
+", METRE_MM * MM_TO_M);
 
-    assert!(hands_raw_scene && exporter_gets_scene, "the scene goes over as it is");
+    assert!(has_const && scales, "glTF must be scaled to metres — its spec says metres");
     assert!(
-        !scales_anywhere,
-        "if a conversion has appeared, glTF was fixed — rewrite this test to \
-         assert the new scale instead of deleting it"
+        on_a_clone && exports_the_clone,
+        "and on a clone: scaling the live scene during an async export would          shrink what the user is looking at"
+    );
+    assert!(
+        updates_matrices,
+        "with world matrices refreshed, or the exporter reads the pre-scale ones"
     );
 }
 

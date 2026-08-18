@@ -2485,12 +2485,28 @@ architectural fix + §3.2 매트릭스 정정.
 > (`split_face_by_inner_*` 4 진입점) 는 **HARD 참조가 0**. 이들은
 > `add_face_closed_curve` / `add_face_with_holes` + twin-HE reparent 로 면을
 > 짓고 `split_face` 계열에 위임하지 않는다 (`split_circle_face_by_chord` 는
-> 위임한다 — 대조군). 곡면을 원으로 자르면 seam 양쪽 normal 이 일치하므로,
-> `force_hard` 가 우회하는 coplanar-hide 검사에 정확히 걸리는 경우다.
+> 위임한다 — 대조군).
 >
-> ⚠ **canonical 예시 자신이 문서화된 패턴을 어긴다** — `Mesh::split_face` 는
-> `set_flags(HeFlags::HARD)` (덮어쓰기, SOFT/SMOOTH_NORMAL 을 지운다) 를 쓰고,
-> 나머지 전부는 `cur | HARD` (safe OR) 를 쓴다.
+> ⚠⚠ **그 다음 문장은 틀렸다 (실측 2026-08-18).** 원문은 *"곡면을 원으로
+> 자르면 seam 양쪽 normal 이 일치하므로 coplanar-hide 검사에 정확히 걸린다"*
+> 고 **결과를 단정**했다. 그런 일은 일어나지 않는다 — 렌더러에 물어본 결과,
+> 곡면에 그린 원의 seam 은 **셋 다 그려진다**:
+>
+> ```text
+>   구      선분  0 → 23
+>   콘      선분 158 → 192
+>   토러스  선분 180 → 204
+> ```
+>
+> ADR-202 A-κ 의 closed-curve 렌더 fast-path 가 self-loop + AnalyticCurve 엣지를
+> 각도 검사와 무관하게 폴리라인으로 내보내기 때문이다. HARD 참조가 0인 것은
+> 사실이지만 **무해**하고, 그래서 task "C-1: D6 HARD 계약" 의 완료 표시는 옳다.
+> 회귀는 `crates/axia-core/tests/a_circle_drawn_on_a_curved_face_is_visible.rs`.
+>
+> ⚠ **아래 "canonical 예시가 패턴을 어긴다" 도 이미 해소됐다 (실측 2026-08-18)** —
+> `set_flags(HeFlags::HARD)` 덮어쓰기는 저장소에 **0건**이고 `Mesh::split_face`
+> (mesh.rs:11445/11447) 도 `cur | HeFlags::HARD` safe-OR 를 쓴다. 기록만 남아
+> 있었다.
 
 - **A9.5 회귀 누적 (Amendment 9)**:
   - axia-geo `operations::coplanar::tests` (+5): `adr101_amendment9_lens_
@@ -3505,8 +3521,13 @@ verification). 합계 **+9**, 절대 #[ignore] 금지 9/9 준수. axia-geo
 **사용자 facing 변화**:
 - STEP/IGES Import: silent failure → production-ready (180s+ wait 후
   실 import 동작)
-- XIA Inspector area display: 0.0 m² → 정확한 analytic value (sphere
-  r=5 → 314.16 m², cylinder side r=5 h=10 → 314.16 m², 등)
+- XIA Inspector area display: 0.0 → 정확한 analytic value (sphere r=5 →
+  314.16, cylinder side r=5 h=10 → 314.16, 등)
+  - ⚠ 원문은 이 숫자에 **m² 를 붙였다 (오기, 정정 2026-08-18)**. 커널 단위는
+    mm 이므로 r=5 는 5 mm 이고 4πr² = 314.16 **mm²** = 0.000314 m². Inspector
+    는 표시 직전 `/1e6` 로 환산하므로 화면 값은 맞다 — 틀린 것은 이 줄의
+    라벨뿐. 단위 사슬 전체 실측은
+    `crates/axia-core/tests/what_the_numbers_are_measured_in.rs`.
 
 **Lessons (canonical)**:
 - L1 사용자 시연 게이트 architectural value 정량 증명 — 11+ PR closure

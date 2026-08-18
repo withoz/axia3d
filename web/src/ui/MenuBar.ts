@@ -84,11 +84,29 @@ export function initMenuBar(deps: MenuBarDeps): void {
     downloadText(result, fileName, 'text/plain');
   };
 
+  /**
+   * glTF's specification states metres — "the units for all linear distances
+   * are meters". The kernel works in millimetres, so a one-metre cube would
+   * otherwise leave as 1000 and any conforming reader would show a cube a
+   * kilometre across. IFC already scales the same way (`MM_TO_M` in axia-wasm),
+   * and DXF gets away without one only because it DECLARES millimetres
+   * (`$INSUNITS = 4`). OBJ and STL are unitless, so nothing there can disagree.
+   *
+   * ⚠ The scale goes on a CLONE, not on the live scene. Scaling `scene3d`
+   * itself and restoring it afterwards would work, but `parseAsync` is async —
+   * the render loop would draw the model a thousand times smaller for however
+   * many frames the export takes. `clone(true)` shares geometries and
+   * materials, so this costs a graph walk, not a copy of the mesh data.
+   */
   const lazyExportGltf = async (scene3d: THREE.Scene, fileName: string) => {
     const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
     const { downloadBlob } = await import('../export/ExportUtils');
+    const MM_TO_M = 0.001;
+    const forExport = scene3d.clone(true);
+    forExport.scale.setScalar(MM_TO_M);
+    forExport.updateMatrixWorld(true);
     const exporter = new GLTFExporter();
-    const glb = await exporter.parseAsync(scene3d, { binary: true });
+    const glb = await exporter.parseAsync(forExport, { binary: true });
     downloadBlob(new Blob([glb as ArrayBuffer], { type: 'model/gltf-binary' }), fileName);
   };
 

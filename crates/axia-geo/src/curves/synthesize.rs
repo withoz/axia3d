@@ -210,17 +210,33 @@ impl AnalyticCurve {
                         distance: (r_actual - radius).abs(),
                     });
                 }
-                // Map atan2 to [start_angle, end_angle] range
+                // Map atan2 into the arc's angular DOMAIN.
+                //
+                // ⚠ `start_angle > end_angle` is a legal CLOCKWISE arc — the
+                // type says so ("positive when end > start") and `arc_length`
+                // takes the absolute difference. `set_arc_on_edge` produces them
+                // deliberately: a DCEL edge is stored v_small -> v_large, so an
+                // arc running the other way has its angles swapped to match.
+                //
+                // Read in curve order the two `while` loops below fight each
+                // other — the first pushes the angle up past `start`, the second
+                // pulls it back below `end`, and the check then rejects a point
+                // that is exactly on the arc. Order the interval first.
+                let (lo, hi) = if start_angle <= end_angle {
+                    (*start_angle, *end_angle)
+                } else {
+                    (*end_angle, *start_angle)
+                };
                 let mut angle = y.atan2(x);
                 let two_pi = std::f64::consts::TAU;
-                while angle < *start_angle - 1e-9 { angle += two_pi; }
-                while angle > *end_angle + 1e-9 { angle -= two_pi; }
-                if angle < *start_angle - 1e-6 || angle > *end_angle + 1e-6 {
+                while angle < lo - 1e-9 { angle += two_pi; }
+                while angle > hi + 1e-9 { angle -= two_pi; }
+                if angle < lo - 1e-6 || angle > hi + 1e-6 {
                     return Err(SplitParameterError::PointOffCurve {
                         distance: 0.0, // approximation
                     });
                 }
-                Ok(angle.clamp(*start_angle, *end_angle))
+                Ok(angle.clamp(lo, hi))
             }
             AnalyticCurve::Bezier { .. }
             | AnalyticCurve::BSpline { .. }
@@ -337,10 +353,19 @@ impl AnalyticCurve {
             AnalyticCurve::Arc {
                 center, radius, normal, basis_u, start_angle, end_angle,
             } => {
-                // Arc parameter t is the angle in [start_angle, end_angle]
-                if t < *start_angle - 1e-12 || t > *end_angle + 1e-12 {
+                // Arc parameter t is an angle in the arc's DOMAIN, which runs
+                // backwards for a clockwise arc (start > end — see
+                // `parameter_at_3d_point`). Compare against the ordered pair;
+                // the two halves below keep the ORIGINAL direction either way,
+                // because each carries the endpoint it started from.
+                let (lo, hi) = if start_angle <= end_angle {
+                    (*start_angle, *end_angle)
+                } else {
+                    (*end_angle, *start_angle)
+                };
+                if t < lo - 1e-12 || t > hi + 1e-12 {
                     bail!("split_at: t={} outside arc range [{}, {}]",
-                        t, start_angle, end_angle);
+                        t, lo, hi);
                 }
                 Ok((
                     AnalyticCurve::Arc {

@@ -44,8 +44,17 @@ pub const EPS_PLANE_NORMAL: f64 = 1e-4;
 
 /// Signed-distance offset tolerance — `|a.offset - b.offset|` threshold (mm).
 ///
-/// Default: `1.5e-3` mm (1.5 μm). Matches LOCKED #5 spatial-hash dedup
-/// (`SPATIAL_HASH_CELL * 1.5 = 1.5μm`) — natural SSOT anchor.
+/// Default: `1.5e-3` mm (1.5 μm).
+///
+/// ⚠ This said it "matches LOCKED #5 spatial-hash dedup
+/// (`SPATIAL_HASH_CELL * 1.5 = 1.5μm`)". It does not, and has not since
+/// ADR-147 tightened `SPATIAL_HASH_CELL` from 1e-3 to 1e-4 mm: the dedup
+/// floor is `1e-4 * 1.5` = **0.15 μm**, so this tolerance is ten times
+/// larger than the thing it named as its anchor.
+///
+/// The value stays. A plane-offset tolerance ABOVE the dedup floor is the
+/// safe direction — two points the mesh would merge can never be read as
+/// lying on different planes. What was wrong was the justification.
 ///
 /// **Strict callers** (e.g., `axia-geo::operations::coplanar`) may pass
 /// a smaller `eps_offset` (e.g., `1.5e-6` for strict coplanarity).
