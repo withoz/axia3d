@@ -29,6 +29,40 @@
 //! on a plane that already holds three box bottoms, several circles, an ellipse
 //! and the top of a solid raised from z = 100.
 //!
+//! ── Where it is, measured stage by stage ─────────────────────────────────
+//!
+//! The flag bisection below points at the coplanar re-derive. That was right
+//! about the SWITCH and wrong about the place — the gate decides whether the
+//! draw reaches the stage that wedges, and that stage is two levels further on.
+//! Every stage of the draw now has a stopwatch:
+//!
+//! ```text
+//!   all pairwise intersections on the plane      0.063 s
+//!   arrange (47 curves -> 16 faces)              0.062 s
+//!   the coplanar re-derive (gate on OR off)      0.209 s
+//!   the rollback guard's four whole-mesh scans   0.019 s
+//!   detect_self_intersections (48 faces)         0.148 s
+//!   ------------------------------------------------------
+//!   split_faces_crossing_other_planes            > 120 s   <- here
+//! ```
+//!
+//! And it is not being handed much: 48 live faces, **18** self-intersecting
+//! pairs, and the crossing set is a subset of those. It calls one thing —
+//! `Mesh::intersect_faces_with_model` (axia-geo `operations/boolean.rs`) — with
+//! a handful of faces, and does not come back. A small input that never returns
+//! is a loop, not a load.
+//!
+//! ⚠ Two of these numbers cost a wrong measurement first, and both are worth
+//! knowing:
+//!
+//!   - The re-derive was "timed" by calling `play(S22_WEDGE)` and then the
+//!     re-derive. That call IS the wedge, so the thread never reached the
+//!     stopwatch and the timeout measured the pipeline again. The rectangle has
+//!     to go in with the auto-behaviours OFF.
+//!   - The freeform curve count was taken at the arrangement's chord tolerance
+//!     of 1e-2, which is what `intersect_curves` gets from a 1e-3 caller. The
+//!     arrangement passes 1e-4. Points grow as 1/sqrt(tol): 257 became 3325.
+//!
 //! ── Which subsystem ──────────────────────────────────────────────────────
 //!
 //! No debugger needed — run the same 19 operations with one automatic
@@ -934,4 +968,331 @@ fn how_many_crossings_the_arrangement_has_to_carry() {
         println!("    {label:<16} {n:>4}   {hits:>7}   {secs:>8.3} 초");
     }
     println!();
+}
+
+// ── Inside `arrange` ─────────────────────────────────────────────────────────
+//
+// Every pair on the plane intersects in 0.063 s total, so the cost is
+// downstream of the crossings. `arrange` is public, and so are `InputCurve` and
+// `Freeform2D`, so the plane's curves can be handed to it directly. If it wedges
+// there, the boundary kernel owns this; if it returns, the cost is in what the
+// re-derive does with the result.
+
+/// Build the plane's curves as `arrange` receives them.
+///
+/// ⚠ Close to, not identical with, `collect_input_curves` — that is private and
+/// also merges collinear line segments and de-duplicates circles. This keeps
+/// every edge, so if anything it hands `arrange` MORE than production does.
+fn plane_input_curves(s: &Scene, plane_z: f64) -> Vec<axia_geo::boundary_kernel::InputCurve> {
+    use axia_geo::boundary_kernel::{Freeform2D, InputCurve, Vec2};
+    use axia_geo::curves::AnalyticCurve;
+
+    let on_plane = |p: DVec3| (p.z - plane_z).abs() < 1e-3;
+    let flat = |p: DVec3| Vec2::new(p.x, p.y);
+    let mut out: Vec<InputCurve> = Vec::new();
+    let mut freeform_seen: Vec<u32> = Vec::new();
+
+    for (eid, e) in s.mesh.edges.iter() {
+        if !e.is_active() {
+            continue;
+        }
+        let (Some(a), Some(b)) = (
+            s.mesh.verts.get(e.v_small()).map(|v| v.pos()),
+            s.mesh.verts.get(e.v_large()).map(|v| v.pos()),
+        ) else {
+            continue;
+        };
+        if !(on_plane(a) && on_plane(b)) {
+            continue;
+        }
+        // A freeform fragment restores its whole original, once per owner.
+        if let Some(owner) = e.curve_owner_id() {
+            if let Some(src) = s.mesh.freeform_curve_source(owner) {
+                if freeform_seen.contains(&owner) {
+                    continue;
+                }
+                freeform_seen.push(owner);
+                let ff = match src {
+                    AnalyticCurve::Bezier { control_pts } => {
+                        Some(Freeform2D::bezier(control_pts.iter().map(|p| flat(*p)).collect()))
+                    }
+                    AnalyticCurve::BSpline { control_pts, knots, degree } => Some(Freeform2D::bspline(
+                        control_pts.iter().map(|p| flat(*p)).collect(),
+                        knots.clone(),
+                        *degree,
+                    )),
+                    AnalyticCurve::NURBS { control_pts, weights, knots, degree } => {
+                        Some(Freeform2D::nurbs(
+                            control_pts.iter().map(|p| flat(*p)).collect(),
+                            weights.clone(),
+                            knots.clone(),
+                            *degree,
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some(ff) = ff {
+                    out.push(InputCurve::Freeform(ff.with_owner(Some(owner))));
+                }
+                continue;
+            }
+        }
+        match s.mesh.edge_curve(eid) {
+            Some(AnalyticCurve::Circle { center, radius, .. }) => {
+                out.push(InputCurve::Circle { center: flat(*center), radius: *radius })
+            }
+            Some(AnalyticCurve::Arc { center, radius, start_angle, end_angle, .. }) => {
+                out.push(InputCurve::Arc {
+                    center: flat(*center),
+                    radius: *radius,
+                    a0: *start_angle,
+                    a1: *end_angle,
+                })
+            }
+            _ => out.push(InputCurve::Line { a: flat(a), b: flat(b) }),
+        }
+    }
+    out
+}
+
+/// Does `arrange` itself wedge on this plane?
+///
+/// Time-boxed on its own thread — the point of the question is that it might
+/// not come back.
+#[test]
+#[ignore = "may not return — run by hand under a timeout"]
+fn does_arrange_itself_wedge() {
+    let budget = std::time::Duration::from_secs(
+        std::env::var("AXIA_WEDGE_STEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+    );
+    println!("\n  arrange 를 직접 호출 ({}초 예산)\n", budget.as_secs());
+
+    for (label, dropped) in [("없음", vec![]), ("11 (원 z=0)", vec![11usize])] {
+        let dropped2 = dropped.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut s = prod();
+            for (i, op) in S22_OPS.iter().enumerate() {
+                if dropped2.contains(&i) {
+                    continue;
+                }
+                play(&mut s, *op);
+            }
+            // The rectangle's own four edges, as the draw would add them.
+            let curves = plane_input_curves(&s, 200.0);
+            let n = curves.len();
+            let t0 = std::time::Instant::now();
+            let faces = axia_geo::boundary_kernel::arrange(&curves, 1e-4);
+            let _ = tx.send((n, faces.len(), t0.elapsed().as_secs_f64()));
+        });
+        match rx.recv_timeout(budget) {
+            Ok((n, f, secs)) => {
+                println!("    {label:<14} 곡선 {n:>3}  ->  면 {f:>4}   {secs:>8.3} 초");
+            }
+            Err(_) => {
+                println!("    {label:<14} {}초 안에 안 끝남  <- arrange 안에서 멈춘다\n", budget.as_secs());
+                return;
+            }
+        }
+    }
+    println!("\n  arrange 는 둘 다 끝난다 — 비용은 그 뒤에 있다\n");
+}
+
+/// What the re-derive's own rollback guard costs on this scene.
+///
+/// `rebuild_coplanar_faces_analytic_scoped` clones the whole mesh and runs
+/// `detect_self_intersections` and `verify_face_invariants` BEFORE the rebuild,
+/// then again after, so it can put the mesh back if the work made things worse.
+/// That is four scans of the whole model per plane, and `arrange` itself was
+/// only 0.062 s — so the guard is the next thing worth a stopwatch.
+#[test]
+#[ignore = "a stopwatch, not a gate — run by hand"]
+fn what_the_rollback_guard_costs() {
+    let mut s = prod();
+    for op in S22_OPS {
+        play(&mut s, *op);
+    }
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let edges = s.mesh.edges.iter().filter(|(_, e)| e.is_active()).count();
+    println!("\n  op 17 까지의 장면 — 면 {faces}, 엣지 {edges}\n");
+
+    let t0 = std::time::Instant::now();
+    let clone = s.mesh.clone();
+    println!("    mesh.clone()                  {:>9.3} 초", t0.elapsed().as_secs_f64());
+    drop(clone);
+
+    let t0 = std::time::Instant::now();
+    let si = s.mesh.detect_self_intersections().count();
+    println!(
+        "    detect_self_intersections     {:>9.3} 초   ({si} 건)",
+        t0.elapsed().as_secs_f64()
+    );
+
+    let t0 = std::time::Instant::now();
+    let inv = s.mesh.verify_face_invariants().violations.len();
+    println!(
+        "    verify_face_invariants        {:>9.3} 초   ({inv} 건)",
+        t0.elapsed().as_secs_f64()
+    );
+
+    println!("\n    가드는 이걸 앞뒤로 두 번씩 돈다 — 평면마다.\n");
+}
+
+/// The re-derive alone, with the freeform gate on and off.
+///
+/// Every measured piece is fast — intersections 0.063 s, `arrange` 0.062 s, the
+/// rollback guard 0.019 s on a scene of 41 faces and 110 edges. So the draw is
+/// not spending its time in any of them, and the flag bisection says the
+/// freeform gate decides. The gate only changes what the re-derive DOES, so
+/// call the re-derive directly, both ways, and see what it leaves behind.
+///
+/// After it, the draw runs `split_faces_crossing_other_planes` over everything
+/// new. If the freeform path leaves far more faces, that is where the bill goes.
+#[test]
+#[ignore = "may not return with the gate on — run by hand under a timeout"]
+fn what_the_re_derive_leaves_behind_with_the_gate_on_and_off() {
+    let budget = std::time::Duration::from_secs(
+        std::env::var("AXIA_WEDGE_STEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+    );
+    println!("\n  재유도만 직접 호출 ({}초 예산)\n", budget.as_secs());
+    println!("    freeform   면 전 -> 면 후    엣지 후    시간");
+
+    for gate in [false, true] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut s = prod();
+            for op in S22_OPS {
+                play(&mut s, *op);
+            }
+            // ⚠ The rectangle has to go in WITHOUT the draw pipeline. A first
+            // version called `play(S22_WEDGE)` here and the thread never
+            // reached the line below — that call IS the wedge, so the timeout
+            // measured the pipeline again and said nothing about the re-derive.
+            s.face_rederive_on_draw = false;
+            s.auto_intersect_on_draw = false;
+            s.auto_face_synthesis_on_draw = false;
+            play(&mut s, S22_WEDGE);
+            let before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let t0 = std::time::Instant::now();
+            let r = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+                &mut s.mesh,
+                DVec3::new(0.0, 0.0, 200.0),
+                DVec3::Z,
+                1e-3,
+                gate,
+                None,
+            );
+            let secs = t0.elapsed().as_secs_f64();
+            let after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let edges = s.mesh.edges.iter().filter(|(_, e)| e.is_active()).count();
+            let _ = tx.send((before, after, edges, secs, r.is_ok()));
+        });
+        match rx.recv_timeout(budget) {
+            Ok((b, a, e, secs, ok)) => println!(
+                "    {:<10} {b:>5} -> {a:<6}  {e:>6}    {secs:>8.3} 초  {}",
+                gate,
+                if ok { "" } else { "(Err)" }
+            ),
+            Err(_) => {
+                println!("    {:<10} {}초 안에 안 끝남  <- 재유도 자체가 멈춘다\n", gate, budget.as_secs());
+                return;
+            }
+        }
+    }
+    println!("\n  재유도는 양쪽 다 끝난다 — 비용은 그 다음 패스에 있다\n");
+}
+
+/// The last stage, timed.
+///
+/// Everything else has a number now:
+///
+/// ```text
+///   all pairwise intersections on the plane   0.063 s
+///   arrange                                   0.062 s
+///   the re-derive (gate on OR off)            0.209 s
+///   the rollback guard's four scans           0.019 s
+/// ```
+///
+/// and the draw takes over fifteen minutes. `split_faces_crossing_other_planes`
+/// is the only stage of that draw left unmeasured — it runs immediately after
+/// the re-derive, over every face that did not exist before.
+#[test]
+#[ignore = "may not return — run by hand under a timeout"]
+fn what_the_crossing_split_costs() {
+    let budget = std::time::Duration::from_secs(
+        std::env::var("AXIA_WEDGE_STEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+    );
+    println!("\n  마지막 단계 — split_faces_crossing_other_planes ({}초 예산)\n", budget.as_secs());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = prod();
+        for op in S22_OPS {
+            play(&mut s, *op);
+        }
+        // The rectangle, without the draw pipeline that wedges.
+        s.face_rederive_on_draw = false;
+        s.auto_intersect_on_draw = false;
+        s.auto_face_synthesis_on_draw = false;
+        play(&mut s, S22_WEDGE);
+        let before: std::collections::HashSet<axia_geo::FaceId> = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(i, _)| i)
+            .collect();
+        // The re-derive the draw would have run, timed already at 0.209 s.
+        let _ = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+            &mut s.mesh, DVec3::new(0.0, 0.0, 200.0), DVec3::Z, 1e-3, true, None,
+        );
+        let n_before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let t0 = std::time::Instant::now();
+        let split = s.split_faces_crossing_other_planes(&before);
+        let secs = t0.elapsed().as_secs_f64();
+        let n_after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let _ = tx.send((n_before, n_after, split.unwrap_or(0), secs));
+    });
+    match rx.recv_timeout(budget) {
+        Ok((b, a, split, secs)) => {
+            println!("    면 {b} -> {a}   분할 {split}   {secs:>8.3} 초");
+            println!("\n  이 단계도 끝난다 — 남은 곳은 draw 의 다른 갈래다\n");
+        }
+        Err(_) => println!(
+            "    {}초 안에 안 끝남  <- 여기가 멈춤\n",
+            budget.as_secs()
+        ),
+    }
+}
+
+/// How many faces the crossing split hands to `intersect_faces_with_model`.
+///
+/// The stage that wedges calls one thing: `Mesh::intersect_faces_with_model`,
+/// given the faces `detect_self_intersections` reported as crossing another
+/// plane. A small input means the loop is inside that call; a large one means
+/// the pass is asking for too much.
+#[test]
+#[ignore = "counts the crossing set — run by hand"]
+fn how_many_faces_the_crossing_split_is_given() {
+    let mut s = prod();
+    for op in S22_OPS {
+        play(&mut s, *op);
+    }
+    s.face_rederive_on_draw = false;
+    s.auto_intersect_on_draw = false;
+    s.auto_face_synthesis_on_draw = false;
+    play(&mut s, S22_WEDGE);
+    let _ = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+        &mut s.mesh, DVec3::new(0.0, 0.0, 200.0), DVec3::Z, 1e-3, true, None,
+    );
+
+    let t0 = std::time::Instant::now();
+    let si = s.mesh.detect_self_intersections();
+    let pairs = si.intersecting_pairs.len();
+    let secs = t0.elapsed().as_secs_f64();
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("\n  교차 분할이 받는 것\n");
+    println!("    살아 있는 면       {faces}");
+    println!("    자기교차 쌍        {pairs}   ({secs:.3} 초에 검출)");
+    println!("\n    -> 이 쌍에서 고른 면이 intersect_faces_with_model 로 간다\n");
 }

@@ -5025,7 +5025,12 @@ impl Scene {
     /// And only pairs involving what was just drawn. Two solids may sit inside
     /// each other quite legitimately; a draw somewhere else in the scene has no
     /// business carving them up.
-    fn split_faces_crossing_other_planes(
+    /// ⚠ `pub` for measurement. Every other stage of a draw has a stopwatch on
+    /// it in `a_fuzz_session_that_never_finishes.rs` — intersections 0.063 s,
+    /// `arrange` 0.062 s, the re-derive 0.209 s, the rollback guard 0.019 s —
+    /// and the draw that wedges still takes over fifteen minutes. This is the
+    /// only stage left, and it could not be timed while it was private.
+    pub fn split_faces_crossing_other_planes(
         &mut self,
         before: &std::collections::HashSet<FaceId>,
     ) -> anyhow::Result<usize> {
