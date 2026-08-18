@@ -27,14 +27,16 @@
 //! real files; without it every test here is arithmetic wearing a
 //! measurement's clothes.
 //!
-//! ⚠ Still open, and deliberately: the Inspector prints LENGTHS in raw
-//! millimetres with a hardcoded "mm" label, and AREA and VOLUME in m² and m³.
-//! Three scales on one panel. Each is labelled, so none of them lies, but
-//! nothing there follows the app's unit setting the way `MeasureTool` and the
-//! VCB do. Which way it should go is NOT obvious — a building's surface in
-//! millimetres squared is unreadable, so the hardcoded m² may well be the
-//! considered choice rather than an oversight. Measured, and left for a
-//! decision rather than guessed at.
+//! ⚠ DECIDED, not outstanding (사용자 결재 2026-08-18): the Inspector prints
+//! LENGTHS in raw millimetres with a hardcoded "mm" label, and AREA and VOLUME
+//! in m² and m³. Three scales on one panel, each next to its own label, and it
+//! is the one surface that does NOT follow the app's unit setting the way
+//! `MeasureTool` and the VCB do.
+//!
+//! That is the intended arrangement. Millimetres are the drafting unit and
+//! square metres are how a building's surface is read — the same panel in
+//! square millimetres would say 6,000,000 and mean nothing to anybody. Do not
+//! file this as a defect again; the guard below holds the arrangement in place.
 
 use axia_core::scene::Scene;
 use axia_core::FORM_MATERIAL;
@@ -240,17 +242,21 @@ fn gltf_is_exported_in_metres_as_its_spec_says() {
     );
 }
 
-/// Most of the app follows the unit setting. The Inspector does not.
+/// The Inspector deliberately does not follow the unit setting.
 ///
 /// `UnitSystem` supports mm / cm / m / in / ft, and `MeasureTool` and the VCB
 /// route their numbers through `units.format(...)`. The Inspector prints raw
 /// millimetres against a hardcoded "mm" label, and its area and volume against
 /// hardcoded "m²" and "m³".
 ///
-/// So nothing there LIES — every number sits next to the unit it is in — but
-/// set the document to feet and one panel keeps answering in millimetres while
-/// the measure tool answers in feet. Recorded, not fixed: which way the
-/// Inspector should go is a product decision, not one the kernel can settle.
+/// Nothing there lies — every number sits next to the unit it is in — and the
+/// split is the point: millimetres are the drafting unit, square metres are how
+/// a building's surface is read. 사용자 결재 2026-08-18 확정 as intentional
+/// after this was measured and offered as a choice.
+///
+/// So this guard holds the ARRANGEMENT, not a gap. If the Inspector starts
+/// routing through `units.format(...)`, someone changed a decided design and
+/// this file needs rewriting around the new one — not deleting.
 #[test]
 fn the_inspector_is_the_one_surface_that_ignores_the_unit_setting() {
     let inspector = repo_file("web/src/ui/XiaInspector.ts");
