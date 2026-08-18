@@ -35,8 +35,45 @@
 //! four above; the one-at-a-time sweep is kept beside it because the difference
 //! between the two answers is the point.
 //!
-//! The fix is not here yet. What is here is a five-operation scene that holds
-//! the defect, where before it took fifty.
+//! ── What the five operations do ──────────────────────────────────────────
+//!
+//! The pair, described:
+//!
+//! ```text
+//!   FaceId(3)   23 corners  area 37071  normal (0,0,+1)  z = 300   the raised cap
+//!   FaceId(37)   4 corners  area  2996  normal (0,0,-1)  z = 300   made by the push
+//! ```
+//!
+//! and it is a GENUINE non-manifold, not two solids merely sitting in the same
+//! place (which this repo has already decided is legal — see
+//! `a_second_solid_on_the_same_plane_stays_whole.rs`). `EdgeId(45)` at z = 300 is
+//! shared by THREE faces, and the cap and the new face share two vertices.
+//!
+//! ── Which push, and why the clamp does not cover it ──────────────────────
+//!
+//! The face being pushed is a vertical WALL, not a horizontal face:
+//!
+//! ```text
+//!   FaceId(24)   centre (-50, 57, 200)   normal (0.92, -0.40, 0.00)
+//!   is_move_only          false
+//!   move_only_max_inward  None
+//! ```
+//!
+//! So ADR-196's inward clamp — which stops a face short of its own solid's far
+//! side — never applies: this goes down the `create_solid` path instead, and
+//! that path builds a cap that lands exactly on a neighbouring cap it shares an
+//! edge with. Nothing between them notices, because coincident is not crossing.
+//!
+//! ── The fix is not here ──────────────────────────────────────────────────
+//!
+//! The shape of it is: what `create_solid` builds has to be reconciled against
+//! coplanar neighbours it shares edges with — merged or divided — the way the
+//! coplanar re-derive already does for a draw. `create_solid` does not go
+//! through that. Making it do so is a change to the push/pull path broadly and
+//! wants its own measurement.
+//!
+//! What is here is a five-operation scene that holds the defect where it used to
+//! take fifty, the producer named, and the reason the existing clamp misses it.
 
 use axia_core::scene::Scene;
 use axia_core::{Command, CommandResult, FORM_MATERIAL};
@@ -406,4 +443,190 @@ fn the_smallest_set_that_still_stacks() {
     겹친 면 {n}
 ");
     assert!(n > 0, "the shrink has to keep reproducing");
+}
+
+/// Which two faces end up on the same ground, and where.
+///
+/// The reduction names five operations. This asks the scene what the pair
+/// actually is — the two faces, their planes, their areas, and whether the push
+/// made them or found them.
+#[test]
+#[ignore = "a description, not a gate — run by hand"]
+fn what_is_stacked_on_what() {
+    let keep = [2usize, 4, 18, 22];
+    let drop: Vec<usize> = (0..S18_OPS.len()).filter(|i| !keep.contains(i)).collect();
+
+    let mut s = prod();
+    for (i, op) in S18_OPS.iter().enumerate() {
+        if drop.contains(&i) {
+            continue;
+        }
+        play18(&mut s, *op);
+    }
+    let before = stacked_pairs(&s);
+    let n_before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("\n  밀어넣기 전   면 {n_before}   겹침 {before}");
+
+    play18(&mut s, S18_BREAK);
+    let n_after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("  밀어넣기 후   면 {n_after}   겹침 {}\n", stacked_pairs(&s));
+
+    for v in s.mesh.verify_face_invariants().violations.iter() {
+        let t = format!("{v:?}");
+        if !t.contains("cover the same ground") {
+            continue;
+        }
+        println!("  {t}\n");
+        let ids: Vec<u32> = t
+            .split("FaceId(")
+            .skip(1)
+            .filter_map(|q| q.split(')').next())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        for id in ids {
+            let f = FaceId::new(id);
+            let Some(face) = s.mesh.faces.get(f) else { continue };
+            let Ok(vs) = s.mesh.collect_loop_verts(face.outer().start) else { continue };
+            let pts: Vec<DVec3> = vs.iter().filter_map(|v| s.mesh.verts.get(*v).map(|x| x.pos())).collect();
+            let n = face.normal().normalize_or_zero();
+            let c = face_centre(&s, f);
+            let zs: Vec<f64> = pts.iter().map(|p| p.z).collect();
+            println!(
+                "    {f:?}  정점 {:>3}  넓이 {:>10.1}  법선 ({:.2},{:.2},{:.2})  중심 ({:.0},{:.0},{:.0})  z [{:.0}, {:.0}]",
+                pts.len(),
+                s.mesh.face_area(f),
+                n.x, n.y, n.z,
+                c.x, c.y, c.z,
+                zs.iter().cloned().fold(f64::INFINITY, f64::min),
+                zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            );
+        }
+        println!();
+    }
+}
+
+/// Is it two solids sitting in the same place, or a genuine non-manifold edge?
+///
+/// The repo has already decided the first is legal — "two solids may sit inside
+/// each other quite legitimately" (`scene.rs`), pinned in
+/// `a_second_solid_on_the_same_plane_stays_whole.rs`. The verifier reports THIS
+/// as "edge shared by N active faces (non-manifold)", which is a different
+/// claim, so the difference decides whether there is anything to fix.
+#[test]
+#[ignore = "a description, not a gate — run by hand"]
+fn whether_the_pair_actually_shares_an_edge() {
+    let keep = [2usize, 4, 18, 22];
+    let drop: Vec<usize> = (0..S18_OPS.len()).filter(|i| !keep.contains(i)).collect();
+    let mut s = prod();
+    for (i, op) in S18_OPS.iter().enumerate() {
+        if drop.contains(&i) {
+            continue;
+        }
+        play18(&mut s, *op);
+    }
+    play18(&mut s, S18_BREAK);
+
+    for v in s.mesh.verify_face_invariants().violations.iter() {
+        let t = format!("{v:?}");
+        if !t.contains("cover the same ground") {
+            continue;
+        }
+        let eid: Option<u32> = t
+            .split("EdgeId(")
+            .nth(1)
+            .and_then(|q| q.split(')').next())
+            .and_then(|n| n.parse().ok());
+        let ids: Vec<u32> = t
+            .split("FaceId(")
+            .skip(1)
+            .filter_map(|q| q.split(')').next())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        println!("\n  {t}\n");
+
+        if let Some(eid) = eid {
+            let e = axia_geo::EdgeId::new(eid);
+            let (faces, _) = s.mesh.get_faces_sharing_edge(e);
+            println!("    EdgeId({eid}) 위의 면  {faces:?}");
+            if let Some(edge) = s.mesh.edges.get(e) {
+                let a = s.mesh.verts.get(edge.v_small()).map(|v| v.pos());
+                let b = s.mesh.verts.get(edge.v_large()).map(|v| v.pos());
+                if let (Some(a), Some(b)) = (a, b) {
+                    println!(
+                        "    엣지 끝점  ({:.0},{:.0},{:.0}) - ({:.0},{:.0},{:.0})",
+                        a.x, a.y, a.z, b.x, b.y, b.z
+                    );
+                }
+            }
+        }
+
+        // Do the two faces share any VERTEX at all? Two solids merely sitting in
+        // the same place share none.
+        if ids.len() >= 2 {
+            let verts = |f: u32| -> Vec<axia_geo::VertId> {
+                s.mesh
+                    .faces
+                    .get(FaceId::new(f))
+                    .and_then(|x| s.mesh.collect_loop_verts(x.outer().start).ok())
+                    .unwrap_or_default()
+            };
+            let (va, vb) = (verts(ids[0]), verts(ids[1]));
+            let shared = va.iter().filter(|v| vb.contains(v)).count();
+            println!("    두 면이 공유하는 정점  {shared} / ({} , {})", va.len(), vb.len());
+            println!(
+                "\n    -> {}\n",
+                if shared > 0 {
+                    "정점을 공유한다 — 위상적으로 붙어 있다, 진짜 non-manifold"
+                } else {
+                    "공유하는 정점 없음 — 같은 자리에 있을 뿐 (이 저장소가 합법이라 정한 것)"
+                }
+            );
+        }
+    }
+}
+
+/// What the inward clamp says about the face that gets pushed.
+///
+/// ADR-196 clamps an inward push to the solid's own thickness less
+/// `MIN_SOLID_THICKNESS`, so a face cannot travel far enough to land exactly on
+/// the far side. This one travelled from z = 200 to z = 300 and landed exactly
+/// on a cap it shares two vertices with, so either the clamp did not apply or it
+/// did not see the obstacle.
+#[test]
+#[ignore = "a description, not a gate — run by hand"]
+fn what_the_inward_clamp_sees() {
+    let keep = [2usize, 4, 18, 22];
+    let drop: Vec<usize> = (0..S18_OPS.len()).filter(|i| !keep.contains(i)).collect();
+    let mut s = prod();
+    for (i, op) in S18_OPS.iter().enumerate() {
+        if drop.contains(&i) {
+            continue;
+        }
+        play18(&mut s, *op);
+    }
+
+    // The face the push targets: nearest centre to the break's point.
+    let target = DVec3::new(-52.0, 70.0, 200.0);
+    let mut best: Option<(f64, FaceId)> = None;
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() {
+            continue;
+        }
+        let d = (face_centre(&s, fid) - target).length();
+        if best.map(|(bd, _)| d < bd).unwrap_or(true) {
+            best = Some((d, fid));
+        }
+    }
+    let (dist, f) = best.expect("a face to push");
+    let n = s.mesh.faces[f].normal().normalize_or_zero();
+    let c = face_centre(&s, f);
+
+    println!("\n  밀어넣을 면 {f:?}  (목표에서 {dist:.1})");
+    println!("    중심 ({:.0},{:.0},{:.0})  법선 ({:.2},{:.2},{:.2})", c.x, c.y, c.z, n.x, n.y, n.z);
+    println!("    MoveOnly?              {}", axia_geo::operations::push_pull::is_move_only(&s.mesh, f));
+    println!(
+        "    move_only_max_inward   {:?}",
+        axia_geo::operations::push_pull::move_only_max_inward(&s.mesh, f)
+    );
+    println!("    요청한 거리            -100\n");
 }
