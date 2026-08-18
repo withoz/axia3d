@@ -10738,14 +10738,22 @@ impl Scene {
     /// A cap a push builds can land exactly on a cap already there.
     ///
     /// See `the_fifty_operation_inventory.rs` — twelve of the sixteen
-    /// violations the 30 x 50 fuzz reports are this, reduced to five
-    /// operations. A DRAW never leaves it, because a draw runs the coplanar
-    /// re-derive afterwards; `create_solid` does not.
+    /// violations the 30 x 50 fuzz reports are this. A DRAW never leaves it,
+    /// because a draw runs the coplanar re-derive afterwards; `create_solid`
+    /// does not.
     ///
-    /// ⚠ Gated on the damage: nothing happens unless a face this op created is
-    /// on a stacked pair. Most pushes never make one and must not pay for it.
+    /// ⚠ The gate is the DAMAGE, not the faces. A first version passed the
+    /// faces the op created and asked whether one of them was on a stacked
+    /// pair. That is right for the fallback arm and wrong twice over for the
+    /// ADR-196 `is_move_only` dispatch: it creates nothing (it slides existing
+    /// vertices), and the pair it leaves is often two of the pushed face's
+    /// NEIGHBOURS, so even gating on the moved face missed it. Session 4 of the
+    /// 50-op run went on stacking seven pairs with the gate wired that way.
     ///
-    /// ⚠⚠ Call this from the Q3 FALLBACK ARM ONLY.
+    /// So: record which planes carry a stacked pair before the op, and after it
+    /// reconcile the ones that are new. Most pushes make none and pay one scan.
+    ///
+    /// ⚠⚠ Call this from the Q3 FALLBACK and MoveOnly arms only.
     ///
     /// Calling it from `exec_create_solid`'s `SolidCreated` arm as well makes
     /// fuzz session 10 fail at op 15 with two NaN normals on faces the op never
@@ -10753,42 +10761,23 @@ impl Scene {
     /// attempt at this fix. Three things were suspected and each was measured
     /// and cleared: the position relative to `promote_arc_side_faces_to_cylinder`
     /// (moving it back above the promote changes nothing), the ownership adopt
-    /// (dropping it changes nothing), and the rollback guard the first attempt
-    /// carried (this one carries one too, for a different reason — session 3
-    /// below — and it is not what makes session 10 pass or fail). It is the
-    /// second call site.
+    /// (dropping it changes nothing), and the rollback guard (kept, but for
+    /// session 3, not session 10). It is the second call site.
     ///
-    /// It also buys nothing there: the stacked pair's producer reports
-    /// `PushPullDone`, and wiring the fallback arm is what cleared it — which is
-    /// the proof of which arm it takes.
-    ///
-    /// Two other paths reach `exec_push_pull` from here and neither is wired:
-    /// the ADR-196 `is_move_only` dispatch, which moves vertices and creates no
-    /// cap to stack, and the ADR-191 multi-loop ring path, which could in
-    /// principle but was never measured to. Wire that one when something
-    /// measures it, not before.
-    pub fn reconcile_new_solid_with_coplanar_neighbours(&mut self, new_faces: &[FaceId]) {
-        use std::collections::HashSet;
-        if new_faces.is_empty() {
-            return;
-        }
-        let fresh: HashSet<FaceId> = new_faces.iter().copied().collect();
-        let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
-        for eid in self.mesh.collect_non_manifold_edges() {
-            let Some((a, b)) = self.mesh.edge_stacked_face_pair(eid) else { continue };
-            if !fresh.contains(&a) && !fresh.contains(&b) {
-                continue;
-            }
-            let n = self.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero());
-            let Some(n) = n.filter(|n| n.length() > 0.5) else { continue };
-            let Some(edge) = self.mesh.edges.get(eid) else { continue };
-            let Ok(p) = self.mesh.vertex_pos(edge.v_small()) else { continue };
-            if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
-                continue;
-            }
-            planes.push((p, n));
-        }
-        for (origin, normal) in planes {
+    /// The ADR-191 multi-loop ring path is the one path still unwired — nothing
+    /// has measured it stacking. Wire it when something does.
+    fn reconcile_stacked_planes(&mut self, before: &[(DVec3, DVec3)]) {
+        let now = Self::stacked_planes(&self.mesh);
+        let fresh: Vec<(DVec3, DVec3)> = now
+            .into_iter()
+            .filter(|(p, n)| {
+                !before
+                    .iter()
+                    .any(|(q, m)| m.dot(*n).abs() > 0.999 && (*p - *q).dot(*n).abs() < 1e-3)
+            })
+            .collect();
+
+        for (origin, normal) in fresh {
             // ⚠ Keep the result only if it is an improvement.
             //
             // Session 3's op 14 is why: re-deriving a plane there answers with a
@@ -10796,7 +10785,7 @@ impl Scene {
             // none. The re-derive is not wrong in general and it is not worth
             // predicting which planes it helps; measure the answer and drop it
             // when it is not better.
-            let before = Self::stacked_pair_count(&self.mesh);
+            let before_pairs = Self::stacked_pair_count(&self.mesh);
             let before_violations = self.mesh.verify_face_invariants().violations.len();
             let backup = self.mesh.clone();
 
@@ -10822,17 +10811,44 @@ impl Scene {
             }
             self.adopt_retiled_faces(&owner_ground, &faces_before, origin, normal);
 
-            let after = Self::stacked_pair_count(&self.mesh);
+            let after_pairs = Self::stacked_pair_count(&self.mesh);
             let after_violations = self.mesh.verify_face_invariants().violations.len();
             let no_new_nan = !self
                 .mesh
                 .faces
                 .iter()
                 .any(|(_, f)| f.is_active() && !f.normal().is_finite());
-            if !(after < before && after_violations <= before_violations && no_new_nan) {
+            if !(after_pairs < before_pairs
+                && after_violations <= before_violations
+                && no_new_nan)
+            {
                 self.mesh = backup;
             }
         }
+    }
+
+    /// Every plane carrying a stacked pair, deduplicated.
+    fn stacked_planes(mesh: &axia_geo::Mesh) -> Vec<(DVec3, DVec3)> {
+        let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+        for eid in mesh.collect_non_manifold_edges() {
+            let Some((a, _)) = mesh.edge_stacked_face_pair(eid) else { continue };
+            let Some(n) = mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else {
+                continue;
+            };
+            if n.length() < 0.5 {
+                continue;
+            }
+            let Some(edge) = mesh.edges.get(eid) else { continue };
+            let Ok(p) = mesh.vertex_pos(edge.v_small()) else { continue };
+            if planes
+                .iter()
+                .any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3)
+            {
+                continue;
+            }
+            planes.push((p, n));
+        }
+        planes
     }
 
     /// How many live face pairs cover the same ground, as the verifier says it.
@@ -10947,7 +10963,22 @@ impl Scene {
         // inherits the dispatch automatically.
         if let Some(dist) = fallback_dist {
             if axia_geo::operations::push_pull::is_move_only(&self.mesh, face_id) {
-                return self.exec_push_pull(face_id, dist);
+                // One frame around both: `exec_push_pull` sees is_recording ==
+                // true, so it mutates inside this transaction and leaves the
+                // after-snapshot to us. Without the wrap the reconcile would sit
+                // outside the push's frame and Undo would not take it back.
+                self.transactions.begin();
+                self.transactions.set_before_snapshot(self.scene_snapshot());
+                let stacked_before = Self::stacked_planes(&self.mesh);
+                let result = self.exec_push_pull(face_id, dist);
+                if matches!(result, CommandResult::Error(_)) {
+                    self.transactions.cancel();
+                } else {
+                    self.reconcile_stacked_planes(&stacked_before);
+                    self.transactions.set_after_snapshot(self.scene_snapshot());
+                    self.transactions.commit();
+                }
+                return result;
             }
         }
 
@@ -11110,13 +11141,7 @@ impl Scene {
                         // = false → it mutates within THIS outer transaction (whose
                         // before_snapshot is the original pre-op state) and leaves
                         // the after-snapshot / commit / cancel to us below.
-                        let before_push: std::collections::HashSet<axia_geo::FaceId> = self
-                            .mesh
-                            .faces
-                            .iter()
-                            .filter(|(_, f)| f.is_active())
-                            .map(|(i, _)| i)
-                            .collect();
+                        let stacked_before = Self::stacked_planes(&self.mesh);
                         let result = self.exec_push_pull(pp_face, dist);
 
                         // ADR-109 π-β — Post-process: promote Cylinder
@@ -11131,17 +11156,10 @@ impl Scene {
                         let _promoted = self.mesh
                             .promote_arc_side_faces_to_cylinder(&candidates, extrude_axis);
 
-                        // The fallback arm — the one that produces the stacked
-                        // pair. Not the `SolidCreated` arm; see the helper.
+                        // The fallback arm. Not the `SolidCreated` arm; see the
+                        // helper for what happens if you wire that one too.
                         if !matches!(result, CommandResult::Error(_)) {
-                            let fresh: Vec<axia_geo::FaceId> = self
-                                .mesh
-                                .faces
-                                .iter()
-                                .filter(|(id, f)| f.is_active() && !before_push.contains(id))
-                                .map(|(i, _)| i)
-                                .collect();
-                            self.reconcile_new_solid_with_coplanar_neighbours(&fresh);
+                            self.reconcile_stacked_planes(&stacked_before);
                         }
 
                         // Close the single outer frame: before = original pre-op,

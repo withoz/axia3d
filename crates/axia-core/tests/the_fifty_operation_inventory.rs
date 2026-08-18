@@ -779,23 +779,31 @@ fn which_arm_the_break_takes() {
 ///     the thing to understand before trying again — not the stacking.
 /// ── What fixed it, written after ────────────────────────────────────────
 ///
-/// The idea was right; the first attempt wired it in TWO places and one of them
-/// is what broke session 10. Reconciling from `exec_create_solid`'s Q3 fallback
-/// arm alone clears the pair and leaves the gate green; adding the same call to
-/// the `SolidCreated` arm brings back the two NaN normals at op 15 exactly as
-/// recorded.
+/// Two arms of `exec_create_solid` reconcile the plane they landed on now: the
+/// Q3 fallback and the ADR-196 `is_move_only` dispatch. Neither did before.
 ///
-/// ⚠ Three other explanations were measured and are wrong — written down so no
-/// one spends the runs again:
+/// ⚠ Four explanations were measured and are wrong. Written down so no one
+/// spends the runs again:
 ///
 ///   - position relative to `promote_arc_side_faces_to_cylinder`: moving the
 ///     call back above the promote changes nothing
 ///   - the ownership adopt: dropping `adopt_retiled_faces` changes nothing
 ///     (it is kept because a re-derive without it loses face ownership, which
 ///     is a different defect, not this one)
-///   - the first attempt's rollback-unless-improved guard: this wiring carries
-///     one too. It is needed — without it session 3's op 14 gains an edge shared
-///     by four faces — but it is not what decides session 10 either way
+///   - the rollback guard: needed, but for session 3's op 14, not session 10
+///   - "MoveOnly creates no cap to stack": it does. Sessions 4 and 19 of the
+///     50-op run are MoveOnly and they stack. That sentence was inferred and
+///     sat in a commit message for an hour before a measurement removed it.
+///
+/// What broke the first attempt was the SECOND call site: reconciling from the
+/// `SolidCreated` arm as well makes session 10 fail at op 15 with NaN normals.
+///
+/// And what made the first MoveOnly wiring do nothing was the GATE. Asking
+/// "is a face this op created on a stacked pair" is right for the fallback arm
+/// and wrong twice for MoveOnly: it creates nothing, and the pair it leaves is
+/// often two of the pushed face's neighbours. The gate is now the damage —
+/// which planes carry a stacked pair before, which after — and session 4 goes
+/// from seven pairs to none.
 ///
 /// So this test now reads the other way: the reduced case must NOT stack.
 #[test]
@@ -858,4 +866,214 @@ fn session_ten_leaves_no_face_without_a_normal() {
     println!("
   세션 10, 20 연산 — 면 {live}, NaN 면 0
 ");
+}
+
+// ── What is left, and whose refusal it is ────────────────────────────────────
+//
+// The reconcile keeps its answer only when the answer is better. So a session
+// that still stacks after the fix is one of two things, and they want different
+// work:
+//
+//   - the re-derive does not clear that plane   -> the fix is elsewhere
+//   - it clears it and the guard drops it       -> the guard is too blunt
+//
+// This asks which, for whatever the 50-op wide run reports.
+
+/// Replay a session to the operation before it breaks, then ask both questions.
+fn what_a_rederive_would_do(session: usize, ops: usize) -> Vec<(String, usize, usize, usize, usize)> {
+    let mut r = Lcg(0x5EED_0000 + session as u64);
+    let mut s = prod();
+    for _ in 0..ops {
+        let _ = step(&mut s, &mut r);
+    }
+    // Every plane carrying a stacked pair, deduplicated.
+    let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+    for eid in s.mesh.collect_non_manifold_edges() {
+        let Some((a, _)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+        let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else { continue };
+        if n.length() < 0.5 {
+            continue;
+        }
+        let Some(edge) = s.mesh.edges.get(eid) else { continue };
+        let Ok(p) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+        if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
+            continue;
+        }
+        planes.push((p, n));
+    }
+
+    let stacked = |m: &axia_geo::Mesh| -> usize {
+        m.collect_non_manifold_edges()
+            .into_iter()
+            .filter(|&e| m.edge_stacked_face_pair(e).is_some())
+            .count()
+    };
+
+    let mut rows = Vec::new();
+    for (origin, normal) in planes {
+        let before = stacked(&s.mesh);
+        let viol_before = s.mesh.verify_face_invariants().violations.len();
+        let mut trial = s.mesh.clone();
+        let ok = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+            &mut trial, origin, normal, 1e-3, true, None,
+        )
+        .is_ok();
+        let after = if ok { stacked(&trial) } else { before };
+        let viol_after = if ok { trial.verify_face_invariants().violations.len() } else { viol_before };
+        rows.push((
+            format!("n={:?} o={:?}", normal.round(), origin.round()),
+            before,
+            after,
+            viol_before,
+            viol_after,
+        ));
+    }
+    rows
+}
+
+/// For a session the wide run still reports, whose refusal is it.
+#[test]
+#[ignore = "a description — run by hand, after a wide run names a session"]
+fn whose_refusal_leaves_the_stacking() {
+    for (session, ops) in [(18usize, 25usize), (4, 41), (19, 27)] {
+        let rows = what_a_rederive_would_do(session, ops);
+        println!("\n  세션 {session}, {ops} 연산 — 겹친 평면 {}\n", rows.len());
+        for (what, b, a, vb, va) in rows {
+            let verdict = if a < b && va <= vb {
+                "재유도가 고친다 (가드가 통과시킴)"
+            } else if a < b {
+                "겹침은 줄지만 위반이 는다 (가드가 거절)"
+            } else {
+                "재유도가 못 고친다"
+            };
+            println!("    {what:<44} 겹침 {b}->{a}  위반 {vb}->{va}   {verdict}");
+        }
+    }
+    println!();
+}
+
+/// Which operation introduces the stacking, and what kind of operation it is.
+///
+/// `whose_refusal_leaves_the_stacking` splits what is left in two. Session 4 is
+/// the half a re-derive WOULD clear (7 stacked pairs to 0) — so the reconcile
+/// never ran there, and the question is which operation made it.
+#[test]
+#[ignore = "a description — run by hand"]
+fn which_operation_first_stacks() {
+    for (session, ops) in [(4usize, 41usize), (18, 25), (19, 27)] {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        let mut prev = 0usize;
+        println!("\n  세션 {session} — 겹침이 처음 생기는 연산\n");
+        for i in 0..ops {
+            let desc = step(&mut s, &mut r);
+            let n = stacked_pairs(&s);
+            if n > prev {
+                println!("    op {i:>2}  {desc:<34}  겹침 {prev} -> {n}   <-");
+                prev = n;
+            } else if n != prev {
+                println!("    op {i:>2}  {desc:<34}  겹침 {prev} -> {n}");
+                prev = n;
+            }
+        }
+        println!("    끝: 겹침 {prev}");
+    }
+    println!();
+}
+
+/// Which arm of `exec_create_solid` the breaking push takes.
+///
+/// The reconcile is wired to the Q3 fallback arm, which answers `PushPullDone`.
+/// A push that answers `SolidCreated` never reaches it.
+#[test]
+#[ignore = "a description — run by hand"]
+fn which_arm_the_wide_run_breaks_take() {
+    for (session, ops) in [(4usize, 41usize), (18, 25), (19, 27)] {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        let mut answer = String::from("(never ran)");
+        for i in 0..ops {
+            let z = [0.0, 100.0, 200.0][r.below(3)];
+            let (x, y) = (r.coord(), r.coord());
+            let c = DVec3::new(x, y, z);
+            let w = r.size();
+            let live: Vec<FaceId> =
+                s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+            let kind = r.below(10);
+            if i + 1 == ops && (kind == 6 || kind == 7) && !live.is_empty() {
+                let f = live[r.below(live.len())];
+                let d = if kind == 6 {
+                    50.0 + r.below(4) as f64 * 50.0
+                } else {
+                    -(50.0 + r.below(3) as f64 * 50.0)
+                };
+                let move_only = axia_geo::operations::push_pull::is_move_only(&s.mesh, f);
+                let res = s.execute(Command::CreateSolid {
+                    face_id: f,
+                    mode: CreateSolidMode::Extrude { distance: d },
+                });
+                answer = format!("{res:?}  is_move_only={move_only}");
+                break;
+            }
+            // Not the operation under study — replay it the ordinary way. The
+            // draws above already took their numbers, so re-derive the same
+            // call from what was drawn.
+            replay_kind(&mut s, &mut r, kind, c, w, x, y, z, &live);
+        }
+        println!("\n  세션 {session} op {} — {answer}", ops - 1);
+    }
+    println!();
+}
+
+/// The body of `step` for one kind, with the random draws already made.
+#[allow(clippy::too_many_arguments)]
+fn replay_kind(
+    s: &mut Scene, r: &mut Lcg, kind: usize, c: DVec3, w: f64,
+    x: f64, y: f64, z: f64, live: &[FaceId],
+) {
+    match kind {
+        0 => { s.execute(Command::DrawRectAsShape { center: c, normal: DVec3::Z, up: DVec3::X, width: w, height: w * 0.75 }); }
+        1 => { s.execute(Command::DrawCircleAsShape { center: c, normal: DVec3::Z, radius: w * 0.5, segments: 24 }); }
+        2 => { s.execute(Command::DrawCircleAsCurve { center: c, normal: DVec3::Z, radius: w * 0.5 }); }
+        3 => { s.execute(Command::DrawEllipseAsCurve { center: c, ref_dir: DVec3::X, normal: DVec3::Z, radius_x: w * 0.5, radius_y: w * 0.3 }); }
+        4 => { let n = 3 + r.below(5) as u32; s.execute(Command::DrawPolygonAsShape { center: c, normal: DVec3::Z, radius: w * 0.5, sides: n }); }
+        5 => { s.execute(Command::DrawLine { start: DVec3::new(x - 150.0, y, z), end: DVec3::new(x + 150.0, y, z), surface_normal: Some(DVec3::Z) }); }
+        6 => {
+            if live.is_empty() { return; }
+            let f = live[r.below(live.len())];
+            let d = 50.0 + r.below(4) as f64 * 50.0;
+            s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: d } });
+        }
+        7 => {
+            if live.is_empty() { return; }
+            let f = live[r.below(live.len())];
+            let d = -(50.0 + r.below(3) as f64 * 50.0);
+            s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: d } });
+        }
+        8 => { let _ = s.mesh.create_box(c + DVec3::new(0.0, 0.0, 60.0), w, 120.0, w, FORM_MATERIAL); }
+        _ => { let _ = s.punch_rect_hole(DVec3::new(x - 30.0, y - 30.0, z), DVec3::new(x + 30.0, y + 30.0, z), DVec3::Z); }
+    }
+}
+
+/// Session 4 pushes a face into its neighbours and leaves nothing stacked.
+///
+/// The MoveOnly half of the family, pinned. Operation 40 is `pushIn` on a face
+/// with `is_move_only = true`: it creates no geometry, it slides vertices, and
+/// before the fix it left SEVEN stacked pairs — between faces it had not
+/// touched, which is why a gate on created-or-moved faces never fired.
+///
+/// Mutation-checked twice: unwire the reconcile from the `is_move_only`
+/// dispatch in `exec_create_solid` and this reports 7; put it back but gate on
+/// the pushed face instead of on the damage, and it still reports 7.
+#[test]
+fn a_move_only_push_leaves_its_neighbours_unstacked() {
+    let mut r = Lcg(0x5EED_0000 + 4);
+    let mut s = prod();
+    for _ in 0..41 {
+        let _ = step(&mut s, &mut r);
+    }
+    let n = stacked_pairs(&s);
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("\n  세션 4, 41 연산 — 면 {faces}, 겹침 {n}\n");
+    assert_eq!(n, 0, "a MoveOnly push must not leave its neighbours stacked");
 }
