@@ -56,6 +56,13 @@
 //!               identical before and after, so it either declined (the scoped
 //!               rebuild carries its own rollback) or found nothing to do
 //!
+//! The eight were asked one more question — did the re-derive decline (it
+//! carries its own rollback) or find nothing to do — and all eight answered
+//! FOUND NOTHING, guarded and unguarded alike. `what_the_untouchable_pairs_are_
+//! made_of` then shows they are not one family but four: a curved face against a
+//! planar one (protected by design), a face of area exactly ZERO still active
+//! and still stacked, an exact duplicate, and a sliver.
+//!
 //! `whose_refusal_leaves_the_stacking` prints both columns and the face counts;
 //! `which_operation_first_stacks` names the operation.
 //!
@@ -1129,4 +1136,189 @@ fn a_move_only_push_leaves_its_neighbours_unstacked() {
     let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
     println!("\n  세션 4, 41 연산 — 면 {faces}, 겹침 {n}\n");
     assert_eq!(n, 0, "a MoveOnly push must not leave its neighbours stacked");
+}
+
+
+/// Did the re-derive decline, or did it run and find nothing?
+///
+/// Eight of the eleven answer a re-derive with an identical face count. Two very
+/// different things look the same from outside:
+///
+///   - `rebuild_coplanar_faces_analytic_scoped` carries its OWN rollback (a
+///     curved face lost, more invariant violations, or more self-intersections
+///     when the plane holds a planar solid) and restores its backup
+///   - `rebuild_inner` ran and produced the same tiling that was already there
+///
+/// `rebuild_inner` is the unguarded half, so calling it directly separates them:
+/// if the guarded call changes nothing and the raw one changes something, the
+/// rollback fired.
+#[test]
+#[ignore = "a description — run by hand"]
+fn whether_the_rederive_declined_or_found_nothing() {
+    let cases: [(usize, usize); 8] =
+        [(3, 46), (12, 30), (18, 25), (19, 27), (20, 38), (25, 32), (27, 38), (28, 29)];
+    println!("\n  재유도가 거절한 것인가, 할 일이 없던 것인가\n");
+    for (session, ops) in cases {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        for _ in 0..ops {
+            let _ = step(&mut s, &mut r);
+        }
+        let planes = stacked_planes_of(&s);
+        for (origin, normal) in planes {
+            let faces0 = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let stacked0 = stacked_pairs(&s);
+            let viol0 = s.mesh.verify_face_invariants().violations.len();
+
+            let mut guarded = s.mesh.clone();
+            let _ = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+                &mut guarded, origin, normal, 1e-3, true, None,
+            );
+            let g_faces = guarded.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+            let mut raw = s.mesh.clone();
+            let raw_ok =
+                axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_with_overlap(
+                    &mut raw, origin, normal, 1e-3, true,
+                )
+                .is_ok();
+            let r_faces = raw.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let r_stacked = raw
+                .collect_non_manifold_edges()
+                .into_iter()
+                .filter(|&e| raw.edge_stacked_face_pair(e).is_some())
+                .count();
+            let r_viol = raw.verify_face_invariants().violations.len();
+
+            let verdict = if g_faces == faces0 && r_faces != faces0 {
+                "가드가 되돌렸다"
+            } else if g_faces == faces0 && r_faces == faces0 {
+                "할 일을 못 찾았다"
+            } else {
+                "가드도 통과했다"
+            };
+            println!(
+                "    세션 {session:>2}  n={:?}  면 {faces0} (가드 {g_faces}, 맨 {r_faces}{})  \
+                 겹침 {stacked0}->{r_stacked}  위반 {viol0}->{r_viol}   {verdict}",
+                normal.round(),
+                if raw_ok { "" } else { " ERR" }
+            );
+        }
+    }
+    println!();
+}
+
+/// Every plane carrying a stacked pair, deduplicated.
+fn stacked_planes_of(s: &Scene) -> Vec<(DVec3, DVec3)> {
+    let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+    for eid in s.mesh.collect_non_manifold_edges() {
+        let Some((a, _)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+        let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else { continue };
+        if n.length() < 0.5 {
+            continue;
+        }
+        let Some(edge) = s.mesh.edges.get(eid) else { continue };
+        let Ok(p) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+        if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
+            continue;
+        }
+        planes.push((p, n));
+    }
+    planes
+}
+
+
+/// What the two faces actually are, for the eight the re-derive cannot touch.
+///
+/// `edge_stacked_face_pair` reports a pair when three or more faces meet at an
+/// edge and two of them have parallel normals AND occupy the same side of it —
+/// so they really do overlap near that edge. Yet a full unscoped re-derive on
+/// their plane changes nothing at all.
+///
+/// The re-derive protects a face from re-tiling when any vertex of its outer
+/// loop is off the plane, or when it carries a curved surface (`rebuild_inner`,
+/// Phase 0). This asks whether that is what is happening.
+///
+/// ── What it answers ─────────────────────────────────────────────────────
+///
+/// Not one family. Four, and they want different work:
+///
+/// ```text
+///   세션  A                                  B                    무엇
+///     3   곡면 넓이 37699                     평면 넓이 15000       곡면 x 평면
+///    12   평면 넓이 19256                     평면 넓이 0           넓이 0
+///    18   평면 넓이 1001                      평면 넓이 1001        똑같은 둘
+///    19   평면 넓이 7717                      평면 넓이 0           넓이 0
+///    20   삼각형 넓이 52                      평면 넓이 7854        가시
+///    25   평면 넓이 9976                      평면 넓이 43401       가시
+/// ```
+///
+///   - **곡면 x 평면** (session 3): `rebuild_inner`'s Phase 0 protects any face
+///     carrying a curved surface, so the re-derive is designed not to touch
+///     these. Not a miss — a decision, met head on.
+///   - **넓이 0** (sessions 12, 19): a face whose area is exactly zero is still
+///     active and still stacked on a real one. LOCKED #26 says a 0-area face is
+///     invalid in the form layer and gets removed automatically; here one
+///     survived. That is the most clearly actionable of the four.
+///   - **똑같은 둘** (session 18): two 4-vertex faces, area 1001 each. A true
+///     duplicate.
+///   - **가시** (sessions 20, 25): a sliver — three vertices, area 52 — resting
+///     on a face 150 times its size.
+///
+/// Every one of them is invisible to `detect_self_intersections`, which is the
+/// thread running through this whole area: coincident is not crossing.
+#[test]
+#[ignore = "a description — run by hand"]
+fn what_the_untouchable_pairs_are_made_of() {
+    let cases: [(usize, usize); 8] =
+        [(3, 46), (12, 30), (18, 25), (19, 27), (20, 38), (25, 32), (27, 38), (28, 29)];
+    println!("\n  재유도가 못 건드리는 쌍의 정체\n");
+    for (session, ops) in cases {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        for _ in 0..ops {
+            let _ = step(&mut s, &mut r);
+        }
+        let mut seen: Vec<(FaceId, FaceId)> = Vec::new();
+        for eid in s.mesh.collect_non_manifold_edges() {
+            let Some((a, b)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+            if seen.contains(&(a, b)) {
+                continue;
+            }
+            seen.push((a, b));
+            let Some(edge) = s.mesh.edges.get(eid) else { continue };
+            let Ok(origin) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+            let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else {
+                continue;
+            };
+
+            let describe = |fid: FaceId| -> String {
+                let Some(f) = s.mesh.faces.get(fid) else { return "(gone)".into() };
+                let verts = s.mesh.collect_loop_verts(f.outer().start).unwrap_or_default();
+                let off = verts
+                    .iter()
+                    .filter(|&&v| {
+                        s.mesh
+                            .verts
+                            .get(v)
+                            .map_or(false, |vv| (vv.pos() - origin).dot(n).abs() >= 1e-3)
+                    })
+                    .count();
+                let curved = !matches!(
+                    f.surface(),
+                    None | Some(axia_geo::surfaces::AnalyticSurface::Plane { .. })
+                );
+                format!(
+                    "{fid:?} 정점 {} (평면 밖 {off}) 넓이 {:.0} 곡면 {}",
+                    verts.len(),
+                    s.mesh.face_area(fid),
+                    if curved { "예" } else { "아니오" }
+                )
+            };
+            println!("    세션 {session:>2}  {eid:?}");
+            println!("        A  {}", describe(a));
+            println!("        B  {}", describe(b));
+        }
+    }
+    println!();
 }
