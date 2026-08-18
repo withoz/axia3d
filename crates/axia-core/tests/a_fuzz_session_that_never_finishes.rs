@@ -63,6 +63,40 @@
 //!     of 1e-2, which is what `intersect_curves` gets from a 1e-3 caller. The
 //!     arrangement passes 1e-4. Points grow as 1/sqrt(tol): 257 became 3325.
 //!
+//! ── What it is doing there ───────────────────────────────────────────────
+//!
+//! `split_faces_crossing_other_planes` calls one thing:
+//! `Mesh::intersect_faces_with_model`, with the faces that crossed another
+//! plane. Each of those eight, handed over ALONE, finishes in milliseconds.
+//! Grow the set and it tips:
+//!
+//! ```text
+//!   first 4    0.001 s    61 faces out
+//!   first 5   26.024 s   436 faces out     <- FaceId(28), a box side
+//! ```
+//!
+//! 436 faces from a model of 48, and of the 450 the full call leaves, **386**
+//! have a boundary that walks the same vertex twice — one with 30 repeats in 57
+//! corners — with 70 invariant violations. Coordinates do NOT move: [-310, 320]
+//! before and after, no non-finite vertex. So it is not a point flying off; the
+//! splitter is producing overlapping pieces, and where they overlap the ring
+//! comes back to a vertex it already passed.
+//!
+//! ⚠ The obvious fix is the wrong layer, measured. Splitting each self-touching
+//! ring at its touches — what `polygon_difference_by_clip` needed in
+//! `operations/coplanar.rs` — does exactly what it says and makes the rest
+//! worse:
+//!
+//! ```text
+//!   repeated-vertex faces   386 -> 0
+//!   faces                   450 -> 1920
+//!   the five-face call      23 s -> 129 s
+//! ```
+//!
+//! The self-touches are a symptom of over-production, not the cause of it.
+//! Reverted; the disease is wherever `sub_polys` decides how many pieces a face
+//! becomes.
+//!
 //! ── Which subsystem ──────────────────────────────────────────────────────
 //!
 //! No debugger needed — run the same 19 operations with one automatic
@@ -1295,4 +1329,314 @@ fn how_many_faces_the_crossing_split_is_given() {
     println!("    살아 있는 면       {faces}");
     println!("    자기교차 쌍        {pairs}   ({secs:.3} 초에 검출)");
     println!("\n    -> 이 쌍에서 고른 면이 intersect_faces_with_model 로 간다\n");
+}
+
+// ── Inside `intersect_faces_with_model` ──────────────────────────────────────
+//
+// It is public, so the input can be bisected. Its body is a straight line —
+// `prepare_solid` twice, `find_intersections`, `split_faces_by_intersections`
+// twice — so a single face that wedges on its own names the pair, and from
+// there the loop is one function away.
+
+/// Rebuild the scene the crossing split works on, and hand back the faces it
+/// would pass to `intersect_faces_with_model`.
+fn crossing_candidates() -> (Scene, Vec<axia_geo::FaceId>) {
+    let mut s = prod();
+    for op in S22_OPS {
+        play(&mut s, *op);
+    }
+    s.face_rederive_on_draw = false;
+    s.auto_intersect_on_draw = false;
+    s.auto_face_synthesis_on_draw = false;
+    play(&mut s, S22_WEDGE);
+    let _ = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+        &mut s.mesh, DVec3::new(0.0, 0.0, 200.0), DVec3::Z, 1e-3, true, None,
+    );
+    // The same choice the crossing split makes: one side of each crossing pair.
+    let pairs = s.mesh.detect_self_intersections().intersecting_pairs;
+    let mut crossing: Vec<axia_geo::FaceId> = Vec::new();
+    for (fa, fb) in pairs {
+        let (Some(a), Some(b)) = (s.mesh.faces.get(fa), s.mesh.faces.get(fb)) else { continue };
+        if !a.is_active() || !b.is_active() {
+            continue;
+        }
+        let na = a.normal().normalize_or_zero();
+        let nb = b.normal().normalize_or_zero();
+        // Coplanar pairs belong to the re-derive, not here.
+        if na.dot(nb).abs() > 0.999 {
+            continue;
+        }
+        if !crossing.contains(&fa) && !crossing.contains(&fb) {
+            crossing.push(fa);
+        }
+    }
+    (s, crossing)
+}
+
+/// Which face, on its own, makes `intersect_faces_with_model` never return.
+///
+/// The whole crossing set wedges. Each face is handed over alone, so the answer
+/// is one face id and the triangle counts that go with it.
+#[test]
+#[ignore = "several of these may not return — run by hand under a timeout"]
+fn which_single_face_wedges_the_intersect() {
+    let budget = std::time::Duration::from_secs(
+        std::env::var("AXIA_WEDGE_STEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30),
+    );
+    let (s, crossing) = crossing_candidates();
+    println!("\n  교차 분할이 넘기는 면 {} 개 ({}초 예산)\n", crossing.len(), budget.as_secs());
+
+    // How big is each one, as triangles?
+    let tri_count = |s: &Scene, f: axia_geo::FaceId| -> usize {
+        s.mesh
+            .faces
+            .get(f)
+            .and_then(|x| s.mesh.collect_loop_verts(x.outer().start).ok())
+            .map(|v| v.len().saturating_sub(2))
+            .unwrap_or(0)
+    };
+    let others_tris: usize = s
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| tri_count(&s, fid))
+        .sum();
+    println!("    모델 전체 삼각형 대략 {others_tris}\n");
+
+    for &f in &crossing {
+        let tris = tri_count(&s, f);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s2, c2) = crossing_candidates();
+            let target = c2.iter().copied().find(|x| *x == f);
+            let Some(target) = target else {
+                let _ = tx.send(None);
+                return;
+            };
+            let t0 = std::time::Instant::now();
+            let r = s2.mesh.intersect_faces_with_model(&[target], FORM_MATERIAL);
+            let _ = tx.send(Some((t0.elapsed().as_secs_f64(), r.map(|v| v.len()).unwrap_or(0))));
+        });
+        match rx.recv_timeout(budget) {
+            Ok(Some((secs, n))) => println!("    {f:?}  삼각형 {tris:>3}   {secs:>8.3} 초   결과 면 {n}"),
+            Ok(None) => println!("    {f:?}  (재구성에서 사라짐)"),
+            Err(_) => println!("    {f:?}  삼각형 {tris:>3}   {}초 안에 안 끝남  <- 이 면", budget.as_secs()),
+        }
+    }
+    println!();
+}
+
+/// Where the set tips over.
+///
+/// Each of the eight crossing faces finishes on its own in milliseconds. The
+/// eight together do not return. The function's body has no loop over
+/// `selected` — it triangulates, finds intersections, splits — so growing the
+/// set one face at a time says which addition costs what.
+#[test]
+#[ignore = "the larger sets may not return — run by hand under a timeout"]
+fn where_the_crossing_set_tips_over() {
+    let budget = std::time::Duration::from_secs(
+        std::env::var("AXIA_WEDGE_STEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30),
+    );
+    let (_, crossing) = crossing_candidates();
+    println!("\n  집합을 키우며 ({}초 예산)\n", budget.as_secs());
+    for k in 1..=crossing.len() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s, c) = crossing_candidates();
+            let take: Vec<axia_geo::FaceId> = c.into_iter().take(k).collect();
+            let t0 = std::time::Instant::now();
+            let r = s.mesh.intersect_faces_with_model(&take, FORM_MATERIAL);
+            let _ = tx.send((t0.elapsed().as_secs_f64(), r.map(|v| v.len()).unwrap_or(0)));
+        });
+        match rx.recv_timeout(budget) {
+            Ok((secs, n)) => println!("    앞 {k} 개   {secs:>9.3} 초   결과 면 {n}"),
+            Err(_) => {
+                println!("    앞 {k} 개   {}초 안에 안 끝남  <- 여기서 넘어간다\n", budget.as_secs());
+                return;
+            }
+        }
+    }
+    println!("\n  여덟 개 전부 끝난다 — 넘기는 순서가 다른 것이다\n");
+}
+
+/// What the fifth face is, and what the 436 faces are made of.
+///
+/// Four faces cost a millisecond and leave 61. Adding the fifth costs 26
+/// seconds and leaves 436 — nine times the model it started from. Either that
+/// is a lot of real division, or the split is producing slivers.
+#[test]
+#[ignore = "runs the 26-second call — by hand"]
+fn what_the_fifth_face_does() {
+    let (s, crossing) = crossing_candidates();
+    let fifth = crossing[4];
+    println!("\n  다섯 번째 면 = {fifth:?}\n");
+    if let Some(f) = s.mesh.faces.get(fifth) {
+        let vs = s.mesh.collect_loop_verts(f.outer().start).unwrap_or_default();
+        let pts: Vec<DVec3> = vs.iter().filter_map(|v| s.mesh.verts.get(*v).map(|x| x.pos())).collect();
+        let n = f.normal().normalize_or_zero();
+        println!("    법선 ({:.3}, {:.3}, {:.3})   정점 {}", n.x, n.y, n.z, pts.len());
+        for p in &pts {
+            println!("      ({:>8.2}, {:>8.2}, {:>8.2})", p.x, p.y, p.z);
+        }
+        println!("    넓이 {:.1}", s.mesh.face_area(fifth));
+    }
+
+    // Run the five and look at what comes out.
+    let (mut s2, c2) = crossing_candidates();
+    let take: Vec<axia_geo::FaceId> = c2.into_iter().take(5).collect();
+    let before = s2.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let t0 = std::time::Instant::now();
+    let _ = s2.mesh.intersect_faces_with_model(&take, FORM_MATERIAL);
+    let secs = t0.elapsed().as_secs_f64();
+
+    let mut areas: Vec<f64> = s2
+        .mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(fid, _)| s2.mesh.face_area(fid))
+        .collect();
+    areas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = areas.len();
+    let slivers = areas.iter().filter(|a| **a < 1.0).count();
+    let tiny = areas.iter().filter(|a| **a < 100.0).count();
+    println!("\n    면 {before} -> {n}   ({secs:.1} 초)");
+    println!("    넓이 < 1      {slivers}");
+    println!("    넓이 < 100    {tiny}");
+    println!(
+        "    가장 작은 다섯: {:?}",
+        areas.iter().take(5).map(|a| (a * 1000.0).round() / 1000.0).collect::<Vec<_>>()
+    );
+    println!(
+        "    가장 큰 셋:     {:?}\n",
+        areas.iter().rev().take(3).map(|a| a.round()).collect::<Vec<_>>()
+    );
+}
+
+/// Where the vertices go.
+///
+/// The five-face call leaves faces of area 1.38e9 in a model whose largest was
+/// 21,600. sqrt(1.38e9) is about 37,000 mm — thirty-seven metres, in a scene
+/// 400 mm across. Something is computing a point far away, and the likeliest
+/// source is an intersection line between two nearly PARALLEL planes, where the
+/// denominator goes to zero and the point flies off.
+#[test]
+#[ignore = "runs the 23-second call — by hand"]
+fn where_the_vertices_go() {
+    let (s0, _) = crossing_candidates();
+    let extent = |s: &Scene| -> (f64, f64, usize) {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let mut nonfinite = 0usize;
+        for (_, v) in s.mesh.verts.iter() {
+            if !v.is_active() {
+                continue;
+            }
+            let p = v.pos();
+            if !p.is_finite() {
+                nonfinite += 1;
+                continue;
+            }
+            for c in [p.x, p.y, p.z] {
+                lo = lo.min(c);
+                hi = hi.max(c);
+            }
+        }
+        (lo, hi, nonfinite)
+    };
+    let (lo0, hi0, nf0) = extent(&s0);
+    println!("\n  자르기 전   좌표 [{lo0:.1}, {hi0:.1}]   비유한 {nf0}");
+
+    let (mut s, c) = crossing_candidates();
+    let take: Vec<axia_geo::FaceId> = c.into_iter().take(5).collect();
+    let _ = s.mesh.intersect_faces_with_model(&take, FORM_MATERIAL);
+    let (lo, hi, nf) = extent(&s);
+    println!("  자른 뒤     좌표 [{lo:.1}, {hi:.1}]   비유한 {nf}\n");
+
+    assert!(
+        hi - lo < 10_000.0 && nf == 0,
+        "a scene 400 mm across must not grow to [{lo:.1}, {hi:.1}] with {nf} \
+         non-finite vertices — the intersection is computing points that are \
+         not on either face"
+    );
+}
+
+/// What the 450 faces actually are.
+///
+/// Coordinates do not move — [-310, 320] before and after, no non-finite
+/// vertex. So an area of 1.38e9 in a scene 630 mm across cannot come from a far
+/// away point; it comes from a LOOP that does not enclose what it claims. This
+/// counts the shapes of the loops that come out.
+#[test]
+#[ignore = "runs the 23-second call — by hand"]
+fn what_shape_the_new_faces_are() {
+    let (mut s, c) = crossing_candidates();
+    let take: Vec<axia_geo::FaceId> = c.into_iter().take(5).collect();
+    let before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let _ = s.mesh.intersect_faces_with_model(&take, FORM_MATERIAL);
+
+    let mut repeats = 0usize;
+    let mut longest = 0usize;
+    let mut unreadable = 0usize;
+    let mut worst: Option<(axia_geo::FaceId, usize, usize, f64)> = None;
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() {
+            continue;
+        }
+        let Ok(vs) = s.mesh.collect_loop_verts(f.outer().start) else {
+            unreadable += 1;
+            continue;
+        };
+        let mut seen = std::collections::HashSet::new();
+        let dups = vs.iter().filter(|v| !seen.insert(**v)).count();
+        longest = longest.max(vs.len());
+        if dups > 0 {
+            repeats += 1;
+            let area = s.mesh.face_area(fid);
+            if worst.map(|(_, _, d, _)| dups > d).unwrap_or(true) {
+                worst = Some((fid, vs.len(), dups, area));
+            }
+        }
+    }
+    let after = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    let inv = s.mesh.verify_face_invariants().violations.len();
+
+    println!("\n  다섯 면을 자른 뒤\n");
+    println!("    면            {before} -> {after}");
+    println!("    루프가 정점을 두 번 지나는 면   {repeats}");
+    println!("    읽을 수 없는 루프              {unreadable}");
+    println!("    가장 긴 루프                   {longest} 정점");
+    println!("    불변식 위반                    {inv}");
+    if let Some((fid, n, d, area)) = worst {
+        println!("\n    최악: {fid:?}  {n} 정점, 중복 {d}, 넓이 {area:.0}");
+    }
+    println!();
+
+    // ⚠ NOT asserted to be zero, and that is the finding.
+    //
+    // Splitting each self-touching ring at its touches — the fix
+    // `polygon_difference_by_clip` needed in `operations/coplanar.rs`, applied
+    // here to `split_faces_by_intersections` — does exactly what it says and
+    // makes everything else worse:
+    //
+    // ```text
+    //   repeated-vertex faces   386 -> 0
+    //   faces                   450 -> 1920
+    //   the five-face call      23 s -> 129 s
+    // ```
+    //
+    // So the self-touching loops are a SYMPTOM. A ring that visits a vertex
+    // twice, cut in two, becomes two rings, and 386 of them become 1470 more
+    // faces. The disease is upstream: `sub_polys` produces far too many pieces,
+    // and they self-touch because they overlap each other. Making the rings
+    // readable leaves forty times the model.
+    //
+    // Reverted. What is asserted is the SHAPE of the damage, so the day the
+    // production of `sub_polys` is fixed this test says so by failing.
+    assert!(
+        repeats > 100 && after > 5 * before,
+        "as measured: a five-face intersect leaves {after} faces from {before},          {repeats} of them walking a vertex twice. If either number has come          down, `split_faces_by_intersections` was fixed — rewrite this around          the new reading rather than deleting it"
+    );
 }
