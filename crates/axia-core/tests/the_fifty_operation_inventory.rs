@@ -126,7 +126,8 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
     let c = DVec3::new(x, y, z);
     let w = r.size();
     let live: Vec<FaceId> = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
-    match r.below(10) {
+    let kind = r.below(10);
+    let desc = match kind {
         0 => {
             s.execute(Command::DrawRectAsShape {
                 center: c, normal: DVec3::Z, up: DVec3::X, width: w, height: w * 0.75,
@@ -200,7 +201,8 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             );
             format!("punch({x},{y},{z})")
         }
-    }
+    };
+    desc
 }
 
 /// Every pair of live faces that cover the same ground, as the verifier says it.
@@ -775,15 +777,85 @@ fn which_arm_the_break_takes() {
 ///     landed on. The idea is sound; the placement is not.
 ///   - Whatever the re-derive leaves behind destabilises the NEXT push. That is
 ///     the thing to understand before trying again — not the stacking.
+/// ── What fixed it, written after ────────────────────────────────────────
+///
+/// The idea was right; the first attempt wired it in TWO places and one of them
+/// is what broke session 10. Reconciling from `exec_create_solid`'s Q3 fallback
+/// arm alone clears the pair and leaves the gate green; adding the same call to
+/// the `SolidCreated` arm brings back the two NaN normals at op 15 exactly as
+/// recorded.
+///
+/// ⚠ Three other explanations were measured and are wrong — written down so no
+/// one spends the runs again:
+///
+///   - position relative to `promote_arc_side_faces_to_cylinder`: moving the
+///     call back above the promote changes nothing
+///   - the ownership adopt: dropping `adopt_retiled_faces` changes nothing
+///     (it is kept because a re-derive without it loses face ownership, which
+///     is a different defect, not this one)
+///   - the first attempt's rollback-unless-improved guard: this wiring carries
+///     one too. It is needed — without it session 3's op 14 gains an edge shared
+///     by four faces — but it is not what decides session 10 either way
+///
+/// So this test now reads the other way: the reduced case must NOT stack.
 #[test]
-fn the_stacking_is_still_here() {
+fn the_reduced_case_no_longer_stacks() {
     let s = stacked_scene();
     let n = stacked_pairs(&s);
+    let inv = s.mesh.verify_face_invariants();
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
     println!("
-  다섯 연산 — 겹침 {n}
-");
-    assert!(
-        n > 0,
-        "the reduced case still stacks; if it stops, say what fixed it and          rewrite this around the new reading"
+  다섯 연산 — 면 {faces}, 겹침 {n}, 위반 {}
+", inv.violations.len());
+    assert_eq!(
+        n, 0,
+        "a wall pushed inward beside a coplanar cap must not leave a stacked          pair — `exec_create_solid`'s Q3 fallback reconciles the plane after          the arc promote"
     );
+    assert!(
+        inv.is_valid(),
+        "and clearing it must not cost soundness: {:?}",
+        inv.violations
+    );
+}
+
+// ── What the re-derive leaves behind ─────────────────────────────────────────
+//
+// The reverted attempt made fuzz session 10 produce NaN normals at operation 15
+// — a session that had been sound, and one where the NaN appears TWO OPERATIONS
+// AFTER the re-derive that caused it.
+//
+// It was the second call site. Reconciling from the Q3 fallback arm alone leaves
+// session 10 clean; adding the same call to the `SolidCreated` arm brings the NaN
+// back. This gate says so by name.
+
+fn nonfinite_faces(s: &Scene) -> usize {
+    s.mesh.faces.iter().filter(|(_, f)| f.is_active() && !f.normal().is_finite()).count()
+}
+
+/// Session 10 stays free of NaN normals.
+///
+/// This is the regression the reverted attempt died on, kept as a gate. The
+/// harness's own gate would catch it too — `verify_face_invariants` reports a
+/// non-finite normal — but it reports the FIRST violation of any kind, and this
+/// one is worth naming: it is what the placement fixes.
+///
+/// Mutation-checked: also call `reconcile_new_solid_with_coplanar_neighbours`
+/// from `exec_create_solid`'s `SolidCreated` arm and this fails at op 15 with
+/// `FaceId(22)` and `FaceId(66)` carrying NaN normals.
+#[test]
+fn session_ten_leaves_no_face_without_a_normal() {
+    let mut r = Lcg(0x5EED_0000 + 10);
+    let mut s = prod();
+    for i in 0..20 {
+        let desc = step(&mut s, &mut r);
+        let bad = nonfinite_faces(&s);
+        assert_eq!(
+            bad, 0,
+            "op {i} ({desc}) left {bad} face(s) whose normal is not a number"
+        );
+    }
+    let live = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("
+  세션 10, 20 연산 — 면 {live}, NaN 면 0
+");
 }

@@ -10735,6 +10735,107 @@ impl Scene {
     /// success, updates Shape/Xia ownership for the new solid faces
     /// (Q7 lock-in). On `NotYetSupported` error, falls back to legacy
     /// `Mesh::push_pull` per Q3 lock-in (W-4 점진 deprecate).
+    /// A cap a push builds can land exactly on a cap already there.
+    ///
+    /// See `the_fifty_operation_inventory.rs` — twelve of the sixteen
+    /// violations the 30 x 50 fuzz reports are this, reduced to five
+    /// operations. A DRAW never leaves it, because a draw runs the coplanar
+    /// re-derive afterwards; `create_solid` does not.
+    ///
+    /// ⚠ Gated on the damage: nothing happens unless a face this op created is
+    /// on a stacked pair. Most pushes never make one and must not pay for it.
+    ///
+    /// ⚠⚠ Call this from the Q3 FALLBACK ARM ONLY.
+    ///
+    /// Calling it from `exec_create_solid`'s `SolidCreated` arm as well makes
+    /// fuzz session 10 fail at op 15 with two NaN normals on faces the op never
+    /// touched (`FaceId(22)`, `FaceId(66)`) — the reading that killed the first
+    /// attempt at this fix. Three things were suspected and each was measured
+    /// and cleared: the position relative to `promote_arc_side_faces_to_cylinder`
+    /// (moving it back above the promote changes nothing), the ownership adopt
+    /// (dropping it changes nothing), and the rollback guard the first attempt
+    /// carried (this one carries one too, for a different reason — session 3
+    /// below — and it is not what makes session 10 pass or fail). It is the
+    /// second call site.
+    ///
+    /// It also buys nothing there: the stacked pair's producer reports
+    /// `PushPullDone`, so it is the fallback arm that creates it.
+    pub fn reconcile_new_solid_with_coplanar_neighbours(&mut self, new_faces: &[FaceId]) {
+        use std::collections::HashSet;
+        if new_faces.is_empty() {
+            return;
+        }
+        let fresh: HashSet<FaceId> = new_faces.iter().copied().collect();
+        let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+        for eid in self.mesh.collect_non_manifold_edges() {
+            let Some((a, b)) = self.mesh.edge_stacked_face_pair(eid) else { continue };
+            if !fresh.contains(&a) && !fresh.contains(&b) {
+                continue;
+            }
+            let n = self.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero());
+            let Some(n) = n.filter(|n| n.length() > 0.5) else { continue };
+            let Some(edge) = self.mesh.edges.get(eid) else { continue };
+            let Ok(p) = self.mesh.vertex_pos(edge.v_small()) else { continue };
+            if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
+                continue;
+            }
+            planes.push((p, n));
+        }
+        for (origin, normal) in planes {
+            // ⚠ Keep the result only if it is an improvement.
+            //
+            // Session 3's op 14 is why: re-deriving a plane there answers with a
+            // WORSE mesh — an edge shared by four faces where there had been
+            // none. The re-derive is not wrong in general and it is not worth
+            // predicting which planes it helps; measure the answer and drop it
+            // when it is not better.
+            let before = Self::stacked_pair_count(&self.mesh);
+            let before_violations = self.mesh.verify_face_invariants().violations.len();
+            let backup = self.mesh.clone();
+
+            // capture -> rebuild -> adopt, the same three steps the draw path
+            // runs (see `rebuild_coplanar_plane`). Re-deriving alone retiles the
+            // plane and leaves every new face owner-less: the Shape or Xia that
+            // held the old faces would silently lose them.
+            let owner_ground = self.capture_coplanar_owners(origin, normal);
+            let faces_before: std::collections::HashSet<FaceId> = self
+                .mesh
+                .faces
+                .iter()
+                .filter(|(_, f)| f.is_active())
+                .map(|(fid, _)| fid)
+                .collect();
+            let ok = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+                &mut self.mesh, origin, normal, 1e-3, self.freeform_overlap_on_draw, None,
+            )
+            .is_ok();
+            if !ok {
+                self.mesh = backup;
+                continue;
+            }
+            self.adopt_retiled_faces(&owner_ground, &faces_before, origin, normal);
+
+            let after = Self::stacked_pair_count(&self.mesh);
+            let after_violations = self.mesh.verify_face_invariants().violations.len();
+            let no_new_nan = !self
+                .mesh
+                .faces
+                .iter()
+                .any(|(_, f)| f.is_active() && !f.normal().is_finite());
+            if !(after < before && after_violations <= before_violations && no_new_nan) {
+                self.mesh = backup;
+            }
+        }
+    }
+
+    /// How many live face pairs cover the same ground, as the verifier says it.
+    fn stacked_pair_count(mesh: &axia_geo::Mesh) -> usize {
+        mesh.collect_non_manifold_edges()
+            .into_iter()
+            .filter(|&e| mesh.edge_stacked_face_pair(e).is_some())
+            .count()
+    }
+
     fn exec_create_solid(
         &mut self,
         face_id: FaceId,
@@ -11002,6 +11103,13 @@ impl Scene {
                         // = false → it mutates within THIS outer transaction (whose
                         // before_snapshot is the original pre-op state) and leaves
                         // the after-snapshot / commit / cancel to us below.
+                        let before_push: std::collections::HashSet<axia_geo::FaceId> = self
+                            .mesh
+                            .faces
+                            .iter()
+                            .filter(|(_, f)| f.is_active())
+                            .map(|(i, _)| i)
+                            .collect();
                         let result = self.exec_push_pull(pp_face, dist);
 
                         // ADR-109 π-β — Post-process: promote Cylinder
@@ -11015,6 +11123,19 @@ impl Scene {
                             .collect();
                         let _promoted = self.mesh
                             .promote_arc_side_faces_to_cylinder(&candidates, extrude_axis);
+
+                        // The fallback arm — the one that produces the stacked
+                        // pair. Not the `SolidCreated` arm; see the helper.
+                        if !matches!(result, CommandResult::Error(_)) {
+                            let fresh: Vec<axia_geo::FaceId> = self
+                                .mesh
+                                .faces
+                                .iter()
+                                .filter(|(id, f)| f.is_active() && !before_push.contains(id))
+                                .map(|(i, _)| i)
+                                .collect();
+                            self.reconcile_new_solid_with_coplanar_neighbours(&fresh);
+                        }
 
                         // Close the single outer frame: before = original pre-op,
                         // after = final. On push_pull failure, cancel so no partial
