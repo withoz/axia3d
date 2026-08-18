@@ -10738,9 +10738,10 @@ impl Scene {
     /// A cap a push builds can land exactly on a cap already there.
     ///
     /// See `the_fifty_operation_inventory.rs` — twelve of the sixteen
-    /// violations the 30 x 50 fuzz reports are this. A DRAW never leaves it,
-    /// because a draw runs the coplanar re-derive afterwards; `create_solid`
-    /// does not.
+    /// violations the 30 x 50 fuzz reports are this, and `create_solid` did not
+    /// re-derive at all. (⚠ A draw DOES leave stacked pairs too — six of the
+    /// eleven that remain are draws. Its re-derive is scoped to what was drawn,
+    /// and the scope is the miss. That is separate work.)
     ///
     /// ⚠ The gate is the DAMAGE, not the faces. A first version passed the
     /// faces the op created and asked whether one of them was on a stacked
@@ -10751,7 +10752,10 @@ impl Scene {
     /// 50-op run went on stacking seven pairs with the gate wired that way.
     ///
     /// So: record which planes carry a stacked pair before the op, and after it
-    /// reconcile the ones that are new. Most pushes make none and pay one scan.
+    /// reconcile the ones that are new. The cost on a push that stacks nothing —
+    /// which is nearly all of them — is two `collect_non_manifold_edges` scans,
+    /// one before and one after; the mesh clone and the re-derive happen only
+    /// when a plane actually went bad.
     ///
     /// ⚠⚠ Call this from the Q3 FALLBACK and MoveOnly arms only.
     ///

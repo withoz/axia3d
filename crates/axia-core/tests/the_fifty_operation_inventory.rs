@@ -17,6 +17,48 @@
 //! whatever makes a duplicate face is invisible to the scan that is supposed to
 //! catch it.
 //!
+//! ── What is left, sorted (2026-08-19) ───────────────────────────────────
+//!
+//! With the push arms reconciling (see `a_move_only_push_leaves_its_neighbours_
+//! unstacked`) the wide run reports fifteen, of which eleven are stacked. Two
+//! questions asked of each — what made it, and would an unscoped re-derive on
+//! that plane clear it — sort them:
+//!
+//! ```text
+//!   세션  연산                         만든 것            재유도가
+//!     3   pushIn   → SolidCreated Box   밀어넣기          못 고친다
+//!    12   rect                          그리기            못 고친다
+//!    17   ellipse                       그리기            고친다  ←
+//!    18   pushIn   → SolidCreated Sweep 밀어넣기          못 고친다
+//!    19   extrude  → MoveOnly           밀어넣기          못 고친다
+//!    20   rect                          그리기            못 고친다
+//!    25   rect                          그리기            못 고친다
+//!    26   box      (mesh.create_box)    하네스 직접 호출  고친다  ←
+//!    27   rect                          그리기            못 고친다
+//!    28   pushIn   → CreateFace         밀어넣기          못 고친다
+//!    29   circleCurve                   그리기            고친다  ←
+//! ```
+//!
+//! ⚠ "A DRAW never leaves it, because a draw runs the coplanar re-derive
+//! afterwards" — the sentence this file opened with — is FALSE. Six of the
+//! eleven are draws. The draw path does re-derive, but SCOPED to the drawn
+//! faces (`seed = Some(face_ids)`), and for sessions 17 and 29 the same
+//! re-derive with `seed = None` clears the plane outright. The scope is the
+//! miss, not the absence.
+//!
+//! Session 26 is the harness reaching past `Scene` into `mesh.create_box`, so
+//! nothing could have reconciled it; that one is an artifact, not a defect.
+//!
+//! Which leaves two piles of work, and they are different work:
+//!
+//!   3 sessions  the re-derive would clear it and nothing ran it   (17, 26, 29)
+//!   8 sessions  the re-derive runs and changes NOTHING — face count
+//!               identical before and after, so it either declined (the scoped
+//!               rebuild carries its own rollback) or found nothing to do
+//!
+//! `whose_refusal_leaves_the_stacking` prints both columns and the face counts;
+//! `which_operation_first_stacks` names the operation.
+//!
 //! This file works that family. Session 18 breaks earliest — operation 24 — and
 //! greedy shrinking takes its twenty-three operations down to four:
 //!
@@ -636,9 +678,10 @@ fn what_the_inward_clamp_sees() {
 // ── Would the re-derive have cleared it? ─────────────────────────────────────
 //
 // The producer is `create_solid` building a cap on a plane that already holds
-// one. A DRAW on that plane would not leave the pair, because a draw runs the
-// coplanar re-derive afterwards and that reconciles everything sharing a plane.
-// `create_solid` does not.
+// one, and `create_solid` did not re-derive at all. (⚠ The first version of this
+// paragraph went on to say a DRAW would not leave the pair. It does — see the
+// table at the top of the file — because the draw path's re-derive is scoped to
+// what was drawn.)
 //
 // Before changing the push/pull path — which carries 245+ regression tests —
 // ask whether the re-derive would even have helped. Engine changes: none. If it
@@ -913,6 +956,7 @@ fn what_a_rederive_would_do(session: usize, ops: usize) -> Vec<(String, usize, u
     for (origin, normal) in planes {
         let before = stacked(&s.mesh);
         let viol_before = s.mesh.verify_face_invariants().violations.len();
+        let faces_before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
         let mut trial = s.mesh.clone();
         let ok = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
             &mut trial, origin, normal, 1e-3, true, None,
@@ -920,8 +964,17 @@ fn what_a_rederive_would_do(session: usize, ops: usize) -> Vec<(String, usize, u
         .is_ok();
         let after = if ok { stacked(&trial) } else { before };
         let viol_after = if ok { trial.verify_face_invariants().violations.len() } else { viol_before };
+        // ⚠ Did it touch anything? The scoped re-derive carries its OWN rollback
+        // (curved face lost / more violations / more self-intersections), so
+        // "no change" is two different answers: it declined, or it ran and the
+        // plane was already what it would have built.
+        let faces_after = trial.faces.iter().filter(|(_, f)| f.is_active()).count();
         rows.push((
-            format!("n={:?} o={:?}", normal.round(), origin.round()),
+            format!(
+                "n={:?} o={:?} 면 {faces_before}->{faces_after}",
+                normal.round(),
+                origin.round()
+            ),
             before,
             after,
             viol_before,
@@ -935,7 +988,7 @@ fn what_a_rederive_would_do(session: usize, ops: usize) -> Vec<(String, usize, u
 #[test]
 #[ignore = "a description — run by hand, after a wide run names a session"]
 fn whose_refusal_leaves_the_stacking() {
-    for (session, ops) in [(18usize, 25usize), (4, 41), (19, 27)] {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
         let rows = what_a_rederive_would_do(session, ops);
         println!("\n  세션 {session}, {ops} 연산 — 겹친 평면 {}\n", rows.len());
         for (what, b, a, vb, va) in rows {
@@ -960,7 +1013,7 @@ fn whose_refusal_leaves_the_stacking() {
 #[test]
 #[ignore = "a description — run by hand"]
 fn which_operation_first_stacks() {
-    for (session, ops) in [(4usize, 41usize), (18, 25), (19, 27)] {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
         let mut r = Lcg(0x5EED_0000 + session as u64);
         let mut s = prod();
         let mut prev = 0usize;
@@ -988,7 +1041,7 @@ fn which_operation_first_stacks() {
 #[test]
 #[ignore = "a description — run by hand"]
 fn which_arm_the_wide_run_breaks_take() {
-    for (session, ops) in [(4usize, 41usize), (18, 25), (19, 27)] {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
         let mut r = Lcg(0x5EED_0000 + session as u64);
         let mut s = prod();
         let mut answer = String::from("(never ran)");
