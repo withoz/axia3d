@@ -48,6 +48,10 @@ test.describe('ADR-190 Phase 3 — repeat last (double-click)', () => {
     });
     expect(setup.canvasW, 'real canvas layout is required for mouse input').toBeGreaterThan(10);
 
+    // (The projection right after `setCameraState` used to be taken off a
+    // camera whose matrices were a frame behind — fixed at the source, guarded
+    // by `a-moved-camera-is-projectable-at-once.spec.ts`.)
+
     // Project the two face centres through the live camera (Three is reachable
     // via the viewport's own objects, so we avoid importing it here).
     const pts = await page.evaluate(() => {
@@ -80,12 +84,20 @@ test.describe('ADR-190 Phase 3 — repeat last (double-click)', () => {
       const canvas = ax.get('viewport').renderer.domElement;
       const md = new MouseEvent('mousedown', { clientX: a.x, clientY: a.y, bubbles: true, detail: 1 });
       canvas.dispatchEvent(md);
+      // Did the press actually find the face? PushPull only arms when it has
+      // one, and a projection computed off a stale camera silently misses.
+      const picked = ax.get('viewport').pick(a.x, a.y)?.faceIndex != null;
       // typed distance, through the same entry the VCB panel uses → commits and
       // records lastPPDist
       tm.applyVCBValue(150);
       tm.syncMesh();
-      return { faces: bridge.getStats().faces };
+      return { faces: bridge.getStats().faces, picked };
     }, pts);
+    expect(
+      afterA.picked,
+      'the synthetic mousedown must land ON face A — if it did not, the camera ' +
+        'projection and the canvas disagree, and nothing after this means anything',
+    ).toBe(true);
     expect(afterA.faces, 'A must have extruded into a solid').toBeGreaterThan(2);
 
     const zBefore = await page.evaluate(() => {
@@ -95,8 +107,56 @@ test.describe('ADR-190 Phase 3 — repeat last (double-click)', () => {
     });
 
     // ── 2) REAL double-click on B — no typing, no dragging ──
+    //
+    // PushPull reads the BROWSER's own `e.detail`, which only reaches 2 when
+    // two clicks land close in time AND position. Under full-suite load this
+    // test failed about one run in two, and a fixed wait could not tell which
+    // of two things had happened: the gesture never registered as a double
+    // click, or it did and the commit had not finished in 300 ms. So watch the
+    // canvas count it, then wait for the RESULT rather than for the clock.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      w.__maxDetail = 0;
+      const canvas = w.__axia.get('viewport').renderer.domElement;
+      canvas.addEventListener(
+        'mousedown',
+        (e: MouseEvent) => {
+          w.__maxDetail = Math.max(w.__maxDetail, e.detail);
+        },
+        true,
+      );
+    });
+
     await page.mouse.dblclick(pts.b.x, pts.b.y);
-    await page.waitForTimeout(300);
+
+    const arrived = await page
+      .waitForFunction(
+        () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ax = (window as any).__axia;
+          const buf = ax.get('bridge').getMeshBuffers();
+          if (!buf?.positions) return false;
+          const p = buf.positions;
+          for (let i = 0; i < p.length; i += 3) {
+            if (p[i] > 400 && p[i + 2] > 140) return true;
+          }
+          return false;
+        },
+        null,
+        { timeout: 5000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const maxDetail = await page.evaluate(() => (window as any).__maxDetail ?? 0);
+    expect(
+      maxDetail,
+      `the browser did not count the two clicks as a double-click (detail ${maxDetail}) — ` +
+        'that is the input reaching the app, not the app repeating the distance',
+    ).toBeGreaterThanOrEqual(2);
+    expect(arrived, 'B did not rise within 5s of a registered double-click').toBe(true);
 
     const res = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

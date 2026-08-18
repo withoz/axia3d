@@ -72,6 +72,10 @@ test.describe('object snap on a curved face', () => {
       { timeout: 10000 },
     );
 
+    // (The projection right after `setCameraState` used to be taken off a
+    // camera whose matrices were a frame behind — fixed at the source, guarded
+    // by `a-moved-camera-is-projectable-at-once.spec.ts`.)
+
     const r = await page.evaluate((radius) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const w = window as any; const ax = w.__axia;

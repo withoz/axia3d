@@ -2401,6 +2401,26 @@ export class Viewport {
     } else {
       this.updateCameraFromSpherical();
     }
+
+    // The camera has MOVED; make it projectable NOW rather than at the next
+    // render. `Vector3.project()` reads `matrixWorldInverse`, and three.js only
+    // refreshes that inside `renderer.render()` — so anything that moves the
+    // camera and then works out where a world point lands on screen was using
+    // the PREVIOUS camera. Measured, moving the camera to look at the origin and
+    // projecting the origin straight after:
+    //
+    //     right after the move   [748, 317]     wrong
+    //     two frames later       [640, 360]     the canvas centre, correct
+    //
+    // Whether that mattered depended on which came first, the projection or the
+    // next frame, so it showed up as two E2E specs failing about one full-suite
+    // run in two — with a tell that pointed elsewhere.
+    //
+    // ⚠ Here and not in `updateCameraFromSpherical`: the constructor calls that
+    // one before `orthoCamera` exists, and touching it there stops the app from
+    // starting at all. Measured — every E2E went red at once.
+    this.camera.updateMatrixWorld();
+    this.orthoCamera.updateMatrixWorld();
   }
 
   /** 카메라를 원점으로 복귀 (초기 상태) */
