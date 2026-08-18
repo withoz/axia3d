@@ -139,9 +139,15 @@ fn newton_refine(
         let damp = if step > 1.0 { 1.0 / step } else { 1.0 };
         t1 += dt1 * damp;
         t2 += dt2 * damp;
-        // Project to parameter range.
-        t1 = t1.clamp(r1_min, r1_max);
-        t2 = t2.clamp(r2_min, r2_max);
+        // Project to parameter range. The range arrives in CURVE order, and an
+        // arc that runs clockwise gives it backwards — `f64::clamp` panics on
+        // min > max. Order the bounds here rather than sorting the range at the
+        // source: the seeds above map polyline index -> parameter linearly, and
+        // `tessellate` walks the arc start -> end, so the backwards range is what
+        // makes that mapping line up. Sorting it would put every seed at the
+        // wrong end of the arc, which is a wrong answer instead of a crash.
+        t1 = t1.clamp(r1_min.min(r1_max), r1_min.max(r1_max));
+        t2 = t2.clamp(r2_min.min(r2_max), r2_min.max(r2_max));
     }
     // Final check after max iter.
     let f = c1.evaluate(t1, mesh)? - c2.evaluate(t2, mesh)?;
