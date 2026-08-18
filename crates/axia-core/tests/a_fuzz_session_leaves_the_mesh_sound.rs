@@ -21,6 +21,26 @@
 //! 100 × 50 is `AXIA_FUZZ_SESSIONS=100 AXIA_FUZZ_OPS=50`, and it is worth
 //! running by hand before a release rather than on every commit.
 //!
+//! ⚠ The wide run is a DISCOVERY run, not a gate, and it is expected to be red.
+//! The default 12 × 20 is the gate; `KNOWN_BREAKS` governs that and nothing
+//! else. Running 100 × 50 by hand on 2026-08-18 is what bought this:
+//!
+//! ```text
+//!   before   session 2 PANICKED  (f64::clamp, min > max — a clockwise arc)
+//!            → sessions 3..99 were never seen at all
+//!   after    session 2 runs 49 operations and REPORTS
+//!            → of the first 22 sessions, 11 break, at operations 24 to 49
+//! ```
+//!
+//! ⚠ That range was first written as "operation 40 and beyond" off the first
+//! three readings — 49, 45, 40. Twenty-two sessions in, the earliest is 24. A
+//! number taken from the top of a list is a guess wearing a decimal point.
+//!
+//! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
+//! violations the wide run reports now are a fresh inventory to work through —
+//! they are deep-session pile-ups, all well past the 20-operation gate, not
+//! regressions of it.
+//!
 //! ⚠ The bar is `verify_face_invariants`, not `damaging_contacts`. Two solids
 //! standing in the same place is a legal model — a user may well want it — and
 //! failing a fuzz session for it would be failing it for a picture, not a
