@@ -235,6 +235,65 @@ fn env_usize(key: &str, default: usize) -> usize {
 const KNOWN_BREAKS: &[(u64, &str)] = &[];
 
 
+/// How long one session may take before it is called wedged.
+///
+/// Chosen from the clock the harness now prints, not from a feeling:
+///
+/// ```text
+///   gate, debug, 12 x 20     0.1 s to 4.9 s per session   (slowest, not mean)
+///   wide, release, 100 x 50  ~65 s per session            (22 in 24 minutes)
+///   the wedge, release       still running at 15 minutes
+/// ```
+///
+/// ⚠ Five minutes reads as far too generous for the gate, and it is — 61x its
+/// slowest session. It is sized for the WIDE run, which is where the wedge
+/// lives, and a debug build there is slower again. The first version was 60 s
+/// and reported a perfectly healthy 50-operation session as wedged.
+fn session_budget() -> std::time::Duration {
+    std::time::Duration::from_secs(env_usize("AXIA_FUZZ_SESSION_SECS", 300) as u64)
+}
+
+/// What happened to a session that did not finish cleanly.
+enum Stopped {
+    /// The contract spoke: an invariant was violated at this operation.
+    Violation(usize, String, Vec<String>),
+    /// Nothing spoke at all — the session was still running when time ran out.
+    Wedged,
+    /// The session panicked. Its message is already on stderr; what matters
+    /// here is that it is NOT called a wedge.
+    ///
+    /// ⚠ Easy to get wrong, and this did at first: a panicking thread drops its
+    /// sender, so `recv_timeout` returns `Disconnected` AT ONCE. Mapping every
+    /// `Err` to `Wedged` reports "still running after 60s" about a session that
+    /// died in milliseconds.
+    Panicked,
+}
+
+/// Run one session on its own thread so a wedge can be REPORTED.
+///
+/// Session 22 of the 100 x 50 run wedged inside the coplanar re-derive and the
+/// harness said nothing whatever — no seed, no operation list, no violation,
+/// just a process burning a core. A hang that reports nothing is worse to read
+/// than a failure, and the whole premise here is "a failure is a bug report
+/// rather than a rumour".
+///
+/// ⚠ The wedged thread is NOT stopped — Rust cannot interrupt one — so it keeps
+/// burning a core until the process exits. That is the price of hearing about
+/// it at all, and it is why the budget is generous rather than tight.
+fn run_session_timeboxed(seed_index: u64, ops: usize) -> Result<(usize, usize), Stopped> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(run_session(seed_index, ops));
+    });
+    use std::sync::mpsc::RecvTimeoutError;
+    match rx.recv_timeout(session_budget()) {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err((op, why, log))) => Err(Stopped::Violation(op, why, log)),
+        Err(RecvTimeoutError::Timeout) => Err(Stopped::Wedged),
+        Err(RecvTimeoutError::Disconnected) => Err(Stopped::Panicked),
+    }
+}
+
 fn run_session(seed_index: u64, ops: usize) -> Result<(usize, usize), (usize, String, Vec<String>)> {
     let seed = 0x5EED_0000_u64 + seed_index;
     let mut r = Lcg(seed);
@@ -270,14 +329,41 @@ fn a_fuzz_session_leaves_the_mesh_sound() {
     let mut fixed: Vec<u64> = Vec::new();
 
     for session in 0..sessions as u64 {
-        match run_session(session, ops) {
+        let t0 = std::time::Instant::now();
+        let outcome = run_session_timeboxed(session, ops);
+        let secs_taken = t0.elapsed().as_secs_f64();
+        match outcome {
             Ok((faces, damage)) => {
-                println!("  세션 {session:>3}  면 {faces:>4}  손상 {damage:>3}");
+                println!(
+                    "  세션 {session:>3}  면 {faces:>4}  손상 {damage:>3}  {secs_taken:>6.1}초"
+                );
                 if known.contains(&session) {
                     fixed.push(session);
                 }
             }
-            Err((op, why, log)) => {
+            Err(Stopped::Wedged) => {
+                let secs = session_budget().as_secs();
+                println!("  세션 {session:>3}  {secs}초 안에 끝나지 않음 — 멈춤 (seed 0x{:X})", 0x5EED_0000_u64 + session);
+                if !known.contains(&session) {
+                    let seed = 0x5EED_0000_u64 + session;
+                    let n = session + 1;
+                    new_breaks.push(format!(
+                        "session {session} (seed 0x{seed:X}) WEDGED — still running after {secs}s.
+    AXIA_FUZZ_SESSIONS={n} AXIA_FUZZ_OPS={ops} replays it; the operation list
+    is in `a_fuzz_session_that_never_finishes.rs`."
+                    ));
+                }
+            }
+            Err(Stopped::Panicked) => {
+                println!("  세션 {session:>3}  패닉 (seed 0x{:X}) — 메시지는 stderr", 0x5EED_0000_u64 + session);
+                if !known.contains(&session) {
+                    let seed = 0x5EED_0000_u64 + session;
+                    new_breaks.push(format!(
+                        "session {session} (seed 0x{seed:X}) PANICKED — the message is on stderr, above this line."
+                    ));
+                }
+            }
+            Err(Stopped::Violation(op, why, log)) => {
                 println!("  세션 {session:>3}  op {op} 에서 위반 — {why}");
                 // An inventoried break prints its operations too. A known
                 // failure nobody can re-type is not much better than an
