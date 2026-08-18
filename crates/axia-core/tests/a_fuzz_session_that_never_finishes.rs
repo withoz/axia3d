@@ -1,4 +1,29 @@
-//! A fuzz session that never finishes — and what it is spinning in.
+//! A fuzz session that never finished — and what it was spinning in.
+//!
+//! ── FIXED. The same crossing was being recorded twice ────────────────────
+//!
+//! A cut passing exactly through a polygon CORNER is found on both edges that
+//! meet there, and `pair_intersection_points` paired the duplicates
+//! sequentially — so one chord became two "pairs". The walk downstream emits one
+//! sub-polygon per intersection POINT, so every phantom pair cost two more
+//! overlapping pieces, and where two pieces overlap the ring comes back to a
+//! vertex it already passed.
+//!
+//! Collapsing coincident points before pairing (`boolean.rs`, a nanometre
+//! tolerance — far below the 0.15 μm the mesh dedups at, so it can only merge
+//! points that are the same point):
+//!
+//! ```text
+//!                          was      is
+//!   faces out              450      58
+//!   walking a vertex       386       2
+//!   invariant breaks        70       8
+//!   the five-face call      23 s     0.1 s
+//!   the draw that wedged   > 15 min  0.105 s
+//! ```
+//!
+//! Everything below is the hunt, kept because the two wrong turns in it are
+//! worth more than the answer.
 //!
 //! The 100 x 50 wide run stopped printing at session 22 and stayed there,
 //! burning a full core at a flat 137 MB:
@@ -1614,29 +1639,37 @@ fn what_shape_the_new_faces_are() {
     }
     println!();
 
-    // ⚠ NOT asserted to be zero, and that is the finding.
+    // The same crossing was being recorded twice.
     //
-    // Splitting each self-touching ring at its touches — the fix
-    // `polygon_difference_by_clip` needed in `operations/coplanar.rs`, applied
-    // here to `split_faces_by_intersections` — does exactly what it says and
-    // makes everything else worse:
+    // A cut through a polygon CORNER is found on both edges that meet there, and
+    // `pair_intersection_points` paired the duplicates sequentially — so one
+    // chord became two "pairs", and the walk emits one sub-polygon per
+    // intersection POINT. Every phantom pair cost two more overlapping pieces,
+    // and where pieces overlap the ring comes back to a vertex it already
+    // passed.
+    //
+    // Collapsing coincident points before pairing:
     //
     // ```text
-    //   repeated-vertex faces   386 -> 0
-    //   faces                   450 -> 1920
-    //   the five-face call      23 s -> 129 s
+    //                      was    is
+    //   faces out          450    58
+    //   walking a vertex   386     2
+    //   invariant breaks    70     8
+    //   the five-face call  23 s   0.1 s
     // ```
     //
-    // So the self-touching loops are a SYMPTOM. A ring that visits a vertex
-    // twice, cut in two, becomes two rings, and 386 of them become 1470 more
-    // faces. The disease is upstream: `sub_polys` produces far too many pieces,
-    // and they self-touch because they overlap each other. Making the rings
-    // readable leaves forty times the model.
+    // ⚠ An earlier attempt split each self-touching ring at its touches instead
+    // — the fix `polygon_difference_by_clip` needed in `operations/coplanar.rs`.
+    // It took the repeats to zero and the faces to 1920, because a corrupt ring
+    // cut in two is two rings. Treating the symptom multiplied it; the duplicate
+    // crossings were the disease.
     //
-    // Reverted. What is asserted is the SHAPE of the damage, so the day the
-    // production of `sub_polys` is fixed this test says so by failing.
+    // ⚠ A second attempt refused any cut with more than one entry/exit pair, on
+    // the grounds that `split_polygon_2d_one_line` says "one line" in its name.
+    // With the dedup in place that buys five fewer invariant violations and
+    // costs every genuine multi-crossing split, so it is not here.
     assert!(
-        repeats > 100 && after > 5 * before,
-        "as measured: a five-face intersect leaves {after} faces from {before},          {repeats} of them walking a vertex twice. If either number has come          down, `split_faces_by_intersections` was fixed — rewrite this around          the new reading rather than deleting it"
+        repeats < 20 && after < 2 * before,
+        "a five-face intersect leaves {after} faces from {before}, {repeats} of          them walking a vertex twice — it used to be 450 and 386"
     );
 }

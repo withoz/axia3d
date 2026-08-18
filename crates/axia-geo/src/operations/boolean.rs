@@ -9561,6 +9561,35 @@ fn pair_intersection_points(
         .collect();
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // ⚠ The same crossing can be recorded twice.
+    //
+    // A cut passing exactly through a polygon CORNER is found on both edges
+    // that meet there, and a cut running along an edge is found at both of its
+    // ends. Paired sequentially, those duplicates turn one chord into two
+    // "pairs" — and the walk downstream emits one sub-polygon per intersection
+    // POINT, so every phantom pair costs two more overlapping pieces.
+    //
+    // Measured: this is what made five faces cut against fuzz session 22's model
+    // leave 450 faces where 58 is the answer, 386 of them with a boundary that
+    // walks the same vertex twice.
+    //
+    // Collapse coincident points first. The tolerance is a nanometre — far below
+    // anything the mesh keeps apart (LOCKED #5 dedups at 0.15 μm), so this can
+    // only merge points that are the same point.
+    const SAME_POINT: f64 = 1e-6;
+    let mut kept: Vec<(usize, f64)> = Vec::with_capacity(sorted.len());
+    for (iid, proj) in sorted {
+        let pt = intersections[iid].1;
+        let dup = kept.iter().any(|&(other, _)| {
+            let q = intersections[other].1;
+            (pt.x - q.x).abs() < SAME_POINT && (pt.y - q.y).abs() < SAME_POINT
+        });
+        if !dup {
+            kept.push((iid, proj));
+        }
+    }
+    let sorted = kept;
+
     // 순차 페어링: 0↔1, 2↔3, ...
     let mut pairs = Vec::new();
     let mut i = 0;
