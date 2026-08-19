@@ -162,11 +162,22 @@ impl Mesh {
         //     0.019 mm²   against a 55 mm² face      — a 2 µm-wide hairline
         //     17,107 mm²  against a 672,417 mm² face — real
         //
-        // and the hairline's width is the same 2 µm scale as the crossings,
-        // which points at where it comes from: the two faces share an edge
-        // carrying an `Arc`, and each tessellates that arc for itself, so their
-        // chord points do not coincide. That is the thing to fix — one
-        // tessellation per edge — not a threshold fitted to two samples.
+        // ⚠ And the story that suggested itself for the hairline is WRONG.
+        //
+        // "The two faces share an arc and each tessellates it for itself, so
+        // their chord points do not coincide" — read the code and it does not
+        // happen. `he_arc_fill_points` takes every parameter from the EDGE
+        // (`center, radius, normal, basis_u, start_angle, end_angle`), sizes its
+        // tolerance from that edge's own radius, and `arc::tessellate` walks
+        // `start_angle + i·(end−start)/n`. The traversal direction is applied
+        // afterwards by `pts.reverse()`, which reorders points without moving
+        // them. Two faces meeting along one arc edge therefore receive
+        // bit-identical positions, and there is no per-face seam to fix.
+        //
+        // So the hairline comes from somewhere else and is not yet named. It is
+        // 0.035% of a 55 mm² face, nothing in production reads this label, and a
+        // threshold fitted to two samples would be worse than the mislabel — so
+        // it stays measured and unexplained rather than papered over.
         //
         // Left as it is on purpose meanwhile: nothing in production reads
         // `ContactKind` (only tests and the `.xia` inspector).
