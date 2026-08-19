@@ -115,12 +115,34 @@ fn what_repairs_a_damaged_file() {
         }
     }
 
-    // ⚠ Two vertices at bit-identical coordinates.
+    // Two vertices at bit-identical coordinates — and they are meant to be.
     //
-    // LOCKED #5 says the spatial hash merges anything within 0.15 µm, so a pair
-    // at 0.000000000 mm should not exist. Some ops make them on purpose — a
-    // detach or an ADR-102 cleave gives each side its own copy — so the number
-    // matters more than the existence. Census the whole model.
+    // LOCKED #5 has the spatial hash merge anything within 0.15 µm, so a pair at
+    // 0.000000000 mm looks like a dedup failure. It is not. `add_vertex` dedups
+    // correctly; there is a second door, `add_vertex_force_new`, which exists to
+    // skip it, and every caller is deliberate and says so:
+    //
+    //     cleave.rs:262        ADR-102 — "bypasses the 1.5μm spatial dedup that
+    //                          would otherwise return the original
+    //                          sibling-shared vert id"
+    //     repair.rs:108        detach — duplicates the shared verts so two face
+    //                          groups on a non-manifold edge come apart
+    //     create_solid.rs:927  an extrude's top ring
+    //
+    // A cleave runs on every push whose face has coplanar siblings, and the
+    // duplicate it makes is permanent: that is how the pushed solid's base stays
+    // topologically apart from its neighbours. So a worked-on model accumulates
+    // these, and the count is a measure of how much cleaving it has seen rather
+    // than of anything broken.
+    //
+    // ⚠ One consequence, read from `add_vertex`: the spatial hash keeps a Vec
+    // per cell and the scan returns the FIRST match, so a later draw landing on
+    // a cleaved corner attaches to whichever copy was inserted first — the
+    // original. Deterministic, and worth knowing before reading anything into a
+    // vertex id at such a corner.
+    //
+    // Counted anyway, because the number is the fastest way to see how much of a
+    // file's history was cleaves and detaches.
     {
         let mut by_key: std::collections::HashMap<(i64, i64, i64), Vec<axia_geo::VertId>> =
             Default::default();
