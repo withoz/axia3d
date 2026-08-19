@@ -477,6 +477,125 @@ fn what_repairs_a_damaged_file() {
             };
             println!("          · {}", describe(a));
             println!("            {}", describe(b));
+            // ⚠ "sliver" was a guess the first time and only half right — one of
+            // these pairs is 55 mm² against 2 m², the other is 2 m² against
+            // 0.67 m². Print the corners so the shape is read, not assumed.
+            for f in [a, b] {
+                let Some(face) = s.mesh.faces.get(f) else { continue };
+                let vv = s.mesh.collect_loop_verts(face.outer().start).unwrap_or_default();
+                let pts: Vec<String> = vv
+                    .iter()
+                    .filter_map(|&v| s.mesh.vertex_pos(v).ok())
+                    .map(|p| format!("({:.0},{:.0},{:.0})", p.x, p.y, p.z))
+                    .collect();
+                println!(
+                    "              {f:?} 정점 {} 구멍 {}  {}",
+                    vv.len(),
+                    face.inners().len(),
+                    pts.join(" ")
+                );
+            }
+            // ⚠ The repair reports 0 for these. Which gate declines? The one it
+            // has to pass is `crossings.len() >= 2 && even`, so read that rather
+            // than guessing at it.
+            let (big, small) = if s.mesh.face_outer_area(a) >= s.mesh.face_outer_area(b) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            match axia_geo::operations::coplanar::coplanar_intersection_segments(
+                &s.mesh, big, small,
+            ) {
+                Ok(ci) => println!(
+                    "              교차점 {}  lens 정점 {}",
+                    ci.crossings.len(),
+                    ci.lens_polygon.len()
+                ),
+                Err(e) => println!("              coplanar_intersection_segments: {e}"),
+            }
+            // ⚠ Two instruments disagreeing about one pair is a shape this repo
+            // has met before (LOCKED #105). `classify_contact` says they overlap
+            // and the clipper says they do not meet at all, so ask a third way:
+            // sample the smaller face's interior and count how much of it lands
+            // inside the bigger one. Area, not opinion.
+            {
+                let flat = |f: axia_geo::FaceId| -> Vec<(f64, f64)> {
+                    s.mesh
+                        .faces
+                        .get(f)
+                        .and_then(|x| s.mesh.collect_loop_verts(x.outer().start).ok())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|&v| s.mesh.vertex_pos(v).ok())
+                        .map(|p| (p.x, p.y)) // every one of these is on z = 0
+                        .collect()
+                };
+                let inside = |p: (f64, f64), poly: &[(f64, f64)]| -> bool {
+                    let mut c = false;
+                    let n = poly.len();
+                    for i in 0..n {
+                        let (x1, y1) = poly[i];
+                        let (x2, y2) = poly[(i + 1) % n];
+                        if (y1 > p.1) != (y2 > p.1)
+                            && p.0 < (x2 - x1) * (p.1 - y1) / (y2 - y1) + x1
+                        {
+                            c = !c;
+                        }
+                    }
+                    c
+                };
+                let (pa, pb) = (flat(a), flat(b));
+                // ⚠ Does the sampler work at all? A "0% overlap" reading is only
+                // worth something if the same test says a face contains its own
+                // interior. Both polygons are checked against a point of their
+                // own before the answer below is believed.
+                for (name, poly) in [("A", &pa), ("B", &pb)] {
+                    let c = poly.iter().fold((0.0, 0.0), |acc, p| (acc.0 + p.0, acc.1 + p.1));
+                    let c = (c.0 / poly.len() as f64, c.1 / poly.len() as f64);
+                    let mut hits = 0;
+                    for k in 0..poly.len() {
+                        // Midpoint of each corner and the centroid — at least one
+                        // lands inside any simple polygon, convex or not.
+                        let m = ((poly[k].0 + c.0) / 2.0, (poly[k].1 + c.1) / 2.0);
+                        if inside(m, poly) {
+                            hits += 1;
+                        }
+                    }
+                    if hits == 0 {
+                        println!("              ⚠ 표본기가 {name} 의 내부를 못 읽음 — 아래 수치 믿지 말 것");
+                    }
+                }
+                let (target, other) =
+                    if s.mesh.face_outer_area(a) < s.mesh.face_outer_area(b) { (&pa, &pb) } else { (&pb, &pa) };
+                let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                for &(x, y) in target {
+                    lo = (lo.0.min(x), lo.1.min(y));
+                    hi = (hi.0.max(x), hi.1.max(y));
+                }
+                const N: usize = 300;
+                let (mut in_t, mut in_both) = (0usize, 0usize);
+                for i in 0..N {
+                    for j in 0..N {
+                        let p = (
+                            lo.0 + (hi.0 - lo.0) * (i as f64 + 0.5) / N as f64,
+                            lo.1 + (hi.1 - lo.1) * (j as f64 + 0.5) / N as f64,
+                        );
+                        if inside(p, target) {
+                            in_t += 1;
+                            if inside(p, other) {
+                                in_both += 1;
+                            }
+                        }
+                    }
+                }
+                let cell = (hi.0 - lo.0) * (hi.1 - lo.1) / (N * N) as f64;
+                println!(
+                    "              작은 면 넓이 {:.0} mm² 중 겹친 넓이 {:.0} mm²  ({:.1}%)",
+                    in_t as f64 * cell,
+                    in_both as f64 * cell,
+                    if in_t > 0 { in_both as f64 * 100.0 / in_t as f64 } else { 0.0 }
+                );
+            }
         }
         if !offenders.is_empty() {
             let mut v: Vec<(&usize, &usize)> = offenders.iter().collect();
@@ -532,6 +651,16 @@ fn what_repairs_a_damaged_file() {
         println!(
             "        맞닿음 {t0} -> {t1}   같은 면 겹침 {c0} -> {c1}   뚫고 지나감 {x0} -> {x1}"
         );
+    }
+    {
+        let mut a = fresh();
+        // Empty set — a file has no "before", so every standing double-cover is
+        // fair game. See the note on the method.
+        let n = a.subtract_double_covered_faces(&Default::default());
+        line("이중덮임 수리만", &health(&a));
+        println!("        (면 {n} 개 수리)");
+        let (t1, c1, x1) = classify(&a);
+        println!("        맞닿음 {t0} -> {t1}   같은 면 겹침 {c0} -> {c1}   뚫고 지나감 {x0} -> {x1}");
     }
     {
         let mut a = fresh();

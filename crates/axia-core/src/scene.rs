@@ -2566,7 +2566,15 @@ impl Scene {
     /// boxes plus a rectangle drawn 900 mm away lost half their sealed faces
     /// (12 → 6) to this function, and nothing was watching, because the draw
     /// itself had been clean (12 → 12).
-    fn subtract_double_covered_faces(
+    /// ⚠ Public so a repair pass can run it on a file, not only a draw.
+    ///
+    /// `guard_imprint` calls this after every face-creating draw with the pairs
+    /// that were ALREADY overlapping, so a draw only repairs what it made. A
+    /// file opened from disk has no "before", and its standing double-covers are
+    /// exactly what wants fixing — pass an empty set and it repairs them all.
+    /// The safety is inside: coplanar pairs only, and the whole pass rolls back
+    /// if it opens a solid or raises the violation count.
+    pub fn subtract_double_covered_faces(
         &mut self,
         already_overlapping: &std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)>,
     ) -> usize {
