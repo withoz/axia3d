@@ -143,6 +143,356 @@ fn what_repairs_a_damaged_file() {
         }
     }
 
+    // ⚠ Damage is not the same as a mistake.
+    //
+    // Two boxes deliberately pushed into each other cross, and this repo has
+    // already decided that is legal. A solid folding through ITSELF is not. The
+    // owner is what separates them, so ask it of every damaging pair rather than
+    // reporting a number and leaving the reader to guess.
+    {
+        let owner_of = |f: axia_geo::FaceId| -> Option<String> {
+            s.shapes
+                .iter()
+                .find(|(_, sh)| sh.face_ids.contains(&f))
+                .map(|(id, sh)| format!("Shape {} \"{}\"", id.raw(), sh.name))
+                .or_else(|| {
+                    s.xias
+                        .iter()
+                        .find(|(_, x)| x.face_ids.contains(&f))
+                        .map(|(id, x)| format!("XIA {} \"{}\"", id, x.name))
+                })
+        };
+        use axia_geo::operations::self_intersect::ContactKind;
+        let mut same: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut across: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut unowned = 0usize;
+        let (mut same_n, mut across_n) = (0usize, 0usize);
+        for (a, b) in s.mesh.detect_self_intersections().intersecting_pairs {
+            let kind = s.mesh.classify_contact(a, b);
+            if !matches!(kind, Some(k) if k.is_damage()) {
+                continue;
+            }
+            let tag = match kind {
+                Some(ContactKind::CoplanarOverlap) => "겹침",
+                _ => "관통",
+            };
+            match (owner_of(a), owner_of(b)) {
+                (Some(x), Some(y)) if x == y => {
+                    same_n += 1;
+                    *same.entry(format!("{tag}  {x}")).or_default() += 1;
+                }
+                (Some(x), Some(y)) => {
+                    across_n += 1;
+                    let (lo, hi) = if x < y { (x, y) } else { (y, x) };
+                    *across.entry(format!("{tag}  {lo}  ×  {hi}")).or_default() += 1;
+                }
+                _ => unowned += 1,
+            }
+        }
+        println!("\n  손상 쌍의 주인:");
+        println!("      같은 물체가 스스로 (결함)   {same_n}");
+        println!("      다른 두 물체 사이 (의도?)   {across_n}");
+        println!("      주인 없는 면이 낀 것        {unowned}");
+
+        let mut v: Vec<(&String, &usize)> = same.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        if !v.is_empty() {
+            println!("\n      스스로 겹치는 물체:");
+            for (what, n) in v.iter().take(8) {
+                println!("          {n:>3} 쌍   {what}");
+            }
+        }
+        let mut w: Vec<(&String, &usize)> = across.iter().collect();
+        w.sort_by(|a, b| b.1.cmp(a.1));
+        if !w.is_empty() {
+            println!("\n      물체끼리 겹치는 짝:");
+            for (what, n) in w.iter().take(8) {
+                println!("          {n:>3} 쌍   {what}");
+            }
+        }
+    }
+
+    // Whatever object carries the most self-crossing, described.
+    //
+    // If the damage concentrates in ONE object the answer is about that object,
+    // not about the model, and the user can act on it.
+    {
+        use axia_geo::operations::self_intersect::ContactKind;
+        let mut worst_xia: Option<(usize, u32)> = None;
+        for (id, x) in s.xias.iter() {
+            let n = s
+                .mesh
+                .detect_self_intersections()
+                .intersecting_pairs
+                .into_iter()
+                .filter(|(a, b)| {
+                    x.face_ids.contains(a)
+                        && x.face_ids.contains(b)
+                        && matches!(s.mesh.classify_contact(*a, *b), Some(k) if k.is_damage())
+                })
+                .count();
+            if n > 0 && worst_xia.map_or(true, |(m, _)| n > m) {
+                worst_xia = Some((n, *id));
+            }
+        }
+        if let Some((n, id)) = worst_xia {
+            let x = &s.xias[&id];
+            let live: Vec<axia_geo::FaceId> = x
+                .face_ids
+                .iter()
+                .copied()
+                .filter(|f| s.mesh.faces.get(*f).is_some_and(|ff| ff.is_active()))
+                .collect();
+            let mut lo = glam::DVec3::splat(f64::INFINITY);
+            let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+            let mut area = 0.0;
+            for &f in &live {
+                area += s.mesh.face_area(f);
+                if let Some(face) = s.mesh.faces.get(f) {
+                    if let Ok(vv) = s.mesh.collect_loop_verts(face.outer().start) {
+                        for &v in &vv {
+                            if let Ok(p) = s.mesh.vertex_pos(v) {
+                                lo = lo.min(p);
+                                hi = hi.max(p);
+                            }
+                        }
+                    }
+                }
+            }
+            println!("\n  가장 많이 스스로 뚫는 물체 — XIA {id} \"{}\"", x.name);
+            println!("      면 {} (등록 {})   손상 쌍 {n}", live.len(), x.face_ids.len());
+            println!(
+                "      범위  x {:.0}..{:.0}   y {:.0}..{:.0}   z {:.0}..{:.0}   (넓이 합 {:.0} mm²)",
+                lo.x, hi.x, lo.y, hi.y, lo.z, hi.z, area
+            );
+            // A box has six faces. Anything else here says what happened to it.
+            let mut by_normal: std::collections::BTreeMap<(i64, i64, i64), usize> =
+                Default::default();
+            for &f in &live {
+                let nn = s.mesh.faces.get(f).map(|ff| ff.normal().normalize_or_zero());
+                if let Some(nn) = nn {
+                    let k = |v: f64| (v * 10.0).round() as i64;
+                    *by_normal.entry((k(nn.x), k(nn.y), k(nn.z))).or_default() += 1;
+                }
+            }
+            println!("      법선별 면 수 {by_normal:?}");
+            let sealed = live.iter().filter(|&&f| s.mesh.is_face_in_volume(f)).count();
+            println!("      부피 안에 봉인된 면 {sealed} / {}", live.len());
+
+            // Which shape is the damage? Two faces folding at a shared corner is
+            // one thing; two faces lying on top of each other, far from any
+            // shared vertex, is a doubled shell — a different thing and a
+            // different fix.
+            let centroid = |f: axia_geo::FaceId| -> Option<glam::DVec3> {
+                let face = s.mesh.faces.get(f)?;
+                let vv = s.mesh.collect_loop_verts(face.outer().start).ok()?;
+                if vv.is_empty() {
+                    return None;
+                }
+                let mut c = glam::DVec3::ZERO;
+                for &v in &vv {
+                    c += s.mesh.vertex_pos(v).ok()?;
+                }
+                Some(c / vv.len() as f64)
+            };
+            let verts_of = |f: axia_geo::FaceId| -> Vec<axia_geo::VertId> {
+                s.mesh
+                    .faces
+                    .get(f)
+                    .and_then(|ff| s.mesh.collect_loop_verts(ff.outer().start).ok())
+                    .unwrap_or_default()
+            };
+            let (mut adjacent, mut apart) = (0usize, 0usize);
+            let mut dists: Vec<f64> = Vec::new();
+            for (a, b) in s.mesh.detect_self_intersections().intersecting_pairs {
+                if !(x.face_ids.contains(&a) && x.face_ids.contains(&b)) {
+                    continue;
+                }
+                if !matches!(s.mesh.classify_contact(a, b), Some(k) if k.is_damage()) {
+                    continue;
+                }
+                let va = verts_of(a);
+                let vb = verts_of(b);
+                if va.iter().any(|v| vb.contains(v)) {
+                    adjacent += 1;
+                } else {
+                    apart += 1;
+                }
+                if let (Some(ca), Some(cb)) = (centroid(a), centroid(b)) {
+                    dists.push((ca - cb).length());
+                }
+            }
+            // ⚠ One object is not necessarily one piece.
+            //
+            // If these faces form several disconnected shells, then "the object
+            // crosses itself" is really "two separate pieces that happen to
+            // share a name cross each other" — which this repo already calls
+            // legal. Connectivity decides it, so ask.
+            {
+                let mut comp: std::collections::HashMap<axia_geo::FaceId, usize> = Default::default();
+                let mut next = 0usize;
+                for &f in &live {
+                    if comp.contains_key(&f) {
+                        continue;
+                    }
+                    let mut stack = vec![f];
+                    comp.insert(f, next);
+                    while let Some(cur) = stack.pop() {
+                        for e in s.mesh.face_outer_edges(cur).unwrap_or_default() {
+                            for nb in s.mesh.get_faces_sharing_edge(e).0 {
+                                if live.contains(&nb) && !comp.contains_key(&nb) {
+                                    comp.insert(nb, next);
+                                    stack.push(nb);
+                                }
+                            }
+                        }
+                    }
+                    next += 1;
+                }
+                let mut sizes: std::collections::BTreeMap<usize, usize> = Default::default();
+                for c in comp.values() {
+                    *sizes.entry(*c).or_default() += 1;
+                }
+                let mut v: Vec<usize> = sizes.values().copied().collect();
+                v.sort_unstable_by(|a, b| b.cmp(a));
+                println!("      떨어진 조각 {next} 개, 면 수 {:?}", &v[..v.len().min(8)]);
+
+                let cross_piece = s
+                    .mesh
+                    .detect_self_intersections()
+                    .intersecting_pairs
+                    .into_iter()
+                    .filter(|(a, b)| {
+                        x.face_ids.contains(a)
+                            && x.face_ids.contains(b)
+                            && matches!(s.mesh.classify_contact(*a, *b), Some(k) if k.is_damage())
+                            && comp.get(a) != comp.get(b)
+                    })
+                    .count();
+                println!("      그중 다른 조각끼리 {cross_piece} 쌍, 같은 조각 안에서 {} 쌍",
+                    169usize.saturating_sub(cross_piece).min(dists.len()));
+            }
+
+            dists.sort_by(|p, q| p.partial_cmp(q).unwrap());
+            println!("      정점을 공유하는 쌍 {adjacent}   떨어진 쌍 {apart}");
+            if !dists.is_empty() {
+                let n = dists.len();
+                println!(
+                    "      두 면 중심 거리  최소 {:.1}  중앙 {:.1}  최대 {:.1} mm",
+                    dists[0],
+                    dists[n / 2],
+                    dists[n - 1]
+                );
+            }
+        }
+    }
+
+    // ⚠ The owner is the wrong question. The PIECE is the right one.
+    //
+    // Ownership said 171 of the 197 damaging pairs were "one object crossing
+    // itself", which sounds like corruption. It is not: `XIA 33 "Box"` turned
+    // out to be three disconnected shells sharing one name, and every one of its
+    // 169 pairs is between DIFFERENT shells. Two separate solids overlapping is
+    // something this repo has already decided is legal; a single connected shell
+    // passing through itself is not. So walk the connectivity of the whole mesh
+    // and ask that instead.
+    {
+        use axia_geo::operations::self_intersect::ContactKind;
+        let all: Vec<axia_geo::FaceId> =
+            s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(i, _)| i).collect();
+        let mut comp: std::collections::HashMap<axia_geo::FaceId, usize> = Default::default();
+        let mut next = 0usize;
+        for &f in &all {
+            if comp.contains_key(&f) {
+                continue;
+            }
+            let mut stack = vec![f];
+            comp.insert(f, next);
+            while let Some(cur) = stack.pop() {
+                for e in s.mesh.face_outer_edges(cur).unwrap_or_default() {
+                    for nb in s.mesh.get_faces_sharing_edge(e).0 {
+                        if s.mesh.faces.get(nb).is_some_and(|x| x.is_active())
+                            && !comp.contains_key(&nb)
+                        {
+                            comp.insert(nb, next);
+                            stack.push(nb);
+                        }
+                    }
+                }
+            }
+            next += 1;
+        }
+        let (mut within, mut between) = (0usize, 0usize);
+        let (mut within_cop, mut within_cross) = (0usize, 0usize);
+        let mut offenders: std::collections::BTreeMap<usize, usize> = Default::default();
+        for (a, b) in s.mesh.detect_self_intersections().intersecting_pairs {
+            let kind = s.mesh.classify_contact(a, b);
+            if !matches!(kind, Some(k) if k.is_damage()) {
+                continue;
+            }
+            if comp.get(&a) == comp.get(&b) {
+                within += 1;
+                if matches!(kind, Some(ContactKind::CoplanarOverlap)) {
+                    within_cop += 1;
+                } else {
+                    within_cross += 1;
+                }
+                if let Some(c) = comp.get(&a) {
+                    *offenders.entry(*c).or_default() += 1;
+                }
+            } else {
+                between += 1;
+            }
+        }
+        println!("\n  손상 쌍을 조각 기준으로 (떨어진 덩어리 {next} 개):");
+        println!("      다른 덩어리끼리 (겹쳐 놓음 — 합법)   {between}");
+        println!("      한 덩어리가 스스로 (진짜 결함)       {within}   겹침 {within_cop} / 관통 {within_cross}");
+        // The few that survive every distinction are the ones worth naming.
+        for (a, b) in s.mesh.detect_self_intersections().intersecting_pairs {
+            let kind = s.mesh.classify_contact(a, b);
+            if !matches!(kind, Some(k) if k.is_damage()) || comp.get(&a) != comp.get(&b) {
+                continue;
+            }
+            let describe = |f: axia_geo::FaceId| -> String {
+                let owner = s
+                    .shapes
+                    .iter()
+                    .find(|(_, sh)| sh.face_ids.contains(&f))
+                    .map(|(id, sh)| format!("Shape {} \"{}\"", id.raw(), sh.name))
+                    .or_else(|| {
+                        s.xias
+                            .iter()
+                            .find(|(_, x)| x.face_ids.contains(&f))
+                            .map(|(id, x)| format!("XIA {} \"{}\"", id, x.name))
+                    })
+                    .unwrap_or_else(|| "주인 없음".into());
+                let n = s.mesh.faces.get(f).map(|x| x.normal().normalize_or_zero()).unwrap_or_default();
+                format!(
+                    "{f:?} 넓이 {:.0} 법선 ({:.2},{:.2},{:.2}) {owner}",
+                    s.mesh.face_area(f),
+                    n.x,
+                    n.y,
+                    n.z
+                )
+            };
+            println!("          · {}", describe(a));
+            println!("            {}", describe(b));
+        }
+        if !offenders.is_empty() {
+            let mut v: Vec<(&usize, &usize)> = offenders.iter().collect();
+            v.sort_by(|a, b| b.1.cmp(a.1));
+            let sizes: std::collections::BTreeMap<usize, usize> =
+                comp.values().fold(Default::default(), |mut m, c| {
+                    *m.entry(*c).or_default() += 1;
+                    m
+                });
+            println!("      스스로 겹치는 덩어리:");
+            for (c, n) in v.iter().take(6) {
+                println!("          덩어리 {c} (면 {})   {n} 쌍", sizes[c]);
+            }
+        }
+    }
+
     // ⚠ Each repair on its own, from a fresh load, before any chain.
     //
     // Chaining them hides which one did what and which one cost something. In
