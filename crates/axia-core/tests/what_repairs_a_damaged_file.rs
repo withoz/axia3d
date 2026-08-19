@@ -513,6 +513,217 @@ fn what_repairs_a_damaged_file() {
                 ),
                 Err(e) => println!("              coplanar_intersection_segments: {e}"),
             }
+            // ⚠ A corner list is not the face.
+            //
+            // `face_area` reported 672,431 for FaceId(599) while the shoelace of
+            // its four corners is 638,375. That is not a bug in `face_area` — it
+            // adds `loop_curve_bulge`, the area an edge carrying an `Arc` sweeps
+            // beyond its chord. Which means a 2D test built from CORNERS alone
+            // measures a smaller face than the one that is really there, and a
+            // "0% overlap" from such a test is only as good as the assumption
+            // that no edge is curved. So say whether any is.
+            for f in [a, b] {
+                let poly = s.mesh.face_outer_area(f);
+                let Some(face) = s.mesh.faces.get(f) else { continue };
+                let vv = s.mesh.collect_loop_verts(face.outer().start).unwrap_or_default();
+                let shoelace = {
+                    let pts: Vec<glam::DVec3> =
+                        vv.iter().filter_map(|&v| s.mesh.vertex_pos(v).ok()).collect();
+                    let mut sum = 0.0;
+                    for i in 0..pts.len() {
+                        let p = pts[i];
+                        let q = pts[(i + 1) % pts.len()];
+                        sum += p.x * q.y - q.x * p.y;
+                    }
+                    (sum * 0.5).abs()
+                };
+                let curved_edges = s
+                    .mesh
+                    .face_outer_edges(f)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|&e| s.mesh.edges.get(e).is_some_and(|x| x.curve().is_some()))
+                    .count();
+                println!(
+                    "              {f:?} 넓이(엔진) {poly:.0}  모서리 다각형 {shoelace:.0}  \
+                     차이 {:.0}  곡선 모서리 {curved_edges}",
+                    poly - shoelace
+                );
+            }
+
+            // ⚠ So sample the TRIANGLES, not the corners.
+            //
+            // A first version of this measurement built its polygons from the
+            // corner list and answered "0% overlap" for both pairs. The areas
+            // above say why that answer was not safe: FaceId(599)'s real region
+            // reaches 34,234 mm² beyond the polygon its corners trace. The
+            // triangles `export_buffers` emits ARE the face the engine draws and
+            // the detector tests, arcs included, so ask them.
+            {
+                let (pos, _n, idx, fmap, _a) = s.mesh.export_buffers().expect("buffers");
+                let tris_of = |want: axia_geo::FaceId| -> Vec<[(f64, f64); 3]> {
+                    let mut out = Vec::new();
+                    for (t, chunk) in idx.chunks(3).enumerate() {
+                        if fmap.get(t).copied() != Some(want.raw()) {
+                            continue;
+                        }
+                        let mut v = [(0.0, 0.0); 3];
+                        for (k, &i) in chunk.iter().enumerate() {
+                            let o = i as usize * 3;
+                            v[k] = (pos[o] as f64, pos[o + 1] as f64);
+                        }
+                        out.push(v);
+                    }
+                    out
+                };
+                let in_tri = |p: (f64, f64), t: &[(f64, f64); 3]| -> bool {
+                    let sign = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+                        (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1)
+                    };
+                    let (d1, d2, d3) = (sign(p, t[0], t[1]), sign(p, t[1], t[2]), sign(p, t[2], t[0]));
+                    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                    let pos_ = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                    !(neg && pos_)
+                };
+                let (ta, tb) = (tris_of(a), tris_of(b));
+                // ⚠ Does the tessellation agree with the area?
+                //
+                // `face_outer_area` adds `loop_curve_bulge`, so an inward arc
+                // makes it SMALLER than the corner polygon. If the triangles
+                // still fill the straight-chord polygon, then two faces sharing
+                // that arc both cover the bulge — the area says they tile and
+                // the geometry says they overlap. Sum the triangles and compare.
+                for (f, tris) in [(a, &ta), (b, &tb)] {
+                    let area: f64 = tris
+                        .iter()
+                        .map(|t| {
+                            ((t[1].0 - t[0].0) * (t[2].1 - t[0].1)
+                                - (t[2].0 - t[0].0) * (t[1].1 - t[0].1))
+                                .abs()
+                                * 0.5
+                        })
+                        .sum();
+                    println!(
+                        "              {f:?} 삼각형 합 {area:.0}   엔진 넓이 {:.0}   차이 {:.0}",
+                        s.mesh.face_outer_area(f),
+                        area - s.mesh.face_outer_area(f)
+                    );
+                }
+                // ⚠ A pair the sampler says overlaps by 0 mm² is still reported.
+                // `coplanar_tris_overlap` is three tests and each excludes shared
+                // corners and edges, so replicate them and say WHICH one fires.
+                {
+                    let n = glam::DVec3::Z;
+                    let strictly_in = |p: (f64, f64), t: &[(f64, f64); 3]| -> bool {
+                        let cr = |o: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+                            (q.0 - o.0) * (r.1 - o.1) - (q.1 - o.1) * (r.0 - o.0)
+                        };
+                        let (d1, d2, d3) =
+                            (cr(t[0], t[1], p), cr(t[1], t[2], p), cr(t[2], t[0], p));
+                        (d1 > 0.0 && d2 > 0.0 && d3 > 0.0) || (d1 < 0.0 && d2 < 0.0 && d3 < 0.0)
+                    };
+                    let cross = |a0: (f64, f64), a1: (f64, f64), b0: (f64, f64), b1: (f64, f64)| {
+                        const E: f64 = 1e-7;
+                        let da = (a1.0 - a0.0, a1.1 - a0.1);
+                        let db = (b1.0 - b0.0, b1.1 - b0.1);
+                        let den = da.0 * db.1 - da.1 * db.0;
+                        let scale = ((da.0.hypot(da.1)) * (db.0.hypot(db.1))).max(1e-18);
+                        if den.abs() < E * scale {
+                            return None;
+                        }
+                        let w = (b0.0 - a0.0, b0.1 - a0.1);
+                        let t = (w.0 * db.1 - w.1 * db.0) / den;
+                        let u = (w.0 * da.1 - w.1 * da.0) / den;
+                        if t > E && t < 1.0 - E && u > E && u < 1.0 - E {
+                            Some((t, u))
+                        } else {
+                            None
+                        }
+                    };
+                    let _ = n;
+                    let (mut by_point, mut by_cross) = (0usize, 0usize);
+                    let mut example = String::new();
+                    for x in &ta {
+                        for y in &tb {
+                            for &p in x.iter() {
+                                if strictly_in(p, y) {
+                                    by_point += 1;
+                                }
+                            }
+                            for &p in y.iter() {
+                                if strictly_in(p, x) {
+                                    by_point += 1;
+                                }
+                            }
+                            for i in 0..3 {
+                                for j in 0..3 {
+                                    if let Some((t, u)) =
+                                        cross(x[i], x[(i + 1) % 3], y[j], y[(j + 1) % 3])
+                                    {
+                                        by_cross += 1;
+                                        if example.is_empty() {
+                                            example = format!(
+                                                "({:.3},{:.3})-({:.3},{:.3}) × ({:.3},{:.3})-({:.3},{:.3})  t={t:.6} u={u:.6}",
+                                                x[i].0, x[i].1, x[(i + 1) % 3].0, x[(i + 1) % 3].1,
+                                                y[j].0, y[j].1, y[(j + 1) % 3].0, y[(j + 1) % 3].1
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!(
+                        "              무엇이 발화하나: 꼭짓점이 안쪽 {by_point}건, 모서리 교차 {by_cross}건"
+                    );
+                    if !example.is_empty() {
+                        println!("                 첫 교차  {example}");
+                    }
+                }
+                let (small_t, big_t) = if s.mesh.face_outer_area(a) < s.mesh.face_outer_area(b) {
+                    (&ta, &tb)
+                } else {
+                    (&tb, &ta)
+                };
+                if small_t.is_empty() || big_t.is_empty() {
+                    println!("              ⚠ 삼각형이 없어 넓이를 잴 수 없음 ({} / {})", ta.len(), tb.len());
+                } else {
+                    let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                    for t in small_t {
+                        for v in t {
+                            lo = (lo.0.min(v.0), lo.1.min(v.1));
+                            hi = (hi.0.max(v.0), hi.1.max(v.1));
+                        }
+                    }
+                    const M: usize = 400;
+                    let (mut in_s, mut in_both) = (0usize, 0usize);
+                    for i in 0..M {
+                        for j in 0..M {
+                            let p = (
+                                lo.0 + (hi.0 - lo.0) * (i as f64 + 0.5) / M as f64,
+                                lo.1 + (hi.1 - lo.1) * (j as f64 + 0.5) / M as f64,
+                            );
+                            if small_t.iter().any(|t| in_tri(p, t)) {
+                                in_s += 1;
+                                if big_t.iter().any(|t| in_tri(p, t)) {
+                                    in_both += 1;
+                                }
+                            }
+                        }
+                    }
+                    let cell = (hi.0 - lo.0) * (hi.1 - lo.1) / (M * M) as f64;
+                    println!(
+                        "              삼각형 기준: 작은 면 {:.0} mm² 중 겹친 넓이 {:.0} mm²  ({:.2}%)   \
+                         (삼각형 {} / {})",
+                        in_s as f64 * cell,
+                        in_both as f64 * cell,
+                        if in_s > 0 { in_both as f64 * 100.0 / in_s as f64 } else { 0.0 },
+                        small_t.len(),
+                        big_t.len()
+                    );
+                }
+            }
+
             // ⚠ Two instruments disagreeing about one pair is a shape this repo
             // has met before (LOCKED #105). `classify_contact` says they overlap
             // and the clipper says they do not meet at all, so ask a third way:

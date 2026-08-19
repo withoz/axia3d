@@ -832,6 +832,27 @@ impl Scene {
 
     /// 스냅샷으로부터 씬 상태 복원 (Undo/Redo 용)
     pub fn restore_scene_snapshot(&mut self, data: &[u8]) {
+        // ⚠ A saved file handed to the headerless reader restored NOTHING, and
+        // said nothing about it.
+        //
+        // This is the internal form — undo frames, no header, first field is a
+        // u64 mesh length. `export_versioned_snapshot` writes the same sections
+        // behind `"AXIA"` + a version, and giving THAT to this function reads
+        // the magic as a length: 0x41495841 is 1,095,455,297, which fails the
+        // `offset + mesh_len <= data.len()` test, so it falls into the legacy
+        // branch, hands the whole file to `Mesh::restore_snapshot`, and comes
+        // back with 0 verts, 0 faces and no error. Measured 2026-08-19 while
+        // opening a user's 500 KB file — the first reading of it was a perfectly
+        // fast, perfectly empty model.
+        //
+        // The magic cannot legitimately appear as a length prefix (it would
+        // claim a 1 GB mesh section), so a file that starts with it is a
+        // versioned snapshot and belongs to the reader that understands one.
+        if data.len() >= 4 && data[0..4] == AXIA_MAGIC {
+            let _ = self.import_versioned_snapshot(data);
+            return;
+        }
+
         let mut offset = 0usize;
 
         // Helper: read u64 length prefix

@@ -127,6 +127,29 @@ impl Mesh {
         if na.length_squared() < 0.5 || nb.length_squared() < 0.5 {
             return None; // a face with no normal is a different problem
         }
+        // ⚠ Parallel normals is the whole test here, and it is not enough.
+        //
+        // The reasoning it stands on — "the detector already found these two
+        // intersecting, and on one plane an intersection is area overlap" —
+        // holds only as far as the detector does. Measured 2026-08-19 on a
+        // user's file, a pair it labels `CoplanarOverlap`:
+        //
+        //     FaceId(601) × FaceId(1255)   겹친 넓이 0 mm²  (0.00%)
+        //
+        // sampled from the very triangles `export_buffers` emits. What fired in
+        // the detector was `segments_properly_cross` at t = 0.000002 of a
+        // 1,178 mm edge — a touch 2.4 µm from an endpoint, which `TRI_EPS` lets
+        // through because it is a PARAMETER tolerance and 1e-7 of a long edge is
+        // far below the scale anything else in this engine calls distinct.
+        //
+        // A second pair from the same file overlaps by 17,104 mm² and is
+        // labelled the same way, so the label cannot be read as either.
+        //
+        // Left as it is on purpose: nothing in production reads `ContactKind`
+        // (only tests and the `.xia` inspector), and deciding what counts as an
+        // overlap at micron scale is a tolerance policy, not a typo. Whoever
+        // changes it should change `segments_properly_cross` to measure in world
+        // units rather than in parameter, and re-read the 30 x 50 fuzz after.
         if na.dot(nb).abs() > 0.999 {
             return Some(ContactKind::CoplanarOverlap);
         }
