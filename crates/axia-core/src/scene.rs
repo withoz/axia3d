@@ -5620,54 +5620,15 @@ impl Scene {
     /// (`restore_scene_snapshot` + `discard_last_undo`) — a rejected op leaves
     /// no dangling undo/redo entry. detection metric = the SAME measurement the
     /// orange overlay uses, so reject fires exactly when the orange would.
-    /// Face pairs that overlap where at least one of them belongs to a solid.
-    /// Sheet-on-sheet overlap is excluded — see [`Self::guard_imprint`].
-    fn solid_overlap_pairs(&self) -> Vec<(FaceId, FaceId)> {
-        self.mesh
-            .detect_self_intersections()
-            .intersecting_pairs
-            .into_iter()
-            .filter(|(a, b)| !self.mesh.is_sheet_face(*a) || !self.mesh.is_sheet_face(*b))
-            .collect()
-    }
-
-    fn solid_overlap_count(&self) -> usize {
-        self.solid_overlap_pairs().len()
-    }
-
-    /// Non-manifold edges where every face on them lies on ONE plane.
-    ///
-    /// Three faces on an edge is normal where a drawn sheet meets a solid's rim
-    /// — the wall, the cap and the sheet, no two of them in the same place.
-    /// SketchUp makes that shape and this guard has always let it through; the
-    /// existing check does so by accepting any new non-manifold edge whose only
-    /// complaint is itself.
-    ///
-    /// Three faces on the SAME plane is the other thing. They are covering each
-    /// other's ground, and no draw asks for that. The distinction is the plane,
-    /// not the shape: measured 2026-08-06, a rect and an ellipse overlapping
-    /// well inside a box top divided into nine faces and left THREE coplanar
-    /// edges bearing three faces each, and the "it is only a T-junction" rule
-    /// waved it through.
-    fn coplanar_non_manifold_edges(&self) -> Vec<axia_geo::EdgeId> {
-        self.mesh
-            .collect_non_manifold_edges()
-            .into_iter()
-            .filter(|&e| {
-                let (faces, _) = self.mesh.get_faces_sharing_edge(e);
-                let mut normals = faces
-                    .iter()
-                    .filter_map(|&f| self.mesh.faces.get(f))
-                    .map(|f| f.normal().normalize_or_zero());
-                let Some(n0) = normals.next() else { return false };
-                normals.all(|n| n.dot(n0).abs() > 0.999)
-            })
-            .collect()
-    }
-
-    fn coplanar_non_manifold_count(&self) -> usize {
-        self.coplanar_non_manifold_edges().len()
-    }
+    // ⚠ `solid_overlap_pairs` / `solid_overlap_count` /
+    // `coplanar_non_manifold_edges` / `coplanar_non_manifold_count` lived here
+    // and were deleted 2026-08-19. `guard_imprint` was their only caller, and it
+    // threw both numbers away — see the note at the top of that function.
+    //
+    // The distinction they drew is not lost: `what_counts_as_damage.rs` states
+    // all three contact kinds and reads them for itself, and the two production
+    // places that still classify — `subtract_double_covered_faces` and
+    // `split_faces_crossing_other_planes` — each carry their own rule.
 
     /// How many active faces are sealed inside a volume (every edge of every
     /// loop has a neighbouring face). Drawing must never make this go DOWN.
@@ -5779,7 +5740,30 @@ impl Scene {
     where
         F: FnOnce(&mut Self) -> CommandResult,
     {
-        let nm_before = self.mesh.collect_non_manifold_edges().len();
+        // ⚠ Four measurements used to be taken here and every one of them was
+        // thrown away.
+        //
+        // The rollback this guard existed for was removed on 2026-08-06 ("A DRAW
+        // IS NEVER REFUSED"), and the note below still explains what the numbers
+        // were for — but the code that read them went with the rollback, leaving
+        // `let _ = (si_before, coplanar_nm_before, nm_before, &before_snapshot)`
+        // at the bottom. They cost, measured on a user's 704-face file that
+        // already carried 498 intersecting pairs:
+        //
+        //     collect_non_manifold_edges          nm_before
+        //     solid_overlap_count                 si_before          589 ms
+        //     coplanar_non_manifold_count         coplanar_nm_before
+        //     scene_snapshot                      before_snapshot
+        //
+        // `solid_overlap_count` runs a FULL `detect_self_intersections`, and a
+        // guarded draw already runs two more (the `pre_pairs` set below, and one
+        // inside `subtract_double_covered_faces`). Three scans where one is dead.
+        //
+        // Only `pre_pairs` survives, because the repair genuinely needs to know
+        // which overlaps were already there.
+        //
+        // ── The note the removed numbers came with, kept ──────────────────
+        //
         // Counting non-manifold edges alone was wrong in BOTH directions.
         //
         // Too strict: a sheet drawn across a solid's footprint necessarily puts
@@ -5806,8 +5790,6 @@ impl Scene {
         // and has its own switches — with `freeform_overlap_on_draw` off, two
         // overlapping blobs are deliberately left as they are, and that is not
         // this guard's call to override.
-        let si_before = self.solid_overlap_count();
-        let coplanar_nm_before = self.coplanar_non_manifold_count();
         let pre_pairs: std::collections::HashSet<(axia_geo::FaceId, axia_geo::FaceId)> = self
             .mesh
             .detect_self_intersections()
@@ -5823,7 +5805,6 @@ impl Scene {
         // it), not a break. A draw that DEFORMS/opens now passes through; only
         // one that CORRUPTS (non-manifold) is rolled back. Rollback reuses the
         // ADR-193 pattern (`restore_scene_snapshot` + `discard_last_undo`).
-        let before_snapshot = self.scene_snapshot();
         let result = draw(self);
         // Never override an existing error (degenerate input, etc.).
         if matches!(result, CommandResult::Error(_)) {
@@ -5859,7 +5840,6 @@ impl Scene {
         // So the rollback is gone and what is left is the honest part: the
         // measurement. Anything still unsound after a draw is a hole in the
         // arrangement, and it belongs in the arrangement, not behind a refusal.
-        let _ = (si_before, coplanar_nm_before, nm_before, &before_snapshot);
         result
     }
 

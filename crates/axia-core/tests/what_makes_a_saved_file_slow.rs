@@ -460,6 +460,89 @@ fn what_makes_a_saved_file_slow() {
         println!("  대조군에 사각형 하나  {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
 
+    // The detector's broad phase, replayed with its own rule.
+    //
+    // `detect_self_intersections` sizes its grid cell at the MEAN face AABB
+    // extent, and any face spanning more than CELL_CAP = 512 cells is dropped
+    // into `big` and tested against every other face. One 34 m face among 700
+    // small ones drags the mean the wrong way for both.
+    {
+        let mut boxes: Vec<(glam::DVec3, glam::DVec3)> = Vec::new();
+        for &f in &faces {
+            let Some(face) = s.mesh.faces.get(f) else { continue };
+            let Ok(vv) = s.mesh.collect_loop_verts(face.outer().start) else { continue };
+            let mut lo = glam::DVec3::splat(f64::INFINITY);
+            let mut hi = glam::DVec3::splat(f64::NEG_INFINITY);
+            for &v in &vv {
+                if let Ok(p) = s.mesh.vertex_pos(v) {
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+            }
+            if lo.x.is_finite() {
+                boxes.push((lo, hi));
+            }
+        }
+        let ext_sum: f64 = boxes.iter().map(|(lo, hi)| (*hi - *lo).max_element().max(1e-9)).sum();
+        let cell = (ext_sum / boxes.len() as f64).max(1e-9);
+        let mut big = 0usize;
+        let mut cells_total = 0i64;
+        for (lo, hi) in &boxes {
+            let span = |a: f64, b: f64| ((b / cell).floor() as i64 - (a / cell).floor() as i64) + 1;
+            let n = span(lo.x, hi.x) * span(lo.y, hi.y) * span(lo.z, hi.z);
+            if n > 512 {
+                big += 1;
+            } else {
+                cells_total += n;
+            }
+        }
+        println!(
+            "\n  넓은 단계: 셀 {cell:.0} mm,  big 로 빠진 면 {big} / {}  (big 하나당 후보 {} 쌍)",
+            boxes.len(),
+            boxes.len() - 1
+        );
+        println!("            나머지가 차지한 셀 {cells_total}");
+
+        // Candidates, and how many survive the exact AABB reject — the ones that
+        // actually reach the triangle-triangle test.
+        let mut grid: std::collections::HashMap<(i64, i64, i64), Vec<usize>> = Default::default();
+        for (i, (lo, hi)) in boxes.iter().enumerate() {
+            let k = |p: f64| (p / cell).floor() as i64;
+            for cx in k(lo.x)..=k(hi.x) {
+                for cy in k(lo.y)..=k(hi.y) {
+                    for cz in k(lo.z)..=k(hi.z) {
+                        grid.entry((cx, cy, cz)).or_default().push(i);
+                    }
+                }
+            }
+        }
+        let mut cand: std::collections::HashSet<(usize, usize)> = Default::default();
+        for bucket in grid.values() {
+            for a in 0..bucket.len() {
+                for b in (a + 1)..bucket.len() {
+                    cand.insert((bucket[a].min(bucket[b]), bucket[a].max(bucket[b])));
+                }
+            }
+        }
+        let survives = cand
+            .iter()
+            .filter(|(i, j)| {
+                let (alo, ahi) = boxes[*i];
+                let (blo, bhi) = boxes[*j];
+                !(ahi.x < blo.x || bhi.x < alo.x || ahi.y < blo.y || bhi.y < alo.y
+                    || ahi.z < blo.z || bhi.z < alo.z)
+            })
+            .count();
+        println!(
+            "            후보 {} 쌍 → AABB 통과 {survives} 쌍 → 실제 교차 {si} 쌍",
+            cand.len()
+        );
+        println!(
+            "            통과 쌍 하나당 {:.0} µs",
+            si_ms * 1000.0 / survives.max(1) as f64
+        );
+    }
+
     // Where the damage sits, so it can be looked at rather than guessed about.
     {
         let mut per_face: std::collections::BTreeMap<u32, usize> = Default::default();

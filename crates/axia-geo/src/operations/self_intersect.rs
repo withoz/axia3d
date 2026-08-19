@@ -445,8 +445,39 @@ const TRI_EPS: f64 = 1e-7;
 /// - **Non-coplanar, no shared vertex** → the plane-interval test
 ///   (`triangle_triangle_intersection`), which already handles this case.
 fn faces_geom_intersect(a: &[[DVec3; 3]], b: &[[DVec3; 3]], share: bool) -> bool {
-    for ta in a {
-        for tb in b {
+    // ⚠ This loop is n × m and it was the whole cost of the detector.
+    //
+    // Measured on a user's file (2026-08-19): 704 faces, 2,976 pairs surviving
+    // the caller's face-AABB reject, 197 µs EACH — 586 ms of a 589 ms scan. One
+    // of its faces has 169 corners, so a single pair is 167 × 167 = 27,889 calls
+    // to `tri_pair_intersect`, and that函수 opens with two cross products and two
+    // square roots before it can say no.
+    //
+    // A triangle-AABB reject costs six comparisons and is exact: two triangles
+    // whose boxes do not overlap cannot meet, and cannot overlap in 2D when
+    // coplanar either. The boxes are built once per FACE (n + m) rather than
+    // once per pair (n × m), which is why this is worth the two allocations.
+    let box_of = |t: &[DVec3; 3]| -> (DVec3, DVec3) {
+        (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]))
+    };
+    let ba: Vec<(DVec3, DVec3)> = a.iter().map(box_of).collect();
+    let bb: Vec<(DVec3, DVec3)> = b.iter().map(box_of).collect();
+
+    for (i, ta) in a.iter().enumerate() {
+        let (alo, ahi) = ba[i];
+        for (j, tb) in b.iter().enumerate() {
+            let (blo, bhi) = bb[j];
+            // Padded by the same AABB_EPS the caller's face-level reject uses,
+            // so nothing this side of that tolerance is dropped.
+            if ahi.x < blo.x - AABB_EPS
+                || bhi.x < alo.x - AABB_EPS
+                || ahi.y < blo.y - AABB_EPS
+                || bhi.y < alo.y - AABB_EPS
+                || ahi.z < blo.z - AABB_EPS
+                || bhi.z < alo.z - AABB_EPS
+            {
+                continue;
+            }
             if tri_pair_intersect(ta, tb, share) {
                 return true;
             }
