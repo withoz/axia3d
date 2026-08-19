@@ -145,11 +145,31 @@ impl Mesh {
         // A second pair from the same file overlaps by 17,104 mm² and is
         // labelled the same way, so the label cannot be read as either.
         //
-        // Left as it is on purpose: nothing in production reads `ContactKind`
-        // (only tests and the `.xia` inspector), and deciding what counts as an
-        // overlap at micron scale is a tolerance policy, not a typo. Whoever
-        // changes it should change `segments_properly_cross` to measure in world
-        // units rather than in parameter, and re-read the 30 x 50 fuzz after.
+        // ⚠ The obvious fix does not work, and it was measured rather than
+        // reasoned about. Changing `segments_properly_cross` to a WORLD-unit
+        // tolerance cannot separate the two, because in f64 their crossings sit
+        // at overlapping distances from their endpoints:
+        //
+        //     0 mm² pair        끝점까지  최소 0.0019  중앙 0.123  최대 0.49 mm
+        //     17,107 mm² pair   끝점까지  최소 0.434   중앙 7.9    최대 134.8 mm
+        //
+        // Any threshold that drops the first drops genuine crossings of the
+        // second. (The earlier "2.4 µm" reading came from `export_buffers`,
+        // which is f32 — see `face_tessellation`.)
+        //
+        // What DOES separate them is the overlap AREA, exactly clipped:
+        //
+        //     0.019 mm²   against a 55 mm² face      — a 2 µm-wide hairline
+        //     17,107 mm²  against a 672,417 mm² face — real
+        //
+        // and the hairline's width is the same 2 µm scale as the crossings,
+        // which points at where it comes from: the two faces share an edge
+        // carrying an `Arc`, and each tessellates that arc for itself, so their
+        // chord points do not coincide. That is the thing to fix — one
+        // tessellation per edge — not a threshold fitted to two samples.
+        //
+        // Left as it is on purpose meanwhile: nothing in production reads
+        // `ContactKind` (only tests and the `.xia` inspector).
         if na.dot(nb).abs() > 0.999 {
             return Some(ContactKind::CoplanarOverlap);
         }
@@ -344,6 +364,20 @@ impl Mesh {
 
     /// Tessellate a face's outer loop (with holes) into 3D triangles via earcut.
     /// `None` if the face is degenerate / untriangulable.
+    /// The triangles this detector actually tests, in f64.
+    ///
+    /// ⚠ Not `export_buffers`. That one is f32 for the GPU, and at x ≈ 4,500 mm
+    /// an f32 step is 0.27 µm — enough that a measurement taken off it and a
+    /// measurement the detector took can disagree about whether two faces meet.
+    /// One did, on 2026-08-19: a "2.4 µm" crossing read from the render buffer
+    /// turned out to be nine f32 steps of a value the detector never saw.
+    ///
+    /// Exposed so an investigation can ask the detector what it looked at rather
+    /// than re-deriving something near it.
+    pub fn face_tessellation(&self, fid: FaceId) -> Option<Vec<[DVec3; 3]>> {
+        self.tessellate_face_geom(fid).map(|g| g.tris)
+    }
+
     fn tessellate_face_geom(&self, fid: FaceId) -> Option<FaceGeom> {
         let face = self.faces.get(fid)?;
         if !face.is_active() {

@@ -115,6 +115,50 @@ fn what_repairs_a_damaged_file() {
         }
     }
 
+    // ⚠ Two vertices at bit-identical coordinates.
+    //
+    // LOCKED #5 says the spatial hash merges anything within 0.15 µm, so a pair
+    // at 0.000000000 mm should not exist. Some ops make them on purpose — a
+    // detach or an ADR-102 cleave gives each side its own copy — so the number
+    // matters more than the existence. Census the whole model.
+    {
+        let mut by_key: std::collections::HashMap<(i64, i64, i64), Vec<axia_geo::VertId>> =
+            Default::default();
+        // 1 nm buckets: far below the 0.15 µm dedup floor, so anything landing
+        // in one bucket is coincident by any measure this engine uses.
+        let q = |p: glam::DVec3| {
+            (
+                (p.x * 1e6).round() as i64,
+                (p.y * 1e6).round() as i64,
+                (p.z * 1e6).round() as i64,
+            )
+        };
+        for (id, v) in s.mesh.verts.iter().filter(|(_, v)| v.is_active()) {
+            by_key.entry(q(v.pos())).or_default().push(id);
+        }
+        let dup_groups: Vec<&Vec<axia_geo::VertId>> =
+            by_key.values().filter(|g| g.len() > 1).collect();
+        let dup_verts: usize = dup_groups.iter().map(|g| g.len()).sum();
+        println!(
+            "\n  같은 자리에 있는 정점: {} 무리, 정점 {} 개 (활성 {} 중)",
+            dup_groups.len(),
+            dup_verts,
+            s.mesh.verts.iter().filter(|(_, v)| v.is_active()).count()
+        );
+        let mut sizes: std::collections::BTreeMap<usize, usize> = Default::default();
+        for g in &dup_groups {
+            *sizes.entry(g.len()).or_default() += 1;
+        }
+        if !sizes.is_empty() {
+            println!("      무리 크기별 {sizes:?}");
+            for g in dup_groups.iter().take(3) {
+                if let Ok(p) = s.mesh.vertex_pos(g[0]) {
+                    println!("      예: {:?} at {p:?}", g);
+                }
+            }
+        }
+    }
+
     // ⚠ Not every reported pair is damage.
     //
     // `detect_self_intersections` reports three different things the same way
@@ -513,6 +557,46 @@ fn what_repairs_a_damaged_file() {
                 ),
                 Err(e) => println!("              coplanar_intersection_segments: {e}"),
             }
+            // ⚠ Before trusting anything measured off `export_buffers`: those
+            // positions are f32. At x ≈ 4469 an f32 step is 0.00027 mm, so a
+            // "2.4 µm" reading from that buffer is nine steps and may be noise
+            // the detector never sees — it tessellates in f64. The DCEL
+            // vertices are the f64 truth, so ask them whether the two faces
+            // share their corners or merely come close.
+            {
+                let vs = |f: axia_geo::FaceId| -> Vec<axia_geo::VertId> {
+                    s.mesh
+                        .faces
+                        .get(f)
+                        .and_then(|x| s.mesh.collect_loop_verts(x.outer().start).ok())
+                        .unwrap_or_default()
+                };
+                let (va, vb) = (vs(a), vs(b));
+                let shared: Vec<axia_geo::VertId> =
+                    va.iter().copied().filter(|v| vb.contains(v)).collect();
+                println!("              공유 정점 {} 개 {:?}", shared.len(), shared);
+                let mut worst = f64::MAX;
+                let mut pair = String::new();
+                for &p in &va {
+                    for &q in &vb {
+                        if p == q {
+                            continue;
+                        }
+                        if let (Ok(pp), Ok(qq)) = (s.mesh.vertex_pos(p), s.mesh.vertex_pos(q)) {
+                            let d = (pp - qq).length();
+                            if d < worst {
+                                worst = d;
+                                pair = format!("{p:?}{pp:?} ↔ {q:?}{qq:?}");
+                            }
+                        }
+                    }
+                }
+                if worst < f64::MAX {
+                    println!("              다른 정점끼리 가장 가까운 거리 {worst:.9} mm");
+                    println!("                 {pair}");
+                }
+            }
+
             // ⚠ A corner list is not the face.
             //
             // `face_area` reported 672,431 for FaceId(599) while the shoelace of
@@ -560,21 +644,34 @@ fn what_repairs_a_damaged_file() {
             // triangles `export_buffers` emits ARE the face the engine draws and
             // the detector tests, arcs included, so ask them.
             {
-                let (pos, _n, idx, fmap, _a) = s.mesh.export_buffers().expect("buffers");
+                // ⚠ `face_tessellation`, not `export_buffers` — the detector's own
+                // f64 triangles. The render buffer is f32 and a reading taken
+                // off it put a crossing 2.4 µm from an endpoint that the
+                // detector never saw there.
+                // ⚠ Project onto the FACE's plane, not onto XY.
+                //
+                // A first version flattened every triangle by dropping z, which
+                // reads a vertical wall as zero area and any two of them as
+                // 100% overlapping. The pair shares a plane by the time it gets
+                // here (that is what `CoplanarOverlap` means), so one basis
+                // built from its normal serves both faces.
+                let n = s
+                    .mesh
+                    .faces
+                    .get(a)
+                    .map(|f| f.normal().normalize_or_zero())
+                    .unwrap_or(glam::DVec3::Z);
+                let up = if n.z.abs() < 0.9 { glam::DVec3::Z } else { glam::DVec3::X };
+                let ux = up.cross(n).normalize_or_zero();
+                let uy = n.cross(ux);
+                let flat = move |p: glam::DVec3| (p.dot(ux), p.dot(uy));
                 let tris_of = |want: axia_geo::FaceId| -> Vec<[(f64, f64); 3]> {
-                    let mut out = Vec::new();
-                    for (t, chunk) in idx.chunks(3).enumerate() {
-                        if fmap.get(t).copied() != Some(want.raw()) {
-                            continue;
-                        }
-                        let mut v = [(0.0, 0.0); 3];
-                        for (k, &i) in chunk.iter().enumerate() {
-                            let o = i as usize * 3;
-                            v[k] = (pos[o] as f64, pos[o + 1] as f64);
-                        }
-                        out.push(v);
-                    }
-                    out
+                    s.mesh
+                        .face_tessellation(want)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|t| [flat(t[0]), flat(t[1]), flat(t[2])])
+                        .collect()
                 };
                 let in_tri = |p: (f64, f64), t: &[(f64, f64); 3]| -> bool {
                     let sign = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
@@ -642,6 +739,7 @@ fn what_repairs_a_damaged_file() {
                     };
                     let _ = n;
                     let (mut by_point, mut by_cross) = (0usize, 0usize);
+                    let mut near: Vec<f64> = Vec::new();
                     let mut example = String::new();
                     for x in &ta {
                         for y in &tb {
@@ -661,12 +759,21 @@ fn what_repairs_a_damaged_file() {
                                         cross(x[i], x[(i + 1) % 3], y[j], y[(j + 1) % 3])
                                     {
                                         by_cross += 1;
+                                        // ⚠ The number that decides whether a
+                                        // world-unit tolerance would change
+                                        // anything: how far the crossing sits
+                                        // from the nearest endpoint, in mm.
+                                        let la = (x[(i + 1) % 3].0 - x[i].0)
+                                            .hypot(x[(i + 1) % 3].1 - x[i].1);
+                                        let lb = (y[(j + 1) % 3].0 - y[j].0)
+                                            .hypot(y[(j + 1) % 3].1 - y[j].1);
+                                        let d = (t * la)
+                                            .min((1.0 - t) * la)
+                                            .min(u * lb)
+                                            .min((1.0 - u) * lb);
+                                        near.push(d);
                                         if example.is_empty() {
-                                            example = format!(
-                                                "({:.3},{:.3})-({:.3},{:.3}) × ({:.3},{:.3})-({:.3},{:.3})  t={t:.6} u={u:.6}",
-                                                x[i].0, x[i].1, x[(i + 1) % 3].0, x[(i + 1) % 3].1,
-                                                y[j].0, y[j].1, y[(j + 1) % 3].0, y[(j + 1) % 3].1
-                                            );
+                                            example = format!("t={t:.9} u={u:.9}  끝점까지 {d:.9} mm");
                                         }
                                     }
                                 }
@@ -679,12 +786,94 @@ fn what_repairs_a_damaged_file() {
                     if !example.is_empty() {
                         println!("                 첫 교차  {example}");
                     }
+                    if !near.is_empty() {
+                        near.sort_by(|p, q| p.partial_cmp(q).unwrap());
+                        println!(
+                            "                 교차→끝점 거리  최소 {:.9}  중앙 {:.9}  최대 {:.9} mm",
+                            near[0],
+                            near[near.len() / 2],
+                            near[near.len() - 1]
+                        );
+                    }
                 }
                 let (small_t, big_t) = if s.mesh.face_outer_area(a) < s.mesh.face_outer_area(b) {
                     (&ta, &tb)
                 } else {
                     (&tb, &ta)
                 };
+                // ⚠ Exact, not sampled.
+                //
+                // The grid said 0 mm² for a pair whose triangles put 21 vertices
+                // strictly inside each other, and both cannot be true. Clip each
+                // triangle of one against each triangle of the other
+                // (Sutherland-Hodgman, convex clipper on a convex subject — the
+                // one case where it is exact) and sum. No resolution to miss a
+                // thin region with.
+                {
+                    let clip_poly = |subject: &[(f64, f64)], clip: &[(f64, f64); 3]| -> Vec<(f64, f64)> {
+                        // Orient the clip triangle CCW so "inside" is one sign.
+                        let area2 = (clip[1].0 - clip[0].0) * (clip[2].1 - clip[0].1)
+                            - (clip[2].0 - clip[0].0) * (clip[1].1 - clip[0].1);
+                        let c: [(f64, f64); 3] = if area2 >= 0.0 {
+                            *clip
+                        } else {
+                            [clip[0], clip[2], clip[1]]
+                        };
+                        let mut out: Vec<(f64, f64)> = subject.to_vec();
+                        for k in 0..3 {
+                            if out.is_empty() {
+                                break;
+                            }
+                            let (e0, e1) = (c[k], c[(k + 1) % 3]);
+                            let side = |p: (f64, f64)| {
+                                (e1.0 - e0.0) * (p.1 - e0.1) - (e1.1 - e0.1) * (p.0 - e0.0)
+                            };
+                            let input = std::mem::take(&mut out);
+                            for i in 0..input.len() {
+                                let cur = input[i];
+                                let prev = input[(i + input.len() - 1) % input.len()];
+                                let (sc, sp) = (side(cur), side(prev));
+                                if sc >= 0.0 {
+                                    if sp < 0.0 {
+                                        let t = sp / (sp - sc);
+                                        out.push((
+                                            prev.0 + (cur.0 - prev.0) * t,
+                                            prev.1 + (cur.1 - prev.1) * t,
+                                        ));
+                                    }
+                                    out.push(cur);
+                                } else if sp >= 0.0 {
+                                    let t = sp / (sp - sc);
+                                    out.push((
+                                        prev.0 + (cur.0 - prev.0) * t,
+                                        prev.1 + (cur.1 - prev.1) * t,
+                                    ));
+                                }
+                            }
+                        }
+                        out
+                    };
+                    let shoelace = |poly: &[(f64, f64)]| -> f64 {
+                        if poly.len() < 3 {
+                            return 0.0;
+                        }
+                        let mut sum = 0.0;
+                        for i in 0..poly.len() {
+                            let p = poly[i];
+                            let q = poly[(i + 1) % poly.len()];
+                            sum += p.0 * q.1 - q.0 * p.1;
+                        }
+                        (sum * 0.5).abs()
+                    };
+                    let mut exact_overlap = 0.0;
+                    for x in &ta {
+                        for y in &tb {
+                            let piece = clip_poly(&x.to_vec(), y);
+                            exact_overlap += shoelace(&piece);
+                        }
+                    }
+                    println!("              정확 계산: 겹친 넓이 {exact_overlap:.3} mm²");
+                }
                 if small_t.is_empty() || big_t.is_empty() {
                     println!("              ⚠ 삼각형이 없어 넓이를 잴 수 없음 ({} / {})", ta.len(), tb.len());
                 } else {
