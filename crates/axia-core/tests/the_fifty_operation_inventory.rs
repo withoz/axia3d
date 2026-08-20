@@ -1267,6 +1267,56 @@ fn stacked_planes_of(s: &Scene) -> Vec<(DVec3, DVec3)> {
 ///
 /// Every one of them is invisible to `detect_self_intersections`, which is the
 /// thread running through this whole area: coincident is not crossing.
+///
+/// ── Re-measured 2026-08-20, with more digits ────────────────────────────
+///
+/// `{:.0}` was rounding the interesting part away. Widened to `{:.6}`, and the
+/// count of DISTINCT vertex positions and of CURVED boundary edges added:
+///
+/// ```text
+///   세션  3  곡면 37699.111843 / 평면 15000.000000     곡면 x 평면
+///   세션 12  19256.195997 / 0.000000  정점 4, 다른 위치 4, 휜변 0
+///   세션 18  1001.194740 / 1001.194740                 비트까지 같은 복제
+///   세션 19  7717.301335 / 0.000000   정점 7, 다른 위치 7, 휜변 4
+///   세션 20  3정점 52 / 7854                            가시
+/// ```
+///
+/// Two corrections to the four families above:
+///
+///   - **세션 12 는 용접이 아니다.** Four vertices at four DISTINCT positions
+///     with a shoelace area of exactly zero means the four points are
+///     COLLINEAR — a zero-width excursion, not two points welded by
+///     `add_vertex`. A `verts.len() >= 3` guard cannot see it.
+///   - **세션 19 의 "넓이 0" 은 증거가 아니다.** That face has FOUR curved
+///     boundary edges, and `face_outer_area` skips `loop_curve_bulge` whenever
+///     the chord normal is degenerate (`normal.length_squared() < 0.5`), so a
+///     bulging region whose chord net is flat reports 0 either way. Whether it
+///     is collapsed is UNSETTLED. Only session 12's, with 휜변 0, is trusted.
+///
+/// ── Four producers looked at and refuted, in order ──────────────────────
+///
+/// None of these creates session 12's `FaceId(142)`; each was patched, the wide
+/// run re-measured at 15/15, and the patch reverted:
+///
+///   1. `exec_draw_rect`'s post-pipeline degenerate scan reads `f.normal()`, a
+///      CACHE that the two refresh sites deliberately leave stale when the
+///      computed normal is degenerate. Asking the geometry instead changed
+///      nothing — and widening its scope to every active face changed nothing
+///      either, so the face is not merely out of scope, it is born later.
+///   2. `auto_intersect_coplanar`'s Step 9 emits three faces with no area
+///      check — but under production flags it NEVER RUNS. `intersect_faces_
+///      inner` returns early inside `if self.face_rederive_on_draw`, so the
+///      whole legacy branch below it is unreachable while that flag is on.
+///   3. `face_rederive`'s Phase 4 reconcile guards its rings by vertex count.
+///      Refusing rings of zero chord area there changed nothing.
+///   4. `split_faces_crossing_other_planes` already rolls itself back when it
+///      raises the violation count, so a piece it emitted would have to become
+///      damaging only later.
+///
+/// Turning the re-derive OFF makes zero-area faces far MORE common (43 of them
+/// in session 3), so it is clearing them, not making them. ⚠ That census is
+/// itself unreliable: `face_area` answers 0 for a face it cannot measure as
+/// well as for one with no area.
 #[test]
 #[ignore = "a description — run by hand"]
 fn what_the_untouchable_pairs_are_made_of() {
@@ -1279,6 +1329,15 @@ fn what_the_untouchable_pairs_are_made_of() {
         for _ in 0..ops {
             let _ = step(&mut s, &mut r);
         }
+        let zero: Vec<FaceId> = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .filter(|&id| s.mesh.face_area(id) == 0.0)
+            .collect();
+        println!("    세션 {session:>2}  넓이 0 면 {zero:?}");
         let mut seen: Vec<(FaceId, FaceId)> = Vec::new();
         for eid in s.mesh.collect_non_manifold_edges() {
             let Some((a, b)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
@@ -1308,9 +1367,35 @@ fn what_the_untouchable_pairs_are_made_of() {
                     f.surface(),
                     None | Some(axia_geo::surfaces::AnalyticSurface::Plane { .. })
                 );
+                let bent = s
+                    .mesh
+                    .collect_loop_hes(f.outer().start)
+                    .map(|hes| {
+                        hes.iter()
+                            .filter(|&&he| {
+                                s.mesh
+                                    .hes
+                                    .get(he)
+                                    .and_then(|h| s.mesh.edges.get(h.edge()))
+                                    .map_or(false, |e| e.curve().is_some())
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
                 format!(
-                    "{fid:?} 정점 {} (평면 밖 {off}) 넓이 {:.0} 곡면 {}",
+                    "{fid:?} 정점 {} (다른 위치 {}) (평면 밖 {off}) 넓이 {:.6} 곡면 {} 휜변 {bent}",
                     verts.len(),
+                    {
+                        let mut kept: Vec<glam::DVec3> = Vec::new();
+                        for &v in &verts {
+                            if let Ok(p) = s.mesh.vertex_pos(v) {
+                                if !kept.iter().any(|k| k.distance_squared(p) < 2.25e-8) {
+                                    kept.push(p);
+                                }
+                            }
+                        }
+                        kept.len()
+                    },
                     s.mesh.face_area(fid),
                     if curved { "예" } else { "아니오" }
                 )
