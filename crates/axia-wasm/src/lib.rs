@@ -8157,7 +8157,7 @@ impl AxiaEngine {
                     let (faces, _) = self.scene.mesh.get_faces_sharing_edge(eid);
                     if faces.len() == 2 && faces[0] != faces[1] {
                         let geo_tol = (angle_tol_deg * 4.0).max(2.0);
-                        if let Ok(_) = self.scene.mesh.merge_coplanar_faces_geometric(
+                        if let Ok(_) = self.scene.merge_coplanar_faces_geometric_owned(
                             faces[0], faces[1], geo_tol,
                         ) {
                             merged += 1;
@@ -9350,7 +9350,7 @@ impl AxiaEngine {
         let f2 = FaceId::new(f2_raw);
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
-        match self.scene.mesh.merge_coplanar_faces_geometric(f1, f2, angle_tol_deg) {
+        match self.scene.merge_coplanar_faces_geometric_owned(f1, f2, angle_tol_deg) {
             Ok(new_face) => {
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
@@ -9381,7 +9381,7 @@ impl AxiaEngine {
         let i = FaceId::new(inner_face_raw);
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
-        match self.scene.mesh.merge_coplanar_containing(o, i, angle_tol_deg) {
+        match self.scene.merge_coplanar_containing_owned(o, i, angle_tol_deg) {
             Ok(new_face) => {
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();

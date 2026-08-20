@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AXiA 3D — 엔진 구현 상태 세밀 검토 보고서 (2026-07-08)</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1a2230; --muted:#5a6472; --line:#e3e7ee;
+    --accent:#2f6fed; --code:#0f1f3d; --codebg:#eef2fb;
+    --prod:#188a4b; --prodbg:#e6f5ec; --most:#b7791f; --mostbg:#fbf3e2;
+    --part:#c0562f; --partbg:#fbeee6; --stub:#9333ea; --stubbg:#f3eafd;
+    --gap:#c0392b; --gapbg:#fdecea;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:'Malgun Gothic','Segoe UI','Apple SD Gothic Neo',system-ui,sans-serif;
+    line-height:1.65; font-size:15px;
+  }
+  .wrap{max-width:1040px; margin:0 auto; padding:36px 22px 80px;}
+  header.masthead{border-bottom:3px solid var(--accent); padding-bottom:18px; margin-bottom:28px;}
+  header.masthead .kicker{color:var(--accent); font-weight:700; letter-spacing:.08em; font-size:12px; text-transform:uppercase;}
+  header.masthead h1{margin:6px 0 4px; font-size:27px; letter-spacing:-.01em;}
+  header.masthead .sub{color:var(--muted); font-size:14px;}
+  header.masthead .meta{margin-top:10px; color:var(--muted); font-size:12.5px;}
+  h2{font-size:20px; margin:38px 0 12px; padding-left:11px; border-left:4px solid var(--accent);}
+  h3{font-size:15.5px; margin:22px 0 8px; color:var(--ink);}
+  p{margin:9px 0;}
+  a{color:var(--accent); text-decoration:none;}
+  code{font-family:'Cascadia Code','Consolas',ui-monospace,monospace; background:var(--codebg); color:var(--code); padding:1px 5px; border-radius:4px; font-size:12.5px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin:14px 0; box-shadow:0 1px 2px rgba(20,30,50,.04);}
+  .verdict{background:linear-gradient(180deg,#f0f5ff,#ffffff); border:1px solid #cfe0ff;}
+  .verdict strong{color:var(--accent);}
+  table{width:100%; border-collapse:collapse; margin:12px 0; font-size:13.5px;}
+  th,td{text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); vertical-align:top;}
+  th{background:#eef2f8; font-weight:700; font-size:12.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
+  tr:last-child td{border-bottom:none;}
+  .badge{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11.5px; font-weight:700; white-space:nowrap;}
+  .b-prod{background:var(--prodbg); color:var(--prod);}
+  .b-most{background:var(--mostbg); color:var(--most);}
+  .b-part{background:var(--partbg); color:var(--part);}
+  .b-stub{background:var(--stubbg); color:var(--stub);}
+  .facts{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:14px 0;}
+  .fact{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:13px 15px;}
+  .fact .n{font-size:20px; font-weight:800; color:var(--accent); letter-spacing:-.02em;}
+  .fact .l{font-size:12px; color:var(--muted); margin-top:2px;}
+  .gapbox{background:var(--gapbg); border:1px solid #f3c6c0; border-radius:12px; padding:16px 20px; margin:14px 0;}
+  .gapbox h2{border-left-color:var(--gap); color:var(--gap); margin-top:0;}
+  ul{margin:8px 0 8px; padding-left:22px;}
+  li{margin:5px 0;}
+  .pipe{font-family:'Cascadia Code','Consolas',monospace; font-size:12px; background:var(--codebg); color:var(--code); padding:14px 16px; border-radius:9px; overflow-x:auto; white-space:pre; line-height:1.5;}
+  .k{color:var(--muted); font-size:12.5px;}
+  .foot{margin-top:40px; padding-top:18px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px;}
+  .tag{display:inline-block; background:#eef2f8; color:var(--muted); border-radius:5px; padding:1px 7px; font-size:11.5px; margin-right:5px;}
+  .toc{columns:2; column-gap:26px; font-size:13px;}
+  .toc a{display:block; padding:2px 0;}
+  @media(max-width:640px){ .toc{columns:1} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="kicker">Engine Implementation Review</div>
+  <h1>AXiA 3D — 엔진 구현 상태 세밀 검토 보고서</h1>
+  <div class="sub">"블렌더보다 쉽고 스케치업보다 정확한 경량 3D 모델링 엔진" · v0.1.0 Beta</div>
+  <div class="meta">검토일 2026-07-08 · 대상 <code>E:\AXiA3D</code> · 12 서브시스템 병렬 감사(적대적 리뷰) + 실측 ground-truth 교차검증 · 편집 없이 읽기·분석 전용</div>
+</header>
+
+<div class="card">
+  <div class="toc">
+    <a href="#verdict">1. 총평</a>
+    <a href="#ground">2. 실측 Ground-truth</a>
+    <a href="#pipe">3. end-to-end 파이프라인</a>
+    <a href="#matrix">4. 서브시스템 성숙도 매트릭스</a>
+    <a href="#gap">5. ★최대 갭: 범용 exact CSG</a>
+    <a href="#readme">6. README vs 실제</a>
+    <a href="#standout">7. 세부 standout 코드</a>
+    <a href="#stubs">8. 미완·스텁·잠재버그</a>
+    <a href="#rel">9. axia-sketch와의 관계</a>
+    <a href="#method">부록: 검토 방법</a>
+  </div>
+</div>
+
+<h2 id="verdict">1. 총평</h2>
+<div class="card verdict">
+  <p><strong>진짜 production급 end-to-end 동작 엔진 — 프로토타입이 아니다.</strong> ~181K LOC의 Rust Half-Edge DCEL 커널(2844 테스트 통과)이 실제 3.6MB WASM 바이너리로 컴파일돼, ~101K LOC의 TypeScript/Three.js 웹앱이 7,148줄 <code>WasmBridge</code>(engine call site 303개)를 통해 구동한다. + MCP 서버 패키지가 커널을 AI 에이전트에 노출.</p>
+  <p>성숙도는 불균등하지만 <strong>정직하다</strong>: 시맨틱 레이어(axia-core)·WASM 브리지·도구 레이어·렌더/스냅/재료는 조밀한 테스트와 거의 0에 가까운 스텁으로 production급이고, DCEL 커널은 강력한 불변식/manifold 검증 시스템을 <em>실제 release gate로 배선</em>한 mostly-working 상태다. 규율이 예외적: ADR 번호 추적 336건, additive-only API baseline, no-<code>#[ignore]</code> 정책, phantom-tool 갭을 스스로 잡아 고친 자가 감사.</p>
+</div>
+
+<h2 id="ground">2. 실측 Ground-truth (추정 아님)</h2>
+<div class="facts">
+  <div class="fact"><div class="n">2,844</div><div class="l">Rust 커널 테스트 통과 (0 실패, 1 ignored)</div></div>
+  <div class="fact"><div class="n">3.63 MB</div><div class="l">실제 WASM 바이너리 (magic 0x0061736d 유효)</div></div>
+  <div class="fact"><div class="n">306+</div><div class="l">#[wasm_bindgen] export 함수 (Rust→JS)</div></div>
+  <div class="fact"><div class="n">~281K</div><div class="l">총 LOC (Rust 181K + web 101K)</div></div>
+  <div class="fact"><div class="n">336</div><div class="l">ADR 문서 (ADR-274까지)</div></div>
+  <div class="fact"><div class="n">84</div><div class="l">git 커밋 (최신 2026-07-06, 활발)</div></div>
+</div>
+<p class="k">line count·binary magic·테스트 수를 리뷰 에이전트가 실제로 열어 대조 → 서베이와 정확히 일치. scene.rs 23,628 · mesh.rs 22,118 · boolean.rs 18,986 · wasm/lib.rs 12,151 · WasmBridge.ts 7,148.</p>
+
+<h2 id="pipe">3. end-to-end 파이프라인 — 실검증됨</h2>
+<div class="pipe">web tool (PushPullTool.ts)
+   │  bridge.* 호출
+   ▼
+WasmBridge.ts  (318 메서드, 303 this.engine.&lt;fn&gt; call site)
+   │  marshal  Uint32Array / Float64Array / JSON
+   ▼
+axia_wasm_bg.wasm  (3.63MB, AxiaEngine)
+   │  Half-Edge DCEL mutate
+   ▼
+★ integrity gate  —  op 전 verify_volume_integrity + boundary + self-intersection baseline 스냅샷
+   │  if after.damage_count() &gt; baseline  →  restore_scene_snapshot  (byte-identical 롤백)
+   ▼
+mesh / delta 버퍼 재읽기  (zero-copy Float32Array view onto WASM linear memory)
+   ▼
+Viewport.updateMesh → THREE.BufferGeometry → 렌더</div>
+<p><strong>변형 op는 fire-and-forget이 아니다.</strong> 틀린 geometry를 내느니 baseline 대비 손상 증가 시 byte-identical 롤백 + 한글 에러. 동일 커널이 headless(<code>axia-wasm-node</code> 3.61MB)로도 도달 가능해 MCP 서버 13 handler를 구동하고, <code>e2e.test.ts</code>가 실제 WASM에 <code>draw_rect→ShapeId</code>·<code>push_pull→audit</code>를 왕복시킨다.</p>
+
+<h2 id="matrix">4. 서브시스템 성숙도 매트릭스 (12)</h2>
+<table>
+  <thead><tr><th>서브시스템</th><th>성숙도</th><th>근거 (테스트·핵심)</th></tr></thead>
+  <tbody>
+    <tr><td><b>axia-core</b> Scene/XIA/command/constraint/material/group</td><td><span class="badge b-prod">production</span></td><td>469 테스트, TODO 1개(PlaceComponent), 31 Command 전부 dispatch, V1–V4 snapshot(Y-up→Z-up 마이그레이션), 3-tier PBR·SketchUp 그룹</td></tr>
+    <tr><td><b>axia-geo</b> mesh core (DCEL)</td><td><span class="badge b-most">mostly-working</span></td><td>2,155 테스트, unimplemented!/TODO 0, I1–I5·M1–M5·Euler/genus 불변식이 <b>release gate로 배선</b>. 단 robust Shewchuk predicate call site 0</td></tr>
+    <tr><td><b>axia-geo</b> operations (Boolean/PushPull/Offset/CreateSolid)</td><td><span class="badge b-most">mostly-working</span></td><td>1,096 테스트. analytic 곡면-boolean(box±cyl/sph/cone/torus)+carve PushPull 실동작·watertight. <b>범용 CSG는 test-only</b>, production은 integrity gate로 거부</td></tr>
+    <tr><td><b>axia-geo</b> surfaces + curves (NURBS/SSI)</td><td><span class="badge b-most">mostly-working</span></td><td>340 surface + 190 curve 테스트, 8 곡면+6 곡선 real analytic(rational NURBS 평가 포함). 범용 NURBS surface-boolean은 probe/diagnostic만</td></tr>
+    <tr><td><b>axia-wasm</b> (Rust↔JS 브리지)</td><td><span class="badge b-prod">production</span></td><td>~367 pub 메서드, 83 테스트, TODO 0, defense-in-depth 스냅샷/롤백, additive-only API baseline 테스트로 강제</td></tr>
+    <tr><td><b>axia-foreign / axia-ifc / axia-transaction</b></td><td><span class="badge b-part">partial</span></td><td>STEP import 깊고 production급(144 테스트+Piegl NURBS+cube.stp 왕복). <b>IGES=bare stub, IFC=box-only, foreign/ifc는 unwired spike</b>. transaction(5테)만 앱에서 live</td></tr>
+    <tr><td><b>web/src/tools</b> (모델링 도구 57종)</td><td><span class="badge b-prod">production</span></td><td>891 테스트/68파일, PushPull live-extrude/carve·kernel-aware draw·3-layer offset·primitives·merge, 기능 스텁 ~0, hasTool() 가드(자가 감사)</td></tr>
+    <tr><td><b>web/src/ui</b> (65파일, ~17K LOC)</td><td><span class="badge b-most">mostly-working</span></td><td>441 테스트, 드래그 패널·CAD 메뉴 ~120 액션·명령줄 ~13 handler·XIA Inspector(불변식/boundary 상태)·dimension inline-edit. 갭: 패널 도킹 의도적 비활성, XiaInspector 테스트 2개</td></tr>
+    <tr><td><b>web/src</b> bridge+wasm+core+commands+citizenship</td><td><span class="badge b-prod">production</span></td><td>559 테스트, 스텁 1개, SSOT 명령 레지스트리 ~200, DI 컨테이너, 텔레메트리 budget, XIA citizenship 복구 orchestrator — 커널 능력을 실어나르는 완전 배선된 seam</td></tr>
+    <tr><td><b>web/src</b> file I/O (import 24 / export 6 / file 2)</td><td><span class="badge b-most">mostly-working</span></td><td><b>11종 import 동작</b>: OBJ/STL/glTF/DAE/PLY/3DS(three.js)·DXF(Rust DCEL)·STEP/IGES(opencascade.js ~160테)·DWG(wasm)·<b>3DM(rhino3dm)</b>. SKP=hard throw. export는 DXF만 진짜(나머지 3줄 three.js wrapper)</td></tr>
+    <tr><td><b>web/src</b> viewport+snap+primitives+materials+curves+units</td><td><span class="badge b-prod">production</span></td><td>~350 테스트, f64 DCEL 버퍼 실렌더, ZWCAD식 ~15종 OSNAP, kernel-native primitives, 12 PBR 재료 엔진 동기, mm 단위</td></tr>
+    <tr><td><b>packages/</b> MCP server + action-catalog + wasm-node</td><td><span class="badge b-most">mostly-working</span></td><td>~158 테스트, 4-tier 보안+fail-closed DENY+schema handshake+JSONL 감사, 13 real handler가 real WASM 호출. 단 <b>31 중 13 capability만, Tier-3 destructive 100% 미구현</b>, config inert, stdio-only</td></tr>
+  </tbody>
+</table>
+
+<div class="gapbox" id="gap">
+<h2>5. ★최대 갭 — 범용 exact/robust CSG는 shipping 엔진이 아니다</h2>
+<ul>
+  <li><b>robust Shewchuk predicates</b>(orient2d/3d·incircle·insphere) 완전 구현 + 14 테스트 — 그러나 <b>production call site 0</b>(<code>predicates/</code> 내부에서만 참조). production mesh op은 여전히 naive f64 cross product + ε(정점 1e-7 / 면 1e-6 / coplanar 0.1°).</li>
+  <li><b>범용 watertight Boolean(<code>solid_boolean</code>)은 test-only</b> — 20개 grep 히트 전부 자기 정의 + <code>boolean.rs</code> 내부 테스트 호출, scene/wasm 호출자 0. production <code>boolean()</code>은 analytic-primitive dispatch + carve PushPull만 처리. <b>임의 회전/오목/multi-loop 오퍼랜드는 byte-rollback + 한글 에러로 거부</b>(안 풀고). multi-loop 면 명시 거부(<code>boolean.rs:1587</code>).</li>
+  <li><b>범용 NURBS surface-boolean은 probe/diagnostic</b>: non-rational only, region당 single closed chain, containment depth ≤1, open-shell surface trim(watertight solid 아님). rational-NURBS SSI 미구현, tensor uv-inversion은 placeholder(0.5,0.5).</li>
+</ul>
+<p><b>"analytic-first, reject-on-damage"가 이 아키텍처의 정직한 심장이다.</b> 마케팅("스케치업보다 정확")은 exact-predicate 견고성을 함의하나, 그 기계장치는 준비돼 있되 shipping 경로가 쓰지 않는다 — 정밀도는 f64+tolerance+불변식 gate로 방어된다.</p>
+</div>
+
+<h2 id="readme">6. README vs 실제 (양방향 stale)</h2>
+<ul>
+  <li><b>Boolean 과대</b>: 헤드라인 "Union/Subtract/Intersect" — 실제는 analytic + carve만. 웹에 Boolean 도구 파일조차 없음.</li>
+  <li><b>Import 양방향 stale</b>: <code>SKP</code>를 나열했으나 실제는 <b>hard throw</b>(".skp 직접 import 미지원"). 반대로 <b>STEP·IGES·3DM은 README에서 누락됐으나 실제 동작</b>(opencascade.js / rhino3dm).</li>
+  <li><b>"스케치업보다 정확"</b>: robust predicate 0 call site라, 정밀도 주장은 f64/tolerance로 방어 가능하나 exact-predicate 견고성은 shipping 경로 미사용.</li>
+  <li><b>Export 비대칭</b>: 11 import vs DXF만 진짜 export. STEP/IGES export는 placeholder Toast.</li>
+  <li><b>패널 도킹</b>: README는 Floating/Docked/AutoHide를 나열하나 auto-docking은 사용자 피드백으로 의도적 비활성(기계장치는 코딩됐으나 UX 미도달).</li>
+</ul>
+
+<h2 id="standout">7. 세부 standout 코드 (file:line)</h2>
+<ul>
+  <li><code>scene.rs:8406-8592</code> — versioned snapshot: 10개 length-prefixed additive 섹션, V1(mesh-only)/V2(Y-up→Z-up 마이그레이션)/V3/V4 + forward-version reject + invariant 위반 시 거부. 진짜 production 파일포맷 엔지니어링.</li>
+  <li><code>wasm/lib.rs boolean_op~8906</code> — defense-in-depth: baseline 스냅샷 → <code>damage_count &gt; baseline → restore</code> byte-identical 롤백. 아키텍처의 심장.</li>
+  <li><code>mesh_invariants.rs:188-459 + p7_manifold.rs</code> — I1–I5·M1–M5 ring-with-hole manifold + <code>compute_topology</code>(Euler χ = V−E+F·genus·boundary-loop). 배선된 watertight 검증(장식 아님).</li>
+  <li><code>carve.rs:496-914</code> — <code>carve_pocket/through/curved_from_source_face</code>: 실제 local DCEL carving(punch_polygon_hole + no-twist walls + floor cap + 롤백), production PushPull subtract(47 테스트).</li>
+  <li><code>step_lexer/parser + conic_converter.rs</code> — 무의존 STEP ISO-10303-21 lexer/parser/resolver + Piegl A7.1/A7.4/A7.5 conic→rational NURBS(√2/2 weight). unwired spike지만 깊은 numerics.</li>
+  <li><code>WasmBridge.ts:27-83</code> — Cardinal Plane SSOT 스냅 1e-4(0.1μm, 엔진 0.15μm spatial-hash 아래로 튜닝, ADR-147) — 언어 seam의 미묘한 정확성 가드.</li>
+  <li><code>mcp-server/dispatcher.ts:102 + policy.ts:62</code> — 5단계 ingress(policy→handler→Zod safeParse→timed call→audit) + fail-closed DENY + Levenshtein "did you mean".</li>
+</ul>
+
+<h2 id="stubs">8. 미완 · 스텁 · 잠재버그</h2>
+<ul>
+  <li><span class="tag">TODO</span><code>PlaceComponent</code>(axia-core 유일 진짜 TODO, <code>scene.rs:3527</code>): 컴포넌트 인스턴스가 metadata만 갖고 <b>geometry 복제 없음</b>(빈 face_ids) → 배치해도 geometry 안 나옴.</li>
+  <li><span class="tag">unwired</span>axia-foreign(STEP/IGES)·axia-ifc = <b>unwired spike</b>(다른 crate 의존 0 → WASM/웹 경로 없음). IGES=bare stub("not yet wired"), IFC=box-only, STEP export 없음.</li>
+  <li><span class="tag">MCP</span>13/31 capability만 handler 보유, Tier-3 destructive(delete_xia/erase_face) 100% 미구현인데 광고됨. config 파일 inert(env만), stdio-only.</li>
+  <li><span class="tag">render</span>4-channel layered PBR 코드+테스트만(Viewport render path 미배선), 그림자 시스템 제거됨(단일 텍스처/메시 v1).</li>
+  <li><span class="tag">bug</span><b>잠재 버그</b>(범위 밖, read-only): <code>import_dxf.rs:258-262</code>가 ellipse major axis에 stale Y-up→Z-up swizzle 적용(나머지 importer는 identity cv(), ADR-103-ζ 이후) → 비-XY 평면 ellipse 오배향.</li>
+  <li><span class="tag">test</span>미검증 코너: <code>import_dxf.rs</code>(432 LOC, in-crate 테스트 0)·<code>XiaInspector.ts</code>(472 LOC, 2 테스트)·8개 ui 모듈 co-located 테스트 0.</li>
+</ul>
+
+<h2 id="rel">9. axia-sketch(우리 다른 엔진)와의 관계 — 직접 유관</h2>
+<ul>
+  <li>둘 다 <b>XIA lifecycle</b>(Dissolved↔Edge↔Face↔Solid) 개념 공유. AXiA3D = WASM + web + DCEL, axia-sketch = native winit/wgpu + mesh/BREP.</li>
+  <li><b>★AXiA3D는 이미 3DM(rhino3dm.js)·STEP(opencascade.js) import가 웹 레이어에서 동작</b> — axia-sketch 증분6(Rhino import)에서 설계한 "C→spike→A(opennurbs FFI vendor)"의 <b>웹-JS-라이브러리 대안 선례</b>. AXiA3D는 Rust FFI 대신 프론트에서 rhino3dm.js/opencascade.js를 씀.</li>
+  <li>두 엔진 다 <b>"analytic-first, exact는 미배선/거부"</b> 전략 공유(AXiA3D=robust predicate 미배선, axia-sketch=Track C exact-BREP도 특정 케이스만 배선).</li>
+</ul>
+
+<h2>한 줄 요약</h2>
+<div class="card verdict">
+<p>E:\AXiA3D는 <strong>성숙하고 정직한 production-track 엔진</strong>이다. happy path(draw → push/pull → analytic boolean → material → save/load → DXF/OBJ export)는 실동작·조밀 테스트, frontier(임의 solid CSG·foreign-CAD 왕복·Tier-3 AI op)는 gate/deferred. 최대 미완은 <strong>범용 exact CSG</strong>(predicate는 준비됐으나 미배선)와 <strong>foreign-CAD import의 unwired Rust spike</strong>(웹은 JS 라이브러리로 우회 동작).</p>
+</div>
+
+<div class="foot" id="method">
+  <p><b>부록 — 검토 방법</b>: 12개 서브시스템을 병렬 리더 에이전트가 각 영역의 <code>lib.rs</code>·<code>mod.rs</code>·최대 파일·테스트를 실제로 열어 조사(구현 vs 부분/스텁/TODO/dead, 테스트 수, file:line 근거) → 종합. 별도로 <code>cargo test</code>로 <b>2,844 커널 테스트 통과(0 실패)</b>·WASM 바이너리 magic·git 활동·ADR 수를 직접 실측해 서베이 주장을 교차검증. 근거 없는 이론적 우려는 배제, 실코드 인용 필수. 편집 없이 읽기·분석 전용.</p>
+  <p class="k">생성: 자동 검토 파이프라인 · 대상 커밋 시점 2026-07-06(최신) · 이 문서는 로컬 저장본(비공유).</p>
+</div>
+
+</div>
+</body>
+</html>

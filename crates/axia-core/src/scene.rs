@@ -4221,6 +4221,70 @@ impl Scene {
         Ok(merged)
     }
 
+    /// A geometric merge that hands the result to an owner, like its
+    /// edge-merge sibling above.
+    ///
+    /// `Mesh::merge_coplanar_faces_geometric` is mesh level: it removes both
+    /// operands and adds a face. Called directly — which three WASM entry points
+    /// did — the owner keeps two dead ids and the live face belongs to nobody,
+    /// so IFC writes that element's body from nothing and the merged region
+    /// comes out an orphan.
+    ///
+    /// ⚠ Which owner wins is the user's decision of 2026-08-11, taken for
+    /// `merge_faces_by_edge_owned` and applied here unchanged: **the
+    /// first-selected face inherits**. `f1` is that face; `f2` only answers if
+    /// `f1` owns nothing.
+    pub fn merge_coplanar_faces_geometric_owned(
+        &mut self,
+        f1: FaceId,
+        f2: FaceId,
+        tol_deg: f64,
+    ) -> anyhow::Result<FaceId> {
+        // Read the owner BEFORE the merge — afterwards both operands are gone.
+        let owning_shape = [f1, f2]
+            .iter()
+            .find_map(|f| self.face_to_shape.get(f).copied());
+        let owning_xia = [f1, f2].iter().find_map(|f| self.face_to_xia.get(f).copied());
+        let before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let merged = self.mesh.merge_coplanar_faces_geometric(f1, f2, tol_deg)?;
+        self.adopt_new_active_faces(owning_shape, owning_xia, &before);
+        Ok(merged)
+    }
+
+    /// The containment sibling of the above — an inner face absorbed into the
+    /// outer one it sits in. Same rule: the OUTER face is the first-selected.
+    pub fn merge_coplanar_containing_owned(
+        &mut self,
+        outer_face: FaceId,
+        inner_face: FaceId,
+        angle_tol_deg: f64,
+    ) -> anyhow::Result<FaceId> {
+        let owning_shape = [outer_face, inner_face]
+            .iter()
+            .find_map(|f| self.face_to_shape.get(f).copied());
+        let owning_xia = [outer_face, inner_face]
+            .iter()
+            .find_map(|f| self.face_to_xia.get(f).copied());
+        let before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let merged = self
+            .mesh
+            .merge_coplanar_containing(outer_face, inner_face, angle_tol_deg)?;
+        self.adopt_new_active_faces(owning_shape, owning_xia, &before);
+        Ok(merged)
+    }
+
     /// ADR-262 + §36-amendment — carve a door U-notch AND reconcile face ownership:
     /// the carve's new faces (jambs, splits, bottom notch) are adopted into the
     /// host wall's owning element, so the wall element owns its full geometry.
