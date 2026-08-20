@@ -127,78 +127,33 @@ impl Mesh {
         if na.length_squared() < 0.5 || nb.length_squared() < 0.5 {
             return None; // a face with no normal is a different problem
         }
-        // ⚠ Parallel normals is the whole test here, and it is not enough.
+        // Parallel normals is the whole test here, and reading the code that
+        // looks too weak: it never asks whether the two faces cover any common
+        // ground. Two files' worth of pairs were held up against it on
+        // 2026-08-19 and BOTH turned out to be genuine overlaps, so the weakness
+        // is on paper and not yet demonstrated. What the investigation actually
+        // found is worth more than the complaint:
         //
-        // The reasoning it stands on — "the detector already found these two
-        // intersecting, and on one plane an intersection is area overlap" —
-        // holds only as far as the detector does. Measured 2026-08-19 on a
-        // user's file, a pair it labels `CoplanarOverlap`:
+        //   pair                    겹친 넓이 (정확 클립)
+        //   FaceId(601) × (1255)         0.019 mm²   of a 55 mm² face
+        //   FaceId(1254) × (599)    17,107.188 mm²   of a 672,417 mm² face
         //
-        //     FaceId(601) × FaceId(1255)   겹친 넓이 0 mm²  (0.00%)
+        // Both share their `Arc` edge (1901 and 1895), so neither is a
+        // tessellation seam — `he_arc_fill_points` samples per EDGE and only
+        // reverses the order for the twin, giving both faces identical points.
+        // What the larger one has is a SECOND arc (1896) its neighbour does not,
+        // bowing past its chord into ground the neighbour's straight edges
+        // enclose. `face_area` already sees it from the other side: +34,234 mm²
+        // of bulge on one face, −17,117 on the other.
         //
-        // sampled from the very triangles `export_buffers` emits. What fired in
-        // the detector was `segments_properly_cross` at t = 0.000002 of a
-        // 1,178 mm edge — a touch 2.4 µm from an endpoint, which `TRI_EPS` lets
-        // through because it is a PARAMETER tolerance and 1e-7 of a long edge is
-        // far below the scale anything else in this engine calls distinct.
-        //
-        // A second pair from the same file overlaps by 17,104 mm² and is
-        // labelled the same way, so the label cannot be read as either.
-        //
-        // ⚠ The obvious fix does not work, and it was measured rather than
-        // reasoned about. Changing `segments_properly_cross` to a WORLD-unit
-        // tolerance cannot separate the two, because in f64 their crossings sit
-        // at overlapping distances from their endpoints:
-        //
-        //     0 mm² pair        끝점까지  최소 0.0019  중앙 0.123  최대 0.49 mm
-        //     17,107 mm² pair   끝점까지  최소 0.434   중앙 7.9    최대 134.8 mm
-        //
-        // Any threshold that drops the first drops genuine crossings of the
-        // second. (The earlier "2.4 µm" reading came from `export_buffers`,
-        // which is f32 — see `face_tessellation`.)
-        //
-        // What DOES separate them is the overlap AREA, exactly clipped:
-        //
-        //     0.019 mm²   against a 55 mm² face      — a 2 µm-wide hairline
-        //     17,107 mm²  against a 672,417 mm² face — real
-        //
-        // ⚠ And the story that suggested itself for the hairline is WRONG.
-        //
-        // "The two faces share an arc and each tessellates it for itself, so
-        // their chord points do not coincide" — read the code and it does not
-        // happen. `he_arc_fill_points` takes every parameter from the EDGE
-        // (`center, radius, normal, basis_u, start_angle, end_angle`), sizes its
-        // tolerance from that edge's own radius, and `arc::tessellate` walks
-        // `start_angle + i·(end−start)/n`. The traversal direction is applied
-        // afterwards by `pts.reverse()`, which reorders points without moving
-        // them. Two faces meeting along one arc edge therefore receive
-        // bit-identical positions, and there is no per-face seam to fix.
-        //
-        // Where a hairline CAN come from, read out of the four functions that
-        // make one — with the one link that is file data, not code, marked:
-        //
-        //   1. `add_vertex_force_new` makes two vertices at one position on
-        //      purpose (cleave.rs:262, repair.rs:108, create_solid.rs:927), so
-        //      two faces can meet at a corner without sharing a vertex id.
-        //   2. `add_edge` keys on the VERTEX PAIR (`vert_to_edge`), so the same
-        //      stretch of boundary between two such faces is TWO edges.
-        //   3. `loop_polygon(.., following_arcs())` asks each edge for its own
-        //      curve. One edge carrying an `Arc` and its twin-in-place carrying
-        //      none gives one face a bow and the other its chord.
-        //   4. `split_edge` propagates a curve to both children via `split_at`
-        //      and, when that fails, leaves BOTH curveless — symmetric either
-        //      way, so it is not the asymmetry; step 2 is.
-        //
-        // The lens between a bow and its chord is a hairline of exactly this
-        // scale. ⚠ Which side holds the `Arc` for the pair measured above is a
-        // property of that file, not of this code, and is not checked here — so
-        // the mechanism is written down and the label is still not trusted.
-        //
-        // Nothing in production reads this label, and a threshold fitted to two
-        // samples would be worse than the mislabel.
-        //
-        // Left as it is on purpose meanwhile: nothing in production reads
-        // `ContactKind` (only tests and the `.xia` inspector).
+        // ⚠ So the label is right in both cases, and four things said about it
+        // over that day were not: that either pair overlapped by 0 mm² (a
+        // corner-polygon sampler), that a world-unit crossing tolerance would
+        // separate them (their ranges overlap), that each face tessellates the
+        // shared arc for itself (it is per edge), and that one edge is curved
+        // while its twin-in-place is not (they share the edge). Each was refuted
+        // by going one step further, which is why the paper weakness above is
+        // left as an observation rather than acted on.
         if na.dot(nb).abs() > 0.999 {
             return Some(ContactKind::CoplanarOverlap);
         }

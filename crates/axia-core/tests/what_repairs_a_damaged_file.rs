@@ -655,6 +655,26 @@ fn what_repairs_a_damaged_file() {
                      차이 {:.0}  곡선 모서리 {curved_edges}",
                     poly - shoelace
                 );
+                // ⚠ The one link the code could not settle: which EDGES each
+                // face's boundary is made of, and which of them carry an `Arc`.
+                // Two faces meeting along ONE edge get identical points; two
+                // faces on DIFFERENT edges at the same place, only one curved,
+                // get a bow against a chord — see `classify_contact`.
+                let listed: Vec<String> = s
+                    .mesh
+                    .face_outer_edges(f)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| {
+                        let tag = match s.mesh.edges.get(e).and_then(|x| x.curve().cloned()) {
+                            Some(axia_geo::curves::AnalyticCurve::Arc { .. }) => "Arc",
+                            Some(_) => "곡선",
+                            None => "직선",
+                        };
+                        format!("{}:{tag}", e.raw())
+                    })
+                    .collect();
+                println!("                 모서리  {}", listed.join("  "));
             }
 
             // ⚠ So sample the TRIANGLES, not the corners.
