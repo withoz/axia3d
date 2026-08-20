@@ -671,7 +671,19 @@ fn what_repairs_a_damaged_file() {
                             Some(_) => "곡선",
                             None => "직선",
                         };
-                        format!("{}:{tag}", e.raw())
+                        let ends = s
+                            .mesh
+                            .edges
+                            .get(e)
+                            .map(|x| (x.v_small(), x.v_large()))
+                            .and_then(|(a, b)| {
+                                Some((s.mesh.vertex_pos(a).ok()?, s.mesh.vertex_pos(b).ok()?))
+                            })
+                            .map(|(p, q)| {
+                                format!("({:.0},{:.0})-({:.0},{:.0})", p.x, p.y, q.x, q.y)
+                            })
+                            .unwrap_or_default();
+                        format!("{}:{tag}{ends}", e.raw())
                     })
                     .collect();
                 println!("                 모서리  {}", listed.join("  "));

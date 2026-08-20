@@ -138,22 +138,27 @@ impl Mesh {
         //   FaceId(601) × (1255)         0.019 mm²   of a 55 mm² face
         //   FaceId(1254) × (599)    17,107.188 mm²   of a 672,417 mm² face
         //
-        // Both share their `Arc` edge (1901 and 1895), so neither is a
-        // tessellation seam — `he_arc_fill_points` samples per EDGE and only
-        // reverses the order for the twin, giving both faces identical points.
-        // What the larger one has is a SECOND arc (1896) its neighbour does not,
-        // bowing past its chord into ground the neighbour's straight edges
-        // enclose. `face_area` already sees it from the other side: +34,234 mm²
-        // of bulge on one face, −17,117 on the other.
+        // Both were REAL, and both were made by the repair rather than found in
+        // the file. Listing the two faces' edges settled it:
         //
-        // ⚠ So the label is right in both cases, and four things said about it
-        // over that day were not: that either pair overlapped by 0 mm² (a
-        // corner-polygon sampler), that a world-unit crossing tolerance would
-        // separate them (their ranges overlap), that each face tessellates the
-        // shared arc for itself (it is per edge), and that one edge is curved
-        // while its twin-in-place is not (they share the edge). Each was refuted
-        // by going one step further, which is why the paper weakness above is
-        // left as an observation rather than acted on.
+        //     FaceId(599)   1896:Arc (4470,0)-(4976,563)
+        //     FaceId(1254)  3837:직선(4976,563)-(4470,0)
+        //
+        // Two edges between one pair of positions, one bowing and one cutting
+        // the chord — `detach_face_groups` rebuilt the detached face with
+        // `add_face(&substituted, mat)`, which carries vertices and a material
+        // and no curve. Fixed in `repair.rs`; the file's own damage was three
+        // pairs of exactly duplicated faces, which the repair does clear.
+        //
+        // ⚠ So the label was right both times, and this is what the arguments
+        // against it were worth: "either pair overlaps by 0 mm²" (a
+        // corner-polygon sampler, which cannot see an arc), "a world-unit
+        // crossing tolerance separates them" (their ranges overlap), "each face
+        // tessellates the shared arc for itself" (it is per edge), "they share
+        // the arc so there is no chord twin" (they share ONE arc and the twin is
+        // on the other stretch). The paper weakness above — parallel normals do
+        // not establish overlap — stands as a reading of the code and has no
+        // example behind it.
         if na.dot(nb).abs() > 0.999 {
             return Some(ContactKind::CoplanarOverlap);
         }
