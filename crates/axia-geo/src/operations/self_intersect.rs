@@ -174,10 +174,28 @@ impl Mesh {
         // them. Two faces meeting along one arc edge therefore receive
         // bit-identical positions, and there is no per-face seam to fix.
         //
-        // So the hairline comes from somewhere else and is not yet named. It is
-        // 0.035% of a 55 mm² face, nothing in production reads this label, and a
-        // threshold fitted to two samples would be worse than the mislabel — so
-        // it stays measured and unexplained rather than papered over.
+        // Where a hairline CAN come from, read out of the four functions that
+        // make one — with the one link that is file data, not code, marked:
+        //
+        //   1. `add_vertex_force_new` makes two vertices at one position on
+        //      purpose (cleave.rs:262, repair.rs:108, create_solid.rs:927), so
+        //      two faces can meet at a corner without sharing a vertex id.
+        //   2. `add_edge` keys on the VERTEX PAIR (`vert_to_edge`), so the same
+        //      stretch of boundary between two such faces is TWO edges.
+        //   3. `loop_polygon(.., following_arcs())` asks each edge for its own
+        //      curve. One edge carrying an `Arc` and its twin-in-place carrying
+        //      none gives one face a bow and the other its chord.
+        //   4. `split_edge` propagates a curve to both children via `split_at`
+        //      and, when that fails, leaves BOTH curveless — symmetric either
+        //      way, so it is not the asymmetry; step 2 is.
+        //
+        // The lens between a bow and its chord is a hairline of exactly this
+        // scale. ⚠ Which side holds the `Arc` for the pair measured above is a
+        // property of that file, not of this code, and is not checked here — so
+        // the mechanism is written down and the label is still not trusted.
+        //
+        // Nothing in production reads this label, and a threshold fitted to two
+        // samples would be worse than the mislabel.
         //
         // Left as it is on purpose meanwhile: nothing in production reads
         // `ContactKind` (only tests and the `.xia` inspector).
