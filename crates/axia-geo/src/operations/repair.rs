@@ -126,8 +126,50 @@ impl Mesh {
                 mapping.push((fid, fid));
                 continue;
             }
+            // ⚠ A detached face came back straight.
+            //
+            // `add_face` takes vertices and a material and nothing else, so a
+            // boundary that followed an `Arc` was rebuilt as its chord while the
+            // face on the other side — not detached — kept the bow. The lens
+            // between them is a genuine double cover, and the repair was making
+            // them: measured 2026-08-19 on a user's file, a detach traded three
+            // exact-duplicate face pairs for two overlaps of 17,107 mm² and
+            // 0.019 mm², each between an `Arc` edge and a straight twin at the
+            // same two positions.
+            //
+            // The duplicated vertices sit at the ORIGINAL positions, so every
+            // curve applies unchanged — carry them across by endpoint pair.
+            // Surface and half-edge flags go the same way (ADR-089 A-χ for the
+            // surface, 메타-원칙 #15 for HARD).
+            let carried: Vec<Option<crate::curves::AnalyticCurve>> = (0..loop_verts.len())
+                .map(|i| {
+                    let a = loop_verts[i];
+                    let b = loop_verts[(i + 1) % loop_verts.len()];
+                    self.find_edge(a, b)
+                        .and_then(|e| self.edges.get(e))
+                        .and_then(|e| e.curve().cloned())
+                })
+                .collect();
+            let carried_surface = self.faces[fid].surface().cloned();
+
             self.remove_face(fid)?;
             let new_fid = self.add_face(&substituted, mat)?;
+
+            for (i, curve) in carried.into_iter().enumerate() {
+                let Some(c) = curve else { continue };
+                let a = substituted[i];
+                let b = substituted[(i + 1) % substituted.len()];
+                if let Some(eid) = self.find_edge(a, b) {
+                    if let Some(e) = self.edges.get_mut(eid) {
+                        if e.curve().is_none() {
+                            e.set_curve(Some(c));
+                        }
+                    }
+                }
+            }
+            if let Some(surf) = carried_surface {
+                self.set_face_surface(new_fid, Some(surf));
+            }
             mapping.push((fid, new_fid));
         }
 

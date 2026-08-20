@@ -127,6 +127,38 @@ impl Mesh {
         if na.length_squared() < 0.5 || nb.length_squared() < 0.5 {
             return None; // a face with no normal is a different problem
         }
+        // Parallel normals is the whole test here, and reading the code that
+        // looks too weak: it never asks whether the two faces cover any common
+        // ground. Two files' worth of pairs were held up against it on
+        // 2026-08-19 and BOTH turned out to be genuine overlaps, so the weakness
+        // is on paper and not yet demonstrated. What the investigation actually
+        // found is worth more than the complaint:
+        //
+        //   pair                    겹친 넓이 (정확 클립)
+        //   FaceId(601) × (1255)         0.019 mm²   of a 55 mm² face
+        //   FaceId(1254) × (599)    17,107.188 mm²   of a 672,417 mm² face
+        //
+        // Both were REAL, and both were made by the repair rather than found in
+        // the file. Listing the two faces' edges settled it:
+        //
+        //     FaceId(599)   1896:Arc (4470,0)-(4976,563)
+        //     FaceId(1254)  3837:직선(4976,563)-(4470,0)
+        //
+        // Two edges between one pair of positions, one bowing and one cutting
+        // the chord — `detach_face_groups` rebuilt the detached face with
+        // `add_face(&substituted, mat)`, which carries vertices and a material
+        // and no curve. Fixed in `repair.rs`; the file's own damage was three
+        // pairs of exactly duplicated faces, which the repair does clear.
+        //
+        // ⚠ So the label was right both times, and this is what the arguments
+        // against it were worth: "either pair overlaps by 0 mm²" (a
+        // corner-polygon sampler, which cannot see an arc), "a world-unit
+        // crossing tolerance separates them" (their ranges overlap), "each face
+        // tessellates the shared arc for itself" (it is per edge), "they share
+        // the arc so there is no chord twin" (they share ONE arc and the twin is
+        // on the other stretch). The paper weakness above — parallel normals do
+        // not establish overlap — stands as a reading of the code and has no
+        // example behind it.
         if na.dot(nb).abs() > 0.999 {
             return Some(ContactKind::CoplanarOverlap);
         }
@@ -321,6 +353,20 @@ impl Mesh {
 
     /// Tessellate a face's outer loop (with holes) into 3D triangles via earcut.
     /// `None` if the face is degenerate / untriangulable.
+    /// The triangles this detector actually tests, in f64.
+    ///
+    /// ⚠ Not `export_buffers`. That one is f32 for the GPU, and at x ≈ 4,500 mm
+    /// an f32 step is 0.27 µm — enough that a measurement taken off it and a
+    /// measurement the detector took can disagree about whether two faces meet.
+    /// One did, on 2026-08-19: a "2.4 µm" crossing read from the render buffer
+    /// turned out to be nine f32 steps of a value the detector never saw.
+    ///
+    /// Exposed so an investigation can ask the detector what it looked at rather
+    /// than re-deriving something near it.
+    pub fn face_tessellation(&self, fid: FaceId) -> Option<Vec<[DVec3; 3]>> {
+        self.tessellate_face_geom(fid).map(|g| g.tris)
+    }
+
     fn tessellate_face_geom(&self, fid: FaceId) -> Option<FaceGeom> {
         let face = self.faces.get(fid)?;
         if !face.is_active() {
@@ -445,8 +491,39 @@ const TRI_EPS: f64 = 1e-7;
 /// - **Non-coplanar, no shared vertex** → the plane-interval test
 ///   (`triangle_triangle_intersection`), which already handles this case.
 fn faces_geom_intersect(a: &[[DVec3; 3]], b: &[[DVec3; 3]], share: bool) -> bool {
-    for ta in a {
-        for tb in b {
+    // ⚠ This loop is n × m and it was the whole cost of the detector.
+    //
+    // Measured on a user's file (2026-08-19): 704 faces, 2,976 pairs surviving
+    // the caller's face-AABB reject, 197 µs EACH — 586 ms of a 589 ms scan. One
+    // of its faces has 169 corners, so a single pair is 167 × 167 = 27,889 calls
+    // to `tri_pair_intersect`, and that函수 opens with two cross products and two
+    // square roots before it can say no.
+    //
+    // A triangle-AABB reject costs six comparisons and is exact: two triangles
+    // whose boxes do not overlap cannot meet, and cannot overlap in 2D when
+    // coplanar either. The boxes are built once per FACE (n + m) rather than
+    // once per pair (n × m), which is why this is worth the two allocations.
+    let box_of = |t: &[DVec3; 3]| -> (DVec3, DVec3) {
+        (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]))
+    };
+    let ba: Vec<(DVec3, DVec3)> = a.iter().map(box_of).collect();
+    let bb: Vec<(DVec3, DVec3)> = b.iter().map(box_of).collect();
+
+    for (i, ta) in a.iter().enumerate() {
+        let (alo, ahi) = ba[i];
+        for (j, tb) in b.iter().enumerate() {
+            let (blo, bhi) = bb[j];
+            // Padded by the same AABB_EPS the caller's face-level reject uses,
+            // so nothing this side of that tolerance is dropped.
+            if ahi.x < blo.x - AABB_EPS
+                || bhi.x < alo.x - AABB_EPS
+                || ahi.y < blo.y - AABB_EPS
+                || bhi.y < alo.y - AABB_EPS
+                || ahi.z < blo.z - AABB_EPS
+                || bhi.z < alo.z - AABB_EPS
+            {
+                continue;
+            }
             if tri_pair_intersect(ta, tb, share) {
                 return true;
             }

@@ -27,6 +27,12 @@
 //!   draw_freely_matrix (test)       |n_a · n_b| > 0.999
 //! ```
 //!
+//! ⚠ Two of those five are gone (2026-08-19). `solid_overlap_pairs` and its
+//! coplanar sibling were computed by `guard_imprint` and then discarded — the
+//! rollback that read them went on 2026-08-06 and the measurements were left
+//! behind, one of them a full `detect_self_intersections` on every draw. Three
+//! classifications remain: the first two above, and this file.
+//!
 //! Before a rollback gate is tightened on top of that (stage 4), the direction
 //! has to be settled, and settling it means measuring what the instruments
 //! actually say about each of the three — not what their names suggest. This

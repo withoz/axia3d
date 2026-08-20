@@ -17,6 +17,55 @@
 //! whatever makes a duplicate face is invisible to the scan that is supposed to
 //! catch it.
 //!
+//! ── What is left, sorted (2026-08-19) ───────────────────────────────────
+//!
+//! With the push arms reconciling (see `a_move_only_push_leaves_its_neighbours_
+//! unstacked`) the wide run reports fifteen, of which eleven are stacked. Two
+//! questions asked of each — what made it, and would an unscoped re-derive on
+//! that plane clear it — sort them:
+//!
+//! ```text
+//!   세션  연산                         만든 것            재유도가
+//!     3   pushIn   → SolidCreated Box   밀어넣기          못 고친다
+//!    12   rect                          그리기            못 고친다
+//!    17   ellipse                       그리기            고친다  ←
+//!    18   pushIn   → SolidCreated Sweep 밀어넣기          못 고친다
+//!    19   extrude  → MoveOnly           밀어넣기          못 고친다
+//!    20   rect                          그리기            못 고친다
+//!    25   rect                          그리기            못 고친다
+//!    26   box      (mesh.create_box)    하네스 직접 호출  고친다  ←
+//!    27   rect                          그리기            못 고친다
+//!    28   pushIn   → CreateFace         밀어넣기          못 고친다
+//!    29   circleCurve                   그리기            고친다  ←
+//! ```
+//!
+//! ⚠ "A DRAW never leaves it, because a draw runs the coplanar re-derive
+//! afterwards" — the sentence this file opened with — is FALSE. Six of the
+//! eleven are draws. The draw path does re-derive, but SCOPED to the drawn
+//! faces (`seed = Some(face_ids)`), and for sessions 17 and 29 the same
+//! re-derive with `seed = None` clears the plane outright. The scope is the
+//! miss, not the absence.
+//!
+//! Session 26 is the harness reaching past `Scene` into `mesh.create_box`, so
+//! nothing could have reconciled it; that one is an artifact, not a defect.
+//!
+//! Which leaves two piles of work, and they are different work:
+//!
+//!   3 sessions  the re-derive would clear it and nothing ran it   (17, 26, 29)
+//!   8 sessions  the re-derive runs and changes NOTHING — face count
+//!               identical before and after, so it either declined (the scoped
+//!               rebuild carries its own rollback) or found nothing to do
+//!
+//! The eight were asked one more question — did the re-derive decline (it
+//! carries its own rollback) or find nothing to do — and all eight answered
+//! FOUND NOTHING, guarded and unguarded alike. `what_the_untouchable_pairs_are_
+//! made_of` then shows they are not one family but four: a curved face against a
+//! planar one (protected by design), a face of area exactly ZERO still active
+//! and still stacked, an exact duplicate, and a sliver.
+//!
+//! `whose_refusal_leaves_the_stacking` prints both columns and the face counts;
+//! `which_operation_first_stacks` names the operation.
+//!
 //! This file works that family. Session 18 breaks earliest — operation 24 — and
 //! greedy shrinking takes its twenty-three operations down to four:
 //!
@@ -126,7 +175,8 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
     let c = DVec3::new(x, y, z);
     let w = r.size();
     let live: Vec<FaceId> = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
-    match r.below(10) {
+    let kind = r.below(10);
+    let desc = match kind {
         0 => {
             s.execute(Command::DrawRectAsShape {
                 center: c, normal: DVec3::Z, up: DVec3::X, width: w, height: w * 0.75,
@@ -200,7 +250,8 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             );
             format!("punch({x},{y},{z})")
         }
-    }
+    };
+    desc
 }
 
 /// Every pair of live faces that cover the same ground, as the verifier says it.
@@ -634,9 +685,10 @@ fn what_the_inward_clamp_sees() {
 // ── Would the re-derive have cleared it? ─────────────────────────────────────
 //
 // The producer is `create_solid` building a cap on a plane that already holds
-// one. A DRAW on that plane would not leave the pair, because a draw runs the
-// coplanar re-derive afterwards and that reconciles everything sharing a plane.
-// `create_solid` does not.
+// one, and `create_solid` did not re-derive at all. (⚠ The first version of this
+// paragraph went on to say a DRAW would not leave the pair. It does — see the
+// table at the top of the file — because the draw path's re-derive is scoped to
+// what was drawn.)
 //
 // Before changing the push/pull path — which carries 245+ regression tests —
 // ask whether the re-derive would even have helped. Engine changes: none. If it
@@ -775,15 +827,498 @@ fn which_arm_the_break_takes() {
 ///     landed on. The idea is sound; the placement is not.
 ///   - Whatever the re-derive leaves behind destabilises the NEXT push. That is
 ///     the thing to understand before trying again — not the stacking.
+/// ── What fixed it, written after ────────────────────────────────────────
+///
+/// Two arms of `exec_create_solid` reconcile the plane they landed on now: the
+/// Q3 fallback and the ADR-196 `is_move_only` dispatch. Neither did before.
+///
+/// ⚠ Four explanations were measured and are wrong. Written down so no one
+/// spends the runs again:
+///
+///   - position relative to `promote_arc_side_faces_to_cylinder`: moving the
+///     call back above the promote changes nothing
+///   - the ownership adopt: dropping `adopt_retiled_faces` changes nothing
+///     (it is kept because a re-derive without it loses face ownership, which
+///     is a different defect, not this one)
+///   - the rollback guard: needed, but for session 3's op 14, not session 10
+///   - "MoveOnly creates no cap to stack": it does. Sessions 4 and 19 of the
+///     50-op run are MoveOnly and they stack. That sentence was inferred and
+///     sat in a commit message for an hour before a measurement removed it.
+///
+/// What broke the first attempt was the SECOND call site: reconciling from the
+/// `SolidCreated` arm as well makes session 10 fail at op 15 with NaN normals.
+///
+/// And what made the first MoveOnly wiring do nothing was the GATE. Asking
+/// "is a face this op created on a stacked pair" is right for the fallback arm
+/// and wrong twice for MoveOnly: it creates nothing, and the pair it leaves is
+/// often two of the pushed face's neighbours. The gate is now the damage —
+/// which planes carry a stacked pair before, which after — and session 4 goes
+/// from seven pairs to none.
+///
+/// So this test now reads the other way: the reduced case must NOT stack.
 #[test]
-fn the_stacking_is_still_here() {
+fn the_reduced_case_no_longer_stacks() {
     let s = stacked_scene();
     let n = stacked_pairs(&s);
+    let inv = s.mesh.verify_face_invariants();
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
     println!("
-  다섯 연산 — 겹침 {n}
-");
-    assert!(
-        n > 0,
-        "the reduced case still stacks; if it stops, say what fixed it and          rewrite this around the new reading"
+  다섯 연산 — 면 {faces}, 겹침 {n}, 위반 {}
+", inv.violations.len());
+    assert_eq!(
+        n, 0,
+        "a wall pushed inward beside a coplanar cap must not leave a stacked          pair — `exec_create_solid`'s Q3 fallback reconciles the plane after          the arc promote"
     );
+    assert!(
+        inv.is_valid(),
+        "and clearing it must not cost soundness: {:?}",
+        inv.violations
+    );
+}
+
+// ── What the re-derive leaves behind ─────────────────────────────────────────
+//
+// The reverted attempt made fuzz session 10 produce NaN normals at operation 15
+// — a session that had been sound, and one where the NaN appears TWO OPERATIONS
+// AFTER the re-derive that caused it.
+//
+// It was the second call site. Reconciling from the Q3 fallback arm alone leaves
+// session 10 clean; adding the same call to the `SolidCreated` arm brings the NaN
+// back. This gate says so by name.
+
+fn nonfinite_faces(s: &Scene) -> usize {
+    s.mesh.faces.iter().filter(|(_, f)| f.is_active() && !f.normal().is_finite()).count()
+}
+
+/// Session 10 stays free of NaN normals.
+///
+/// This is the regression the reverted attempt died on, kept as a gate. The
+/// harness's own gate would catch it too — `verify_face_invariants` reports a
+/// non-finite normal — but it reports the FIRST violation of any kind, and this
+/// one is worth naming: it is what the placement fixes.
+///
+/// Mutation-checked: also call `reconcile_new_solid_with_coplanar_neighbours`
+/// from `exec_create_solid`'s `SolidCreated` arm and this fails at op 15 with
+/// `FaceId(22)` and `FaceId(66)` carrying NaN normals.
+#[test]
+fn session_ten_leaves_no_face_without_a_normal() {
+    let mut r = Lcg(0x5EED_0000 + 10);
+    let mut s = prod();
+    for i in 0..20 {
+        let desc = step(&mut s, &mut r);
+        let bad = nonfinite_faces(&s);
+        assert_eq!(
+            bad, 0,
+            "op {i} ({desc}) left {bad} face(s) whose normal is not a number"
+        );
+    }
+    let live = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("
+  세션 10, 20 연산 — 면 {live}, NaN 면 0
+");
+}
+
+// ── What is left, and whose refusal it is ────────────────────────────────────
+//
+// The reconcile keeps its answer only when the answer is better. So a session
+// that still stacks after the fix is one of two things, and they want different
+// work:
+//
+//   - the re-derive does not clear that plane   -> the fix is elsewhere
+//   - it clears it and the guard drops it       -> the guard is too blunt
+//
+// This asks which, for whatever the 50-op wide run reports.
+
+/// Replay a session to the operation before it breaks, then ask both questions.
+fn what_a_rederive_would_do(session: usize, ops: usize) -> Vec<(String, usize, usize, usize, usize)> {
+    let mut r = Lcg(0x5EED_0000 + session as u64);
+    let mut s = prod();
+    for _ in 0..ops {
+        let _ = step(&mut s, &mut r);
+    }
+    // Every plane carrying a stacked pair, deduplicated.
+    let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+    for eid in s.mesh.collect_non_manifold_edges() {
+        let Some((a, _)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+        let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else { continue };
+        if n.length() < 0.5 {
+            continue;
+        }
+        let Some(edge) = s.mesh.edges.get(eid) else { continue };
+        let Ok(p) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+        if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
+            continue;
+        }
+        planes.push((p, n));
+    }
+
+    let stacked = |m: &axia_geo::Mesh| -> usize {
+        m.collect_non_manifold_edges()
+            .into_iter()
+            .filter(|&e| m.edge_stacked_face_pair(e).is_some())
+            .count()
+    };
+
+    let mut rows = Vec::new();
+    for (origin, normal) in planes {
+        let before = stacked(&s.mesh);
+        let viol_before = s.mesh.verify_face_invariants().violations.len();
+        let faces_before = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+        let mut trial = s.mesh.clone();
+        let ok = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+            &mut trial, origin, normal, 1e-3, true, None,
+        )
+        .is_ok();
+        let after = if ok { stacked(&trial) } else { before };
+        let viol_after = if ok { trial.verify_face_invariants().violations.len() } else { viol_before };
+        // ⚠ Did it touch anything? The scoped re-derive carries its OWN rollback
+        // (curved face lost / more violations / more self-intersections), so
+        // "no change" is two different answers: it declined, or it ran and the
+        // plane was already what it would have built.
+        let faces_after = trial.faces.iter().filter(|(_, f)| f.is_active()).count();
+        rows.push((
+            format!(
+                "n={:?} o={:?} 면 {faces_before}->{faces_after}",
+                normal.round(),
+                origin.round()
+            ),
+            before,
+            after,
+            viol_before,
+            viol_after,
+        ));
+    }
+    rows
+}
+
+/// For a session the wide run still reports, whose refusal is it.
+#[test]
+#[ignore = "a description — run by hand, after a wide run names a session"]
+fn whose_refusal_leaves_the_stacking() {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
+        let rows = what_a_rederive_would_do(session, ops);
+        println!("\n  세션 {session}, {ops} 연산 — 겹친 평면 {}\n", rows.len());
+        for (what, b, a, vb, va) in rows {
+            let verdict = if a < b && va <= vb {
+                "재유도가 고친다 (가드가 통과시킴)"
+            } else if a < b {
+                "겹침은 줄지만 위반이 는다 (가드가 거절)"
+            } else {
+                "재유도가 못 고친다"
+            };
+            println!("    {what:<44} 겹침 {b}->{a}  위반 {vb}->{va}   {verdict}");
+        }
+    }
+    println!();
+}
+
+/// Which operation introduces the stacking, and what kind of operation it is.
+///
+/// `whose_refusal_leaves_the_stacking` splits what is left in two. Session 4 is
+/// the half a re-derive WOULD clear (7 stacked pairs to 0) — so the reconcile
+/// never ran there, and the question is which operation made it.
+#[test]
+#[ignore = "a description — run by hand"]
+fn which_operation_first_stacks() {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        let mut prev = 0usize;
+        println!("\n  세션 {session} — 겹침이 처음 생기는 연산\n");
+        for i in 0..ops {
+            let desc = step(&mut s, &mut r);
+            let n = stacked_pairs(&s);
+            if n > prev {
+                println!("    op {i:>2}  {desc:<34}  겹침 {prev} -> {n}   <-");
+                prev = n;
+            } else if n != prev {
+                println!("    op {i:>2}  {desc:<34}  겹침 {prev} -> {n}");
+                prev = n;
+            }
+        }
+        println!("    끝: 겹침 {prev}");
+    }
+    println!();
+}
+
+/// Which arm of `exec_create_solid` the breaking push takes.
+///
+/// The reconcile is wired to the Q3 fallback arm, which answers `PushPullDone`.
+/// A push that answers `SolidCreated` never reaches it.
+#[test]
+#[ignore = "a description — run by hand"]
+fn which_arm_the_wide_run_breaks_take() {
+    for (session, ops) in [(3usize, 46usize), (12, 30), (17, 41), (18, 25), (19, 27), (20, 38), (25, 32), (26, 33), (27, 38), (28, 29), (29, 47)] {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        let mut answer = String::from("(never ran)");
+        for i in 0..ops {
+            let z = [0.0, 100.0, 200.0][r.below(3)];
+            let (x, y) = (r.coord(), r.coord());
+            let c = DVec3::new(x, y, z);
+            let w = r.size();
+            let live: Vec<FaceId> =
+                s.mesh.faces.iter().filter(|(_, f)| f.is_active()).map(|(f, _)| f).collect();
+            let kind = r.below(10);
+            if i + 1 == ops && (kind == 6 || kind == 7) && !live.is_empty() {
+                let f = live[r.below(live.len())];
+                let d = if kind == 6 {
+                    50.0 + r.below(4) as f64 * 50.0
+                } else {
+                    -(50.0 + r.below(3) as f64 * 50.0)
+                };
+                let move_only = axia_geo::operations::push_pull::is_move_only(&s.mesh, f);
+                let res = s.execute(Command::CreateSolid {
+                    face_id: f,
+                    mode: CreateSolidMode::Extrude { distance: d },
+                });
+                answer = format!("{res:?}  is_move_only={move_only}");
+                break;
+            }
+            // Not the operation under study — replay it the ordinary way. The
+            // draws above already took their numbers, so re-derive the same
+            // call from what was drawn.
+            replay_kind(&mut s, &mut r, kind, c, w, x, y, z, &live);
+        }
+        println!("\n  세션 {session} op {} — {answer}", ops - 1);
+    }
+    println!();
+}
+
+/// The body of `step` for one kind, with the random draws already made.
+#[allow(clippy::too_many_arguments)]
+fn replay_kind(
+    s: &mut Scene, r: &mut Lcg, kind: usize, c: DVec3, w: f64,
+    x: f64, y: f64, z: f64, live: &[FaceId],
+) {
+    match kind {
+        0 => { s.execute(Command::DrawRectAsShape { center: c, normal: DVec3::Z, up: DVec3::X, width: w, height: w * 0.75 }); }
+        1 => { s.execute(Command::DrawCircleAsShape { center: c, normal: DVec3::Z, radius: w * 0.5, segments: 24 }); }
+        2 => { s.execute(Command::DrawCircleAsCurve { center: c, normal: DVec3::Z, radius: w * 0.5 }); }
+        3 => { s.execute(Command::DrawEllipseAsCurve { center: c, ref_dir: DVec3::X, normal: DVec3::Z, radius_x: w * 0.5, radius_y: w * 0.3 }); }
+        4 => { let n = 3 + r.below(5) as u32; s.execute(Command::DrawPolygonAsShape { center: c, normal: DVec3::Z, radius: w * 0.5, sides: n }); }
+        5 => { s.execute(Command::DrawLine { start: DVec3::new(x - 150.0, y, z), end: DVec3::new(x + 150.0, y, z), surface_normal: Some(DVec3::Z) }); }
+        6 => {
+            if live.is_empty() { return; }
+            let f = live[r.below(live.len())];
+            let d = 50.0 + r.below(4) as f64 * 50.0;
+            s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: d } });
+        }
+        7 => {
+            if live.is_empty() { return; }
+            let f = live[r.below(live.len())];
+            let d = -(50.0 + r.below(3) as f64 * 50.0);
+            s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: d } });
+        }
+        8 => { let _ = s.mesh.create_box(c + DVec3::new(0.0, 0.0, 60.0), w, 120.0, w, FORM_MATERIAL); }
+        _ => { let _ = s.punch_rect_hole(DVec3::new(x - 30.0, y - 30.0, z), DVec3::new(x + 30.0, y + 30.0, z), DVec3::Z); }
+    }
+}
+
+/// Session 4 pushes a face into its neighbours and leaves nothing stacked.
+///
+/// The MoveOnly half of the family, pinned. Operation 40 is `pushIn` on a face
+/// with `is_move_only = true`: it creates no geometry, it slides vertices, and
+/// before the fix it left SEVEN stacked pairs — between faces it had not
+/// touched, which is why a gate on created-or-moved faces never fired.
+///
+/// Mutation-checked twice: unwire the reconcile from the `is_move_only`
+/// dispatch in `exec_create_solid` and this reports 7; put it back but gate on
+/// the pushed face instead of on the damage, and it still reports 7.
+#[test]
+fn a_move_only_push_leaves_its_neighbours_unstacked() {
+    let mut r = Lcg(0x5EED_0000 + 4);
+    let mut s = prod();
+    for _ in 0..41 {
+        let _ = step(&mut s, &mut r);
+    }
+    let n = stacked_pairs(&s);
+    let faces = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+    println!("\n  세션 4, 41 연산 — 면 {faces}, 겹침 {n}\n");
+    assert_eq!(n, 0, "a MoveOnly push must not leave its neighbours stacked");
+}
+
+
+/// Did the re-derive decline, or did it run and find nothing?
+///
+/// Eight of the eleven answer a re-derive with an identical face count. Two very
+/// different things look the same from outside:
+///
+///   - `rebuild_coplanar_faces_analytic_scoped` carries its OWN rollback (a
+///     curved face lost, more invariant violations, or more self-intersections
+///     when the plane holds a planar solid) and restores its backup
+///   - `rebuild_inner` ran and produced the same tiling that was already there
+///
+/// `rebuild_inner` is the unguarded half, so calling it directly separates them:
+/// if the guarded call changes nothing and the raw one changes something, the
+/// rollback fired.
+#[test]
+#[ignore = "a description — run by hand"]
+fn whether_the_rederive_declined_or_found_nothing() {
+    let cases: [(usize, usize); 8] =
+        [(3, 46), (12, 30), (18, 25), (19, 27), (20, 38), (25, 32), (27, 38), (28, 29)];
+    println!("\n  재유도가 거절한 것인가, 할 일이 없던 것인가\n");
+    for (session, ops) in cases {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        for _ in 0..ops {
+            let _ = step(&mut s, &mut r);
+        }
+        let planes = stacked_planes_of(&s);
+        for (origin, normal) in planes {
+            let faces0 = s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let stacked0 = stacked_pairs(&s);
+            let viol0 = s.mesh.verify_face_invariants().violations.len();
+
+            let mut guarded = s.mesh.clone();
+            let _ = axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_scoped(
+                &mut guarded, origin, normal, 1e-3, true, None,
+            );
+            let g_faces = guarded.faces.iter().filter(|(_, f)| f.is_active()).count();
+
+            let mut raw = s.mesh.clone();
+            let raw_ok =
+                axia_geo::operations::face_rederive::rebuild_coplanar_faces_analytic_with_overlap(
+                    &mut raw, origin, normal, 1e-3, true,
+                )
+                .is_ok();
+            let r_faces = raw.faces.iter().filter(|(_, f)| f.is_active()).count();
+            let r_stacked = raw
+                .collect_non_manifold_edges()
+                .into_iter()
+                .filter(|&e| raw.edge_stacked_face_pair(e).is_some())
+                .count();
+            let r_viol = raw.verify_face_invariants().violations.len();
+
+            let verdict = if g_faces == faces0 && r_faces != faces0 {
+                "가드가 되돌렸다"
+            } else if g_faces == faces0 && r_faces == faces0 {
+                "할 일을 못 찾았다"
+            } else {
+                "가드도 통과했다"
+            };
+            println!(
+                "    세션 {session:>2}  n={:?}  면 {faces0} (가드 {g_faces}, 맨 {r_faces}{})  \
+                 겹침 {stacked0}->{r_stacked}  위반 {viol0}->{r_viol}   {verdict}",
+                normal.round(),
+                if raw_ok { "" } else { " ERR" }
+            );
+        }
+    }
+    println!();
+}
+
+/// Every plane carrying a stacked pair, deduplicated.
+fn stacked_planes_of(s: &Scene) -> Vec<(DVec3, DVec3)> {
+    let mut planes: Vec<(DVec3, DVec3)> = Vec::new();
+    for eid in s.mesh.collect_non_manifold_edges() {
+        let Some((a, _)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+        let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else { continue };
+        if n.length() < 0.5 {
+            continue;
+        }
+        let Some(edge) = s.mesh.edges.get(eid) else { continue };
+        let Ok(p) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+        if planes.iter().any(|(q, m)| m.dot(n).abs() > 0.999 && (p - *q).dot(n).abs() < 1e-3) {
+            continue;
+        }
+        planes.push((p, n));
+    }
+    planes
+}
+
+
+/// What the two faces actually are, for the eight the re-derive cannot touch.
+///
+/// `edge_stacked_face_pair` reports a pair when three or more faces meet at an
+/// edge and two of them have parallel normals AND occupy the same side of it —
+/// so they really do overlap near that edge. Yet a full unscoped re-derive on
+/// their plane changes nothing at all.
+///
+/// The re-derive protects a face from re-tiling when any vertex of its outer
+/// loop is off the plane, or when it carries a curved surface (`rebuild_inner`,
+/// Phase 0). This asks whether that is what is happening.
+///
+/// ── What it answers ─────────────────────────────────────────────────────
+///
+/// Not one family. Four, and they want different work:
+///
+/// ```text
+///   세션  A                                  B                    무엇
+///     3   곡면 넓이 37699                     평면 넓이 15000       곡면 x 평면
+///    12   평면 넓이 19256                     평면 넓이 0           넓이 0
+///    18   평면 넓이 1001                      평면 넓이 1001        똑같은 둘
+///    19   평면 넓이 7717                      평면 넓이 0           넓이 0
+///    20   삼각형 넓이 52                      평면 넓이 7854        가시
+///    25   평면 넓이 9976                      평면 넓이 43401       가시
+/// ```
+///
+///   - **곡면 x 평면** (session 3): `rebuild_inner`'s Phase 0 protects any face
+///     carrying a curved surface, so the re-derive is designed not to touch
+///     these. Not a miss — a decision, met head on.
+///   - **넓이 0** (sessions 12, 19): a face whose area is exactly zero is still
+///     active and still stacked on a real one. LOCKED #26 says a 0-area face is
+///     invalid in the form layer and gets removed automatically; here one
+///     survived. That is the most clearly actionable of the four.
+///   - **똑같은 둘** (session 18): two 4-vertex faces, area 1001 each. A true
+///     duplicate.
+///   - **가시** (sessions 20, 25): a sliver — three vertices, area 52 — resting
+///     on a face 150 times its size.
+///
+/// Every one of them is invisible to `detect_self_intersections`, which is the
+/// thread running through this whole area: coincident is not crossing.
+#[test]
+#[ignore = "a description — run by hand"]
+fn what_the_untouchable_pairs_are_made_of() {
+    let cases: [(usize, usize); 8] =
+        [(3, 46), (12, 30), (18, 25), (19, 27), (20, 38), (25, 32), (27, 38), (28, 29)];
+    println!("\n  재유도가 못 건드리는 쌍의 정체\n");
+    for (session, ops) in cases {
+        let mut r = Lcg(0x5EED_0000 + session as u64);
+        let mut s = prod();
+        for _ in 0..ops {
+            let _ = step(&mut s, &mut r);
+        }
+        let mut seen: Vec<(FaceId, FaceId)> = Vec::new();
+        for eid in s.mesh.collect_non_manifold_edges() {
+            let Some((a, b)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
+            if seen.contains(&(a, b)) {
+                continue;
+            }
+            seen.push((a, b));
+            let Some(edge) = s.mesh.edges.get(eid) else { continue };
+            let Ok(origin) = s.mesh.vertex_pos(edge.v_small()) else { continue };
+            let Some(n) = s.mesh.faces.get(a).map(|f| f.normal().normalize_or_zero()) else {
+                continue;
+            };
+
+            let describe = |fid: FaceId| -> String {
+                let Some(f) = s.mesh.faces.get(fid) else { return "(gone)".into() };
+                let verts = s.mesh.collect_loop_verts(f.outer().start).unwrap_or_default();
+                let off = verts
+                    .iter()
+                    .filter(|&&v| {
+                        s.mesh
+                            .verts
+                            .get(v)
+                            .map_or(false, |vv| (vv.pos() - origin).dot(n).abs() >= 1e-3)
+                    })
+                    .count();
+                let curved = !matches!(
+                    f.surface(),
+                    None | Some(axia_geo::surfaces::AnalyticSurface::Plane { .. })
+                );
+                format!(
+                    "{fid:?} 정점 {} (평면 밖 {off}) 넓이 {:.0} 곡면 {}",
+                    verts.len(),
+                    s.mesh.face_area(fid),
+                    if curved { "예" } else { "아니오" }
+                )
+            };
+            println!("    세션 {session:>2}  {eid:?}");
+            println!("        A  {}", describe(a));
+            println!("        B  {}", describe(b));
+        }
+    }
+    println!();
 }
