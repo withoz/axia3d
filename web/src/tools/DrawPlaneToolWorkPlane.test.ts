@@ -21,7 +21,23 @@
  * does not auto-unlock on a face hit — that is what "I said to draw HERE" means.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// STATIC, and it used to be four `await import(...)` calls inside the tests.
+//
+// `ToolManagerRefactored` is a 229 kB module that pulls in Three.js, so the
+// FIRST of those four paid for transpiling it — inside a test's 5 s budget.
+// Measured 2026-08-21 in a full 185-file run, where the machine is busy:
+//
+//     × offset …  5011 ms   Test timed out in 5000ms
+//     ✓ tilt   …   664 ms   same import, now cached
+//
+// Nothing was wrong with the code under test; the first test was being charged
+// for a module load. Hoisting it pays that at file collection, which is not on
+// any test's clock, and the other three stop re-asking for it.
+// `ToolManagerRefactored.test.ts` has always imported it this way, and the
+// module has no top-level side effects, so there was never a reason for the
+// dynamic form here.
 import * as THREE from 'three';
+import { ToolManager } from './ToolManagerRefactored';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DrawPlaneTool } from './DrawPlaneTool';
@@ -190,8 +206,7 @@ describe('moving a plane that is already set', () => {
     return { mgr, setVisual };
   }
 
-  it('offset moves the origin along the normal and leaves the direction alone', async () => {
-    const { ToolManager } = await import('./ToolManagerRefactored');
+  it('offset moves the origin along the normal and leaves the direction alone', () => {
     const { mgr } = managerWithSketch(
       new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
     );
@@ -201,8 +216,7 @@ describe('moving a plane that is already set', () => {
     expect(mgr._sketch.normal.z).toBeCloseTo(1, 9);
   });
 
-  it('tilt turns the plane about an axis IN it, so the origin stays put', async () => {
-    const { ToolManager } = await import('./ToolManagerRefactored');
+  it('tilt turns the plane about an axis IN it, so the origin stays put', () => {
     const origin = new THREE.Vector3(10, 20, 30);
     const { mgr } = managerWithSketch(
       new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), origin,
@@ -220,8 +234,7 @@ describe('moving a plane that is already set', () => {
     expect(Math.abs(up.dot(right))).toBeLessThan(1e-9);
   });
 
-  it('cancelling the prompt changes nothing', async () => {
-    const { ToolManager } = await import('./ToolManagerRefactored');
+  it('cancelling the prompt changes nothing', () => {
     const { mgr, setVisual } = managerWithSketch(
       new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
     );
@@ -231,8 +244,7 @@ describe('moving a plane that is already set', () => {
     expect(setVisual).not.toHaveBeenCalled();
   });
 
-  it('a non-number is refused rather than making the plane NaN', async () => {
-    const { ToolManager } = await import('./ToolManagerRefactored');
+  it('a non-number is refused rather than making the plane NaN', () => {
     const { mgr } = managerWithSketch(
       new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
     );
