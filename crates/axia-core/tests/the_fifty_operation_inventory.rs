@@ -1235,6 +1235,82 @@ fn stacked_planes_of(s: &Scene) -> Vec<(DVec3, DVec3)> {
 /// so they really do overlap near that edge. Yet a full unscoped re-derive on
 /// their plane changes nothing at all.
 ///
+/// WHEN does session 12's zero-area face appear, and what was it before?
+///
+/// ── ANSWERED 2026-08-21 ─────────────────────────────────────────────────
+///
+/// `Mesh::split_face`, whose guard counted STEPS along the boundary:
+///
+/// ```rust
+/// ensure!(dist_fwd >= 2 && dist_bwd >= 2, "…adjacent or equal…");
+/// ```
+///
+/// Three vertices apart is plenty — unless they are COLLINEAR, and then that
+/// side of the split is a ring of zero width. op 29 is a plain rect draw, and
+/// each of its four sides goes through `split_face_by_line`:
+///
+/// ```text
+///     FaceId(86)   3 steps apart   arc areas 0.000000 / 286.97
+///     FaceId(141)  4 steps apart   arc areas 0.000000 / 181.93  ← left FaceId(142)
+/// ```
+///
+/// Fixed by measuring the two arcs' AREA. Pinned in
+/// `axia-geo/tests/a_split_that_leaves_no_area_is_refused.rs`.
+///
+/// ⚠ Five diagnoses missed it, and all five made the same mistake: they traced
+/// `add_face_with_holes`, asking who CREATED the face, and the honest answer
+/// each time was "nobody". **A split does not go through that door** — it does
+/// its own DCEL surgery (`faces.insert` + half-edge splicing). What found it
+/// was tracing the FaceId itself at `SlotStorage::insert`, in a DEBUG build
+/// (release inlines the frames away).
+///
+/// This test stays because it is what narrowed the op down to one.
+///
+/// Every earlier question asked who CREATED it. Measured 2026-08-21: nobody —
+/// no ring with area below 1e-3, and no ring of exactly {86,149,262,263}, ever
+/// reached `add_face_with_holes`. So it was rewired after birth. This walks the
+/// session one operation at a time and prints the face the moment it goes flat.
+#[test]
+#[ignore = "a description — run by hand"]
+fn when_session_twelve_goes_flat() {
+    let mut r = Lcg(0x5EED_0000 + 12);
+    let mut s = prod();
+    let mut prev: Vec<(FaceId, usize, f64)> = Vec::new();
+    for i in 0..30 {
+        let desc = step(&mut s, &mut r);
+        let now: Vec<(FaceId, usize, f64)> = s
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, f)| {
+                let n = s
+                    .mesh
+                    .collect_loop_verts(f.outer().start)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                (id, n, s.mesh.face_area(id))
+            })
+            .collect();
+        let flat: Vec<&(FaceId, usize, f64)> = now.iter().filter(|(_, _, a)| *a == 0.0).collect();
+        if !flat.is_empty() {
+            println!("  op {i:>2}  {desc}");
+            for (id, n, _) in &flat {
+                let was = prev.iter().find(|(p, _, _)| p == id);
+                match was {
+                    Some((_, pn, pa)) => println!(
+                        "      {id:?} 넓이 0, 정점 {n}   ← 직전: 정점 {pn}, 넓이 {pa:.4}"
+                    ),
+                    None => println!("      {id:?} 넓이 0, 정점 {n}   ← 직전에 없던 면"),
+                }
+            }
+            return;
+        }
+        prev = now;
+    }
+    println!("  (30 연산 안에 넓이 0 면 없음)");
+}
+
 /// The re-derive protects a face from re-tiling when any vertex of its outer
 /// loop is off the plane, or when it carries a curved surface (`rebuild_inner`,
 /// Phase 0). This asks whether that is what is happening.
@@ -1338,6 +1414,29 @@ fn what_the_untouchable_pairs_are_made_of() {
             .filter(|&id| s.mesh.face_area(id) == 0.0)
             .collect();
         println!("    세션 {session:>2}  넓이 0 면 {zero:?}");
+        for &z in &zero {
+            if let Some(f) = s.mesh.faces.get(z) {
+                if let Ok(vs) = s.mesh.collect_loop_verts(f.outer().start) {
+                    println!("      {z:?} 정점:");
+                    // who else is on each of its boundary edges
+                    if let Ok(hes) = s.mesh.collect_loop_hes(f.outer().start) {
+                        for he in hes {
+                            if let Some(h) = s.mesh.hes.get(he) {
+                                let eid = h.edge();
+                                let (fs, _) = s.mesh.get_faces_sharing_edge(eid);
+                                let ends = s.mesh.edges.get(eid).map(|e| (e.v_small(), e.v_large()));
+                                println!("        {eid:?} {ends:?} 공유면 {fs:?}");
+                            }
+                        }
+                    }
+                    for v in &vs {
+                        if let Ok(pp) = s.mesh.vertex_pos(*v) {
+                            println!("        {v:?}  ({:.4}, {:.4}, {:.4})", pp.x, pp.y, pp.z);
+                        }
+                    }
+                }
+            }
+        }
         let mut seen: Vec<(FaceId, FaceId)> = Vec::new();
         for eid in s.mesh.collect_non_manifold_edges() {
             let Some((a, b)) = s.mesh.edge_stacked_face_pair(eid) else { continue };
