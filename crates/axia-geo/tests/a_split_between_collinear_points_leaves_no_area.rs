@@ -30,11 +30,33 @@
 //! LOAD-BEARING: something downstream needs that division to have happened,
 //! and refusing it strands an overlap instead.
 //!
+//! ⚠⚠⚠ AND SO DOES EVERY OTHER WAY OF NOT EMITTING IT. Three were built and
+//! measured, and all three moved session 12's failure from op 29 to op 15:
+//!
+//!   1. refuse the split (`Err`) — `exec_draw_line` does `continue`, so the
+//!      whole segment is dropped;
+//!   2. add the edge `v1↔v2` but emit no second face;
+//!   3. make no cut at all and return an empty `new_faces`.
+//!
+//! Bypassing the one place it fires puts the failure back at op 29 every time.
+//! So what the pipeline depends on is not the edge, and not the flat face —
+//! it is **the division having happened**. Here is the case, in full:
+//!
+//! ```text
+//!   cut    VertId(152)(27.872, -130, 200) → VertId(147)(67.500, -130, 200)
+//!   arc A  [152, 148, 147]                   all at y = -130 — no width
+//!   arc B  [147, 79, 28, 29, 30, 31, 152]    the real piece, area 280.7
+//! ```
+//!
+//! `VertId(148)` sits on the flat arc, 0.233 mm from one end of the cut. Any
+//! answer has to say where that vertex goes, and none of the three above did —
+//! which is why they all failed the same way.
+//!
 //! The engine is therefore UNCHANGED. What is pinned below is the behaviour as
 //! it stands, with the collinear case named so the next attempt starts from
-//! measurement rather than from the same wrong guess. The real fix has to
-//! divide the face WITHOUT emitting the flat side — which means changing what
-//! `split_face` produces, not whether it runs.
+//! measurement rather than from a fourth guess. The next thing to measure is
+//! what op 15 actually needs from op 29's division — not another way to
+//! suppress the flat face.
 //!
 //! ⚠ It cost FOUR wrong diagnoses first, all of which asked who CREATED the
 //! face. Nobody did, in the sense they meant: a split does its own DCEL surgery
