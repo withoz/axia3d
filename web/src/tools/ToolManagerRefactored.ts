@@ -3374,6 +3374,28 @@ export class ToolManager {
   }
 
   /**
+   * A point moved onto the analytic surface of the face it was picked on.
+   *
+   * Returns the point unchanged when there is nothing to move it onto (a plane,
+   * an engine without the export) or when the projection lands somewhere the
+   * raw hit plainly was not. That last guard is the closed-surface hazard the
+   * snap path documents one method up: a projection can come back on the FAR
+   * side of a sphere or cylinder. It cannot happen for a hit already within a
+   * chord sag of the surface, but this method must not be the one place that
+   * assumes so — the mesh a hit came from can be arbitrarily coarse.
+   */
+  private projectOntoFaceSurface(p: THREE.Vector3, faceId: number): THREE.Vector3 {
+    const q = this.bridge.projectPointToFaceSurface?.(faceId, p.x, p.y, p.z);
+    if (!q || q.length !== 3 || !Number.isFinite(q[0] + q[1] + q[2])) return p;
+    const moved = Math.hypot(q[0] - p.x, q[1] - p.y, q[2] - p.z);
+    // The coarsest the engine will ever tessellate is `MAX_LOD_CHORD_TOL` = 1 mm
+    // (`lod_chord_tol`), so a correction beyond a few of those is not a sag —
+    // it is a projection that went somewhere else.
+    if (!(moved < 10)) return p;
+    return new THREE.Vector3(q[0], q[1], q[2]);
+  }
+
+  /**
    * The snap candidate for this cursor position, or null — shared by the plane
    * and surface paths so both get the same exclusions, the same Tab-cycled
    * tentative and the same failure handling. It deliberately stops short of
@@ -3488,7 +3510,31 @@ export class ToolManager {
         // Without it a point could only ever land where the ray happened to hit,
         // so nothing on a sphere could be drawn to meet anything already there.
         const kind = this.bridge.faceSurfaceKind?.(fid) ?? -1;
-        if (kind >= 2) return this.applyObjectSnapOnSurface(faceHit.point.clone(), fid, e);
+        if (kind >= 2) {
+          // On the surface FIRST, and whether or not a snap follows.
+          //
+          // `faceHit.point` is a point on the TRIANGLE MESH, and the mesh is a
+          // view of the surface rather than the surface. How coarse a view
+          // depends on the camera — ADR-135 LOD scales `chord_tol` with
+          // distance and re-tessellates on a 160 ms debounce — so the same
+          // click on the same sphere landed a different distance inside it
+          // depending on the zoom, and on whether the debounce had fired.
+          // Measured 2026-08-21 on r=100 (`curved-surface-osnap.spec`, which
+          // flaked on exactly this):
+          //
+          //     tol 1.00 (the far default camera)   1.126744 mm inside
+          //     tol 0.08 (after the debounce)       0.066743 mm inside
+          //
+          // A rendering decision has no business in a coordinate the user
+          // draws with (메타-원칙 #13 — Rust is truth, JS is a view).
+          //
+          // NOT part of snapping, which is why it is here and not inside
+          // `applyObjectSnapOnSurface`: turning OSNAP off means "do not pull my
+          // click onto existing geometry", never "hand me the tessellation
+          // error". Both are 1.4e-14 after this.
+          const onSurface = this.projectOntoFaceSurface(faceHit.point.clone(), fid);
+          return this.applyObjectSnapOnSurface(onSurface, fid, e);
+        }
 
         const [nx, ny, nz] = this.bridge.getFaceNormal(fid);
         if (Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)) {
@@ -4007,7 +4053,14 @@ export class ToolManager {
     let normal: THREE.Vector3;
     let surfaceAwareOrigin: THREE.Vector3 | undefined;
     if (kind >= 2 && hit.point) {
-      // Surface-aware path: tangent plane at hit point P
+      // Surface-aware path: tangent plane at hit point P — with P put on the
+      // surface first, for the reason spelled out in `get3DPoint`'s curved
+      // branch. The curved tools take their point from this origin, so the
+      // tessellation error would otherwise reach them the same way.
+      hit.point = this.projectOntoFaceSurface(
+        new THREE.Vector3(hit.point.x, hit.point.y, hit.point.z),
+        fid,
+      );
       const tangentNormal = this.bridge.faceSurfaceNormalAtPos(
         fid,
         hit.point.x,

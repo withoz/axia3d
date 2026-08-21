@@ -1414,13 +1414,40 @@ describe('ToolManager', () => {
       expect([pt.x, pt.y, pt.z]).toEqual([100, 0, 0]); // the raw hit
     });
 
-    it('with snap off the raw hit is used and the engine is not asked', () => {
+    it('with snap off the point is not pulled to the vertex — but it IS on the surface', () => {
+      // Two different things, and only one of them is snapping.
+      //
+      // This used to assert that the engine was not asked at all. That made
+      // OSNAP-off mean "hand me the raw triangle-mesh hit", and the mesh is a
+      // view of the surface whose coarseness follows the camera (ADR-135 LOD):
+      // measured 2026-08-21, the same click on the same sphere came back
+      // 1.126744 mm inside it at the far default camera and 0.066743 mm after
+      // the 160 ms LOD debounce. Turning snap off should stop the point being
+      // PULLED to existing geometry; it should not hand back tessellation
+      // error, so the projection now runs either way.
       tm.snap.enabled = false;
       bridge.projectPointToFaceSurface.mockClear();
+      bridge.projectPointToFaceSurface.mockReturnValue([100.5, 0, 0]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pt = (tm as any).get3DPoint(ev());
+      // On the surface...
+      expect([pt.x, pt.y, pt.z]).toEqual([100.5, 0, 0]);
+      expect(bridge.projectPointToFaceSurface).toHaveBeenCalled();
+      // ...and NOT at the snap candidate, which is what snap-off buys. The
+      // mocked candidate sits at (0, 95, 20), nowhere near this.
+      expect(pt.y).toBe(0);
+    });
+
+    it('a projection that lands somewhere the hit plainly was not is declined', () => {
+      // The closed-surface hazard `applyObjectSnapOnSurface` documents: a
+      // projection can come back on the FAR side. It cannot happen for a hit
+      // already within a chord sag, but this must not be the one place that
+      // assumes so.
+      tm.snap.enabled = false;
+      bridge.projectPointToFaceSurface.mockReturnValue([-100, 0, 0]); // through
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pt = (tm as any).get3DPoint(ev());
       expect([pt.x, pt.y, pt.z]).toEqual([100, 0, 0]);
-      expect(bridge.projectPointToFaceSurface).not.toHaveBeenCalled();
     });
 
     it('a PLANAR face still snaps onto the plane, not the surface', () => {
