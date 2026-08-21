@@ -8157,7 +8157,7 @@ impl AxiaEngine {
                     let (faces, _) = self.scene.mesh.get_faces_sharing_edge(eid);
                     if faces.len() == 2 && faces[0] != faces[1] {
                         let geo_tol = (angle_tol_deg * 4.0).max(2.0);
-                        if let Ok(_) = self.scene.mesh.merge_coplanar_faces_geometric(
+                        if let Ok(_) = self.scene.merge_coplanar_faces_geometric_owned(
                             faces[0], faces[1], geo_tol,
                         ) {
                             merged += 1;
@@ -9350,7 +9350,7 @@ impl AxiaEngine {
         let f2 = FaceId::new(f2_raw);
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
-        match self.scene.mesh.merge_coplanar_faces_geometric(f1, f2, angle_tol_deg) {
+        match self.scene.merge_coplanar_faces_geometric_owned(f1, f2, angle_tol_deg) {
             Ok(new_face) => {
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
@@ -9381,7 +9381,7 @@ impl AxiaEngine {
         let i = FaceId::new(inner_face_raw);
         self.scene.transactions.begin();
         self.scene.transactions.set_before_snapshot(self.scene.scene_snapshot());
-        match self.scene.mesh.merge_coplanar_containing(o, i, angle_tol_deg) {
+        match self.scene.merge_coplanar_containing_owned(o, i, angle_tol_deg) {
             Ok(new_face) => {
                 self.scene.transactions.set_after_snapshot(self.scene.scene_snapshot());
                 self.scene.transactions.commit();
@@ -12364,6 +12364,33 @@ impl AxiaEngine {
                 def_id as f64
             }
             None => 0.0,
+        }
+    }
+
+    /// 컴포넌트를 배치 — 정의의 형상을 복제해서 가져온다.
+    ///
+    /// `make_component` 는 `scene.groups` 를 직접 만지면 되지만 (메타데이터
+    /// 뿐), 배치는 형상을 만들므로 `Scene::execute` 를 지나야 한다 — 그래야
+    /// undo 프레임 하나로 묶이고, 실패 시 스냅샷이 되돌린다.
+    ///
+    /// 반환 = 인스턴스 id, 실패는 0. 자기 원점 배치는 원본과 겹치므로 거절된다
+    /// (`array_linear_faces` 가 offset 0 을 거부하는 것과 같은 이유).
+    #[wasm_bindgen(js_name = placeComponent)]
+    pub fn place_component(&mut self, def_id: u32, x: f64, y: f64, z: f64) -> f64 {
+        match self.scene.execute(Command::PlaceComponent {
+            def_id,
+            position: DVec3::new(x, y, z),
+        }) {
+            CommandResult::GroupUpdated(inst_id) => {
+                self.cache_dirty = true;
+                self.topology_changed = true;
+                inst_id as f64
+            }
+            CommandResult::Error(e) => {
+                self.last_error = e;
+                0.0
+            }
+            _ => 0.0,
         }
     }
 

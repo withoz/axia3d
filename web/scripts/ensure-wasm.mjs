@@ -21,23 +21,27 @@
  *     developer with a working WASM artifact without an extra command.
  *
  * Behaviour:
- *   1. If `web/src/wasm/axia_wasm_bg.wasm` exists and is non-trivial in
- *      size, do nothing (idempotent — repeated `npm install` calls don't
- *      retrigger expensive builds).
+ *   1. If `web/src/wasm/axia_wasm_bg.wasm` exists, is non-trivial in size,
+ *      and is NEWER than every Rust source and Cargo file under `crates/`,
+ *      do nothing (idempotent — repeated `npm install` calls do not retrigger
+ *      expensive builds).
  *   2. Otherwise, attempt `wasm-pack build --target web --out-dir
  *      ../../web/src/wasm` from `crates/axia-wasm/`.
  *   3. If wasm-pack is missing, print actionable install instructions
  *      and exit 0 (don't break `npm install` — the user may not need WASM
  *      yet, e.g. they're only running tsc/eslint).
  *
- * Note: this script intentionally never deletes or refreshes existing
- * artifacts. The "WASM is stale relative to source" detection lives in a
- * separate CI check (see follow-up); locally, `npm run build:wasm`
- * remains the explicit-rebuild path.
+ * ⚠ This script used to check EXISTENCE AND SIZE and nothing else, and said
+ * here that staleness detection "lives in a separate CI check (see follow-up)".
+ * That follow-up was never written, and on 2026-08-21 the artifact was found
+ * dated 2026-08-07 against sources dated 2026-08-20 — ninety engine commits
+ * that had never reached a browser. Step 1 now also asks `wasm-freshness.mjs`
+ * whether the sources have moved on, and rebuilds when they have.
  */
 
 import { existsSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { wasmFreshness, describeStaleness } from './wasm-freshness.mjs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -63,8 +67,8 @@ function wasmIsPresent() {
   }
 }
 
-function tryWasmPackBuild() {
-  log('WASM artifact missing — invoking wasm-pack build…');
+function tryWasmPackBuild(why) {
+  log(`${why} — invoking wasm-pack build…`);
   const result = spawnSync(
     'wasm-pack',
     ['build', '--target', 'web', '--out-dir', '../../web/src/wasm'],
@@ -100,12 +104,16 @@ function printInstallInstructions() {
 
 // ── Main ──────────────────────────────────────────────────────────────
 
-if (wasmIsPresent()) {
+const freshness = wasmFreshness();
+
+if (wasmIsPresent() && !freshness.stale) {
   // Silent — happens on every `npm install` once the dev clone is set up.
   process.exit(0);
 }
 
-const outcome = tryWasmPackBuild();
+const outcome = tryWasmPackBuild(
+  freshness.stale ? `WASM 이 낡았습니다 — ${describeStaleness(freshness)}` : 'WASM artifact missing',
+);
 
 if (outcome === 'ok') {
   log('WASM build succeeded.');

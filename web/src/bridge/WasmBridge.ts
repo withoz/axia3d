@@ -668,6 +668,7 @@ type AxiaEngineExtended = AxiaEngine & {
   remove_faces_from_group?(groupId: number, faceIds: Uint32Array): boolean;
   set_group_parent?(childId: number, parentId: number): boolean;
   make_component?(groupId: number, name: string): number;
+  placeComponent?(defId: number, x: number, y: number, z: number): number;
   get_group_info?(groupId: number): string;
   get_all_groups?(): string;
   group_count?(): number;
@@ -7167,6 +7168,25 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * 컴포넌트를 배치 — 정의의 형상을 복제해서 가져온다. 반환: instanceId (0 = 실패).
+   *
+   * `makeComponent` 는 메타데이터만 만들지만 배치는 형상을 만들므로 엔진이
+   * `Scene::execute` 를 지난다 — undo 한 프레임, 실패 시 스냅샷 복원.
+   *
+   * 자기 원점 배치는 원본과 겹치므로 거절된다 (0 반환). 실패 사유는
+   * `lastError()` 에 남는다.
+   */
+  placeComponent(defId: number, x: number, y: number, z: number): number {
+    if (!this.engine) return 0;
+    try {
+      return this.engine.placeComponent?.(defId, x, y, z) ?? 0;
+    } catch (e) {
+      console.error('[WasmBridge] placeComponent failed:', e);
+      return 0;
+    }
+  }
+
   /** 그룹 정보 JSON */
   getGroupInfo(groupId: number): GroupInfo | null {
     if (!this.engine) return null;
@@ -7953,6 +7973,14 @@ export interface GroupInfo {
   visible: boolean;
   locked: boolean;
   isComponent: boolean;
+  /**
+   * Which definition, when `isComponent`. `null` otherwise.
+   *
+   * `isComponent` alone told the panel that a group WAS a component and left
+   * it nothing to hand `placeComponent` — so a component could be made and
+   * never placed. Both group JSON emitters carry it.
+   */
+  componentDefId?: number | null;
   error?: string;
 }
 

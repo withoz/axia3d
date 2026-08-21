@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — option lock-in pending 사용자 결재)** |
+| Status | **Accepted (Q1=D — ADR-124, LOCKED #54)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 자기-내성 질문 → Claude audit + spec) |
 | Anchor | 사용자 질문 (2026-05-17): *"우리 엔진 자체 내에서 해결방법은 없는지요?"* — KAYAC GPU instancing 검토 (ADR-122) 후 AxiA 자체 architectural 자산 활용 가능성 검토 요청 |

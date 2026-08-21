@@ -4221,6 +4221,70 @@ impl Scene {
         Ok(merged)
     }
 
+    /// A geometric merge that hands the result to an owner, like its
+    /// edge-merge sibling above.
+    ///
+    /// `Mesh::merge_coplanar_faces_geometric` is mesh level: it removes both
+    /// operands and adds a face. Called directly — which three WASM entry points
+    /// did — the owner keeps two dead ids and the live face belongs to nobody,
+    /// so IFC writes that element's body from nothing and the merged region
+    /// comes out an orphan.
+    ///
+    /// ⚠ Which owner wins is the user's decision of 2026-08-11, taken for
+    /// `merge_faces_by_edge_owned` and applied here unchanged: **the
+    /// first-selected face inherits**. `f1` is that face; `f2` only answers if
+    /// `f1` owns nothing.
+    pub fn merge_coplanar_faces_geometric_owned(
+        &mut self,
+        f1: FaceId,
+        f2: FaceId,
+        tol_deg: f64,
+    ) -> anyhow::Result<FaceId> {
+        // Read the owner BEFORE the merge — afterwards both operands are gone.
+        let owning_shape = [f1, f2]
+            .iter()
+            .find_map(|f| self.face_to_shape.get(f).copied());
+        let owning_xia = [f1, f2].iter().find_map(|f| self.face_to_xia.get(f).copied());
+        let before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let merged = self.mesh.merge_coplanar_faces_geometric(f1, f2, tol_deg)?;
+        self.adopt_new_active_faces(owning_shape, owning_xia, &before);
+        Ok(merged)
+    }
+
+    /// The containment sibling of the above — an inner face absorbed into the
+    /// outer one it sits in. Same rule: the OUTER face is the first-selected.
+    pub fn merge_coplanar_containing_owned(
+        &mut self,
+        outer_face: FaceId,
+        inner_face: FaceId,
+        angle_tol_deg: f64,
+    ) -> anyhow::Result<FaceId> {
+        let owning_shape = [outer_face, inner_face]
+            .iter()
+            .find_map(|f| self.face_to_shape.get(f).copied());
+        let owning_xia = [outer_face, inner_face]
+            .iter()
+            .find_map(|f| self.face_to_xia.get(f).copied());
+        let before: std::collections::HashSet<FaceId> = self
+            .mesh
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active())
+            .map(|(id, _)| id)
+            .collect();
+        let merged = self
+            .mesh
+            .merge_coplanar_containing(outer_face, inner_face, angle_tol_deg)?;
+        self.adopt_new_active_faces(owning_shape, owning_xia, &before);
+        Ok(merged)
+    }
+
     /// ADR-262 + §36-amendment — carve a door U-notch AND reconcile face ownership:
     /// the carve's new faces (jambs, splits, bottom notch) are adopted into the
     /// host wall's owning element, so the wall element owns its full geometry.
@@ -6082,12 +6146,80 @@ impl Scene {
                 }
             }
             Command::PlaceComponent { def_id, position } => {
-                // TODO: 실제 geometry 복제 구현 필요
-                // 현재는 인스턴스 메타데이터만 생성
+                // A placement brings the geometry with it.
+                //
+                // This used to create metadata and nothing else, with a
+                // `// TODO: 실제 geometry 복제 구현 필요` where the copy should
+                // have been — so "컴포넌트로 변환" (three entry points: menu,
+                // toolbar dropdown, right-click) led somewhere a user could
+                // never arrive. Measured 2026-08-21.
+                //
+                // `array_linear_faces(faces, 1, offset)` is the same single
+                // copy `CopyTool` makes, so the duplication is the production
+                // path rather than a second one written for here.
+                let Some(def) = self.groups.component_defs.get(&def_id) else {
+                    return CommandResult::Error(format!("ComponentDef {} not found", def_id));
+                };
+                let source: Vec<axia_geo::FaceId> = def
+                    .face_ids
+                    .iter()
+                    .copied()
+                    .filter(|&f| self.mesh.faces.get(f).map(|x| x.is_active()).unwrap_or(false))
+                    .collect();
+                if source.is_empty() {
+                    return CommandResult::Error(format!(
+                        "ComponentDef {} has no live geometry to place",
+                        def_id
+                    ));
+                }
+                let offset = position - def.origin;
+
+                // `array_linear_faces` refuses a zero offset, and it is right
+                // to: a copy laid exactly on its original is two faces covering
+                // the same ground, which `verify_face_invariants` calls
+                // non-manifold. Say so here rather than half-place and let the
+                // caller wonder why the count did not move.
+                if offset.length_squared() <= axia_geo::tolerances::EPSILON_LENGTH.powi(2) {
+                    return CommandResult::Error(
+                        "컴포넌트를 자기 원점에 배치할 수 없습니다 — 원본과 겹칩니다".into(),
+                    );
+                }
+
+                self.transactions.begin();
+                let before = self.scene_snapshot();
+                let placed = match self.mesh.array_linear_faces(&source, 1, offset) {
+                    Ok(new_faces) if !new_faces.is_empty() => new_faces,
+                    Ok(_) => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        return CommandResult::Error(
+                            "컴포넌트 배치가 아무 면도 만들지 못했습니다".into(),
+                        );
+                    }
+                    Err(e) => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        return CommandResult::Error(format!("컴포넌트 배치 실패: {e}"));
+                    }
+                };
+
                 let transform = Transform3D::new().with_position(position);
-                match self.groups.create_instance(def_id, "Instance".into(), vec![], transform) {
-                    Some(inst_id) => CommandResult::GroupUpdated(inst_id),
-                    None => CommandResult::Error(format!("ComponentDef {} not found", def_id)),
+                let name = self
+                    .groups
+                    .component_defs
+                    .get(&def_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| "Instance".into());
+                match self.groups.create_instance(def_id, name, placed, transform) {
+                    Some(inst_id) => {
+                        self.transactions.commit();
+                        CommandResult::GroupUpdated(inst_id)
+                    }
+                    None => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        CommandResult::Error(format!("ComponentDef {} not found", def_id))
+                    }
                 }
             }
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — priority track lock-in pending 사용자 결재)** |
+| Status | **Accepted (Amendment 1 — priority track P#1~P#4, LOCKED #61)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 결재 2026-05-17 — "추천 승인합니다" Option A 채택) |
 | Anchor | LOCKED #43 priority track 100% closure 후 자연 successor — 4 priorities 모두 completed (Z-up / Path B / STEP timing / NURBS-aware coplanar) |

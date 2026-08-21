@@ -5,7 +5,7 @@
 > (P2.2 through-hole). 본 문서는 **α spec only** — 아키텍처/범위/분해/회귀 계획을
 > lock 하고, **β 구현은 별도 사용자 결재** 후 진행 (ADR-118→119 패턴 답습).
 
-- **Status**: Proposed (α spec — β 진입은 별도 결재)
+- **Status**: Superseded by ADR-293 (2026-07-15) — 감사가 P2.1·P2.2 는 이미 출하됐고 (`carve_pocket_from_source_face`, ADR-252) 지을 β 가 없음을 실측. 남은 gap 은 로드맵이 적은 것과 다른 것 (whole-face inward push 의 조용한 clamp)
 - **Date**: 2026-06-10
 - **Track**: 6 (boundary kernel) + W (ADR-079 create_solid) — Push/Pull 로드맵
 - **Builds on**: ADR-190 (roadmap Phase 2), ADR-191 (P1.2 ring→tube), ADR-064/066

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — hotspot lock-in pending 사용자 결재)** |
+| Status | **Accepted (Amendments 1~3; α-2 implemented by ADR-126, α-1/α-4 refuted by ADR-125/127 — LOCKED #55~#57)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 KAYAC engine 검토 요청 → Claude audit + spec) |
 | Anchor | KAYAC `documents/BoundingBox그리기 리뉴얼.txt` canonical pattern + AxiA hotspot audit |

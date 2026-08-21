@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Draft (spec + engine fix, 사용자 결재 2026-05-16)** |
+| Status | **Accepted (π-β landed — Path B pre-polygonize in boolean.rs)** |
 | Date | 2026-05-16 |
 | Supersedes | — |
 | Related | ADR-089 (Path B closed-curve face), ADR-094 (Path B-full default ON), ADR-101 (auto-intersect coplanar, Phase A `polygonize_closed_curve_face`), ADR-107 (`*AsShape` → Path B), ADR-064/066 (NURBS Boolean DCEL), ADR-076 (Boolean Path Sunset) |

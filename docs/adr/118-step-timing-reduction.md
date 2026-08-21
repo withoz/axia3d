@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — sub-step lock-ins pending 사용자 결재)** |
+| Status | **Accepted (β implementation — ADR-119, LOCKED #52)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 결정 + Claude spec) |
 | Anchor | LOCKED #43 절대 우선순위 priority #3 — "STEP timing 단축" |

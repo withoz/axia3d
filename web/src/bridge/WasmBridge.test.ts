@@ -3594,6 +3594,29 @@ describe('WasmBridge', () => {
   // ════════════════════════════════════════════════════════════════════════
   // ADR-262 β-2 — cutWallDoorOpening wrapper (door = floor-reaching notch).
   // ════════════════════════════════════════════════════════════════════════
+  describe('placeComponent wrapper — a component can finally be placed', () => {
+    it('forwards the def id and position to engine.placeComponent', () => {
+      const fn = vi.fn(() => 4);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = { placeComponent: fn };
+      expect(bridge.placeComponent(2, 1000, 0, 0)).toBe(4);
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith(2, 1000, 0, 0);
+    });
+
+    it('returns 0 when the WASM endpoint is missing (legacy / mock build)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = {};
+      expect(bridge.placeComponent(2, 1000, 0, 0)).toBe(0);
+    });
+
+    it('returns 0 (caught) when the engine throws', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bridge as any).engine = { placeComponent: () => { throw new Error('boom'); } };
+      expect(bridge.placeComponent(2, 1000, 0, 0)).toBe(0);
+    });
+  });
+
   describe('ADR-262 β-2 cutWallDoorOpening wrapper', () => {
     it('forwards corners + normal to engine.cutWallDoorOpening, returns jamb count', () => {
       const fn = vi.fn(() => 3);

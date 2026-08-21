@@ -1,6 +1,6 @@
 # ADR-197 — General 3D Solid Boolean Foundation (α spec)
 
-- **Status**: Proposed (α spec — 결재 대기, 코드 변경 0)
+- **Status**: Accepted (β-2 ~ ε-3 + Track2/Track3 landed in scene.rs / boolean.rs; later phases 별도 PR)
 - **Date**: 2026-06-11
 - **Track**: 6 (NURBS / Boolean)
 - **Trigger**: LOCKED #82 (ADR-196) follow-up "다른-솔리드 carve" 조사 → 기반인

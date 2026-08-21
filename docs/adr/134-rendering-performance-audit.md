@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — path lock-in pending 사용자 결재)** |
+| Status | **Accepted (Path A — ADR-135, LOCKED #62)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 perceived slowness report 2026-05-17 — "원 / 구 / 원통 / 도넛 / 자유곡선 / 스케치 표현이 많이 느린것 같습니다") |
 | Anchor | 사용자 perceived slowness report → audit-first canonical 8번째 적용 |

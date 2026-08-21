@@ -1,6 +1,6 @@
 # ADR-293 — Push/Pull Phase 2 Audit (α): Phase 2 already ships; the roadmap was stale
 
-- **Status**: Proposed
+- **Status**: Accepted (감사 완결 — §1 Verdict + §6 corrected scope + §8 lock-ins; ADR-190 §4 Phase 2 를 amend)
 - **Date**: 2026-07-15 (**revised the same day — the first revision was wrong, see §7**)
 - **Amends**: ADR-190 §4 Phase 2 (scope correction, measured)
 - **Cross-link**: ADR-190 (roadmap, LOCKED #78) · ADR-252 (source-face carve routing, "옵션 A
