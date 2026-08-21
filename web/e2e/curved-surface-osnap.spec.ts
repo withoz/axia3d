@@ -137,15 +137,27 @@ test.describe('object snap on a curved face', () => {
     // (2) and it is ON the sphere — the invariant, restated for a surface.
     expect(Math.abs(Math.hypot(r.near![0], r.near![1], r.near![2]) - R)).toBeLessThan(0.01);
 
-    // (3) a click away from everything is the raw surface hit, and NOT dragged
-    //     to the vertex. It sits on the tessellated MESH, so it is inside the
-    //     analytic sphere by up to the chord sag — measured 0.067 mm on CI at
-    //     r=100, where the canvas is a different size and the ray lands
-    //     mid-triangle rather than near a vertex. Only the SNAPPED point is
-    //     analytically exact; asserting 0.01 mm on this one was asserting the
-    //     tessellation, not the behaviour.
+    // (3) a click away from everything is not dragged to the vertex — and it
+    //     is ON THE SPHERE, exactly, the same as the snapped one.
+    //
+    //     This used to allow 1 mm and flake anyway. The raw hit is a point on
+    //     the TRIANGLE MESH, and how coarse that mesh is depends on the camera
+    //     (ADR-135 LOD scales `chord_tol` with distance, and re-tessellates on
+    //     a 160 ms debounce). The test waits for the SNAP CACHE, which is a
+    //     different clock, so a pick could land in the window where the mesh
+    //     was still tessellated for the far default camera. Measured
+    //     2026-08-21:
+    //
+    //         tol 1.00 (before the debounce)   1.126744 mm inside
+    //         tol 0.08 (after)                 0.066743 mm inside
+    //
+    //     The first of those is the number that failed a full run. The fix was
+    //     not to widen the bound — `applyObjectSnapOnSurface` now puts the raw
+    //     hit on the face's analytic surface, so a rendering decision no longer
+    //     reaches the coordinate a user draws with (메타-원칙 #13). Both
+    //     numbers above became 1.4e-14.
     expect(r.far).not.toBeNull();
-    expect(Math.abs(Math.hypot(r.far![0], r.far![1], r.far![2]) - R)).toBeLessThan(1);
+    expect(Math.abs(Math.hypot(r.far![0], r.far![1], r.far![2]) - R)).toBeLessThan(1e-6);
     expect(
       Math.hypot(r.far![0] - r.target![0], r.far![1] - r.target![1], r.far![2] - r.target![2]),
     ).toBeGreaterThan(5);
