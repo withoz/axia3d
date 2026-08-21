@@ -1,6 +1,6 @@
 # ADR-205 — Tilted Primitive ∩ World-Box: Oblique-Section Boolean (B track)
 
-- **Status**: Proposed
+- **Status**: Accepted (β-1 ~ β-5 + γ wire/UI landed for cone·torus·sphere; later phases 별도 PR)
 - **Date**: 2026-06-18
 - **Author**: WYKO + Claude
 - **Track**: ADR-197/204 Z-axis lift — (B) world-box general

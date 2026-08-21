@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — γ sub-step lock-in pending 사용자 결재)** |
+| Status | **Accepted (Amendment 1 — ADR-131 pivot, LOCKED #59)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 결재 2026-05-17 — "권장 진행 승인합니다" Q1=(a) + Q2=(a) audit-first 5번째 적용) |
 | Anchor | LOCKED #43 successor track (ADR-129) Priority #1 — ADR-046 P31 Pillar 1 (Discoverability) "가장 시급" |

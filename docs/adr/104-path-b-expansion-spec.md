@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (Amendment 2, 2026-05-15)** — Q1 revision: (c) seam edge → **(b) 2-hemisphere** (manifold + ADR-021 P7 strict 정합). 메타-원칙 #14 (face derives from closed boundary) 정합. β-1-β (engine 본체) 진입 사용자 명시 결재 대기. |
+| Status | **Accepted (Path B family closure — ADR-113/114/115/116/117, LOCKED #47~#51)** |
 | Date | 2026-05-15 |
 | Supersedes | — |
 | Related | ADR-027 (NURBS Kernel kickoff), ADR-031 (Phase D — Sphere/Cone/Torus analytic), ADR-032 (P17 primitive Path B activation), ADR-079 (Create Solid surface-native), ADR-080 (Offset dimension-aware), ADR-089 (Phase 2 closed-curve face), ADR-094 (Cylinder Path B-full canonical), LOCKED #1 (P7 manifold), LOCKED #26 (Two-Layer Citizenship), LOCKED #41 (ADR-101 closure), LOCKED #42 (ADR-102 closure), LOCKED #43 (ADR-103 Z-up closure) |

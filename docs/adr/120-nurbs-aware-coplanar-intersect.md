@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — algorithm path lock-in pending 사용자 결재)** |
+| Status | **Accepted (Q1=G — ADR-128, LOCKED #58)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 결정 + Claude spec) |
 | Anchor | LOCKED #43 절대 우선순위 priority #4 — "NURBS-aware coplanar intersect" |

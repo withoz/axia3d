@@ -1,6 +1,6 @@
 # ADR-277 — General Mesh CSG (arbitrary-angle solids) via shared-vertex imprint + constrained retriangulation
 
-- **Status**: Proposed (α spec — needs 결재 per phase)
+- **Status**: Accepted (β-1 ~ β-5 + γ landed — v2 general CSG is the production path, LOCKED #94)
 
 ## Context
 

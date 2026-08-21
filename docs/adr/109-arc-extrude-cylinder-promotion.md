@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Draft (spec only, π-α — 사용자 결재 2026-05-16)** |
+| Status | **Accepted (π-β landed — Arc→Cylinder promote in scene.rs, used by ADR-192 P1.1 / LOCKED #80)** |
 | Date | 2026-05-16 |
 | Supersedes | — |
 | Related | ADR-079 (Create Solid surface-native — W-2-γ Cylinder branch), ADR-094 (Path B-full default ON), ADR-107 (`*AsShape` → Path B Canonical Unification), ADR-093 (cylinder side face owner-id grouping), ADR-027/028 (NURBS Kernel + Edge curve attach) |

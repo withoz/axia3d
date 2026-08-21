@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Draft (spec only, ζ-α — 사용자 결재 2026-05-16)** |
+| Status | **Accepted (ζ-β engine dispatch landed — `POLYGON_THRESHOLD` in scene.rs, LOCKED #41 + 메타-원칙 #14)** |
 | Date | 2026-05-16 |
 | Supersedes | — |
 | Related | ADR-019 (Line is Truth), ADR-027 (NURBS Kernel), ADR-028 (Edge curve attach), ADR-049/050 (Two-Layer Citizenship Shape/Xia), ADR-087 (Kernel-Native Command Suite Reset), ADR-088 (curve_owner_id grouping), ADR-089 (Path B closed-curve face), ADR-094 (Path B-full default ON), ADR-101 Amendment 9 (메타-원칙 #15 lock-in) |

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed (α spec only — path lock-in pending 사용자 결재)** |
+| Status | **Accepted (Path E — ADR-133, LOCKED #60)** |
 | Date | 2026-05-17 |
 | Author | AXiA team (사용자 결재 2026-05-17 — "승인합니다" Option A 채택 from ADR-131 §6 다음 진입 후보) |
 | Anchor | ADR-131 §A1.2 dual catalog architectural finding — ActionCatalog (ADR-045 D1, 95 actions, isolated) ↔ CommandCatalog (production, 148 commands, **production SSOT**) 별개 시스템 |
