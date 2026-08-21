@@ -6146,12 +6146,80 @@ impl Scene {
                 }
             }
             Command::PlaceComponent { def_id, position } => {
-                // TODO: 실제 geometry 복제 구현 필요
-                // 현재는 인스턴스 메타데이터만 생성
+                // A placement brings the geometry with it.
+                //
+                // This used to create metadata and nothing else, with a
+                // `// TODO: 실제 geometry 복제 구현 필요` where the copy should
+                // have been — so "컴포넌트로 변환" (three entry points: menu,
+                // toolbar dropdown, right-click) led somewhere a user could
+                // never arrive. Measured 2026-08-21.
+                //
+                // `array_linear_faces(faces, 1, offset)` is the same single
+                // copy `CopyTool` makes, so the duplication is the production
+                // path rather than a second one written for here.
+                let Some(def) = self.groups.component_defs.get(&def_id) else {
+                    return CommandResult::Error(format!("ComponentDef {} not found", def_id));
+                };
+                let source: Vec<axia_geo::FaceId> = def
+                    .face_ids
+                    .iter()
+                    .copied()
+                    .filter(|&f| self.mesh.faces.get(f).map(|x| x.is_active()).unwrap_or(false))
+                    .collect();
+                if source.is_empty() {
+                    return CommandResult::Error(format!(
+                        "ComponentDef {} has no live geometry to place",
+                        def_id
+                    ));
+                }
+                let offset = position - def.origin;
+
+                // `array_linear_faces` refuses a zero offset, and it is right
+                // to: a copy laid exactly on its original is two faces covering
+                // the same ground, which `verify_face_invariants` calls
+                // non-manifold. Say so here rather than half-place and let the
+                // caller wonder why the count did not move.
+                if offset.length_squared() <= axia_geo::tolerances::EPSILON_LENGTH.powi(2) {
+                    return CommandResult::Error(
+                        "컴포넌트를 자기 원점에 배치할 수 없습니다 — 원본과 겹칩니다".into(),
+                    );
+                }
+
+                self.transactions.begin();
+                let before = self.scene_snapshot();
+                let placed = match self.mesh.array_linear_faces(&source, 1, offset) {
+                    Ok(new_faces) if !new_faces.is_empty() => new_faces,
+                    Ok(_) => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        return CommandResult::Error(
+                            "컴포넌트 배치가 아무 면도 만들지 못했습니다".into(),
+                        );
+                    }
+                    Err(e) => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        return CommandResult::Error(format!("컴포넌트 배치 실패: {e}"));
+                    }
+                };
+
                 let transform = Transform3D::new().with_position(position);
-                match self.groups.create_instance(def_id, "Instance".into(), vec![], transform) {
-                    Some(inst_id) => CommandResult::GroupUpdated(inst_id),
-                    None => CommandResult::Error(format!("ComponentDef {} not found", def_id)),
+                let name = self
+                    .groups
+                    .component_defs
+                    .get(&def_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| "Instance".into());
+                match self.groups.create_instance(def_id, name, placed, transform) {
+                    Some(inst_id) => {
+                        self.transactions.commit();
+                        CommandResult::GroupUpdated(inst_id)
+                    }
+                    None => {
+                        self.restore_scene_snapshot(&before);
+                        self.transactions.cancel();
+                        CommandResult::Error(format!("ComponentDef {} not found", def_id))
+                    }
                 }
             }
 

@@ -24,6 +24,16 @@ export interface ComponentPanelCallbacks {
   syncMesh?: () => void;
 }
 
+/**
+ * Where a placed component lands relative to its definition's origin.
+ *
+ * Not zero: a copy laid exactly on its original shares every edge with it, and
+ * `verify_face_invariants` reports that pair as non-manifold - the engine
+ * refuses a zero offset outright. `CopyTool` has the same shape (copy, then
+ * move), so this follows the convention already in the app.
+ */
+const PLACE_OFFSET_MM = 1000;
+
 export class ComponentPanel {
   private container: HTMLElement;
   private bridge: WasmBridge;
@@ -183,6 +193,9 @@ export class ComponentPanel {
         <span class="cp-face-count">(${group.faceCount})</span>
         <span class="cp-lock cp-toggle" data-action="lock">${lockIcon}</span>
         <span class="cp-vis cp-toggle" data-action="vis">${visIcon}</span>
+        ${group.isComponent && group.componentDefId != null
+          ? `<button class="cp-btn-place cp-toggle" data-action="place" title="${t('컴포넌트 배치 — 원본 옆에 사본을 놓습니다')}">⊕</button>`
+          : ''}
         <button class="cp-btn-delete cp-toggle" data-action="delete" title="${t('그룹 해제')}">✕</button>
       </div>
     `;
@@ -241,6 +254,28 @@ export class ComponentPanel {
         this.bridge.toggleGroupLock(groupId);
         this.refresh();
         break;
+      case 'place': {
+        // "컴포넌트로 변환" had three entry points and no way out - a component
+        // could be made and never placed. The copy lands BESIDE the original
+        // rather than on it: two solids in the same place share every edge,
+        // which `verify_face_invariants` calls non-manifold, and the engine
+        // refuses a zero offset for that reason. Move it from there.
+        const info = this.bridge.getGroupInfo(groupId);
+        const defId = info?.componentDefId;
+        if (defId == null) {
+          Toast.warning(t('이 그룹은 컴포넌트가 아닙니다'));
+          break;
+        }
+        const inst = this.bridge.placeComponent(defId, PLACE_OFFSET_MM, 0, 0);
+        if (inst > 0) {
+          this.callbacks.syncMesh?.();
+          Toast.success(t('컴포넌트를 배치했습니다 — 이동 도구로 옮기세요'));
+        } else {
+          Toast.error(this.bridge.lastError?.() || t('컴포넌트 배치에 실패했습니다'));
+        }
+        this.refresh();
+        break;
+      }
       case 'delete':
         this.callbacks.onGroupDelete?.(groupId);
         this.bridge.deleteGroup(groupId);

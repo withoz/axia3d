@@ -492,7 +492,11 @@ impl GroupManager {
         let children: Vec<u32> = group.children.clone();
 
         Some(format!(
-            r#"{{"id":{},"name":"{}","faceIds":{:?},"children":{:?},"visible":{},"locked":{},"parent":{},"isComponent":{}}}"#,
+            // `componentDefId` beside `isComponent`: the panel could tell that a
+            // group WAS a component but not WHICH definition, so it had nothing
+            // to hand `placeComponent`. The boolean stays — every existing
+            // reader keeps working.
+            r#"{{"id":{},"name":"{}","faceIds":{:?},"children":{:?},"visible":{},"locked":{},"parent":{},"isComponent":{},"componentDefId":{}}}"#,
             group.id,
             group.name.replace('"', "'"),
             face_ids,
@@ -501,6 +505,7 @@ impl GroupManager {
             group.locked,
             group.parent.map(|p| p.to_string()).unwrap_or("null".to_string()),
             group.component_def_id.is_some(),
+            group.component_def_id.map(|d| d.to_string()).unwrap_or("null".to_string()),
         ))
     }
 
@@ -510,7 +515,11 @@ impl GroupManager {
         for (_, group) in &self.groups {
             let face_ids: Vec<u32> = group.face_ids.iter().map(|f| f.raw()).collect();
             items.push(format!(
-                r#"{{"id":{},"name":"{}","faceCount":{},"faceIds":{:?},"parent":{},"children":{:?},"visible":{},"locked":{},"isComponent":{}}}"#,
+                // This is the one ComponentPanel actually reads (`getAllGroups`),
+                // so `componentDefId` has to be here too — the sibling
+                // `export_group_info` alone would have left the panel with the
+                // boolean and nothing to place.
+                r#"{{"id":{},"name":"{}","faceCount":{},"faceIds":{:?},"parent":{},"children":{:?},"visible":{},"locked":{},"isComponent":{},"componentDefId":{}}}"#,
                 group.id,
                 group.name.replace('"', "'"),
                 group.face_ids.len(),
@@ -520,6 +529,7 @@ impl GroupManager {
                 group.visible,
                 group.locked,
                 group.component_def_id.is_some(),
+                group.component_def_id.map(|d| d.to_string()).unwrap_or("null".to_string()),
             ));
         }
         format!("[{}]", items.join(","))

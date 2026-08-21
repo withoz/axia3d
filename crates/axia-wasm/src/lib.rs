@@ -12367,6 +12367,33 @@ impl AxiaEngine {
         }
     }
 
+    /// 컴포넌트를 배치 — 정의의 형상을 복제해서 가져온다.
+    ///
+    /// `make_component` 는 `scene.groups` 를 직접 만지면 되지만 (메타데이터
+    /// 뿐), 배치는 형상을 만들므로 `Scene::execute` 를 지나야 한다 — 그래야
+    /// undo 프레임 하나로 묶이고, 실패 시 스냅샷이 되돌린다.
+    ///
+    /// 반환 = 인스턴스 id, 실패는 0. 자기 원점 배치는 원본과 겹치므로 거절된다
+    /// (`array_linear_faces` 가 offset 0 을 거부하는 것과 같은 이유).
+    #[wasm_bindgen(js_name = placeComponent)]
+    pub fn place_component(&mut self, def_id: u32, x: f64, y: f64, z: f64) -> f64 {
+        match self.scene.execute(Command::PlaceComponent {
+            def_id,
+            position: DVec3::new(x, y, z),
+        }) {
+            CommandResult::GroupUpdated(inst_id) => {
+                self.cache_dirty = true;
+                self.topology_changed = true;
+                inst_id as f64
+            }
+            CommandResult::Error(e) => {
+                self.last_error = e;
+                0.0
+            }
+            _ => 0.0,
+        }
+    }
+
     /// 그룹 정보 JSON 반환
     pub fn get_group_info(&self, group_id: u32) -> String {
         match self.scene.groups.export_group_info(group_id) {

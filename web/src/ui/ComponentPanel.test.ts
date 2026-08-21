@@ -9,6 +9,9 @@ function mockBridge() {
     toggleGroupVisibility: vi.fn(),
     toggleGroupLock: vi.fn(),
     deleteGroup: vi.fn(),
+    getGroupInfo: vi.fn(),
+    placeComponent: vi.fn().mockReturnValue(0),
+    lastError: vi.fn().mockReturnValue(''),
   } as any;
 }
 
@@ -232,6 +235,67 @@ describe('ComponentPanel', () => {
     it('removes panel from DOM', () => {
       panel.dispose();
       expect(container.querySelector('#component-panel')).toBeNull();
+    });
+  });
+
+  // ── Placing a component ────────────────────────────────────────────────
+  //
+  // "컴포넌트로 변환" had three entry points (menu, toolbar dropdown,
+  // right-click) and no way out: `Command::PlaceComponent` created metadata
+  // and carried `// TODO: 실제 geometry 복제 구현 필요`, and nothing in
+  // `web/src` or `axia-wasm` called it at all. A component could be MADE and
+  // never PLACED. Measured 2026-08-21.
+  describe('place button', () => {
+    const componentRow = {
+      id: 1,
+      name: 'box-def',
+      faceCount: 6,
+      faceIds: [1, 2, 3, 4, 5, 6],
+      parent: null,
+      children: [],
+      visible: true,
+      locked: false,
+      isComponent: true,
+      componentDefId: 2,
+    };
+
+    it('appears on a component and NOT on a plain group', () => {
+      bridge.getAllGroups.mockReturnValue([componentRow]);
+      panel.refresh();
+      expect(container.querySelector('.cp-btn-place')).not.toBeNull();
+
+      bridge.getAllGroups.mockReturnValue([
+        { ...componentRow, isComponent: false, componentDefId: null },
+      ]);
+      panel.refresh();
+      expect(container.querySelector('.cp-btn-place')).toBeNull();
+    });
+
+    it('a click reaches the engine with that definition', () => {
+      bridge.getAllGroups.mockReturnValue([componentRow]);
+      bridge.getGroupInfo.mockReturnValue(componentRow);
+      bridge.placeComponent.mockReturnValue(7);
+      panel.refresh();
+      (container.querySelector('.cp-btn-place') as HTMLElement).click();
+      expect(bridge.placeComponent).toHaveBeenCalledTimes(1);
+      // Beside the original, never on it — two solids in the same place share
+      // every edge, which the invariant checker calls non-manifold, and the
+      // engine refuses a zero offset for exactly that reason.
+      const [defId, dx] = bridge.placeComponent.mock.calls[0];
+      expect(defId).toBe(2);
+      expect(Math.abs(dx)).toBeGreaterThan(0);
+    });
+
+    it('a refusal does not claim success', () => {
+      bridge.getAllGroups.mockReturnValue([componentRow]);
+      bridge.getGroupInfo.mockReturnValue(componentRow);
+      bridge.placeComponent.mockReturnValue(0);
+      const sync = vi.fn();
+      panel = new ComponentPanel(container, bridge, selection, { ...callbacks, syncMesh: sync });
+      panel.refresh();
+      (container.querySelector('.cp-btn-place') as HTMLElement).click();
+      expect(bridge.placeComponent).toHaveBeenCalled();
+      expect(sync, 'nothing changed, so nothing to sync').not.toHaveBeenCalled();
     });
   });
 });
