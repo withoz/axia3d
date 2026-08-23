@@ -105,6 +105,56 @@
 //! (`face_rederive` / the coplanar reconcile) is the next place to read,
 //! because it is what runs on the surviving face after the segment loop ends.
 //!
+//! ── Answered 2026-08-23. It is not downstream at all ───────────────────
+//!
+//! Printing the whole boundary loop of both offending faces, rather than just
+//! the flat arc, says the damage is already IN the face before the cut:
+//!
+//! ```text
+//!   FaceId(86)  loop  148(27.639,-130) 147(67.500,-130) 79 28 29 30 31
+//!                     152(27.872,-130)
+//!                     -> 152 lies INSIDE edge 148->147.  s = 0.0058
+//!
+//!   FaceId(141) loop  262(67.5,-170.337) 86(67.5,-174.367) 149(67.5,-130)
+//!                     85 4 3 2 1 263(67.5,-145.725)
+//!                     -> edge 86->149 steps over BOTH 262 and 263
+//! ```
+//!
+//! One shape, not two:
+//!
+//!   **a boundary edge that steps over another vertex of its own loop.**
+//!
+//! Everything else follows. The two cut points both sit on that overlapping
+//! stretch, so one side of the cut is the stretch doubling back on itself and
+//! has no width. The cut is not creating the degeneracy; it is the first thing
+//! that has to divide by it.
+//!
+//! ⚠ Two more corrections to the header above, both from the same printout:
+//!
+//!   - "`VertId(148)` sits on the flat arc, 0.233 mm from one end of the cut"
+//!     is true and misleading. 148 is at x = 27.639 and the cut runs
+//!     27.872 -> 67.500, so 148 is OUTSIDE the cut, on the far side of its own
+//!     start. `find_vertices_on_line` was right not to break the line there —
+//!     148 is not on the segment. The question "where does VertId(148) go" was
+//!     the wrong question.
+//!   - The two faces were described as the same case. They are the same DEFECT
+//!     but were reached differently: 86's extra vertex is where an arc landed
+//!     0.233 mm inside an existing line edge; 141's are two earlier vertices on
+//!     a vertical that a later edge simply spanned.
+//!
+//! `find_collinear_endpoint_splits` (Step 0, Phase B in `exec_draw_line`) is
+//! built for exactly this and would have accepted 86's case — `s = 0.0058`
+//! against its `s_eps = 1e-3`, comfortably inside. It did not run on it,
+//! because it only ever looks at the endpoints of the line BEING DRAWN against
+//! existing edges. Nothing looks the other way: a vertex that arrives by some
+//! other route — an arc endpoint, a crossing split, an arrangement output —
+//! lands in the middle of a collinear edge and no one splits that edge.
+//!
+//! So the next thing to measure is upstream of everything tried so far: which
+//! producer puts a vertex inside an existing collinear edge without splitting
+//! it. The four attempts in this file were all downstream of that, which is why
+//! all four traded one symptom for a worse one.
+//!
 //! ⚠ It cost FOUR wrong diagnoses first, all of which asked who CREATED the
 //! face. Nobody did, in the sense they meant: a split does its own DCEL surgery
 //! (`faces.insert` + half-edge splicing) and never passes through
@@ -231,4 +281,110 @@ fn adjacent_vertices_are_still_refused() {
         .expect("the face");
     let r = m.split_face(f, vs[0], vs[1]);
     assert!(r.is_err(), "neighbours on the boundary cannot be cut apart");
+}
+
+/// The shape the whole file is about, stated as a check anyone can run.
+///
+/// A boundary edge must not step over another vertex of its own loop. This is
+/// what `verify_face_invariants` does NOT look for, and it is the condition
+/// that makes a later cut produce a piece with no area.
+///
+/// Built here from the rectangle above plus an extra vertex placed INSIDE the
+/// bottom edge without splitting it — the same arrangement the fuzz reached by
+/// landing an arc 0.233 mm inside an existing line.
+fn steps_over_own_vertex(
+    m: &Mesh,
+    f: axia_geo::FaceId,
+) -> Option<(DVec3, DVec3, DVec3)> {
+    let face = m.faces.get(f)?;
+    if !face.is_active() { return None; }
+    let verts = m.collect_loop_verts(face.outer().start).ok()?;
+    let n = verts.len();
+    for i in 0..n {
+        let a = m.vertex_pos(verts[i]).ok()?;
+        let b = m.vertex_pos(verts[(i + 1) % n]).ok()?;
+        let ab = b - a;
+        let len = ab.length();
+        if len < 1e-9 { continue; }
+        let dir = ab / len;
+        for (j, &v) in verts.iter().enumerate() {
+            if j == i || j == (i + 1) % n { continue; }
+            let p = m.vertex_pos(v).ok()?;
+            let w = p - a;
+            let along = w.dot(dir);
+            if along <= 1e-6 || along >= len - 1e-6 { continue; }
+            if (w - dir * along).length() > 1e-6 { continue; }
+            return Some((a, b, p));
+        }
+    }
+    None
+}
+
+#[test]
+fn an_edge_that_steps_over_its_own_vertex_is_findable() {
+    // A clean rectangle does not have it.
+    let (m, _verts) = rect_with_a_split_left_side();
+    let clean: Vec<axia_geo::FaceId> = m
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(id, _)| id)
+        .collect();
+    for &f in &clean {
+        assert_eq!(
+            steps_over_own_vertex(&m, f),
+            None,
+            "a plain rectangle must not have an edge stepping over its own vertex"
+        );
+    }
+
+    // And it must be able to say YES, or the loop above proves nothing. Build
+    // the exact shape measured off FaceId(86): a loop whose LAST vertex sits
+    // in the interior of the edge formed by its first two.
+    //
+    // ⚠ The first version of this test stopped at the `None` loop plus two
+    // assertions about arithmetic, and passed with the detector stubbed to
+    // return None. Mutation-checked now: return None unconditionally from
+    // `steps_over_own_vertex` and this fails.
+    let mut bad = Mesh::new();
+    let vs: Vec<axia_geo::VertId> = [
+        DVec3::new(27.639, -130.0, 200.0), // 148 — edge start
+        DVec3::new(67.500, -130.0, 200.0), // 147 — edge end
+        DVec3::new(67.500, -125.633, 200.0),
+        DVec3::new(32.700, -125.491, 200.0),
+        DVec3::new(27.872, -130.0, 200.0), // 152 — INSIDE 148->147
+    ]
+    .iter()
+    .map(|q| bad.add_vertex(*q))
+    .collect();
+    let bf = bad
+        .add_face(&[vs[0], vs[1], vs[2], vs[3], vs[4]], MaterialId::new(0))
+        .expect("the fuzz built this shape, so the kernel accepts it");
+
+    let found = steps_over_own_vertex(&bad, bf);
+    let (ea, eb, over) = found.expect(
+        "an edge stepping over its own loop vertex must be detectable — this is \
+         the shape session 12 hit twice",
+    );
+    // Winding is the kernel's to choose, so assert the GEOMETRY, not indices:
+    // the offending edge is the long bottom run, and 152 is what it steps over.
+    let span = [ea.x, eb.x];
+    assert!(
+        span.contains(&27.639) && span.contains(&67.500),
+        "the offending edge must be the bottom run 27.639 <-> 67.500, got {ea:?} {eb:?}"
+    );
+    assert!(
+        (over - DVec3::new(27.872, -130.0, 200.0)).length() < 1e-9,
+        "and the vertex it steps over must be 152 at x=27.872, got {over:?}"
+    );
+
+    // ⚠ And the kernel currently calls this face sound. That is the gap: the
+    // damage is invisible until something has to divide by it.
+    let inv = bad.verify_face_invariants();
+    assert!(
+        inv.is_valid(),
+        "if this ever starts failing, verify_face_invariants learned to see the \
+         defect and this file's premise needs revisiting — violations: {:?}",
+        inv.violations
+    );
 }
