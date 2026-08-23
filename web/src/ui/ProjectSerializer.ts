@@ -17,6 +17,11 @@ export interface ProjectSerializerDeps {
   viewport: Viewport;
   toolManager: ToolManager;
   units: UnitSystem;
+  /** 바이너리 .xia 를 읽는 유일한 파서. 없으면 그 형식은 거절합니다 —
+   *  기존 호출자를 깨지 않으려고 optional 로 둡니다. */
+  fileManager?: {
+    loadFromArrayBuffer(data: Uint8Array, fileName?: string): Promise<boolean>;
+  };
 }
 
 /** Uint8Array → base64 문자열 */
@@ -42,6 +47,17 @@ export interface ProjectSerializerAPI {
   saveProject: () => void;
   openProject: () => void;
 }
+
+/** FileManager.createAxiaFile 이 앞 4바이트에 쓰는 값 ('AXIA', little-endian). */
+const AXIA_MAGIC = 0x41584941;
+/** 같은 상수를 파일 앞 4글자로 — little-endian 이라 디스크에는 'AIXA' 로 적힙니다
+    (코드 주석의 'AXIA' 와 다릅니다). 손으로 적지 않고 상수에서 유도합니다. */
+const AXIA_MAGIC_PREFIX = String.fromCharCode(
+  AXIA_MAGIC & 0xff,
+  (AXIA_MAGIC >>> 8) & 0xff,
+  (AXIA_MAGIC >>> 16) & 0xff,
+  (AXIA_MAGIC >>> 24) & 0xff,
+);
 
 export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSerializerAPI {
   const { bridge, viewport, toolManager, units } = deps;
@@ -128,6 +144,27 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
   };
 
   /** .xia 프로젝트 파일 저장 */
+  /** ADR-078 P-3 참고 — 스냅샷을 들인 뒤 뷰와 그룹을 되살립니다.
+   *
+   * JSON 경로와 바이너리 경로가 **같은** 사후 작업을 하도록 한곳에 둡니다.
+   * 나뉘어 있으면 한쪽만 고쳐져 조용히 어긋납니다 — 바이너리 파일이 열리는데
+   * 화면은 그대로인 식으로. */
+  const restoreViewAfterImport = () => {
+    toolManager.syncMesh();
+    // 면 ID 가 안정된 뒤에 당겨야 합니다.
+    pullGroupTagsFromBridge();
+    // 그룹 자체는 Boolean 그룹 태그와 다른 것입니다. 스냅샷이 엔진에는
+    // 되살리지만 로컬 맵은 비어 있어서, 다시 연 프로젝트의 그룹을 UI 가 보지
+    // 못했습니다. 양쪽 optional 접근 — 열기 전체가 하나의 try/catch 안이라
+    // 여기서 던지면 units·camera·styles 까지 건너뛰고 "불러오기 실패"가 됩니다.
+    const engineGroups = bridge.getAllGroups?.() ?? [];
+    if (engineGroups.length > 0) {
+      toolManager.selection.syncGroupsFromWasm?.(
+        engineGroups.map((g) => ({ id: g.id, faceIds: g.faceIds })),
+      );
+      debugLog(`[Open] ${engineGroups.length} group(s) restored`);
+    }
+  };
   const saveProject = () => {
     // ADR-078 P-3 — push group tags to bridge BEFORE exportSnapshot.
     pushGroupTagsToBridge();
@@ -190,7 +227,37 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
       if (!file) return;
 
       try {
+        // 두 저장 경로가 서로 다른 포맷을 씁니다 (2026-08-23 측정):
+        //   메뉴 "저장"              -> JSON
+        //   "다른 이름으로 저장"      -> [magic]['AXIA'][version][len][meta][snapshot]
+        // 열기는 JSON 만 읽어서, 후자로 저장한 파일은 이 앱에서 다시 열리지
+        // 않았습니다. 앞 4바이트를 보고 갈라 둘 다 받습니다.
+        // ⚠ Sniff from TEXT, not bytes. `openProject` has always read via
+        // `file.text()`, and ProjectSerializer.test.ts supplies exactly that
+        // one reader on its fixtures — switching the first read to
+        // `arrayBuffer()` broke three of its tests with
+        // "file.arrayBuffer is not a function". The magic is four ASCII bytes,
+        // so the text prefix carries it, and bytes are only fetched once we
+        // know we need them.
         const text = await file.text();
+        if (text.startsWith(AXIA_MAGIC_PREFIX)) {
+          const fm = deps.fileManager;
+          if (!fm) {
+            alert(t('이 파일은 바이너리 .xia 입니다 — 열 수 없습니다.'));
+            return;
+          }
+          // FileManager 가 materials / curves / 파일명 복원 + importSnapshot 까지
+          // 합니다. 뷰포트 갱신과 그룹 복원은 그쪽이 하지 않으므로 여기서.
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const ok = await fm.loadFromArrayBuffer(bytes, file.name);
+          if (!ok) {
+            alert(t('파일을 불러오는데 실패했습니다.'));
+            return;
+          }
+          restoreViewAfterImport();
+          debugLog('[Open] binary .xia restored');
+          return;
+        }
         const project = JSON.parse(text);
 
         if (project.format !== 'xia') {
@@ -203,27 +270,7 @@ export function initProjectSerializer(deps: ProjectSerializerDeps): ProjectSeria
           const data = fromBase64(project.mesh);
           const ok = bridge.importSnapshot(data);
           if (ok) {
-            toolManager.syncMesh();
-            // ADR-078 P-3 — pull group tags AFTER syncMesh (face IDs stable).
-            pullGroupTagsFromBridge();
-            // Groups themselves, which are not the same thing as Boolean group
-            // tags above. The snapshot restores them into the engine, but the
-            // local map was never repopulated, so a reopened project had groups
-            // the UI could not see: getGroupId returned undefined and
-            // "컴포넌트로 변환" answered "그룹에 속해 있지 않습니다" for a face
-            // that was in one. syncGroupsFromWasm exists for this and had no
-            // callers anywhere.
-            // Optional access on both sides: the whole open handler sits inside
-            // one try/catch, so a bridge or selection without these would abort
-            // the load and skip units, camera and styles — turning a missing
-            // group restore into "파일을 불러오는데 실패했습니다".
-            const engineGroups = bridge.getAllGroups?.() ?? [];
-            if (engineGroups.length > 0) {
-              toolManager.selection.syncGroupsFromWasm?.(
-                engineGroups.map((g) => ({ id: g.id, faceIds: g.faceIds })),
-              );
-              debugLog(`[Open] ${engineGroups.length} group(s) restored`);
-            }
+            restoreViewAfterImport();
             debugLog('[Open] Mesh restored from snapshot');
           } else {
             console.error('[Open] importSnapshot failed');

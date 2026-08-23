@@ -612,7 +612,7 @@ async function main() {
   const { openOsnapPanel } = osnapAPI;
 
   // ═══ Project Save/Load (.xia) — MenuBar/KeyboardShortcuts보다 먼저 초기화 ═══
-  const { saveProject, openProject } = initProjectSerializer({ bridge, viewport, toolManager, units });
+  const { saveProject, openProject } = initProjectSerializer({ bridge, viewport, toolManager, units, fileManager });
 
   // ═══ Command Catalog — single source of truth for command metadata.
   //   NOT a new dispatcher — each entry's `execute` callback delegates
