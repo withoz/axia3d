@@ -54,9 +54,56 @@
 //!
 //! The engine is therefore UNCHANGED. What is pinned below is the behaviour as
 //! it stands, with the collinear case named so the next attempt starts from
-//! measurement rather than from a fourth guess. The next thing to measure is
-//! what op 15 actually needs from op 29's division — not another way to
-//! suppress the flat face.
+//! measurement rather than from a fourth guess.
+//!
+//! ── Re-measured 2026-08-23, and three details above are wrong ──────────
+//!
+//! The conclusion held; the mechanism did not. Running session 12 with the
+//! area check actually applied, against the same session unpatched:
+//!
+//! ```text
+//!                                    미수정      넓이 가드
+//!   최종 violation                      2            13
+//!   그중 NaN 법선                        0             2
+//!   넓이 0 면                            1             0
+//! ```
+//!
+//! So the corrections:
+//!
+//!   1. The guard fires TWICE, not once — `FaceId(86)` (arc areas 0.000000 /
+//!      286.967811) and `FaceId(137)` (0.000000 / 181.930198).
+//!   2. Both `FaceId(86)` and `FaceId(141)` were said to be "session 12 op 29".
+//!      They are two different moments; the classifier only ever named op 29
+//!      because its criterion is `face_area == 0.0` EXACTLY, and the earlier
+//!      damage is stacked-but-not-flat, so it goes unnamed.
+//!   3. "fails EARLIER, at op 15" described the classifier's output moving,
+//!      not the damage moving. Unpatched, session 12's FIRST stacked pair is
+//!      `FaceId(89)/FaceId(46)`, long before op 29's `143/142/141` family —
+//!      it is already broken there. The area check does remove every flat
+//!      face, and in exchange the FINAL violation count goes 2 -> 13, two of
+//!      them faces with a NaN normal.
+//!
+//!      ⚠ Count the FINAL block, not the dumps. `debug_verify_invariants`
+//!      prints on every mutation, so a cumulative tally (26 vs 92 here) partly
+//!      measures how often it ran (8 vs 10), not how much is wrong.
+//!
+//! That last row is the load-bearing part, now with a number on it. Refusing
+//! the cut does not leave the face intact — it leaves it UNDIVIDED, and
+//! whatever runs next re-tiles the undivided face over and over.
+//!
+//! ⚠ A fourth correction, and a fifth guess refuted. The note above said
+//! `exec_draw_line` does `continue` on an `Err`. It does not — `scene.rs`'s
+//! `Err(_)` arm falls through to (b) free-edge loop detection, commented
+//! `// split 실패 시 loop detection으로 fallback`. That looked like the
+//! re-tiler, so it was tested: guard PLUS `continue` on that specific error,
+//! skipping the fallback entirely. Result identical — 13 violations, the same
+//! 2 NaN faces. Loop detection is not where the extra damage comes from.
+//!
+//! So the next question is narrower than before: with the cut refused, the
+//! host face survives undivided and something downstream lays 11 more
+//! overlapping faces onto it. Not loop detection. The post-draw arrangement
+//! (`face_rederive` / the coplanar reconcile) is the next place to read,
+//! because it is what runs on the surviving face after the segment loop ends.
 //!
 //! ⚠ It cost FOUR wrong diagnoses first, all of which asked who CREATED the
 //! face. Nobody did, in the sense they meant: a split does its own DCEL surgery
