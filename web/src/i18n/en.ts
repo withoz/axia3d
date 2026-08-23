@@ -2236,6 +2236,8 @@ export const EN: Record<string, string> = {
   '클릭하여 치수 편집': 'Click to edit the dimension',
   '클릭하여 각도 편집': 'Click to edit the angle',
   '올바른 .xia 파일이 아닙니다.': 'This is not a valid .xia file.',
+  '이 파일은 바이너리 .xia 입니다 — 열 수 없습니다.':
+    'This is a binary .xia file and cannot be opened.',
   '파일을 불러오는데 실패했습니다.': 'Could not load the file.',
   '세 점이 일직선이거나 너무 가깝습니다 — 평면을 만들 수 없어요': 'The three points are in a line or too close together — no plane can be made from them',
   '작업 평면 설정 완료 — 이후 그리기가 이 평면에 투영됩니다 (Home 키로 해제)': 'Work plane set — drawing now projects onto it (Home to clear)',
