@@ -101,9 +101,39 @@
 //!   - **Route 2** — the face is built from a sound list and the loop acquires
 //!     the overlap AFTERWARDS. FaceId(86) is one. Mechanism not yet measured.
 //!
-//! Route 2 is the open one. Anything that edits a loop in place after
-//! construction — `split_edge`, a vertex move, arrangement splicing — is a
-//! candidate, and none has been ruled in or out.
+//! ## Route 2, measured 2026-08-23 — two faces, and only one is its own
+//!
+//! Probing `verify_face_invariants` for the FIRST moment any face's outer loop
+//! steps over one of its own vertices, with a backtrace, session 12 has exactly
+//! five such faces:
+//!
+//! ```text
+//!   FaceId(146)  loop 12   z=0     <- subtract_double_covered_faces
+//!   FaceId(147)  loop 12   z=0     <- subtract_double_covered_faces
+//!   FaceId(148)  loop 15   z=0     <- subtract_double_covered_faces
+//!   FaceId(142)  loop  4   z=0     <- exec_draw_line
+//!   FaceId( 87)  loop  3   z=200   <- exec_draw_line
+//! ```
+//!
+//! Route 1 makes BIG ones — 12, 12, 15 verts, exactly the three
+//! self-overlapping pieces the clipper hands back. Route 2 makes SMALL ones,
+//! 3 and 4 verts, and those are the flat faces that actually get reported.
+//!
+//! ⚠ `FaceId(142)`'s offending geometry is `86 -> 149 over 263`, which is
+//! verbatim one of route 1's. So that one is not a second producer — it is a
+//! route-1 face split later, the damage inherited. `FaceId(87)` is at z=200 and
+//! every route-1 case is at z=0, so it has no route-1 ancestor. Route 2 is one
+//! face, not a mechanism.
+//!
+//! ⚠⚠ The backtrace names `exec_draw_line` through `flip_face_safe` /
+//! `align_face_with_neighbors`, but those are where the CHECK ran, not where
+//! the mutation happened — `debug_verify_invariants` fires after every
+//! mutation, so the frame above it is the first check that followed. The
+//! producing statement is somewhere in `exec_draw_line`'s synthesis before that
+//! check, and this measurement does not pin which one.
+//!
+//! So the remaining question is one face wide: what in `exec_draw_line` builds
+//! a 3-vertex loop whose single long edge runs over its own third vertex.
 //!
 //! ## Route 1 traced to its source
 //!
