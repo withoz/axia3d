@@ -17,6 +17,24 @@
 //!
 //! All tests are non-#[ignore]; §X.5 lock-in #6 mandates strict.
 
+// ⚠ FOUR EXPORTS HAVE NO CONSUMER, AND THAT IS NOT A DEFECT.
+//
+// Measured 2026-08-23 across `web/src` and `packages/`: of 346 `js_name`
+// exports, exactly four are referenced nowhere —
+//
+//     demoBooleanSolidTwoBoxes   ADR-276 Phase 1 verification harness
+//     getDirtyFaceCount          delta-buffer debugging
+//     getLastExportSkipStats     "face is active but invisible" diagnostics
+//     getXiaIds                  XIA enumeration for debugging
+//
+// All four are DIAGNOSTIC. Removing them would need this baseline changed too
+// (§D lock-in below is additive-only, so a deletion is an explicit decision,
+// not a tidy-up), and they cost 1.2% of a surface whose value is precisely that
+// it can be reached when something is wrong. Sessions in August 2026 used
+// exactly this kind of endpoint to find a stale WASM artifact, a zero-area face
+// and an LOD leak. Kept on purpose; recorded so the next audit does not
+// re-derive the list.
+//
 // ── Test 1 — Export baseline unchanged ───────────────────────────────
 //
 // §D lock-in (additive-only) regression: every js_name that existed
