@@ -53,6 +53,80 @@
 //!
 //! Nothing here changes the engine. What is pinned is the door, and the fact
 //! that walking through it leaves a face `verify_face_invariants` calls sound.
+//!
+//! ## Which side of the fork, measured 2026-08-23
+//!
+//! Two ways to fix this were on the table: inside the door, so every caller
+//! benefits, or per-caller. Both were measured rather than argued.
+//!
+//! **Inside the door does not work.** Candidate A densified the incoming vertex
+//! list — for each consecutive run, insert any existing vertex lying strictly
+//! inside it — and session 12 got WORSE:
+//!
+//! ```text
+//!                        baseline    candidate A
+//!   final violations         2            3
+//!   zero-area faces          1            1   (FaceId(142), unchanged)
+//! ```
+//!
+//! ⚠ It cannot work, and the reason is worth keeping: the offending vertex is
+//! ALREADY IN THE LIST. FaceId(86)'s loop is
+//! `[148, 147, 79, 28, 29, 30, 31, 152]` and 152 is the entry the run 148->147
+//! steps over. Densifying would place 152 twice and make the boundary
+//! self-touching. Nothing was forgotten — the polygon doubles back.
+//!
+//! **So the door is blameless.** It builds faithfully what it is handed. A
+//! third probe, on the INCOMING list at the door, found the self-overlap
+//! arriving already formed — 3 times in session 12, from a single caller:
+//!
+//! ```text
+//!   3   Scene::subtract_double_covered_faces
+//!
+//!   list len 12: run 7->8 over entry 0
+//!     (67.500,-174.367,0)-(67.500,-130.000,0)  over  (67.500,-145.725,0)
+//! ```
+//!
+//! That last one IS FaceId(141): the run 86->149 stepping over 263, and 263 is
+//! entry 0 of the same list.
+//!
+//! ## But there are TWO routes, not one
+//!
+//! ⚠ FaceId(86)'s case is NOT among those three. Its list was clean when the
+//! face was built — checked: with that loop as input the probe would have
+//! fired (`along` = 0.233 against its `1e-3` floor). So:
+//!
+//!   - **Route 1** — the caller hands over a polygon that already doubles back.
+//!     3 events, all `Scene::subtract_double_covered_faces`. Tractable: one
+//!     caller, and the fix belongs there rather than at the door.
+//!   - **Route 2** — the face is built from a sound list and the loop acquires
+//!     the overlap AFTERWARDS. FaceId(86) is one. Mechanism not yet measured.
+//!
+//! Route 2 is the open one. Anything that edits a loop in place after
+//! construction — `split_edge`, a vertex move, arrangement splicing — is a
+//! candidate, and none has been ruled in or out.
+//!
+//! ## Route 1 traced to its source
+//!
+//! `subtract_double_covered_faces` does not invent the polygon. Reading the
+//! path, its vertex lists come straight from a 2D clip:
+//!
+//! ```text
+//!   cop::polygon_difference_by_clip(&base2d, &clip2d, &cr)   -> pieces
+//!     -> filter(len >= 3)
+//!       -> vid_lists
+//!         -> mesh.add_face_with_holes(vids, &[], material)
+//! ```
+//!
+//! Only `len >= 3` is checked between the clipper and the door. A piece that
+//! doubles back has plenty of vertices, so it passes that filter untouched.
+//! That is where route 1's fix belongs — either the clipper stops emitting
+//! self-overlapping pieces, or that filter learns to see more than length.
+//!
+//! ⚠ Note the clipper is ADR-101's, whose own MVP is documented as assuming
+//! convex input (Sutherland-Hodgman). These pieces are differences of
+//! arbitrary coplanar faces, so the assumption does not obviously hold. That
+//! is a lead, not a measurement — nobody has yet fed it the three session-12
+//! inputs and looked at what comes out.
 
 use axia_geo::mesh::Mesh;
 use axia_geo::MaterialId;
