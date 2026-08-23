@@ -15,6 +15,40 @@
 //! - **Promotion** to `axia_geo::AnalyticCurve` / `AnalyticSurface` —
 //!   ADR-036 P21 매핑 표 그대로 (Stage 4-A OCCT.js 경로와 동일 매핑)
 //!
+//! ## Where this actually stands, measured 2026-08-23
+//!
+//! An audit listed "3 TODOs in axia-foreign" as the remaining work. Two of
+//! those three describe work that is already done somewhere else, so here is
+//! what a `grep` for callers says instead:
+//!
+//! ```text
+//!   step_lexer + step_parser        1218   IN PRODUCTION — axia-ifc imports
+//!                                          `step_parser`; IFC is ISO 10303-21
+//!                                          physical file syntax, same grammar
+//!   step_resolver                    626   written, no production caller
+//!   promote_step_curve/_surface     2370   written — Line / Circle / BSpline /
+//!                                          Ellipse / Trimmed / Parabola /
+//!                                          Hyperbola — no production caller
+//!   conic_converter + sweep          894   written, reached from the above
+//!   iges                             167   STUB. the 5-step TODO is real
+//! ```
+//!
+//! ⚠ `promote_curve::promote()` and `promote_surface::promote()` — the two
+//! that carry "TODO (Stage 4-B 본체)" — have ZERO callers. They take a bare
+//! kind enum with no entity data, and the live path is `step.rs` calling
+//! `promote_step_curve` / `promote_step_surface`, which are implemented. The
+//! TODO lists work that exists thirty lines further down the same file.
+//!
+//! `tests/cube_roundtrip.rs` parses a real `cube.stp`: 12 LINEs, 6 PLANEs,
+//! geometry checked. The STEP side is not a spike any more.
+//!
+//! What is genuinely missing is narrower than the ADR reads: IGES (a stub),
+//! and a caller for the promote layer. Note that STEP-as-a-CAD-format import
+//! in the app does NOT come through here — it goes through OCCT.js, Stage 4-A
+//! (ADR-082 / ADR-083), which shipped. So ADR-035 P20.E's twelve-month
+//! comparison is between a shipped 4-A and a 4-B whose parser is already
+//! carrying IFC in production.
+//!
 //! ## Out of Scope
 //!
 //! - AP242 / AP238 / IFC — 별도 ADR
