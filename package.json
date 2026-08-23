@@ -15,7 +15,9 @@
     "build:all": "npm run build:all --workspace web",
     "typecheck": "npm run typecheck --workspace web",
     "test": "npm run test --workspace web",
-    "validate:ifc": "node scripts/ifc-external-validate.mjs"
+    "validate:ifc": "node scripts/ifc-external-validate.mjs",
+    "mcp:setup": "node scripts/mcp-setup.mjs",
+    "mcp:test": "npm --prefix packages/axia-mcp-server test"
   },
   "devDependencies": {
     "web-ifc": "0.0.77"
