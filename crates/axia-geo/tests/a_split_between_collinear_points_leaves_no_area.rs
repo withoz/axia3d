@@ -142,18 +142,34 @@
 //!     0.233 mm inside an existing line edge; 141's are two earlier vertices on
 //!     a vertical that a later edge simply spanned.
 //!
-//! `find_collinear_endpoint_splits` (Step 0, Phase B in `exec_draw_line`) is
-//! built for exactly this and would have accepted 86's case — `s = 0.0058`
-//! against its `s_eps = 1e-3`, comfortably inside. It did not run on it,
-//! because it only ever looks at the endpoints of the line BEING DRAWN against
-//! existing edges. Nothing looks the other way: a vertex that arrives by some
-//! other route — an arc endpoint, a crossing split, an arrangement output —
-//! lands in the middle of a collinear edge and no one splits that edge.
+//! `find_collinear_endpoint_splits` (Step 0, Phase B in `exec_draw_line`) would
+//! have accepted 86's case — `s = 0.0058` against its `s_eps = 1e-3`. It did
+//! not run on it, because it only ever looks at the endpoints of the line BEING
+//! DRAWN against existing edges.
 //!
-//! So the next thing to measure is upstream of everything tried so far: which
-//! producer puts a vertex inside an existing collinear edge without splitting
-//! it. The four attempts in this file were all downstream of that, which is why
-//! all four traded one symptom for a worse one.
+//! ⚠ It is also narrower than "built for exactly this" suggests: it rejects any
+//! line not PARALLEL to the existing edge (`cross > 1e-6`), so it answers "a
+//! line running along an edge and starting partway into it", not "a vertex
+//! landed on an edge". 86's cut did run along the bottom edge, so that case
+//! qualifies; the general claim would not. Pinned in
+//! `the_door_a_spanning_edge_comes_through.rs`.
+//!
+//! ## Upstream, found 2026-08-23
+//!
+//! The damage runs the other way from what this file assumed. The vertex is
+//! there FIRST, and an edge is later drawn straight over it — 23 times in
+//! session 12, every one through one door:
+//!
+//! ```text
+//!   add_edge  <-  make_loop  <-  add_face_with_holes
+//! ```
+//!
+//! ⚠ Which is the door this file dismisses above: "a split does its own DCEL
+//! surgery and never passes through `add_face_with_holes`, so a trace on that
+//! one door saw nothing." True of the SPLIT. The upstream producer is that very
+//! door — the four traces were watching the right place for the wrong event.
+//!
+//! See `the_door_a_spanning_edge_comes_through.rs` for the callers and counts.
 //!
 //! ⚠ It cost FOUR wrong diagnoses first, all of which asked who CREATED the
 //! face. Nobody did, in the sense they meant: a split does its own DCEL surgery
