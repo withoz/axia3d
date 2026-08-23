@@ -14,6 +14,33 @@
 //! - Self-intersection PRE-PASS via Phase J `detect_ssi_pathologies`
 //!   on the offset-surface set — fail-fast if collisions detected
 //!   (silent wrong-result 차단 per ADR-057 §2.4 lock-in)
+//!
+//! ## What this is wired to, measured 2026-08-23
+//!
+//! Nothing in production. `shell_solid` has ONE caller in the whole repo —
+//! `offset_surface_robust.rs`'s `cross_phase_shell_then_phase_h_transform`
+//! test. An audit earlier the same day called the whole subsystem dead; that
+//! was wrong in both directions, so here is what is actually true:
+//!
+//!   - `shell_solid` (this file) — complete and validated, no caller.
+//!   - `entities/shell.rs` + `Mesh::shells` + its five CRUD methods
+//!     (`create_shell` / `remove_shell` / `shell_count` / `shell_for_face` /
+//!     `is_face_set_closed_solid`) — zero callers, and the storage is not
+//!     serialised into the scene snapshot either. Bookkeeping never adopted.
+//!   - `boundary::shell_from_point`, exported to WASM as `shellFromPoint` —
+//!     wired, but a DIFFERENT operation (boundary extraction from a point).
+//!   - the menu's "셸 (Thicken/Shell)" (`data-action="thicken-faces"`)
+//!     calls `bridge.createSolidExtrude`. That thickens a sheet into a solid;
+//!     it does not hollow one out. The label promises this file's operation
+//!     and delivers an extrude.
+//!
+//! ⚠ The gap is not a missing `#[wasm_bindgen]`. This works in SURFACE
+//! space: it takes `&[AnalyticSurface]` and returns `Vec<AnalyticSurface>`
+//! for the outer and inner walls. The mesh is a DCEL, and the returned inner
+//! surfaces carry no boundary loops, no trim curves and no topology, so there
+//! is nothing for `add_face_with_holes` or ADR-086's `inject_external_face`
+//! to consume. Wiring it means writing that materialisation, which is the
+//! part that does not exist — not an export line.
 
 use anyhow::{bail, Result};
 
