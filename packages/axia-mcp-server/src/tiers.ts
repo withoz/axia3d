@@ -56,6 +56,27 @@ export const TIER_2_MODIFY = [
 /**
  * Tier 3 — Destructive. Opt-in + per-call user consent + audit log.
  */
+// ⚠ FIVE OF THE 32 HAVE NO HANDLER, AND THE REASON IS NOT WIRING.
+//
+// Measured 2026-08-23: `delete_xia`, `export_obj`, `export_step`, `export_stl`
+// and `import_step` are declared here and have no file under `capabilities/`.
+// Every one of them is missing an ENGINE feature, not a delegator:
+//
+//   - `delete_xia`   — no `delete_xia` / `DeleteXia` anywhere in axia-core or
+//                      axia-wasm. Groups and faces can be deleted; a whole XIA
+//                      cannot.
+//   - `export_obj` / `export_stl` — these exist in the WEB app only, through
+//                      Three.js's `OBJExporter` / `STLExporter` (`MenuBar.ts`).
+//                      The MCP server runs in Node against the engine alone, so
+//                      it cannot reach them.
+//   - `export_step` / `import_step` — STEP is `axia-foreign` Stage 4-B, still
+//                      three `TODO (Stage 4-B 본체)` markers.
+//
+// So this is a roadmap gap, not a drift. Verified 2026-08-23:
+// `ALL_CAPABILITY_HANDLERS` lists the 27 that exist, `tools/list` filters that
+// list (P27.4), so the five never appear — a client cannot see, let alone call,
+// a capability with no handler. The surface is honest today, and each of these
+// lands when its engine feature does.
 export const TIER_3_DESTROY = [
   'erase_face',
   'erase_edge',
