@@ -124,9 +124,45 @@
 //!
 //! ⚠ Note the clipper is ADR-101's, whose own MVP is documented as assuming
 //! convex input (Sutherland-Hodgman). These pieces are differences of
-//! arbitrary coplanar faces, so the assumption does not obviously hold. That
-//! is a lead, not a measurement — nobody has yet fed it the three session-12
-//! inputs and looked at what comes out.
+//! arbitrary coplanar faces, so the assumption does not obviously hold.
+//!
+//! ## Fed 2026-08-23 — the lead was right, and dropping is not the answer
+//!
+//! Probed at the call site, computing IN PLACE rather than parsing a dump:
+//!
+//! ```text
+//!   piece len 16   2D 0   lifted 0   asVerts 0
+//!   piece len 12   2D 4   lifted 4   asVerts 4     <- self-overlapping
+//!   piece len 12   2D 2   lifted 2   asVerts 2     <- self-overlapping
+//!   piece len 15   2D 2   lifted 2   asVerts 2     <- self-overlapping
+//!   (6 more)       2D 0   lifted 0   asVerts 0
+//! ```
+//!
+//! Three of ten, eight incidences, and already in 2D — the clipper emits a ring
+//! that runs over its own vertex. Everything downstream is innocent: `lift` and
+//! `add_vertex` give byte-identical counts, and `add_vertex` snapped nothing
+//! (max 2.8e-14, i.e. float noise). `project`/`lift` round-trips the inputs to
+//! 2.8e-14 as well, so the plane basis is sound.
+//!
+//! ⚠⚠ But DROPPING them is not a fix. Filtering self-overlapping pieces right
+//! where `len >= 3` is checked:
+//!
+//! ```text
+//!                        baseline    drop self-overlapping
+//!   final violations         2                2
+//!   zero-area faces          1                1   (FaceId(142), unchanged)
+//!   workspace                green            green (3315, 0 failed)
+//! ```
+//!
+//! Neutral — no gain, no loss, and a per-piece O(n^2) scan for it. Not shipped.
+//! The flat face survives because it comes through route 2 (`rebuild_inner`),
+//! which this filter never sees.
+//!
+//! ⚠⚠⚠ Four text-parsing attempts disagreed with each other before the check
+//! was moved into the probe itself, and one of them said "2D 0, 3D 2" — which
+//! would have made the clipper innocent and sent the next reader to hunt an
+//! isometry bug in `lift` that does not exist. Do the arithmetic where the data
+//! is; do not grep a dump and compare two parses.
 
 use axia_geo::mesh::Mesh;
 use axia_geo::MaterialId;
