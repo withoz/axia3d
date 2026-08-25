@@ -9676,9 +9676,6 @@ impl VertexArrangement {
         idx
     }
 
-    pub(crate) fn point(&self, idx: usize) -> DVec3 {
-        self.points[idx]
-    }
 
     pub(crate) fn len(&self) -> usize {
         self.points.len()

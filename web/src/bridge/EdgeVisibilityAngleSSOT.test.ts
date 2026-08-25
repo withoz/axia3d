@@ -53,3 +53,28 @@ describe('ADR-038 P23.3: Edge visibility angle SSOT (Rust ↔ TS)', () => {
     expect(bridge.getEdgeVisibilityAngleDeg()).toBe(expected);
   });
 });
+
+/**
+ * ⚠ There is a THIRD copy, and it had drifted to 30.0 for long enough that
+ * nobody noticed - because `COS_EDGE_VISIBILITY`, the only thing derived from
+ * it, has no importers, so the wrong value never reached a pixel.
+ *
+ * An inert wrong value is still a trap: the next person to import it gets a
+ * 10-degree difference from what Rust hides edges at. The guard above only
+ * ever looked at the WasmBridge mirror, so this covers the file that drifted.
+ */
+describe('constants.ts is the third copy, and it drifted once', () => {
+  it('matches the Rust SSOT, not the 30 it used to say', async () => {
+    const c = await import('../constants');
+    expect(c.EDGE_VISIBILITY_ANGLE_DEG, 'Rust tolerances.rs:123 is 20.1').toBe(20.1);
+    expect(c.EDGE_VISIBILITY_ANGLE_DEG, 'the exact value it drifted to').not.toBe(30);
+  });
+
+  it('agrees with the WasmBridge mirror rather than being separately right', () => {
+    // Two copies that happen to be 20.1 today, checked against each other, so
+    // moving one alone fails here rather than silently reintroducing a split.
+    return import('../constants').then((c) => {
+      expect(c.EDGE_VISIBILITY_ANGLE_DEG).toBe(WasmBridge.EDGE_VISIBILITY_ANGLE_DEG);
+    });
+  });
+});

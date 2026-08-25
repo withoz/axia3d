@@ -7,5 +7,5 @@ description = "AXiA 3D transaction manager — Undo/Redo with atomic operations"
 
 [dependencies]
 rustc-hash = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true }
+
+
