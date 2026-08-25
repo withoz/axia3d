@@ -7710,6 +7710,50 @@ LOCKED #44 (Complete Meaning per Merge) · #61 (identity vs dispatch) ·
 세그먼트마다 커밋해서 지금은 못 하고, 체인 전체를 모으는 상태기계 변경이 필요하다. 그리고
 계획 C(입체 위에서 coplanar arrangement 가 통째로 꺼져 특수 경로 36개가 메우는 구조)는
 사용자 결재로 **다음 계획**.
+### 106. 초기 번들 — 725 kB 는 2026-05 의 기록이고, 지금은 1,151 kB (2026-08-25) ✅
+
+⚠ **LOCKED #28/#30/#33 의 "724.99 kB" 를 현재 값으로 읽지 말 것.** 그 숫자들은
+2026-05-07~08 에 참이었고 메타-원칙 #10 에 따라 그대로 둔다. 이후 ADR 약 10건이
+"724.99 UNCHANGED (P20.C #2)" 를 계속 단언했지만, 마지막 실측 이후 ADR 이 약
+177개 지나갔다.
+
+실측 (2026-08-25, ADR-082 L3 이 정의한 것과 같은 지표 = `index-*.js`):
+
+```text
+  entry chunk        1,151.07 kB     (LOCKED #33 의 725.65 대비 +425.42, +58.6%)
+  modulepreload        751.34 kB     three-loaders
+  첫 로드 합계       1,902.41 kB     (gzip 505.18 kB)
+```
+
+⚠ **ADR-035 P20.C #2 자체는 지켜지고 있다.** 그 규칙은 "OCCT 동적 import 가 초기
+번들을 0 MB 늘릴 것" 이고, `opencascade-deps` (5,370 kB) 는 `dist/index.html` 에
+**0회** 등장한다. 깨진 것은 없다 — 없던 것은 **알아챌 무언가** 였다.
+
+이제 있다: `web/scripts/check-bundle-size.mjs` 가 `postbuild` 로 돌며, 예산을
+넘으면 빌드를 실패시킨다. 예산을 올리려면 같은 커밋에서 `BUDGET` 을 고쳐야 한다 —
+아무도 못 본 드리프트가 아니라 승인된 diff 한 줄이 되도록.
+
+#### 다음 사람이 밟을 함정
+
+- ⚠ `dist/assets/index-*.js` 를 glob 하지 말 것. 빌드가 `--emptyOutDir false`
+  (Windows 권한 회피, CLAUDE.md:8152) 라 stale entry chunk 가 12개 쌓여 있고
+  glob 은 아무거나 집는다. **`dist/index.html` 을 통해 해석**해야 한다.
+- ⚠ `vite.config.ts` 의 "import 시에만 로딩" 주석은 **틀렸었다** (정정함).
+  `three.module.js` (rendered 1,087 kB) 가 `three-loaders` 청크로 hoist 되어
+  즉시 로드된다. 뷰포트가 three 코어를 시작 시 필요로 하므로 즉시 로드 자체는
+  정당하고, 함께 실린 로더 코드만 낭비다. **재분할은 렌더 경로를 건드리므로
+  별도 ADR** — 여기서 하지 않았다.
+- ⚠ 가드의 preload 정규식이 안 맞으면 751 kB 가 0 으로 세어져 조용히 통과했다.
+  변이로 잡아 `preloads.length === 0` 을 실패로 바꿨다 (ADR-299/302/304 와 같은
+  vacuous 모양).
+
+#### 성장은 최근 것이 아니다
+
+엔트리에서 baseline (`155e127`, 2026-07-01 squash) 이후 새로 늘어난 552.4 kB 중
+408.0 은 그때도 있었으나 미추적이던 빌드 산출물 (`axia_wasm.js` 339.3 +
+`catalog.js` 68.7). 진짜 새 소스는 약 144 kB 이고 대부분 i18n (127.0, ADR-294).
+나머지는 5~6월 엔진 확장에 걸쳐 누적됐다.
+
 ### 105. 퍼즈가 찾은 겹침 네 건 — 배선이 아니라 **판정**이 없었다 (2026-08-17) ✅
 
 **재-오진 방지 (LOCKED #88 의 목적)** — 아래 넷은 **고쳤다. 다시 결함으로 올리지 말 것.**

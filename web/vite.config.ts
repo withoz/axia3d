@@ -85,7 +85,14 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          // Three.js 로더 → 별도 청크 (import 시에만 로딩)
+          // Three.js 로더 → 별도 청크.
+          // ⚠ 이 주석은 "import 시에만 로딩" 이라고 했는데 사실이 아닙니다:
+          // three.module.js (rendered 1,087 kB) 가 이 청크로 hoist 되어,
+          // dist/index.html 이 modulepreload 로 즉시 받습니다 (751 kB).
+          // 뷰포트가 three 코어를 시작 시 필요로 하므로 즉시 로드 자체는
+          // 정당하지만, 함께 실린 로더 코드는 import 때까지 필요 없습니다.
+          // 재분할은 렌더 경로를 건드리므로 별도 ADR — 지금은 예산
+          // (scripts/check-bundle-size.mjs) 이 크기를 붙잡고 있습니다.
           if (id.includes('three/examples/jsm/loaders/')) {
             return 'three-loaders';
           }
