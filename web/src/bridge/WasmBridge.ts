@@ -6005,7 +6005,7 @@ export class WasmBridge {
       if (!arr || arr.length < 3) return null;
       return [arr[0], arr[1], arr[2]];
     } catch (e) {
-      console.error('[WasmBridge] getVertexPos failed:', e);
+      this.reportOnce('getVertexPos', e);
       return null;
     }
   }
@@ -6155,7 +6155,7 @@ export class WasmBridge {
       const a = this.engine.radiusDimAt(refVert);
       return a && a.length === 4 ? [a[0], a[1], a[2], a[3]] : null;
     } catch (e) {
-      console.error('[WasmBridge] radiusDimAt failed:', e);
+      this.reportOnce('radiusDimAt', e);
       return null;
     }
   }
@@ -6171,9 +6171,36 @@ export class WasmBridge {
     catch (e) { console.error('[WasmBridge] removeConstraint failed:', e); return false; }
   }
 
-  /** Once-flag for listConstraints failures — avoid console flood when
-   *  RAF tick repeatedly hits the same wasm-bindgen reentrancy guard. */
+  /** Once-flag for listConstraints failures.
+   *
+   *  The doc here used to blame 'RAF tick repeatedly hits the same
+   *  wasm-bindgen reentrancy guard'. listConstraints has not been on a
+   *  per-frame tick since the snapshot cache landed — ConstraintVisual calls
+   *  it from `refreshCache()`, which runs on bridge events only. The flood it
+   *  guards against is a burst of events, not a frame loop. */
   private _listConstraintsFailedOnce = false;
+
+  /** Methods that have already reported a failure — see `reportOnce`. */
+  private _reportedFailures = new Set<string>();
+
+  /**
+   * Log a bridge failure once per method, then stay quiet.
+   *
+   * For the calls that run EVERY FRAME. `ConstraintVisual.update` makes 2-4
+   * `getVertexPos` calls per constraint per frame and `DimensionManager`
+   * makes 2-5 more; with a poisoned engine and ten constraints an unguarded
+   * `console.error` is on the order of a thousand identical lines a second,
+   * which buries the first one — the only one that says anything.
+   *
+   * Deliberately NOT applied to the other ~87 `console.error` sites in this
+   * file. Most are user-driven and fire once anyway; blanket-suppressing them
+   * would hide repeats that matter. This is for the per-frame ones.
+   */
+  private reportOnce(method: string, e: unknown): void {
+    if (this._reportedFailures.has(method)) return;
+    this._reportedFailures.add(method);
+    console.error(`[WasmBridge] ${method} failed (suppressing repeats):`, e);
+  }
 
   /**
    * Event-driven constraint cache invalidation.

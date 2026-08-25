@@ -778,6 +778,9 @@ export class Viewport {
   dispose(): void {
     // Stop render loop
     this.stop();
+    // …and forget what it was running. `stop()` only cancels the pending
+    // frame; the callbacks would still be here if anything restarted the loop.
+    this._onFrameCallbacks.length = 0;
     // Disconnect ResizeObserver
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
@@ -3032,7 +3035,18 @@ export class Viewport {
     this.setEdgeStyle({ color: preset.edgeColor });
   }
 
-  /** Register a callback to run each frame (before render) */
+  /**
+   * Register a callback to run each frame, before the render.
+   *
+   * Returns nothing, unlike `onResize` ten lines up which hands back an
+   * unsubscribe. The asymmetry is deliberate: resize listeners genuinely come
+   * and go (panels mount and unmount), while every per-frame job here is
+   * registered once during init and lives as long as the viewport. An
+   * unsubscribe nobody calls is an API to keep working for no reason.
+   *
+   * `dispose()` clears the list, so a disposed viewport does not re-run stale
+   * callbacks if it were ever restarted.
+   */
   onFrame(cb: () => void): void {
     this._onFrameCallbacks.push(cb);
   }

@@ -434,6 +434,25 @@ export function initMenuBar(deps: MenuBarDeps): void {
         Toast.info(t(next ? '축 표시' : '축 숨김'));
         break;
       }
+      case 'view-dimensions': {
+        // The permanent, editable dimension labels (ADR-215) — a different
+        // thing from the context menu's '치수 표시 ON/OFF', which toggles the
+        // transient readout on the current SELECTION. Those had a control;
+        // these did not, though DimensionManager has had setVisible() and a
+        // test for it all along.
+        //
+        // Reached through the window handle, the way `view-scenes` reaches
+        // ScenesManager. DimensionManager is built inside main()'s §15b and
+        // there is no other seam into it.
+        const dm = (window as unknown as {
+          __axia_dimensionManager?: { setVisible(v: boolean): void; isVisible(): boolean };
+        }).__axia_dimensionManager;
+        if (!dm) break;
+        const next = !dm.isVisible();
+        dm.setVisible(next);
+        Toast.info(t(next ? '치수 라벨 표시' : '치수 라벨 숨김'));
+        break;
+      }
       case 'measure-selection':
         // 선택 상태에 따라 길이/면적/부피 Toast 출력.
         toolManager.executeAction('measure-selection');
