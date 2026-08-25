@@ -22,6 +22,33 @@
 //! four-point quadrilateral that crosses it twice on each of two opposite
 //! sides. That is the shape, not an exotic one.
 //!
+//! ## ⚠ Not a re-flag of LOCKED #105 — read this before filing it as one
+//!
+//! CLAUDE.md LOCKED #105 (2026-08-17) already names this function and says
+//! "고츠다. 다시 결함으로 올리지 말 것" — fixed, do not re-flag. That is a
+//! DIFFERENT shape in the same function, and the distinction is measurable:
+//!
+//! ```text
+//!               LOCKED #105                    this file
+//!   shape       a vertex appearing TWICE       distinct vertices, one edge
+//!               (31-vert loop, 2 duplicates)   running over another
+//!   duplicates  2                              0
+//!   crossings   2                              4
+//! ```
+//!
+//! And #105's own closing table records the gap this fills, honestly:
+//!
+//!   "짝수 교차 게이트 ... 4-교차 겹침을 만들면서 수리도 필요한 장면이 아직 없다"
+//!   ("no scene yet makes a 4-crossing overlap that also needs repair")
+//!
+//! Wide-fuzz session 12 is that scene. So this is not a regression of #105's
+//! fix and not a re-flag — it is the case #105 said nothing had reached.
+//!
+//! The input here also clears both gates #105 left in place: the clip is
+//! convex (`is_convex_ccw_2d`, coplanar.rs:200 — all four cross products
+//! positive) and the crossing count is even (coplanar.rs:1088). Convex clip,
+//! convex subject, and the output still doubles back.
+//!
 //! ## What this file does NOT claim
 //!
 //! It does not say dropping such pieces is the fix — measured, and it is not:

@@ -5,6 +5,9 @@ on:
     branches: [main, develop, 'claude/**', 'feature/**']
     paths:
       - 'packages/axia-mcp-server/**'
+      # The scaffold's own suite runs in this workflow (job
+      # create-scaffold-test), so a PR touching only it must trigger us.
+      - 'packages/create-axia-mcp/**'
       - 'packages/axia-wasm-node/**'
       - 'crates/axia-wasm/**'
       - 'crates/axia-core/**'
@@ -16,6 +19,9 @@ on:
     branches: [main, develop]
     paths:
       - 'packages/axia-mcp-server/**'
+      # The scaffold's own suite runs in this workflow (job
+      # create-scaffold-test), so a PR touching only it must trigger us.
+      - 'packages/create-axia-mcp/**'
       - 'packages/axia-wasm-node/**'
       - 'crates/**'
       - '.github/workflows/mcp.yml'

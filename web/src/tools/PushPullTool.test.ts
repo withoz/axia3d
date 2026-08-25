@@ -330,8 +330,18 @@ describe('PushPullTool', () => {
 
   describe('onMouseMove', () => {
     it('does nothing when not active', () => {
-      tool.onMouseMove({ clientX: 200, clientY: 200 } as MouseEvent, null);
-      // Should not throw
+      // ⚠ Was assertion-free. "Does nothing" is checkable: an idle tool must
+      // not start anything on a move.
+      expect(tool.isBusy(), 'premise: the tool is idle').toBe(false);
+      expect(() =>
+        tool.onMouseMove({ clientX: 200, clientY: 200 } as MouseEvent, null),
+      ).not.toThrow();
+      expect(tool.isBusy(), 'and a move on an idle tool starts nothing').toBe(false);
+      // ⚠ isBusy() alone is NOT enough - it is false whether or not the guard
+      // exists. What `if (!this.ppActive) return;` buys is that an idle tool does
+      // no snap work at all. Mutation-checked: delete the guard and this fails.
+      expect(ctx.snap.findAlignedDistance, 'an idle tool must not run snap')
+        .not.toHaveBeenCalled();
     });
   });
 
