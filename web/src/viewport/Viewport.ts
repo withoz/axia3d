@@ -3063,8 +3063,26 @@ export class Viewport {
       //
       // That was tolerable while every per-frame job owned its own rAF chain
       // (a throw killed only that chain). It is not tolerable now that the
-      // constraint indicator and the dimension labels ride here — both reach
-      // into WASM, and WASM is exactly what throws during teardown.
+      // constraint indicator and the dimension labels ride here.
+      //
+      // ⚠ Not because of WASM. An earlier version of this comment said the two
+      // overlays are dangerous because they reach into WASM and WASM throws
+      // during teardown — that is wrong, and it is the same false-comment
+      // mistake that had ConstraintVisual's own header claiming it made no
+      // WASM calls at all. `WasmBridge.getVertexPos` catches and returns null
+      // (WasmBridge.ts), as does `listConstraints`; neither can propagate to
+      // here. The throws that CAN reach this loop come from the plain-JS side:
+      // `viewport.activeCamera` read after dispose, `getBoundingClientRect()`
+      // on a detached container, `v.clone().project(camera)`, `label.update`.
+      //
+      // ⚠ And one thing the move genuinely changed: the old chain re-armed
+      // AFTER the call, so a permanently-broken callback died on its first
+      // throw. Here it is re-entered every frame forever. Anything it does
+      // before throwing repeats at 60fps — `ConstraintVisual.update` clears
+      // its canvas first, so a broken one clears and re-clears indefinitely.
+      // Acceptable for now (the alternative, disabling a callback after N
+      // failures, is a policy this loop does not otherwise have), but it is a
+      // trade, not a free win.
       //
       // Report each callback once. At 60fps a bare console.error is 60
       // identical lines a second, which buries the first one — the same
