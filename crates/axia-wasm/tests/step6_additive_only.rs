@@ -1,6 +1,7 @@
 //! ADR-060 Phase O Step 6 — WASM additive-only API regression tests.
 //!
-//! 6 invariants per ADR-060 §3 + Step 6 sign-off mitigation matrix:
+//! ADR-060 §3 + Step 6 sign-off mitigation matrix. The six below are the
+//! original set; the file has grown to 80 tests since.
 //!
 //!   1. wasm_export_baseline_unchanged                     (R1, R2)
 //!   2. get_edge_curve_json_emits_world_coords             (R7)
@@ -19,7 +20,7 @@
 
 // ⚠ FOUR EXPORTS HAVE NO CONSUMER, AND THAT IS NOT A DEFECT.
 //
-// Measured 2026-08-23 across `web/src` and `packages/`: of 346 `js_name`
+// Measured 2026-08-23 across `web/src` and `packages/`: of 343 `js_name`
 // exports, exactly four are referenced nowhere —
 //
 //     demoBooleanSolidTwoBoxes   ADR-276 Phase 1 verification harness
@@ -41,6 +42,19 @@
 // before Step 6 must still exist with same name. New endpoints may be
 // added but none removed. Baseline file is committed to repo.
 #[test]
+// ⚠ export_baseline.txt is GENERATED, not hand-written. It stood at 227 names
+// while lib.rs had 343, so 116 exports sat outside it — and an empirical sweep
+// (delete each one, run the guard, restore) found 90 of those deletable with
+// this test still green, 86 with the whole axia-wasm suite green. The other 26
+// were caught by sibling tests asserting a Rust fn name or a behaviour string,
+// which a name-scan cannot see. Regenerated 2026-08-25 to all 343:
+//
+//     grep -o 'js_name = "[^"]*"' crates/axia-wasm/src/lib.rs | sort -u \
+//       > crates/axia-wasm/tests/export_baseline.txt
+//
+// Order does not matter (this test reads it into a HashSet), so regenerating is
+// safe. Every one of the previous 227 survives the regeneration — checked with
+// `comm -23` before replacing the file.
 fn wasm_export_baseline_unchanged() {
     let baseline = include_str!("export_baseline.txt");
     let baseline_names: std::collections::HashSet<&str> = baseline
