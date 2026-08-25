@@ -264,6 +264,7 @@ export function registerAxiaCommands(deps: CommandRegistrationDeps): void {
   cmds.push(action('view-home',   'view', '홈 뷰',         'F5',     undefined, false, deps));
   cmds.push(action('view-axis',   'view', '축 표시 토글',   '축',     undefined, false, deps));
   cmds.push(action('view-grid',   'view', '그리드 토글',    'Grid',   undefined, false, deps));
+  cmds.push(action('view-dimensions', 'view', '치수 라벨 토글', 'Dimensions', undefined, false, deps));
   cmds.push(action('view-history','view', '작업 기록 패널', 'History','⇧H',     false, deps));
   cmds.push(action('view-scenes', 'view', '장면 패널',     'Scenes', undefined, false, deps));
   cmds.push(action('view-ssao',   'view', 'SSAO 토글',     'SSAO',   undefined, false, deps));

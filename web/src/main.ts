@@ -885,6 +885,12 @@ async function main() {
     clearInterval(statsIntervalId);
     viewport.stop();
     viewport.dispose();
+    // Both overlays implement dispose() and neither was ever called. It
+    // matters little on unload, but a dispose nobody calls is a dispose
+    // nobody maintains — and these two now stop with the render loop, so
+    // this is the only place left that releases their observers.
+    constraintVisualRef?.dispose();
+    dimensionManagerRef?.dispose();
   });
 
   // 9. VCB (Value Control Box) — see ui/VCB.ts
@@ -976,6 +982,7 @@ async function main() {
   // 버튼이 클릭 시점에 찾아갈 수 있도록 참조만 미리 둔다. 콜백은 init 이 끝난
   // 뒤에야 불리므로 지연 조회로 충분하다.
   let constraintVisualRef: ConstraintVisual | null = null;
+  let dimensionManagerRef: DimensionManager | null = null;
 
   // ═══ 14. Constraint Panel (파라메트릭 제약 목록) ═══
   {
@@ -1198,8 +1205,6 @@ async function main() {
   // ═══ 15. Constraint Visual (3D 뷰포트 제약 인디케이터) ═══
   {
     const constraintVisual = new ConstraintVisual(viewportEl, bridge);
-    (window as unknown as { __axia_constraintVisual?: ConstraintVisual })
-      .__axia_constraintVisual = constraintVisual;
     // ADR-301 — §14 의 패널 👁 버튼이 이걸 통해 토글한다.
     constraintVisualRef = constraintVisual;
 
@@ -1237,6 +1242,11 @@ async function main() {
       getCamera: () => viewport.activeCamera,
       onGeometryEdited: () => toolManager.syncMesh(),
     });
+    dimensionManagerRef = dimensionManager;
+    // Read by MenuBar's `view-dimensions` case, the same way it reaches
+    // ScenesManager through `__axia_scenes`. Until that case existed this
+    // assignment had no reader at all, and `DimensionManager.setVisible()` —
+    // implemented and tested — had no way to be called.
     (window as unknown as { __axia_dimensionManager?: DimensionManager })
       .__axia_dimensionManager = dimensionManager;
     // §15 의 제약 인디케이터와 같은 이유로 rAF 체인이 아니라 렌더 루프에 싣는다.
@@ -1258,10 +1268,6 @@ async function main() {
   const scenesManager = new ScenesManager(viewportEl, viewport, sectionPlane);
   (window as unknown as { __axia_scenes?: ScenesManager }).__axia_scenes = scenesManager;
 
-  // Solar heatmap — lazy init on first menu use.
-  (window as unknown as { __axia_solarHeatmap?: {
-    viewport: typeof viewport; bridge: typeof bridge;
-  } }).__axia_solarHeatmap = { viewport, bridge };
 
   debugLog('AXiA 3D ready. OSNAP: F3=Toggle, R=Rect, V=Extrude/Cut, P=Select, I=Inspector, O=Outliner, J=Constraints');
 }

@@ -76,7 +76,7 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     ).toEqual([]);
   });
 
-  it('CommandCatalog count matches expected total (190, after -4 ghosts, +2 surfaced tools, -1 hover-only, +2 plane moves)', () => {
+  it('CommandCatalog count matches expected total (191, after -4 ghosts, +2 surfaced tools, -1 hover-only, +2 plane moves, +1 dimension labels)', () => {
     const toolManager = {
       setTool: () => {},
       executeAction: () => {},
@@ -142,7 +142,11 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // because the audit grep asked for a name the repo does not use. Two
     // near-identical entries in the palette is how a user finds out the
     // codebase disagrees with itself.
-    expect(count).toBe(190);
+    // 191: view-dimensions (2026-08-25). DimensionManager.setVisible() was
+    // implemented and tested with no way to reach it — the context menu's
+    // '치수 표시 ON/OFF' toggles the SELECTION readout, a different thing.
+    // Added to the View menu beside view-grid / view-axis.
+    expect(count).toBe(191);
   });
 
   // Bottom-bar UX audit — DOM ⊆ ActionCatalog guard. Every data-action id

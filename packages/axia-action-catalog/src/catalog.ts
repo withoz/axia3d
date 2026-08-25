@@ -1821,6 +1821,16 @@ export const ALL_ACTIONS: readonly ActionDef[] = [
     adrs: ['ADR-133'],
   },
   {
+    id: 'view-dimensions',
+    label: '치수 라벨 토글',
+    description: 'Show or hide the permanent dimension labels (ADR-215).',
+    tier: 0,
+    surfaces: ['menu'],
+    aliases: {},
+    status: 'ui-only',
+    adrs: ['ADR-215'],
+  },
+  {
     id: 'view-grid',
     label: '그리드 토글',
     description: 'Toggle ground grid visibility.',

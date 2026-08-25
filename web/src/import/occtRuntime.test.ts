@@ -12,6 +12,15 @@
  * - 버전 정합: 설치된 버전이 ADR-082 L1 lock-in (`^2.0.0-beta.b5ff984`)
  *   semver caret 범위 내
  *
+ *   ⚠ 이 검사가 prefix (`2.0.0-beta.`) 만 보는 것은 느슨한 게 아니라 정확한
+ *   것이다. 설치본은 `2.0.0-beta.fdece36` 이고 pin 은 `...b5ff984` 라 드리프트
+ *   처럼 읽히지만, prerelease 식별자는 알파벳순 비교라 `f > b` 이므로
+ *   `semver.satisfies('2.0.0-beta.fdece36', '^2.0.0-beta.b5ff984')` 는
+ *   default / includePrerelease 양쪽 모두 **true** 이고 package-lock 도 같은
+ *   버전을 기록한다. 2026-08-25 감사에서 이걸 드리프트로 올렸다가 측정으로
+ *   철회했다 — 정확한 해시를 단언하도록 조이면 caret pin 이 허용하는 정상
+ *   업데이트마다 이 가드가 거짓 실패한다.
+ *
  * ## C-γ scope (별도 commit)
  *
  * - 실 OCCT API init (`initOpenCascade(settings)`) 정합 검증
