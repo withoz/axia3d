@@ -265,9 +265,17 @@ describe('DrawLineTool', () => {
 
   describe('onMouseMove', () => {
     it('does nothing when not in Drawing state', () => {
+      // ⚠ Was assertion-free. Armed is not Drawing: a move must not begin a
+      // chain, so isBusy() stays false.
       tool.onActivate(); // Armed
+      expect(tool.isBusy(), 'premise: Armed, not Drawing').toBe(false);
       tool.onMouseMove({} as MouseEvent, new THREE.Vector3(50, 0, 0));
-      // No preview updates in Armed state
+      expect(tool.isBusy(), 'a move in Armed must not start drawing').toBe(false);
+      // ⚠ isBusy() alone does NOT hold the guard - it is false either way.
+      // What `if (this.state === Drawing)` buys is that Armed does no face
+      // picking. Mutation-checked: loosen it to `if (true)` and this fails.
+      expect(ctx.viewport.pick, 'Armed must not pick a face on a move')
+        .not.toHaveBeenCalled();
     });
   });
 

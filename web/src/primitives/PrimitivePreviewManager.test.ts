@@ -40,8 +40,11 @@ describe('PrimitivePreviewManager', () => {
     });
 
     it('does not add circle when no anchor', () => {
+      // ⚠ Was assertion-free - the comment said what to check and did not
+      // check it. With no anchor the manager must add nothing to the scene.
+      const before = scene.children.length;
       manager.updatePreview({ radius: 50, height: 0 }, 'sizing1');
-      // anchor is null, should not add
+      expect(scene.children.length, 'no anchor, so nothing is drawn').toBe(before);
     });
 
     it('replaces old circle on update', () => {

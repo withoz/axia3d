@@ -87,7 +87,19 @@ describe('OffsetSessionManager', () => {
 
   describe('cancel', () => {
     it('does nothing when no session', () => {
-      manager.cancel(); // should not throw
+      // ⚠ Was assertion-free ("should not throw"). Deleting cancel()'s own
+      // early return left it green, so it held nothing. Name the state instead.
+      expect(manager.isActive(), 'premise: no session').toBe(false);
+      expect(() => manager.cancel()).not.toThrow();
+      expect(manager.isActive(), 'and cancel leaves it inactive').toBe(false);
+      expect(manager.getSession()).toBeNull();
+      // ⚠ The state assertions above are NOT enough - they hold whether or
+      // not the guard exists, because the session was already null. What the
+      // guard actually buys is that cancel() does not reach bridge.undo() and
+      // roll back somebody else's operation. Mutation-checked: delete
+      // `if (!this.session) return;` and THIS line fails.
+      expect(ctx.bridge.undo, 'cancel with no session must not undo anything')
+        .not.toHaveBeenCalled();
     });
   });
 

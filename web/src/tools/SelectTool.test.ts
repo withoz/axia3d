@@ -121,7 +121,10 @@ describe('SelectTool', () => {
       ctx.viewport.pickEdgeOrFace.mockReturnValue(null);
 
       tool.onMouseDown({ clientX: 100, clientY: 200, shiftKey: false, ctrlKey: false } as MouseEvent, null);
-      // Should not clear selection yet (drag threshold)
+      // ⚠ Was assertion-free. The sibling right below asserts clearSelection
+      // IS called on mouseup; this one is its pair and must assert it is NOT
+      // called yet, or the drag threshold could vanish with both still green.
+      expect(ctx.selection.clearSelection).not.toHaveBeenCalled();
     });
 
     it('clears selection on mouseup without drag', () => {
