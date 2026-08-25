@@ -6187,6 +6187,13 @@ impl Scene {
 
                 self.transactions.begin();
                 let before = self.scene_snapshot();
+                // ⚠ The frame needs the snapshot too, not just the local. Without
+                // this the frame commits EMPTY: Command::Undo only acts when
+                // before_snapshot is non-empty, so Ctrl+Z restored nothing and
+                // still reported success, and a SECOND Ctrl+Z popped the previous
+                // operation's frame and undid THAT instead. 41 other sites in this
+                // file set it; this one did not. (2026-08-24)
+                self.transactions.set_before_snapshot(before.clone());
                 let placed = match self.mesh.array_linear_faces(&source, 1, offset) {
                     Ok(new_faces) if !new_faces.is_empty() => new_faces,
                     Ok(_) => {
@@ -6212,6 +6219,7 @@ impl Scene {
                     .unwrap_or_else(|| "Instance".into());
                 match self.groups.create_instance(def_id, name, placed, transform) {
                     Some(inst_id) => {
+                        self.transactions.set_after_snapshot(self.scene_snapshot());
                         self.transactions.commit();
                         CommandResult::GroupUpdated(inst_id)
                     }

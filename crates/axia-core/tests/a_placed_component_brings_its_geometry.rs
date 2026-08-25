@@ -177,3 +177,123 @@ fn placing_at_the_definitions_own_origin_is_refused_cleanly() {
         "and a refusal must leave the mesh exactly as it was"
     );
 }
+
+/// ⚠ And Ctrl+Z must actually take it back.
+///
+/// Found 2026-08-24 by an engine-wide audit, in code this same session added.
+/// `Command::PlaceComponent` calls `transactions.begin()` and
+/// `transactions.commit()` but never `set_before_snapshot` /
+/// `set_after_snapshot` — the two setters 41 and 46 other call sites in
+/// scene.rs do use. The frame commits EMPTY.
+///
+/// `TransactionManager::undo` pops that frame and `Command::Undo` only acts
+/// when `before_snapshot` is non-empty, so the first Ctrl+Z restores nothing
+/// and still reports success — the component stays. ⚠ The SECOND Ctrl+Z is
+/// worse than confusing: it pops the PREVIOUS operation's frame and undoes
+/// that, so one keystroke removes an unrelated earlier edit while the
+/// placement survives, unredoable (its after_snapshot is empty too).
+#[test]
+fn placing_a_component_can_be_undone() {
+    let mut s = prod();
+    let def_id = a_box_component(&mut s);
+    let before = active(&s);
+
+    s.execute(Command::PlaceComponent {
+        def_id,
+        position: DVec3::new(500.0, 0.0, 0.0),
+    });
+    let placed = active(&s);
+    assert!(placed > before, "premise: the placement added faces ({before} -> {placed})");
+
+    let r = s.execute(Command::Undo);
+    let after = active(&s);
+    println!("
+  면 {before} -> {placed} -> undo -> {after}   결과 {r:?}
+");
+
+    assert_eq!(
+        after, before,
+        "one Ctrl+Z must put the scene back: {before} -> {placed} -> {after}"
+    );
+    let inv = s.mesh.verify_face_invariants();
+    assert!(inv.is_valid(), "and leave it sound: {:?}", inv.violations);
+}
+/// The destructive half: a second Ctrl+Z must not eat an unrelated edit.
+///
+/// With the frame empty, the first Ctrl+Z was a no-op that still reported
+/// success, so a user would press it again — and THAT one popped the previous
+/// operation's frame. One keystroke removed an earlier edit while the
+/// placement survived. This asserts the ordering a working undo gives:
+/// placement first, then the older operation.
+#[test]
+fn a_second_undo_takes_the_previous_edit_not_a_bystander() {
+    let mut s = prod();
+    let def_id = a_box_component(&mut s);
+
+    // An unrelated edit AFTER the component exists, so it owns the older frame.
+    s.execute(Command::DrawRectAsShape {
+        center: DVec3::new(-900.0, -900.0, 0.0),
+        normal: DVec3::Z,
+        up: DVec3::X,
+        width: 100.0,
+        height: 100.0,
+    });
+    let with_rect = active(&s);
+
+    s.execute(Command::PlaceComponent {
+        def_id,
+        position: DVec3::new(500.0, 0.0, 0.0),
+    });
+    let with_both = active(&s);
+    assert!(with_both > with_rect, "premise: the placement added faces");
+
+    s.execute(Command::Undo);
+    let after_one = active(&s);
+    assert_eq!(
+        after_one, with_rect,
+        "the FIRST undo takes the placement, leaving the rect: \
+         {with_rect} -> {with_both} -> {after_one}"
+    );
+
+    s.execute(Command::Undo);
+    let after_two = active(&s);
+    println!("
+  {with_rect} -> {with_both} -> undo -> {after_one} -> undo -> {after_two}
+");
+    assert!(
+        after_two < after_one,
+        "and the SECOND undo takes the rect, not nothing: {after_one} -> {after_two}"
+    );
+}
+/// And Redo must bring it back — which is what `set_after_snapshot` buys.
+///
+/// ⚠ Written because the two tests above did NOT catch removing the after
+/// setter: both only look at undo, and undo reads `before_snapshot`. With the
+/// after half missing the placement is undoable but not redoable — a silent
+/// half-fix that a mutation check exposed.
+#[test]
+fn an_undone_placement_can_be_redone() {
+    let mut s = prod();
+    let def_id = a_box_component(&mut s);
+    let before = active(&s);
+
+    s.execute(Command::PlaceComponent {
+        def_id,
+        position: DVec3::new(500.0, 0.0, 0.0),
+    });
+    let placed = active(&s);
+    assert!(placed > before, "premise: the placement added faces");
+
+    s.execute(Command::Undo);
+    assert_eq!(active(&s), before, "premise: undo worked");
+
+    let r = s.execute(Command::Redo);
+    let again = active(&s);
+    println!("
+  면 {before} -> {placed} -> undo -> {before} -> redo -> {again}   결과 {r:?}
+");
+    assert_eq!(
+        again, placed,
+        "redo must restore the placement: expected {placed}, got {again}"
+    );
+}
