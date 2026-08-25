@@ -1203,12 +1203,18 @@ async function main() {
     // ADR-301 — §14 의 패널 👁 버튼이 이걸 통해 토글한다.
     constraintVisualRef = constraintVisual;
 
-    // 매 프레임 업데이트 (카메라 이동 시 마커 위치 즉시 추적)
-    const tickCV = () => {
-      constraintVisual.update(viewport.activeCamera);
-      requestAnimationFrame(tickCV);
-    };
-    requestAnimationFrame(tickCV);
+    // 매 프레임 업데이트 (카메라 이동 시 마커 위치 즉시 추적).
+    //
+    // 이건 자기 자신을 다시 거는 rAF 체인이었다. 아무것도 그걸 끄지 못했다 —
+    // `viewport.stop()` 은 뷰포트 자신의 `_frameId` 만 취소하고(Viewport.ts),
+    // 이 체인은 별개였다. 그래서 beforeunload 가 `stop()` + `dispose()` 로
+    // 렌더러를 버린 *뒤에도* 계속 돌면서, 해체 중인 엔진을 향해
+    // `constraintVisual.update()` 안에서 WASM(`getVertexPos`)을 불렀다.
+    //
+    // 프레임 작업은 렌더 루프가 소유한다: 콜백은 `animate()` 안에서 렌더
+    // 직전에 돌고, 루프가 멈추면 같이 멈춘다. LOD chord-tolerance 푸시와
+    // ToolManagerRefactored 의 선택 치수 표시가 이미 이 방식이다.
+    viewport.onFrame(() => constraintVisual.update(viewport.activeCamera));
 
     // ADR-301 — 이 토글에는 전역 단축키가 없다. ADR-300 이 여기에 Shift+K 를
     // 줬는데 그 키는 이미 Back view 의 것이었고(KeyboardShortcuts.ts 뷰 리스너,
@@ -1233,11 +1239,8 @@ async function main() {
     });
     (window as unknown as { __axia_dimensionManager?: DimensionManager })
       .__axia_dimensionManager = dimensionManager;
-    const tickDim = () => {
-      dimensionManager.update();
-      requestAnimationFrame(tickDim);
-    };
-    requestAnimationFrame(tickDim);
+    // §15 의 제약 인디케이터와 같은 이유로 rAF 체인이 아니라 렌더 루프에 싣는다.
+    viewport.onFrame(() => dimensionManager.update());
   }
 
   // ═══ 15. Toolbar toggle-state sync ═══

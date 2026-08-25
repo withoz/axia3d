@@ -4,7 +4,7 @@
  * 5 tests covering:
  * 1. Singleton pattern (getInstance / resetInstance)
  * 2. Extension dispatch (step/stp/iges/igs accepted, others rejected)
- * 3. Graceful fallback when opencascade.js is not installed
+ * 3. Graceful fallback when the OCCT engine cannot be loaded
  * 4. Loading callback hooks fire during ensureLoaded()
  * 5. Cached instance reused across multiple importFile calls
  */
@@ -34,11 +34,11 @@ describe('StepIgesImporter (ADR-035 P20.7)', () => {
     await expect(importer.importFile(file)).rejects.toThrow(/STEP\/IGES/);
   });
 
-  it('graceful fallback when opencascade.js is not installed', async () => {
+  it('graceful fallback when the OCCT engine cannot be loaded', async () => {
     const importer = StepIgesImporter.getInstance();
     const file = new File(['ISO-10303-21;'], 'cube.step', { type: 'application/step' });
-    // opencascade.js is not in test deps → ensureLoaded should throw
-    // a clear "not installed" error (P20.C #3).
+    // opencascade.js IS a dependency and IS on disk (the npm workspace
+    // hoists it to the repo root). It still does not load under vitest —
     await expect(importer.importFile(file)).rejects.toThrow(/opencascade\.js|설치/);
   });
 
@@ -52,7 +52,7 @@ describe('StepIgesImporter (ADR-035 P20.7)', () => {
     try {
       await importer.ensureLoaded();
     } catch (_e) {
-      // expected — opencascade.js not installed in test env
+      // expected — the OCCT engine does not load under vitest
     }
     expect(onStart).toHaveBeenCalledTimes(1);
     expect(onStart).toHaveBeenCalledWith(expect.stringContaining('STEP/IGES'));
@@ -74,7 +74,7 @@ describe('StepIgesImporter (ADR-035 P20.7)', () => {
       try {
         await importer.ensureLoaded();
       } catch (_e) {
-        // expected — opencascade.js not installed in test env
+        // expected — the OCCT engine does not load under vitest
       }
 
       // engine_load stage 가 onLoadingStart 와 동시에 fire (backward compat)
@@ -434,7 +434,7 @@ describe('StepIgesImporter (ADR-035 P20.7)', () => {
   it('iges extension dispatches to importer (not to default branch)', async () => {
     const importer = StepIgesImporter.getInstance();
     const file = new File(['dummy iges'], 'part.iges', { type: 'application/iges' });
-    // Should attempt to load OCCT (and fail, since not installed) — not
+    // Should attempt to load OCCT (and fail — it does not load here) — not
     // throw "unsupported extension".
     await expect(importer.importFile(file)).rejects.toThrow(/opencascade\.js|설치/);
   });

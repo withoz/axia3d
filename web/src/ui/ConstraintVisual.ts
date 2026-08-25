@@ -116,9 +116,19 @@ export class ConstraintVisual {
   /**
    * 전체 제약을 다시 그림. camera 인자로 스크린 투영.
    *
-   * Pure projection from cached snapshot — NO WASM call here. Cache is
-   * populated once on first call and refreshed only on bridge events
-   * (subscription installed lazily on first update).
+   * The constraint LIST comes from a cached snapshot — that lookup makes no
+   * WASM call. The vertex POSITIONS do: `bridge.getVertexPos` runs 2 to 4
+   * times per constraint, every frame, right here in this method.
+   *
+   * This comment used to say 'NO WASM call here', full stop. An audit read it
+   * and concluded the per-frame cost was zero. It is zero only while the
+   * constraint list is empty, which is the default scene.
+   *
+   * The positions cannot simply be cached alongside the list. Nothing in
+   * `_emitConstraintsChanged` fires on geometry change — the emitters are
+   * add/remove/toggle/resolve/setValue/undo/redo/import, not translateVerts
+   * or pushPull. Cache the positions on that event and the markers freeze in
+   * place the moment a vertex moves. A safe cache needs a different key.
    */
   update(camera: THREE.Camera) {
     this.clear();
