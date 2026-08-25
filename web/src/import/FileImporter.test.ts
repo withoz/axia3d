@@ -94,8 +94,8 @@ describe('FileImporter', () => {
   //
   // Behavior change: STEP/IGES no longer hard-rejects in FileImporter.
   // Instead they dispatch to StepIgesImporter which dynamically loads
-  // OCCT.js. In test env (no opencascade.js installed), this throws a
-  // clear "엔진이 설치되지 않았습니다" message + alternate format hints.
+  // OCCT.js. That load fails under vitest — the package IS installed, but
+  // see web/src/__mocks__/opencascade.ts — so this throws a clear
 
   describe('STEP/IGES OCCT.js 동적 로딩 (ADR-035)', () => {
     async function tryImport(name: string) {
@@ -115,6 +115,10 @@ describe('FileImporter', () => {
       await expect(tryImport('legacy.igs')).rejects.toThrow(/opencascade\.js|설치/);
     });
     it('error includes alternatives (FreeCAD / Fusion / Rhino)', async () => {
+      // Both assertions sit inside the catch. Without this line, the day
+      // tryImport stops rejecting is the day this test passes having
+      // asserted nothing — and it would look exactly as green as today.
+      expect.assertions(2);
       try { await tryImport('foo.step'); } catch (e) {
         expect((e as Error).message).toContain('FreeCAD');
         expect((e as Error).message).toContain('Fusion');
@@ -133,7 +137,7 @@ describe('FileImporter', () => {
       const infoSpy = vi.spyOn(Toast, 'info').mockImplementation(() => {});
       const f = new File([''], 'model.step', { type: 'application/octet-stream' });
 
-      // OCCT.js not installed → ensureLoaded throws after onLoadingStart fires.
+      // OCCT does not load here → ensureLoaded throws after onLoadingStart fires.
       try {
         await importer.importFile(f);
       } catch (_e) {

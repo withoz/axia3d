@@ -297,3 +297,97 @@ C-α 본 commit 으로 만족:
 
 *Author*: AXiA team (사용자 결정 + Claude spec) | *Status*: **Accepted**
 (C-α spec only commit 2026-05-07). C-β ~ C-δ 별도 commit 으로 구현.
+
+---
+
+## Amendment 2 — vitest 는 왜 이 패키지를 열려다 마는가 (2026-08-25)
+
+### A2.1 계기
+
+vitest 실행 시간을 재던 세션이 `opencascade.js` 해석을 비용 후보로 지목했다.
+제안은 vitest 전용 stub 으로 갈아끼우는 것이었다. **측정 결과 전체 스위트의
+실시간은 움직이지 않았고, 변경은 되돌렸다.** 대신 그 과정에서 드러난 사실들이
+남았다 — 그게 이 amendment 다.
+
+### A2.2 두 config 는 별개다 (측정된 사실)
+
+프로덕션 `vite.config.ts` 는 이 패키지 하나를 위해 `opencascadeWasmAsUrl()`
+플러그인 + `vite-plugin-wasm` + `optimizeDeps.exclude` + manualChunks 규칙을
+갖고 있다. `vitest.config.ts` 는 **플러그인이 하나도 없다**. 그래서 vitest
+에서는 `.wasm` re-export 를 처리할 것이 없고 import 가 실패한다.
+
+패키지 자체는 234 MB 이고 entry `dist/index.js` 는 8 MB 짜리
+`dist/opencascade.js` 를 첫 줄에서 끌어온다. **그러나 그 8 MB 는 실제로
+transform 되지 않는다** — `.wasm` 해석이 먼저 실패한다. 처음엔 소스 순서를
+근거로 반대를 추론했고, 측정이 그 추론을 뒤집었다.
+
+### A2.3 측정 (콜드 캐시, 3쌍 반복)
+
+`_loadOcct` 를 실제로 타는 두 파일만:
+
+| | stub | 실제 패키지 |
+|---|---|---|
+| Duration | 718 / 753 / 741 ms | 1.99 / 1.95 / 2.01 s |
+| tests | 26 / 27 / 26 ms | 2.49 / 2.44 / 2.51 s |
+
+stub 은 그 두 파일에서 ~1.25s 를 아끼고, 비용은 거의 전부 **테스트 실행
+시점** 에 있다 (`_loadOcct` 의 dynamic import 가 테스트 본문에서 돈다).
+
+전체 스위트 (190 파일, ~20 워커), 콜드:
+
+| | stub | 실제 패키지 |
+|---|---|---|
+| Duration | 14.90s | 13.50s |
+
+**실시간이 움직이지 않는다.** 두 파일의 1.25s 는 임계 경로가 아니고, 실행 간
+편차(콜드 13.5–14.9s, 최초 실행 29.3s)가 효과보다 크다.
+
+⚠ 처음에 29.33s → 25.12s (−14.4%) 라는 수치를 얻었는데, **최초 실행 대
+데워진 실행** 을 비교한 것이었다. 양쪽 다 콜드로 통제하니 사라졌다.
+
+### A2.4 stub 을 넣었다면 봉인 하나가 무력화됐을 것 (남길 이유)
+
+`occtRuntime.test.ts` 의 *Drift #2 회귀 가드* 는 목적을 스스로 적어 두고
+있다 — *"향후 누군가 Node 측 OCCT 통합을 시도할 때 즉시 발견 가능."*
+stub 은 **무조건** throw 하므로, 그 봉인이 지켜보려던 사건(Node 가 wasm-ESM
+링크를 얻는 날)이 와도 영원히 초록이다. 봉인이 상수 관측으로 바뀐다.
+
+적대적 검토가 이걸 잡았다. 향후 다시 stub 을 제안한다면 **이 봉인이
+alias 를 우회해 실제 entry 를 열어야** 한다 (절대 `file://` URL 은
+exact-match alias 에 걸리지 않는다). 그 비용은 그 파일 하나가 run 당 실제
+entry 를 한 번 여는 것이다.
+
+### A2.5 세 겹으로 낡아 있던 주석 (정정함)
+
+`StepIgesImporter.test.ts` 의 테스트 **이름** 이 `'graceful fallback when
+opencascade.js is not installed'` 였고 주석 넷이 *"not in test deps"* /
+*"not installed in test env"* 였다. `FileImporter.test.ts` 도 같았다.
+
+패키지는 ADR-082 L1 amendment 로 `dependencies` 이고 디스크에 있다 — npm
+workspace 가 저장소 루트로 hoist 하므로 `web/node_modules` 를 보면 비어
+있다. 통과 이유는 두 번 바뀌었는데(미설치 → Node 가 wasm 을 링크 못 함)
+아무 것도 옆에 적히지 않았다. 전부 정정.
+
+덤으로, `FileImporter.test.ts` 의 *'error includes alternatives'* 는 두
+`expect` 가 맨 `catch` 안에 있어 **공허** 했다. `tryImport` 가 거부를 멈추는
+날 아무 것도 단언하지 않은 채 초록이 된다. `expect.assertions(2)` 로 닫았다.
+변이로 증명: 그 줄이 있으면 변이가 실패하고, 빼면 **같은 변이가 20/20
+통과** 한다. 저장소 전체 `expect.assertions` 는 이전까지 **0** 이었다.
+
+### A2.6 Lock-ins
+
+- **L-A2-1** `web/node_modules` 가 비어 있는 것은 미설치가 아니다. npm
+  workspace 가 저장소 루트로 hoist 한다. 위치를 잘못 보면 "moot" 라는
+  거짓 결론이 난다.
+- **L-A2-2** vitest 와 vite 는 **별개 config** 다. vitest 쪽 alias 는
+  프로덕션 번들에 닿지 못한다 (ADR-035 P20.C #2 는 무관).
+- **L-A2-3** stub 을 다시 제안한다면 Drift #2 봉인을 함께 수리해야 한다
+  (A2.4). 수리 없이는 LOCKED #29 가 기록한 것을 더 이상 지켜보지 않는다.
+- **L-A2-4** 캐시 상태를 통제하지 않은 전후 비교는 수치가 아니다 (A2.3).
+- **L-A2-5** 절대 #[ignore] 금지.
+
+### A2.7 Cross-link
+
+LOCKED #29 (Drift #1~#5) / ADR-035 P20.C #2 / LOCKED #106 (번들 예산 측정) /
+ADR-125 · ADR-127 (측정이 뒷받침하지 않은 변경을 접은 선례) / 메타-원칙
+#4 (SSOT) · #6 (측정 우선).

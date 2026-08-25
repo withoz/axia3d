@@ -168,6 +168,8 @@ export class Viewport {
   private _boundHandlers: { target: EventTarget; type: string; handler: EventListener }[] = [];
   private _frameId: number | null = null;
   private _onFrameCallbacks: (() => void)[] = [];
+  /** Callbacks that have already thrown once — see the loop in `animate()`. */
+  private _onFrameFailed = new WeakSet<() => void>();
 
   // ═══ Post-processing (SSAO) ═══
   // Built lazily on first enable so the WebGL context and scene are
@@ -3053,7 +3055,30 @@ export class Viewport {
       // property access; Hidden when __AXIA_DEBUG=false anyway.
       const w = window as unknown as { __AXIA_TELEMETRY_FRAME_START?: () => void };
       w.__AXIA_TELEMETRY_FRAME_START?.();
-      for (const cb of this._onFrameCallbacks) cb();
+      // A throwing callback used to take the frame down with it. The next
+      // frame is already scheduled on the first line, so the loop survives —
+      // but `renderer.render()` below never runs, and it never runs again,
+      // because the same callback throws again next frame. The viewport goes
+      // black while the loop spins.
+      //
+      // That was tolerable while every per-frame job owned its own rAF chain
+      // (a throw killed only that chain). It is not tolerable now that the
+      // constraint indicator and the dimension labels ride here — both reach
+      // into WASM, and WASM is exactly what throws during teardown.
+      //
+      // Report each callback once. At 60fps a bare console.error is 60
+      // identical lines a second, which buries the first one — the same
+      // spam guard WasmBridge uses for listConstraints.
+      for (const cb of this._onFrameCallbacks) {
+        try {
+          cb();
+        } catch (e) {
+          if (!this._onFrameFailed.has(cb)) {
+            this._onFrameFailed.add(cb);
+            console.error('[Viewport] onFrame callback threw (reported once):', e);
+          }
+        }
+      }
       if (this._ssaoEnabled && this._composer) {
         // Keep the SSAO pass's camera in sync with the active camera —
         // we switch between perspective and orthographic on view-mode
