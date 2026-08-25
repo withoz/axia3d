@@ -8,6 +8,7 @@
     "dev": "vite",
     "prebuild": "node scripts/check-wasm-fresh.mjs",
     "build": "tsc && vite build --emptyOutDir false",
+    "postbuild": "node scripts/check-bundle-size.mjs",
     "build:wasm": "npm run wasm:build && npm run wasm:verify",
     "build:all": "npm run build:wasm && npm run build",
     "typecheck": "tsc --noEmit",
