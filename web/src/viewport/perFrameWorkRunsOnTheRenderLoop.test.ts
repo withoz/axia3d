@@ -9,36 +9,41 @@
  *
  * Nothing could stop those. `viewport.stop()` cancels the viewport's own
  * `_frameId`; these chains were separate. So after `beforeunload` ran
- * `stop()` + `dispose()` and threw the renderer away, they kept going —
- * still reaching into WASM (`ConstraintVisual.update` → `bridge.getVertexPos`,
- * `DimensionManager.update` → the same) against an engine being torn down.
- *
- * ── The move made one thing worse before it made it better ──
+ * `stop()` + `dispose()` and threw the renderer away, they kept going.
  *
  * `animate()` schedules the next frame on its FIRST line and calls the
- * onFrame callbacks after. So a throwing callback does not stop the loop —
- * it skips `renderer.render()`, and skips it again next frame, and the next.
- * A frozen overlay became a black viewport. Under the old rAF chains a throw
- * killed only the thrower. `animate()` therefore isolates each callback now,
- * which also covers the two registrants that predate this change.
+ * callbacks after, so a throwing callback does not stop the loop — it skips
+ * `renderer.render()`, and skips it again next frame. A frozen overlay becomes
+ * a black viewport. `animate()` therefore isolates each callback and reports it
+ * once, which also covers the two registrants that predate this change.
  *
- * ── What each assertion holds, and what none of them can ──
+ * ── What each assertion holds ──
  *
- *   1. no rAF in main.ts — restore `requestAnimationFrame(tickCV)` and this
- *      fails. Alone it would also pass if the registrations were DELETED.
- *   2. each overlay is registered — that closes it. Comments are stripped
- *      first, because commenting a registration out leaves the string behind
- *      and satisfied an earlier version of this test while both overlays sat
- *      dead.
- *   3. the loop runs the callbacks and stops — main.ts can satisfy 1 and 2
- *      and still have overlays that never draw, or never stop.
- *   4. the loop isolates a thrower — without it the move trades a frozen
- *      overlay for a dead viewport.
+ *   1. no rAF in main.ts
+ *   2. every registrant is present BY NAME — not merely counted
+ *   3. the loop runs them, and stops
+ *   4. a thrower is isolated: called inside try, catch does not rethrow
+ *   5. the isolation reports ONCE, not once per frame
  *
- * What it cannot hold: assertion 1 reads a spelling. `setInterval(tick, 16)`
- * or a self-re-arming `setTimeout` is the same mistake wearing another name
- * and would pass. Banning `setInterval` outright is not available — main.ts
- * uses it legitimately for the 200ms stats poll.
+ * Each of the five was checked by breaking the thing it guards and watching it
+ * go red. Three of them exist because the first version of this file passed
+ * mutations it should have failed:
+ *
+ *   - assertion 2 searched the raw source, so COMMENTING a registration out
+ *     satisfied it. It now strips comments — block comments too, which the
+ *     second version still missed while its docblock claimed otherwise.
+ *   - assertion 2 counted `>= 3` and named only the two overlays, so deleting
+ *     the LOD registrant while adding anything else passed. All three are named.
+ *   - assertion 5 did not exist, so deleting the report-once WeakSet — the
+ *     60-lines-a-second flood this whole thing is written against — passed 4/4.
+ *
+ * ── What it still cannot hold ──
+ *
+ * Assertion 1 reads a spelling. `setInterval(tick, 16)` or a self-re-arming
+ * `setTimeout` is the same mistake wearing another name and would pass; banning
+ * `setInterval` outright is not available, main.ts uses it for the 200ms stats
+ * poll. And none of this EXECUTES `animate()` — no test calls `viewport.start()`,
+ * so the isolation is verified by reading, not by running.
  *
  * Source-level, like `ActionWiring.test.ts` and `isTypingInInput.test.ts`,
  * because main.ts is a single init function no test can import.
@@ -53,12 +58,29 @@ const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const MAIN = read('src/main.ts');
 const VIEWPORT = read('src/viewport/Viewport.ts');
 
-/** Line comments only — enough for the commented-out-registration hole, and
- *  it cannot swallow a real line the way a block-comment stripper might. */
-const stripLineComments = (src: string) =>
-  src.split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
+/**
+ * Strip comments so a commented-out line cannot satisfy a search.
+ *
+ * Block comments first — a `//` inside `/* ... *​/` would otherwise be
+ * half-eaten. Neither pass understands string literals, so a `/*` inside a
+ * string would over-strip; main.ts has none, and over-stripping fails LOUD
+ * (a registration disappears) rather than passing quietly.
+ */
+const stripComments = (src: string) =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n');
 
-const MAIN_CODE = stripLineComments(MAIN);
+const MAIN_CODE = stripComments(MAIN);
+
+/** Every per-frame job main.ts owns. Named, so deleting one cannot hide behind a count. */
+const REGISTRANTS = [
+  'constraintVisual.update',
+  'dimensionManager.update',
+  'bridge.lodChordTol',
+];
 
 describe('per-frame work runs on the render loop', () => {
   it('main.ts drives no rAF chain of its own', () => {
@@ -71,22 +93,21 @@ describe('per-frame work runs on the render loop', () => {
     ).toBe(0);
   });
 
-  it('each overlay is registered on the render loop', () => {
-    const registrations = MAIN_CODE.split('viewport.onFrame(').slice(1);
+  it('every per-frame job is registered on the render loop, by name', () => {
+    const bodies = MAIN_CODE.split('viewport.onFrame(').slice(1).map((s) => s.slice(0, 900));
     expect(
-      registrations.length,
-      'expected the LOD push and both overlays to register on the loop',
-    ).toBeGreaterThanOrEqual(3);
+      bodies.length,
+      'expected one viewport.onFrame() registration per per-frame job',
+    ).toBeGreaterThanOrEqual(REGISTRANTS.length);
 
     // Plain string search on purpose. A regex built from a string literal eats
     // its own backslashes — `'onFrame\('` reaches RegExp as `onFrame(`, an
     // unterminated group. Escaping is not worth the footgun here.
-    const bodies = registrations.map((s) => s.slice(0, 200));
-    for (const overlay of ['constraintVisual.update', 'dimensionManager.update']) {
+    for (const job of REGISTRANTS) {
       expect(
-        bodies.some((b) => b.includes(overlay)),
-        `${overlay}() must be reached through viewport.onFrame(); ` +
-        'otherwise it either never runs or never stops.',
+        bodies.some((b) => b.includes(job)),
+        `${job} must be reached through viewport.onFrame(); otherwise it ` +
+        'either never runs or never stops.',
       ).toBe(true);
     }
   });
@@ -105,19 +126,44 @@ describe('per-frame work runs on the render loop', () => {
     ).toBe(true);
   });
 
+  /** The callback loop and a little after it — the window assertions 4 and 5 read. */
+  const loopBody = VIEWPORT
+    .slice(VIEWPORT.indexOf('for (const cb of this._onFrameCallbacks)'))
+    .slice(0, 700);
+
   it('a throwing callback cannot take the render with it', () => {
-    // The callback loop must be inside a try, and the catch must not rethrow.
-    const loop = VIEWPORT.slice(VIEWPORT.indexOf('for (const cb of this._onFrameCallbacks)'));
-    const body = loop.slice(0, 600);
     expect(
-      /try\s*\{[\s\S]{0,80}cb\(\);[\s\S]{0,80}\}\s*catch/.test(body),
+      /try\s*\{[\s\S]{0,80}cb\(\);[\s\S]{0,80}\}\s*catch/.test(loopBody),
       'Each onFrame callback must be called inside try/catch. Without it a ' +
       'throwing overlay skips renderer.render() on every frame — the ' +
       'viewport goes black while the loop keeps spinning.',
     ).toBe(true);
+
+    // \b so this reads the KEYWORD. A bare /throw/ would also match the word
+    // inside the report message ("threw" does not, but "throws" would), which
+    // made the earlier version pass by accident of wording.
     expect(
-      /catch[\s\S]{0,300}?throw/.test(body),
+      /\bthrow\b/.test(loopBody),
       'the catch must not rethrow — that would defeat the isolation',
     ).toBe(false);
+  });
+
+  it('the isolation reports once, not once per frame', () => {
+    expect(
+      /_onFrameFailed/.test(VIEWPORT),
+      'Viewport must remember which callbacks it has already reported. At ' +
+      '60fps an unguarded console.error is 60 identical lines a second, ' +
+      'which buries the first one.',
+    ).toBe(true);
+
+    // The guard has to sit BEFORE the log, or it guards nothing.
+    const failedAt = loopBody.indexOf('_onFrameFailed');
+    const logAt = loopBody.indexOf('console.error');
+    expect(failedAt, 'the report-once check must be inside the callback loop').toBeGreaterThan(-1);
+    expect(logAt, 'the loop must report a failure somewhere').toBeGreaterThan(-1);
+    expect(
+      failedAt < logAt,
+      'the report-once check must come before the log, not after it',
+    ).toBe(true);
   });
 });

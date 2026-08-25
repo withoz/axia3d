@@ -94,8 +94,11 @@ describe('FileImporter', () => {
   //
   // Behavior change: STEP/IGES no longer hard-rejects in FileImporter.
   // Instead they dispatch to StepIgesImporter which dynamically loads
-  // OCCT.js. That load fails under vitest — the package IS installed, but
-  // see web/src/__mocks__/opencascade.ts — so this throws a clear
+  // OCCT.js. That load fails under vitest — not because the package is
+  // missing (it is a dependency and it is on disk; npm hoists it to the repo
+  // root, so web/node_modules looks empty), but because vitest.config.ts
+  // carries none of the wasm plugins vite.config.ts needs for it. So this
+  // throws a clear "엔진이 설치되지 않았습니다" message + alternate format hints.
 
   describe('STEP/IGES OCCT.js 동적 로딩 (ADR-035)', () => {
     async function tryImport(name: string) {

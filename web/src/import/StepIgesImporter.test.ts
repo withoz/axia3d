@@ -37,8 +37,11 @@ describe('StepIgesImporter (ADR-035 P20.7)', () => {
   it('graceful fallback when the OCCT engine cannot be loaded', async () => {
     const importer = StepIgesImporter.getInstance();
     const file = new File(['ISO-10303-21;'], 'cube.step', { type: 'application/step' });
-    // opencascade.js IS a dependency and IS on disk (the npm workspace
-    // hoists it to the repo root). It still does not load under vitest —
+    // opencascade.js IS a dependency and IS on disk (npm hoists it to the
+    // repo root, which is why web/node_modules looks empty). It still does
+    // not load under vitest, because vitest.config.ts carries none of the
+    // wasm plugins vite.config.ts needs for its ~60 .wasm re-exports. The
+    // error the user sees is the same either way (P20.C #3).
     await expect(importer.importFile(file)).rejects.toThrow(/opencascade\.js|설치/);
   });
 

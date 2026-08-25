@@ -316,10 +316,21 @@ vitest 실행 시간을 재던 세션이 `opencascade.js` 해석을 비용 후�
 갖고 있다. `vitest.config.ts` 는 **플러그인이 하나도 없다**. 그래서 vitest
 에서는 `.wasm` re-export 를 처리할 것이 없고 import 가 실패한다.
 
-패키지 자체는 234 MB 이고 entry `dist/index.js` 는 8 MB 짜리
-`dist/opencascade.js` 를 첫 줄에서 끌어온다. **그러나 그 8 MB 는 실제로
-transform 되지 않는다** — `.wasm` 해석이 먼저 실패한다. 처음엔 소스 순서를
-근거로 반대를 추론했고, 측정이 그 추론을 뒤집었다.
+패키지 자체는 234 MB 이고 entry `dist/index.js` 는 3.9 KB 인데, 첫 줄에서
+8 MB 짜리 `dist/opencascade.js` 를 끌어오고 이어서 ~52 개의 `.wasm` 을
+re-export 한다.
+
+⚠ **그 8 MB 가 실제로 transform 되는지는 여기서 결론 내리지 않는다.** 초안은
+"transform 되지 않는다 — `.wasm` 해석이 먼저 실패하고, 측정이 그걸 뒤집었다"
+라고 적었는데 **둘 다 과장이다**. ES static import 는 hoist 되어 한 모듈의
+requested modules 가 instantiation 단계에서 함께 해석되므로 소스 줄 순서로
+transform 순서를 단정할 수 없고, §A2.3 이 가진 것은 **wall-clock 뿐** 이라
+"8 MB 를 아예 안 가져왔다" 와 "가져온 뒤 `.wasm` 에서 실패했다" 를 구별하지
+못한다. 구별하려면 transform 을 관측하는 계측이 필요하고, 그건 이 세션이
+금지된 probe 영역이다.
+
+확실한 것만 남기면: **vitest 에서 import 는 실패하고, 그 실패에 시간이
+든다** (§A2.3). 비용의 위치는 미확정이다.
 
 ### A2.3 측정 (콜드 캐시, 3쌍 반복)
 
