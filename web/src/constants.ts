@@ -62,7 +62,12 @@ export const EPSILON_ANGLE_DEG = 0.01;
  * 엣지 가시성 임계 각도 (도). 인접 면 사이의 법선 각도가 이보다 작으면
  * 엣지를 숨긴다(soft edge / coplanar 취급). SketchUp 기본값.
  */
-export const EDGE_VISIBILITY_ANGLE_DEG = 30.0;
+// ⚠ Was 30.0 while the Rust SSOT (axia-geo tolerances.rs:123) and the
+// WasmBridge mirror both say 20.1. This third copy drifted and nothing
+// noticed, because COS_EDGE_VISIBILITY below has no importers - the wrong
+// value was inert. Corrected 2026-08-24; the drift guard in
+// bridge/EdgeVisibilityAngleSSOT.test.ts now covers this copy too.
+export const EDGE_VISIBILITY_ANGLE_DEG = 20.1;
 
 /**
  * Smooth group 그룹핑 임계 각도 (도). BFS로 인접 면을 묶을 때 이보다

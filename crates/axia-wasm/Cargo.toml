@@ -14,7 +14,7 @@ wasm-opt = false
 [dependencies]
 axia-core = { workspace = true }
 axia-geo = { workspace = true }
-axia-transaction = { workspace = true }
+
 axia-ifc = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
@@ -24,7 +24,7 @@ serde_json = "1"
 anyhow = { workspace = true }
 glam = { workspace = true }
 uuid = { workspace = true }
-getrandom = { version = "0.2", features = ["js"] }
+
 # Surfaces a panic's message + source location to console.error before the wasm
 # trap (otherwise a Rust panic shows only an opaque "RuntimeError: unreachable"
 # and, because the trap leaks the wasm-bindgen borrow guard, every later call
