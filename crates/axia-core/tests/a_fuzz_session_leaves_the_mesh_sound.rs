@@ -328,7 +328,14 @@ fn a_fuzz_session_leaves_the_mesh_sound() {
     let mut new_breaks: Vec<String> = Vec::new();
     let mut fixed: Vec<u64> = Vec::new();
 
-    for session in 0..sessions as u64 {
+    // ⚠ A start offset, because a stack overflow inside a session ABORTS the
+    // whole process — `run_session_timeboxed` catches a wedge and a panic, but
+    // not that. Without an offset the wide run can never see anything past the
+    // first session that overflows, and one did at 30 x 50. `AXIA_FUZZ_START=K`
+    // resumes at session K; the seed is `0x5EED_0000 + session`, so a session's
+    // identity does not depend on where the run began.
+    let start = env_usize("AXIA_FUZZ_START", 0) as u64;
+    for session in start..sessions as u64 {
         let t0 = std::time::Instant::now();
         let outcome = run_session_timeboxed(session, ops);
         let secs_taken = t0.elapsed().as_secs_f64();
