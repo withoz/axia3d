@@ -249,15 +249,42 @@ fn the_mesh_is_sound_right_up_to_the_last_draw() {
     );
 }
 
-/// And then one rect brings it down.
+/// And then one rect used to bring it down. It does not any more.
 ///
-/// ⚠ When this stops panicking the defect is fixed — rewrite it into an
-/// assertion that the draw succeeds and the mesh stays sound. Do not delete it.
+/// This was `#[should_panic(expected = "not found in storage")]` with a note
+/// saying that when it stopped panicking the defect was fixed and the test
+/// should be rewritten rather than deleted. That is what happened, in the same
+/// session, and this is the rewrite.
 #[test]
-#[should_panic(expected = "not found in storage")]
-fn one_more_rect_indexes_a_half_edge_that_is_gone() {
+fn the_last_rect_draws_and_the_mesh_stays_sound() {
     let mut s = prod();
     for op in OPS {
         apply(&mut s, *op);
     }
+
+    let inv = s.mesh.verify_face_invariants();
+    assert!(inv.is_valid(), "invalid after the last op: {:?}", inv.violations);
+
+    // The verifier walks faces, so it cannot see the thing that actually broke.
+    // Ask the v_rings directly: every vertex's anchor must be a live half-edge
+    // that leaves THAT vertex — the invariant F1 was violating.
+    let mut bad = Vec::new();
+    for (v, vt) in s.mesh.verts.iter() {
+        let Some(h) = vt.outgoing() else { continue };
+        if !s.mesh.hes.contains(h) {
+            bad.push(format!("{v:?} anchors dead {h:?}"));
+            continue;
+        }
+        let e = s.mesh.hes[h].edge();
+        if !s.mesh.edges.contains(e) {
+            bad.push(format!("{v:?} anchors {h:?} on a dead edge"));
+            continue;
+        }
+        let (a, b) = (s.mesh.edges[e].v_small(), s.mesh.edges[e].v_large());
+        if a != v && b != v {
+            bad.push(format!("{v:?} anchors {h:?}, an edge it is not on"));
+        }
+    }
+    assert!(bad.is_empty(), "v_ring anchors are wrong: {bad:?}");
 }
+

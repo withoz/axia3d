@@ -13243,13 +13243,40 @@ impl Mesh {
             let cur = self.verts[v].outgoing();
             if let Some(out) = cur {
                 if !removed_set.contains(&out) { continue; }
-                // Find any live HE whose origin == v (i.e., prev(h).dst == v)
+                // Find any live HE whose origin is v.
+                //
+                // ⚠ This used to ask `prev(h).dst == v`, and that is what made
+                // this repair the source of the corruption it exists to prevent.
+                // A half-edge's origin is only `prev(h).dst` while the loop
+                // chains are intact — and here they are mid-surgery, spliced by
+                // earlier calls in the caller's own removal loop. So the search
+                // matched half-edges belonging to edges that do not touch `v` at
+                // all, and wrote one of them into `v.outgoing`.
+                //
+                // Measured on `a_vertex_whose_outgoing_half_edge_is_gone`:
+                //
+                //   WRITER F1 v=VertId(208) he=HeId(908)
+                //   WRITER F1 v=VertId(211) he=HeId(879)
+                //   WRITER F1 v=VertId(218) he=HeId(909)
+                //
+                // …each a half-edge of an edge with neither endpoint equal to
+                // `v`. When those edges were later removed, F1 repaired only
+                // THEIR two endpoints, so these three anchors stayed pointing at
+                // dead half-edges — and `remove_from_v_ring` indexes its start
+                // anchor without checking, which is where it finally panics.
+                //
+                // The endpoints are STORED on the edge, so the origin needs no
+                // inference: it is whichever endpoint is not `dst`. That reads
+                // only data the surgery does not touch.
                 let mut replacement: Option<HeId> = None;
                 for (h_id, h) in self.hes.iter() {
                     if removed_set.contains(&h_id) || !h.is_active() { continue; }
-                    let p = h.prev();
-                    if p.is_null() || !self.hes.contains(p) { continue; }
-                    if self.hes[p].dst() == v {
+                    let e = h.edge();
+                    if !self.edges.contains(e) { continue; }
+                    let (a, b) = (self.edges[e].v_small(), self.edges[e].v_large());
+                    let dst = h.dst();
+                    let origin = if dst == a { b } else if dst == b { a } else { continue };
+                    if origin == v {
                         replacement = Some(h_id);
                         break;
                     }
