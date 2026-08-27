@@ -18732,13 +18732,37 @@ mod tests {
         }
     }
 
+    /// ⚠ This test also documents what `remove_edge_and_halfedges` does NOT do,
+    /// because for a long time it only asked about `outgoing` and so passed while
+    /// leaving an ACTIVE face naming a removed half-edge. Measured 2026-08-25:
+    ///
+    /// ```text
+    ///   VRING face=FaceId(0) active outer_start_live=false
+    ///   VRING   collect FAILED: HalfEdge HeId(0) not found
+    /// ```
+    ///
+    /// That is the shape the fuzz reports as `face FaceId(N): cannot collect
+    /// outer loop: HalfEdge HeId(M) not found`, reproduced in four lines.
+    ///
+    /// The function repoints `Vertex.outgoing` (F1) and splices the radial chain
+    /// (F2) but never looks at faces — grep its body for `outer()` / `inners()`
+    /// / `.start` and you get nothing. It cannot simply repair the loop either:
+    /// removing one edge of a triangle leaves two half-edges that cannot bound
+    /// anything, so there is no surviving start to repoint to. And it cannot
+    /// simply deactivate the face, because callers legitimately remove-then-
+    /// rebuild (the ADR-284 open-seam paths do exactly that and repair before
+    /// they return).
+    ///
+    /// So this asserts the state as it IS, rather than staying silent about it.
+    /// ⚠ If someone makes the function handle faces, this test SHOULD fail —
+    /// that is the signal to rewrite it, not to delete the assertion.
     #[test]
     fn v_ring_cleans_up_on_edge_removal() {
         let mut mesh = Mesh::new();
         let v0 = mesh.add_vertex(DVec3::new(0.0, 0.0, 0.0));
         let v1 = mesh.add_vertex(DVec3::new(1.0, 0.0, 0.0));
         let v2 = mesh.add_vertex(DVec3::new(0.5, 1.0, 0.0));
-        let _ = mesh.add_face(&[v0, v1, v2], MaterialId::new(0)).unwrap();
+        let fid = mesh.add_face(&[v0, v1, v2], MaterialId::new(0)).unwrap();
         // Remove edge v0-v1
         let eid = mesh.find_edge(v0, v1).unwrap();
         mesh.remove_edge_and_halfedges(eid).unwrap();
@@ -18749,6 +18773,21 @@ mod tests {
         if let Some(out) = mesh.verts[v1].outgoing() {
             assert!(mesh.hes.contains(out), "v1.outgoing should point to a live HE");
         }
+
+        // …and the face is left behind, still active, naming a half-edge that
+        // is gone. Not an assertion that this is RIGHT — an assertion that it
+        // is what happens, so a change to it is visible.
+        let f = &mesh.faces[fid];
+        assert!(f.is_active(), "the face was not deactivated");
+        assert!(
+            !mesh.hes.contains(f.outer().start),
+            "the face's outer loop start survived — if the function now repairs \
+             or retires the face, rewrite this test to say what it does instead"
+        );
+        assert!(
+            mesh.collect_loop_verts(f.outer().start).is_err(),
+            "the loop now collects — same as above, rewrite rather than delete"
+        );
     }
 
     #[test]
