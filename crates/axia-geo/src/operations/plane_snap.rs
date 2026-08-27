@@ -327,6 +327,38 @@ pub fn snap_face_to_plane(
         .filter_map(|&vid| mesh.verts.get(vid).map(|v| v.pos()))
         .collect();
 
+    // The face must BE the plane it is being flattened onto.
+    //
+    // ⚠ This is the half of ADR-168 that was designed, documented, and never
+    // wired. `PLANE_SNAP_NORMAL` existed with a doc comment saying "a snapped
+    // face has normal within 1e-3 of target", and its only mention outside its
+    // own definition was a `let _ =` in a test silencing the unused warning.
+    //
+    // Without it the offset half alone reads "project every vertex onto this
+    // plane, at any distance" -- correct for chord drift (the tests move 5e-3 mm
+    // at most) and destructive for anything else. Measured 2026-08-27: drawing a
+    // rect at z=100 across a box wall at y=-20 put that wall on the draw's face
+    // list, and this function laid all four of its vertices flat onto z=100 --
+    // a 100 mm displacement that collapsed the wall to a zero-area line. A wall
+    // perpendicular to the draw plane cannot be a drift case at any tolerance.
+    //
+    // Anti-parallel passes: `.abs()`, same as `adr168_snap_anti_parallel_
+    // normal_handled` requires of drift measurement.
+    let aligned = match mesh.compute_normal(&vert_ids) {
+        Ok(n) => {
+            let n = n.normalize_or_zero();
+            n.length_squared() > 1e-10 && 1.0 - n.dot(plane.normal).abs() <= PLANE_SNAP_NORMAL
+        }
+        // A loop with no computable normal has no plane to agree with. Declining
+        // to move it is the safe answer; snapping it would be a guess.
+        Err(_) => false,
+    };
+    if !aligned {
+        let pre_drift = detect_chord_drift(&chord, plane);
+        let post_max_drift = pre_drift.max_drift;
+        return SnapReport { pre_drift, vertices_snapped: 0, snap_applied: false, post_max_drift };
+    }
+
     let report = snap_chord_to_plane(&mut chord, plane, snap_tol);
 
     // 3. Write snapped positions back to mesh
@@ -742,7 +774,6 @@ mod tests {
         assert_eq!(agg.face_calls, 1);
 
         // Architectural constants accessible
-        let _ = super::PLANE_SNAP_NORMAL;
         let _ = super::PLANE_SNAP_OFFSET;
     }
 
