@@ -238,6 +238,14 @@ fn is_move_only_inner(mesh: &Mesh, face_id: FaceId, collect_debug: bool) -> Move
 /// coincident top/bottom verts) yet invisible at mm CAD scale.
 pub const MIN_SOLID_THICKNESS: f64 = 1e-3;
 
+/// How far a vertex may sit off the surface its face carries before that
+/// surface is treated as stale rather than merely imprecise.
+///
+/// Far above drift and far below a mistake: the render chord tolerance is
+/// 0.02 mm (LOCKED #40) and the spatial-hash dedup floor is 0.15 μm (LOCKED #5),
+/// while the stale surfaces this catches were 30 to 200 mm out.
+const STALE_SURFACE_TOL: f64 = 1e-3;
+
 /// ADR-196 follow-up — the maximum INWARD distance a MoveOnly push can travel
 /// before the solid inverts: the minimum connecting-wall length projected onto
 /// the face normal (the local solid thickness, always positive). `None` when
@@ -912,6 +920,48 @@ impl Mesh {
             if let Ok(vs) = self.collect_loop_verts(start) {
                 if let Ok(n) = self.compute_normal(&vs) {
                     self.faces[f].set_normal(n);
+                }
+            }
+            // ...and the surface, which describes the same face.
+            //
+            // ⚠ This loop already knew these faces had changed shape -- it exists
+            // to refresh their cached normals -- and refreshed one of the two
+            // things that describe a face while leaving the other stale.
+            //
+            // On a box it does not show. MoveOnly slides the top along its own
+            // normal, and the side walls' planes CONTAIN that direction, so their
+            // planes are the same afterwards. Push a wall of a heptagonal prism and
+            // the neighbours are not parallel to the motion: their planes turn, and
+            // the surface they carry is the one they had before.
+            //
+            // Measured 2026-08-27, fuzz session 89 shrunk to five operations: a
+            // neighbour wall two of whose four vertices moved, left 42.4 mm off the
+            // plane it still claimed -- 50 mm of push times the cosine between the
+            // walls. `verify_face_invariants` never saw it: it compares a cached
+            // normal against a loop's winding, and neither is the surface. It
+            // surfaced as `cached normal opposite to winding` instead, with dot
+            // 0.805 -- the 36.4° the plane had turned through.
+            //
+            // Asking whether the face is still ON its surface, rather than always
+            // re-synthesizing, keeps the curved case: a cylindrical wall whose
+            // vertices are still on its cylinder is left alone instead of being
+            // flattened to a Plane.
+            if let Some(surf) = self.faces[f].surface().cloned() {
+                let still_on_it = self
+                    .face_outline_points(f)
+                    .map(|pts| {
+                        !pts.is_empty()
+                            && pts.iter().all(|p| {
+                                surf.unsigned_distance_to(*p)
+                                    .map(|d| d <= STALE_SURFACE_TOL)
+                                    .unwrap_or(false)
+                            })
+                    })
+                    .unwrap_or(false);
+                if !still_on_it {
+                    if let Some(fresh) = self.synthesize_plane_for_face(f) {
+                        self.faces[f].set_surface(Some(fresh));
+                    }
                 }
             }
         }
