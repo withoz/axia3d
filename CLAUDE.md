@@ -6877,6 +6877,27 @@ Phase 5 repo 위생 (옛 repo dir 삭제·브랜치 486→~5·npm install↔open
 tensor uv inversion) / Phase 5 repo 위생. 자세히는 [[project-engine-state-and-doc-lag]]
 메모리 + 세션 감사.
 
+**2026-08-25 정리 — 이 항목이 막으려던 일이 한 턴에 세 번 났다.** 이미 만들어진
+것을 세 번 구현하러 갔다: cross-bore(인덱스 "step 2 is next" ↔ 파일 "steps 1-4
+DONE"), C-2 곡면 겹침(명시적 "Next: splice…" 인데 PR #141 이 그걸 했고 #142 가
+cone 확장), C-3 곡면 위 선(LOCKED #104 "상태기계 변경 필요" 인데 `DrawLineTool` 이
+이미 3점 모아 `drawOpenSeamOnCurved` 호출 + 안내 토스트). **어떤 "next" 표시도
+믿기 전에 명명된 산출물을 grep 할 것.**
+
+계획서(`docs/plans/SHAPE-DRAWING-EXPANSION-PLAN-2026-08-13.html`)에 순번 9행
+실측 대조표를 넣었고, 결재 대기 3항목은 셋 다 이미 답이 있었다(① 먼저 선택한 쪽
+상속 — PR #132 로 **구현까지** 됨 / ② 트랙 A 완료 / ③ 0단계 wip 는 #124 로 흡수).
+
+**정말로 안 만들어진 것은 둘**: `FaceLineage` (0 파일) 과 `Cylinder→NURBS` 승격
+(0 파일, cross-bore step 3 의 선행). **사용자 facing 공백은 하나**: 구·토러스 위
+두 원 겹침 — `chart_for` 가 `None`, 전개 가능하지 않아 unroll 이 없다. ⚠ 원통·콘의
+unroll 은 isometry(정확)지만 구·토러스는 근사다 — 더 어려운 같은 문제가 아니라 다른 문제.
+
+⚠ 정리 중 건진 실마리: `remove_edge_and_halfedges` (mesh.rs:13213) 가 half-edge 를
+지우면서 **살아있는 face 가 그걸 `outer().start` / `inners()[i].start` 로 쓰는지
+확인하지 않는다** — 함수 본문 전체에 그 언급이 0회. fuzz 세션 8 의 `HalfEdge
+HeId(341) not found` 의 메커니즘. 도달 경로만 미확정(twin-HE reparent 필요).
+
 ### 89. ADR-286 — Curved-Surface Boss (outward) + Cut Completion ("완벽한 extrude" #5 곡면 Phase 2, 2026-07-10) ✅
 
 **Canonical anchor (사용자 결재, 2026-07-10)**: AskUserQuestion "다음 작업" → **곡면 cut/boss**.

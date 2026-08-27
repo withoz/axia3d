@@ -760,13 +760,56 @@ torus       x0.5418   x1.0055   46% 적게 그림</pre>
   </ul>
 
   <div class="note warn">
-    <span class="tag">사용자 결정 대기 항목</span>
+    <span class="tag">사용자 결정 대기 항목 — 셋 다 답이 나왔다 (2026-08-25 실측)</span>
     <p>
-      ① 트랙 E: 두 owner 가 다른 면을 merge 할 때 누가 상속하는가 (측정된 미해결의 선행 결정).
-      ② 트랙 A 착수 승인 — LOCKED #104 가 "계획 C 는 사용자 결재로 다음 계획"이라 기록한
-      바로 그 항목이다. ③ 계획서 0단계 wip(<code>9241217</code>)을 이어받을지, 리뷰 후
-      재작성할지.
+      ① <b>답: 먼저 선택한 쪽이 상속</b> (사용자 결재 2026-08-13) — 그리고 <b>이미 구현됨</b>,
+      PR #132 <code>Scene::merge_faces_by_edge_owned</code>. WASM merge 다섯 진입점 전부 경유.
+      ② 트랙 A 는 <b>완료</b> (D1 #127/#128 · D2 · D7 원래 정상 · D8 원래 정상 · D9 철회).
+      ③ 0단계 wip 는 <b>#124 로 흡수</b> (Arc 부호 뒤집힘 + 컴파일 오류를 고쳐 채택, 변이 5/5).
     </p>
+  </div>
+
+  <div class="note warn">
+    <span class="tag">⚠ 이 표를 믿기 전에 — 2026-08-25 실측 대조</span>
+    <p>
+      이 문서와 메모리가 코드보다 뒤처져 있었다. 한 세션에서 <b>이미 만들어진 것을 세 번</b>
+      구현하러 갔다 — cross-bore(인덱스는 "step 2 is next", 파일은 "steps 1-4 DONE"),
+      C-2(명시적 "Next: splice…" 인데 PR #141 이 그걸 했고 #142 가 cone 확장),
+      C-3(LOCKED #104 는 "상태기계 변경 필요"인데 <code>DrawLineTool</code> 이 이미 3점을
+      모아 <code>drawOpenSeamOnCurved</code> 를 부르고 안내 토스트까지 띄운다).
+      LOCKED #88 이 존재하는 이유가 정확히 이것 — 뒤처진 기록이 한 세션으로 하여금
+      <b>멀쩡한 코드를 고장난 것으로 오진</b>하게 했다.
+    </p>
+    <p>순번별 실측 (각 행마다 명명된 산출물 하나를 grep):</p>
+    <table>
+      <tr><th>순번</th><th>단위</th><th>실측</th></tr>
+      <tr><td>1</td><td>P — #122 + 0단계 계측기</td><td>✅ <code>face_tessellation</code> 2 파일</td></tr>
+      <tr><td>2</td><td>C-1 — D6 HARD</td><td>✅ <code>mark_chain_edges_hard</code> 4 파일 (#125)</td></tr>
+      <tr><td>3</td><td>A-분기특정 → A MVP (D8)</td><td>✅ D8 은 원래 고쳐져 있었다 (ADR-281 β-1)</td></tr>
+      <tr><td>4</td><td>A 확장 (D1·D2·D7·D9)</td><td>✅ <code>split_edges_at_curve_crossings</code> 2 · <code>subtract_double_covered_faces</code> 10</td></tr>
+      <tr><td>5</td><td>E — 소유권</td><td>⚠ <b>반만</b> — D4 규칙은 PR #132 로 구현, <code>FaceLineage</code> 는 <b>0 파일</b></td></tr>
+      <tr><td>6</td><td>B — 표면 각인</td><td>✅ <code>imprint_surface_path</code> 3 파일 (#134)</td></tr>
+      <tr><td>7</td><td>C-0 · D — 측정</td><td>✅ C-0 완료 · <b>D 완료 (PR #215)</b> — 축은 문제가 아니었다</td></tr>
+      <tr><td>8</td><td>C-2 · C-3</td><td>✅ 둘 다 — C-2 #141/#142, C-3 <code>DrawLineTool</code> 에 이미 있음</td></tr>
+      <tr><td>9</td><td>3.5 → 4 → F</td><td>✅ 대체로 — <code>damaging_contacts</code> 4 · <code>guard_imprint</code> 8 · fuzz 25 파일 + 세션 테스트 2</td></tr>
+    </table>
+    <p>
+      ⚠ 순번 4 의 <b>게이트(4단계)는 "롤백하지 않는다"가 결정</b>이지 미구현이 아니다 —
+      <i>A DRAW IS NEVER REFUSED</i> (사용자 결정 2026-08-06). 게이트는 측정만 한다.
+    </p>
+    <p><b>정말로 안 만들어진 것은 둘뿐이다:</b></p>
+    <ul>
+      <li><code>FaceLineage</code> (순번 5) — <b>0 파일</b>. 단 계획서가 적은 효용
+      ("opened 7→0")은 <b>이미 다른 경로로 달성</b>됐다(타원 rim 사전분할, 2026-08-13).
+      남은 실제 가치는 selection 재매핑 · undo · preview 의 단일 진실원천.</li>
+      <li><code>Cylinder→NURBS</code> 승격 — <b>0 파일</b>. cross-bore step 3(반지름이 다른
+      교차 보어)의 선행이고, 원기둥은 정확히 rational NURBS 이므로 "정직한 첫 수".</li>
+    </ul>
+    <p><b>사용자 facing 으로 남은 공백 하나:</b> 구·토러스 위 두 원 겹침.
+      원통·콘은 3영역(lens + 초승달 2)으로 풀리는데 구·토러스는 <code>chart_for</code> 가
+      <code>None</code> — <b>전개 가능하지 않아 unroll 이 존재하지 않는다</b>.
+      ⚠ 그래서 "더 어려운 같은 문제"가 아니라 <b>다른 문제</b>이고, 계획서가 적은
+      <code>구·토러스=parametric</code> 은 원통/콘의 isometry(정확)와 달리 <b>근사</b>다.</p>
   </div>
 </section>
 
