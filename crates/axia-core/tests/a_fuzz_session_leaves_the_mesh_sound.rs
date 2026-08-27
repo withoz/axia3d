@@ -155,11 +155,12 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             }
             let f = faces[r.below(faces.len())];
             let d = 50.0 + r.below(4) as f64 * 50.0;
+            let tag = face_tag(s, f); // before the op moves it
             let e = matches!(
                 s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: d } }),
                 CommandResult::Error(_)
             );
-            format!("extrude({f:?},{d}){}", if e { " REFUSED" } else { "" })
+            format!("extrude({tag},{d}){}", if e { " REFUSED" } else { "" })
         }
         7 => {
             // Push a face IN. Held out of the generator while seeds 6 and 10
@@ -178,6 +179,7 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             }
             let f = faces[r.below(faces.len())];
             let d = -(50.0 + r.below(3) as f64 * 50.0);
+            let tag = face_tag(s, f); // before the op moves it
             let e = matches!(
                 s.execute(Command::CreateSolid {
                     face_id: f,
@@ -185,7 +187,7 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
                 }),
                 CommandResult::Error(_)
             );
-            format!("pushIn({f:?},{d}){}", if e { " REFUSED" } else { "" })
+            format!("pushIn({tag},{d}){}", if e { " REFUSED" } else { "" })
         }
         8 => {
             // A box, so a solid exists without needing a draw to succeed first.
@@ -202,6 +204,30 @@ fn step(s: &mut Scene, r: &mut Lcg) -> String {
             let ok = s.punch_rect_hole(a, b, DVec3::Z).is_ok();
             format!("punch({x},{y},{z},{})", if ok { "ok" } else { "refused" })
         }
+    }
+}
+
+/// Where a face is, so a log line can be re-typed.
+///
+/// ⚠ The generator picks faces by INDEX into the active list, so `FaceId(7)`
+/// in a log means nothing once an operation is dropped -- every later id shifts.
+/// Every reproduction file transcribed from this harness had to recover the
+/// centroids by hand for exactly that reason, and each one carries a warning
+/// about it. Printing the point makes a session transcribable as written.
+fn face_centroid(s: &Scene, f: axia_geo::FaceId) -> Option<DVec3> {
+    let pts = s.mesh.face_outline_points(f)?;
+    if pts.is_empty() {
+        return None;
+    }
+    Some(pts.iter().copied().sum::<DVec3>() / pts.len() as f64)
+}
+
+/// `FaceId(7)@(86.494,-47.317,125.000)` -- the id for reading the engine's own
+/// output against, the point for re-typing.
+fn face_tag(s: &Scene, f: axia_geo::FaceId) -> String {
+    match face_centroid(s, f) {
+        Some(c) => format!("{f:?}@({:.3},{:.3},{:.3})", c.x, c.y, c.z),
+        None => format!("{f:?}@?"),
     }
 }
 
