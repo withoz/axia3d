@@ -1,57 +1,53 @@
-//! Push a cylinder's wall outward and the new wall still claims the cylinder.
+//! Move a face and its neighbours keep the plane they used to be on.
 //!
-//! Fuzz session 11, seed `0x5EED000B`, reported `cached normal opposite to
-//! winding` at operation 31. Shrunk from thirty-one operations to **four**, and
-//! then the fourth turned out not to matter:
+//! Four sessions of the wide fuzz — 11, 40, 73 and 89 — reported `cached normal
+//! opposite to winding`. None of them was about a normal. Underneath every one
+//! were faces carrying an analytic surface they no longer sat on, by 30 to 200
+//! millimetres.
 //!
-//! ```text
-//!   circle at (-100,0,0) r=30      draw
-//!   extrude that disk    +200      a cylinder, 24 side quads
-//!   extrude one side quad +200     the wall in question
-//!   rect at (-100,50,0)  60x45     what the fuzz blamed
-//! ```
+//! ## Where it comes from
 //!
-//! ⚠ The rect is innocent. Measured with and without it, the same three faces
-//! are already 199.8 mm off the surface they carry:
+//! `push_pull_move_only` slides a face's vertices and then walks every face those
+//! vertices touched, refreshing each one's cached normal because the face has
+//! changed shape. It refreshed one of the two things that describe a face and
+//! left the other alone.
 //!
-//! ```text
-//!   without the rect   FaceId(10) r=30 off by 199.8
-//!                      FaceId(11) r=30 off by 199.8
-//!                      FaceId(12) r=30 off by 199.8
-//!   with the rect      the same three, the same 199.8
-//! ```
+//! On a box it never shows. MoveOnly slides the top along its own normal, and the
+//! side walls' planes CONTAIN that direction, so afterwards their planes are
+//! exactly what they were. Push a wall of a heptagonal prism and the neighbours
+//! are not parallel to the motion: their planes turn, and the surface they carry
+//! is the one they had before.
 //!
-//! Pushing a wall out by 200 gives the new faces the parent's surface --
-//! `Cylinder { axis_origin: (-100,0,0), axis_dir: Z, radius: 30 }` -- while
-//! their vertices sit 230 from that axis. A factor of 7.7, not a tolerance.
+//! ## What the verifier could and could not see
 //!
-//! ## Why the fuzz called it a winding problem
+//! Nothing. `verify_face_invariants` compares a cached normal against the winding
+//! of a loop, and neither of those is the surface. Session 89's neighbour wall was
+//! 42.4 mm off the plane it still claimed and what got reported was `dot=0.805`,
+//! which is the 36.4° the plane had turned through. Session 11's went 31
+//! operations further before a draw put a vertex into one of the mislabelled loops
+//! and made a five-vertex non-planar face out of it.
 //!
-//! It could not see this. `verify_face_invariants` compares a face's cached
-//! normal against the winding of its loop; neither is the surface. The 199.8 mm
-//! sat silently until the rect crossed the original cylinder and inserted a
-//! vertex -- correctly, at r=30 where the crossing really is -- into one of the
-//! mislabelled faces. Five vertices, four at r=230 and one at r=30, is not
-//! planar, so the winding check finally fired, 31 operations after the cause.
+//! ⚠ The reproductions here are built directly rather than transcribed from those
+//! sessions. Shrinking a fuzz session re-resolves its face picks by centroid, and
+//! the five-operation reduction of session 89 turns out to pick a different face
+//! than the full session did — it reproduces *a* stale surface, but not this one.
+//! A heptagonal prism with one wall pushed is the mechanism with nothing else in
+//! the way, and it is measured both ways below.
 //!
-//! That shape is familiar: ADR-298 found `verify_face_invariants` reporting
-//! `valid` over a broken hole because I4 walked only outer loops, and ADR-304
-//! found it reporting `valid` over a NaN normal because `NaN > 1e-10` is false.
-//! A gate that cannot see the thing that is wrong reports the next thing that
-//! happens to break.
+//! Same shape as ADR-298 (I4 walked only outer loops, so a broken hole read
+//! `valid`) and ADR-304 (`NaN > 1e-10` is false, so a NaN normal read `valid`).
 //!
-//! ## What is open
+//! ## What this file was, and is
 //!
-//! What surface an extruded curved face SHOULD carry is a decision, not an
-//! oversight. Here the push is radial, so the cap really is a cylinder of radius
-//! 230 about the same axis -- but an extrude along any other direction is not
-//! cylindrical at all, and dropping the surface instead costs the face its
-//! kernel-aware operations (ADR-087 K-ε's `NoProfileSurface`). Both answers are
-//! defensible and neither is mine to pick, so this file measures rather than
-//! decides.
+//! It was written as `should_panic` while the cause was still open, with a note
+//! saying to rewrite it into an ordinary assertion the day it went red. That
+//! happened in the same session, and this is the rewrite.
 //!
-//! ⚠ `should_panic` while it stands. The day it goes red, rewrite it into an
-//! ordinary assertion -- do not delete it.
+//! ⚠ The third test is the one that keeps the fix honest. Re-synthesizing every
+//! touched face unconditionally would also make the first two pass, and would
+//! flatten a cylinder's walls into planes on the way. Asking whether the face is
+//! still ON its surface leaves the twenty walls that never moved alone and
+//! rebuilds only the three that did — which are, measurably, planes.
 
 use axia_core::scene::Scene;
 use axia_core::Command;
@@ -86,7 +82,7 @@ fn face_near(s: &Scene, p: DVec3) -> Option<axia_geo::FaceId> {
     best.map(|(_, f)| f)
 }
 
-fn extrude_at(s: &mut Scene, p: DVec3, d: f64) {
+fn push_face_at(s: &mut Scene, p: DVec3, d: f64) {
     if let Some(f) = face_near(s, p) {
         s.execute(Command::CreateSolid {
             face_id: f,
@@ -95,7 +91,47 @@ fn extrude_at(s: &mut Scene, p: DVec3, d: f64) {
     }
 }
 
-/// A cylinder, and then one of its side quads pushed out by 200.
+/// Every face measured against the surface it carries.
+fn faces_off_their_own_surface(s: &Scene) -> Vec<String> {
+    let mut off = Vec::new();
+    for (f, fa) in s.mesh.faces.iter() {
+        if !fa.is_active() {
+            continue;
+        }
+        let Some(surf) = s.mesh.face_surface(f).cloned() else { continue };
+        let pts = s.mesh.face_outline_points(f).unwrap_or_default();
+        if pts.is_empty() {
+            continue;
+        }
+        let worst = pts
+            .iter()
+            .filter_map(|p| surf.unsigned_distance_to(*p))
+            .fold(0.0f64, f64::max);
+        // Well past any drift: the render chord tolerance is 0.02 mm and the
+        // dedup floor is 0.15 μm.
+        if worst > 1e-3 {
+            off.push(format!("{f:?} off by {worst:.1} mm"));
+        }
+    }
+    off
+}
+
+fn count_surfaces(s: &Scene) -> (usize, usize) {
+    let (mut cyl, mut plane) = (0, 0);
+    for (f, fa) in s.mesh.faces.iter() {
+        if !fa.is_active() {
+            continue;
+        }
+        match s.mesh.face_surface(f) {
+            Some(AnalyticSurface::Cylinder { .. }) => cyl += 1,
+            Some(AnalyticSurface::Plane { .. }) => plane += 1,
+            _ => {}
+        }
+    }
+    (cyl, plane)
+}
+
+/// A circle extruded into a cylinder, then one of its side quads pushed out.
 fn cylinder(push_a_wall: bool) -> Scene {
     let mut s = prod();
     s.execute(Command::DrawCircleAsCurve {
@@ -103,69 +139,111 @@ fn cylinder(push_a_wall: bool) -> Scene {
         normal: DVec3::Z,
         radius: 30.0,
     });
-    extrude_at(&mut s, DVec3::new(-100.0, 0.0, 0.0), 200.0);
+    push_face_at(&mut s, DVec3::new(-100.0, 0.0, 0.0), 200.0);
     if push_a_wall {
-        extrude_at(&mut s, DVec3::new(-119.689, 22.279, 100.0), 200.0);
+        push_face_at(&mut s, DVec3::new(-119.689, 22.279, 100.0), 200.0);
     }
     s
 }
 
-/// Every vertex of every cylindrical face, measured against the cylinder that
-/// face claims to be part of.
-fn faces_off_their_own_surface(s: &Scene) -> Vec<String> {
-    let mut off = Vec::new();
-    for (f, fa) in s.mesh.faces.iter() {
-        if !fa.is_active() {
-            continue;
-        }
-        let Some(AnalyticSurface::Cylinder { axis_origin, axis_dir, radius, .. }) =
-            s.mesh.face_surface(f).cloned()
-        else {
-            continue;
-        };
-        let pts = s.mesh.face_outline_points(f).unwrap_or_default();
-        let worst = pts
-            .iter()
-            .map(|p| {
-                let d = *p - axis_origin;
-                let radial = d - axis_dir * d.dot(axis_dir);
-                (radial.length() - radius).abs()
-            })
-            .fold(0.0f64, f64::max);
-        // Well past any drift: the tessellation tolerance is 0.02 mm and the
-        // dedup floor is 0.15 μm.
-        if worst > 1e-3 {
-            off.push(format!("{f:?} claims r={radius:.0}, off by {worst:.1} mm"));
-        }
-    }
-    off
+/// The mechanism on its own: a heptagonal prism with one side wall pushed out.
+///
+/// The push reports `MODE=MoveOnly, 4 verts moved`. Two of those four belong to
+/// each neighbouring wall, so the neighbours turn while the pushed wall
+/// translates.
+fn heptagonal_prism_with_one_wall_pushed() -> Scene {
+    let mut s = prod();
+    s.execute(Command::DrawPolygonAsShape {
+        center: DVec3::new(0.0, 0.0, 0.0),
+        normal: DVec3::Z,
+        radius: 100.0,
+        sides: 7,
+    });
+    push_face_at(&mut s, DVec3::new(0.0, 0.0, 0.0), 120.0);
+    // A side wall, taken at mid-height so the pick cannot land on a cap.
+    push_face_at(&mut s, DVec3::new(0.0, -97.49, 60.0), 60.0);
+    s
 }
 
 /// The control. A cylinder built the ordinary way sits on its own surface, so a
-/// failure below is about the push and not about how the cylinder is made.
+/// failure below is about the push and not about how cylinders are made.
 #[test]
 fn a_plain_cylinder_sits_on_its_own_surface() {
     let s = cylinder(false);
-    let n = s
-        .mesh
-        .faces
-        .iter()
-        .filter(|(f, fa)| {
-            fa.is_active()
-                && matches!(s.mesh.face_surface(*f), Some(AnalyticSurface::Cylinder { .. }))
-        })
-        .count();
-    assert!(n >= 20, "expected the cylinder's side quads, found {n} cylindrical faces");
-
+    let (cyl, _) = count_surfaces(&s);
+    assert!(cyl >= 20, "expected the cylinder's side quads, found {cyl}");
     let off = faces_off_their_own_surface(&s);
     assert!(off.is_empty(), "a plain cylinder is already wrong: {off:?}");
 }
 
-/// ⚠ Open. Three faces claim `radius: 30` from 230 away.
+/// Three faces used to claim `radius: 30` from 230 away.
 #[test]
-#[should_panic(expected = "off by")]
-fn a_pushed_wall_still_claims_the_cylinder_it_left() {
+fn a_pushed_wall_does_not_claim_the_cylinder_it_left() {
     let s = cylinder(true);
     let off = faces_off_their_own_surface(&s);
     assert!(off.is_empty(), "faces are off their own surface: {off:?}");
+}
+
+/// ⚠ This is what stops the fix from being "re-synthesize everything touched".
+///
+/// Push a cylinder's top cap along its axis and every side wall is touched — its
+/// top two vertices move — while staying exactly on the cylinder it already
+/// carries, with only the v_range wanting to grow. Measured both ways:
+///
+/// ```text
+///   asking whether the face is still on it   Cylinder 23 → 23
+///   re-synthesizing whatever was touched     Cylinder 23 → 0
+/// ```
+///
+/// The second turns a cylinder into twenty-three planes, and nothing else in this
+/// file would notice: the walls are still where they should be, so every other
+/// assertion here still passes. This is the one that catches it.
+#[test]
+fn pushing_a_cylinder_taller_keeps_its_walls_curved() {
+    let mut s = prod();
+    s.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(0.0, 0.0, 0.0),
+        normal: DVec3::Z,
+        radius: 50.0,
+    });
+    push_face_at(&mut s, DVec3::new(0.0, 0.0, 0.0), 100.0);
+    let (before, _) = count_surfaces(&s);
+    assert!(before >= 20, "expected a cylinder to start from, got {before}");
+
+    push_face_at(&mut s, DVec3::new(0.0, 0.0, 100.0), 50.0);
+    let (after, plane) = count_surfaces(&s);
+    assert_eq!(
+        after, before,
+        "the push flattened the cylinder: {before} cylindrical faces became {after}, \
+         and there are now {plane} planes"
+    );
+}
+
+/// ⚠ The mechanism, measured directly rather than through a fuzz session.
+///
+/// Before the fix, pushing one wall of a heptagonal prism out by 60 left three
+/// faces off the surface they carried:
+///
+/// ```text
+///   FaceId(9) off 60.0     the wall that moved
+///   FaceId(3) off 37.4     a neighbour
+///   FaceId(8) off 37.4     the other neighbour
+/// ```
+///
+/// 37.4 is 60 × cos(51.4°), and 51.4° is a heptagon's exterior angle — the amount
+/// each neighbour's plane turns through. That number is why this file claims the
+/// cause rather than merely the symptom.
+#[test]
+fn a_pushed_wall_leaves_its_neighbours_on_their_own_planes() {
+    let s = heptagonal_prism_with_one_wall_pushed();
+    let off = faces_off_their_own_surface(&s);
+    assert!(off.is_empty(), "neighbours left off their planes: {off:?}");
+
+    let inv = s.mesh.verify_face_invariants();
+    let winding: Vec<_> = inv
+        .violations
+        .iter()
+        .filter(|v| v.contains("opposite to winding"))
+        .collect();
+    assert!(winding.is_empty(), "and the symptom it used to show as: {winding:?}");
 }
