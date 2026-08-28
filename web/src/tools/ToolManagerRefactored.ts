@@ -3829,8 +3829,18 @@ export class ToolManager {
     this.drawPlaneRafPending = false;
     const e = this.drawPlaneLastEvent;
     if (!e) return;
-    if (!ToolManager.DRAW_PLANE_TOOLS.has(this._currentTool)) return;
-    if (this.isToolBusy()) { this.drawPlaneIndicator?.hide(); return; }
+    // The cursor's mini work-plane grid rides along here: same trigger (a draw
+    // tool waiting for its first point), same throttle, and the origin and plane
+    // are already computed below. `null` clears it.
+    if (!ToolManager.DRAW_PLANE_TOOLS.has(this._currentTool)) {
+      this.viewport.setMiniGridCursor?.(null);
+      return;
+    }
+    if (this.isToolBusy()) {
+      this.drawPlaneIndicator?.hide();
+      this.viewport.setMiniGridCursor?.(null);
+      return;
+    }
 
     const plane = this.getDrawPlane(e);
     // Gizmo anchor: use the face hit point if we're on a face,
@@ -3841,9 +3851,16 @@ export class ToolManager {
       if (hit?.point) origin = hit.point.clone();
     }
     if (!origin) origin = this.get3DPoint(e);
-    if (!origin) { this.drawPlaneIndicator?.hide(); return; }
+    if (!origin) {
+      this.drawPlaneIndicator?.hide();
+      this.viewport.setMiniGridCursor?.(null);
+      return;
+    }
 
     this.drawPlaneIndicator?.show(origin, plane);
+    // `right` and `up` are already perpendicular unit vectors in the plane, so
+    // they are the u/v the disc is laid out on.
+    this.viewport.setMiniGridCursor?.(origin, plane.right, plane.up);
   }
 
   /**
@@ -4915,6 +4932,7 @@ export class ToolManager {
       this.selection.clearHover();
       this.selection.clearEdgeHover();
       this.drawPlaneIndicator?.hide();
+      this.viewport.setMiniGridCursor?.(null);
     });
 
     // ===== MOUSE UP =====

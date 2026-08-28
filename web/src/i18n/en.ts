@@ -2372,4 +2372,14 @@ export const EN: Record<string, string> = {
   // ── batch 13h — turning a line's section about the line ──
   '단면을 선 둘레로 돌립니다. 0° = 폭은 가로, 높이는 세로.':
     'Turns the section about the line. 0° = width across, height upright.',
+
+  // ── the cursor's mini work-plane grid ──
+  '커서 그리드 표시': 'Show cursor grid',
+  '그리기 도구가 첫 점을 기다릴 때 커서 아래 작업 평면을 보여줍니다':
+    'Shows the work plane under the cursor while a draw tool waits for its first point.',
+  '반지름 (px)': 'Radius (px)',
+  '가장자리까지 칸 수': 'Cells to the rim',
+  '선 반폭 (px)': 'Line half-width (px)',
+  '반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다':
+    'A HALF-width, so 0.5 is one CSS pixel at DPR 2. Fatter values pile up at the crossings.',
 };

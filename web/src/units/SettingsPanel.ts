@@ -23,6 +23,15 @@ import {
   CYLINDER_SEGMENTS_MIN, CYLINDER_SEGMENTS_MAX,
 } from '../tools/CylinderSegmentsSettings';
 import {
+  getMiniGridVisible, setMiniGridVisible,
+  getMiniGridRadiusPx, setMiniGridRadiusPx,
+  getMiniGridCells, setMiniGridCells,
+  getMiniGridLineHwPx, setMiniGridLineHwPx,
+  MINI_GRID_RADIUS_PX_MIN, MINI_GRID_RADIUS_PX_MAX,
+  MINI_GRID_CELLS_MIN, MINI_GRID_CELLS_MAX,
+  MINI_GRID_LINE_HW_PX_MIN, MINI_GRID_LINE_HW_PX_MAX,
+} from '../tools/MiniGridSettings';
+import {
   getExtrudeMode,
   setExtrudeMode,
   getExtrudeDistNeg,
@@ -196,6 +205,35 @@ export class SettingsPanel {
         <div class="sp-hint">${t('많을수록 매끈하지만 면·정점 증가 (기본 16)')}</div>
       </div>
 
+          <div class="sp-divider"></div>
+
+          <div class="sp-section">
+            <label class="sp-toggle">
+              <span>${t('커서 그리드 표시')}</span>
+              <input type="checkbox" id="sp-mini-grid" />
+            </label>
+            <div class="sp-hint">${t('그리기 도구가 첫 점을 기다릴 때 커서 아래 작업 평면을 보여줍니다')}</div>
+
+            <label class="sp-label">${t('반지름 (px)')}</label>
+            <div class="sp-row">
+              <input type="range" id="sp-mini-grid-radius" min="${MINI_GRID_RADIUS_PX_MIN}" max="${MINI_GRID_RADIUS_PX_MAX}" step="1" />
+              <span id="sp-mini-grid-radius-val" class="sp-value"></span>
+            </div>
+
+            <label class="sp-label">${t('가장자리까지 칸 수')}</label>
+            <div class="sp-row">
+              <input type="range" id="sp-mini-grid-cells" min="${MINI_GRID_CELLS_MIN}" max="${MINI_GRID_CELLS_MAX}" step="1" />
+              <span id="sp-mini-grid-cells-val" class="sp-value"></span>
+            </div>
+
+            <label class="sp-label">${t('선 반폭 (px)')}</label>
+            <div class="sp-row">
+              <input type="range" id="sp-mini-grid-hw" min="${MINI_GRID_LINE_HW_PX_MIN}" max="${MINI_GRID_LINE_HW_PX_MAX}" step="0.1" />
+              <span id="sp-mini-grid-hw-val" class="sp-value"></span>
+            </div>
+            <div class="sp-hint">${t('반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다')}</div>
+          </div>
+
       <div class="sp-divider"></div>
 
       <div class="sp-section">
@@ -352,6 +390,31 @@ export class SettingsPanel {
     });
 
     // 원통 세그먼트
+    // 커서 그리드
+    const mgOn = panel.querySelector('#sp-mini-grid') as HTMLInputElement;
+    const mgR = panel.querySelector('#sp-mini-grid-radius') as HTMLInputElement;
+    const mgRVal = panel.querySelector('#sp-mini-grid-radius-val')!;
+    const mgC = panel.querySelector('#sp-mini-grid-cells') as HTMLInputElement;
+    const mgCVal = panel.querySelector('#sp-mini-grid-cells-val')!;
+    const mgW = panel.querySelector('#sp-mini-grid-hw') as HTMLInputElement;
+    const mgWVal = panel.querySelector('#sp-mini-grid-hw-val')!;
+    mgOn.addEventListener('change', () => setMiniGridVisible(mgOn.checked));
+    mgR.addEventListener('input', () => {
+      const v = parseInt(mgR.value, 10);
+      setMiniGridRadiusPx(v);
+      mgRVal.textContent = `${v}`;
+    });
+    mgC.addEventListener('input', () => {
+      const v = parseInt(mgC.value, 10);
+      setMiniGridCells(v);
+      mgCVal.textContent = `${v}`;
+    });
+    mgW.addEventListener('input', () => {
+      const v = parseFloat(mgW.value);
+      setMiniGridLineHwPx(v);
+      mgWVal.textContent = v.toFixed(1);
+    });
+
     const cylSegSlider = panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
     const cylSegVal = panel.querySelector('#sp-cyl-seg-val')!;
     cylSegSlider.addEventListener('input', () => {
@@ -461,6 +524,17 @@ export class SettingsPanel {
     const cylSegSlider = this.panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
     const cylSegVal = this.panel.querySelector('#sp-cyl-seg-val')!;
     const cylSeg = getCylinderSegments();
+    // 커서 그리드 — 이 메서드는 패널을 다시 찾아 현재 값을 반영한다.
+    const q = (id: string) => this.panel.querySelector(id) as HTMLInputElement;
+    const qs = (id: string) => this.panel.querySelector(id)!;
+    q('#sp-mini-grid').checked = getMiniGridVisible();
+    q('#sp-mini-grid-radius').value = String(getMiniGridRadiusPx());
+    qs('#sp-mini-grid-radius-val').textContent = `${getMiniGridRadiusPx()}`;
+    q('#sp-mini-grid-cells').value = String(getMiniGridCells());
+    qs('#sp-mini-grid-cells-val').textContent = `${getMiniGridCells()}`;
+    q('#sp-mini-grid-hw').value = String(getMiniGridLineHwPx());
+    qs('#sp-mini-grid-hw-val').textContent = getMiniGridLineHwPx().toFixed(1);
+
     cylSegSlider.value = String(cylSeg);
     cylSegVal.textContent = `${cylSeg}`;
 
