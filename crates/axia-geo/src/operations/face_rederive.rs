@@ -928,6 +928,124 @@ fn unproject_curve(c: &AnalyticCurve, unproject: &impl Fn(Vec2) -> DVec3) -> Ana
 /// freeform (B1 `split_at` ×2; U-B4b-1 machine-ε exact). Bezier sub-ranges
 /// re-parameterise to `[0,1]` (rescale `(t1-t0)/(r1-t0)`); BSpline/NURBS
 /// preserve param. Returns the sub-curve in WORLD coords (unprojected).
+/// How many chords one boundary curve is cut into on its way back into the DCEL.
+///
+/// The old rule was "always two, three for a full circle", and for a big curve
+/// that is a NEEDLE rather than a region. A 355 degree arc cut only at its
+/// midpoint gives two chords lying almost on top of each other -- out to the far
+/// side and back -- so the loop's signed area comes out near zero with its sign
+/// decided by whichever lobe happens to win. Every instrument that reads the loop
+/// instead of the curves then reports on the needle: `Face::normal()`,
+/// `face_outer_area`, `point_in_face`, invariant I2's winding check, and
+/// `split_face_by_line`, which looks for its crossings on the chords and knows
+/// nothing about the arcs attached to them.
+///
+/// `fraction` is how much of its own closed curve this piece is -- angle over a
+/// full turn for an arc, parameter span over the full range for a freeform -- so
+/// arcs and freeforms get the same contract: no chord spans more than a quarter
+/// of its curve.
+///
+/// Two is a floor, not a rounding artefact: one chord would leave a 2-edge bigon
+/// the DCEL cannot hold, which is the same reason the closed-curve materialiser
+/// splits.
+/// Where a boundary piece starts and where it ends, in plane coordinates.
+fn sub_ends(sc: &SubCurve) -> (Vec2, Vec2) {
+    match sc {
+        SubCurve::Line { a, b } => (*a, *b),
+        SubCurve::Arc { center, radius, a0, a1 } => {
+            let at = |t: f64| Vec2::new(center.x + radius * t.cos(), center.y + radius * t.sin());
+            (at(*a0), at(*a1))
+        }
+        SubCurve::Freeform { f2d, t0, t1 } => (f2d.eval(*t0), f2d.eval(*t1)),
+    }
+}
+
+/// Does this boundary actually come back to where it started?
+///
+/// The materialiser pushes only each piece's START vertex and relies on the next
+/// piece to begin where the last one ended, so a chain that does not close is
+/// closed by a phantom chord no edge backs. That is not a boundary -- meta
+/// principle #14, a face is derived from a CLOSED boundary -- and the region
+/// behind it is not a face.
+///
+/// This used to be caught by accident: a lone open piece became exactly two
+/// chords and the `< 3` floor dropped it. The accident also dropped legitimate
+/// regions bounded by one CLOSED curve, and it stops firing once pieces are cut
+/// by span (`chord_cuts`), so the rule is stated directly instead.
+///
+/// Relative to the loop's own size, so it holds at any scale: a gap under a
+/// thousandth of the extent is arithmetic, anything above it is a real opening.
+/// (For scale: the dangling B-spline that motivated this leaves a 46 mm gap
+/// across a 50 mm loop; a well-formed chain closes to within rounding.)
+fn loop_closes(lp: &[SubCurve]) -> bool {
+    if lp.is_empty() {
+        return false;
+    }
+    let (first, _) = sub_ends(&lp[0]);
+    let (_, last) = sub_ends(&lp[lp.len() - 1]);
+    let mut lo = first;
+    let mut hi = first;
+    for sc in lp {
+        let (a, b) = sub_ends(sc);
+        for p in [a, b] {
+            lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
+            hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
+        }
+    }
+    let diag = ((hi.x - lo.x).powi(2) + (hi.y - lo.y).powi(2)).sqrt();
+    let gap = ((last.x - first.x).powi(2) + (last.y - first.y).powi(2)).sqrt();
+    gap <= (diag * 1e-3).max(1e-9)
+}
+
+/// Drop chords that begin and end on the same vertex.
+///
+/// `mesh.add_vertex` welds anything within the spatial-hash cell (LOCKED #5), so
+/// two cut points closer together than that come back as one `VertId` and the
+/// chord between them is a zero-length edge. A loop carrying one has no normal to
+/// compute -- `compute_normal` returns NaN -- and the face is degenerate from the
+/// moment it is built.
+///
+/// The dropped chord's span is below the weld tolerance by construction, so
+/// nothing measurable is lost: the neighbouring chord already ends where this one
+/// would have.
+///
+/// What this is worth, measured rather than assumed: made to panic when it fires,
+/// it fired **twice in 100 fuzz sessions x 50 operations** and **not once in the
+/// whole test suite**. Adding it changed no fuzz outcome at all -- the category
+/// counts came back byte-identical. So it is not here on evidence of damage
+/// prevented; it is here because a zero-length edge in a face loop is wrong on
+/// its own terms and the state is demonstrably reachable.
+///
+/// I first put it in believing it explained a doubling of NaN-normal reports. It
+/// did not -- see `a_curve_bounded_face_has_no_winding_to_check.rs` for what that
+/// doubling actually was.
+fn drop_welded_chords<A, F>(verts: &mut Vec<VertId>, arcs: &mut Vec<A>, free: &mut Vec<F>) {
+    debug_assert_eq!(verts.len(), arcs.len());
+    debug_assert_eq!(verts.len(), free.len());
+    let mut k = 0usize;
+    while k < verts.len() {
+        let next = (k + 1) % verts.len();
+        if verts.len() > 1 && verts[k] == verts[next] {
+            verts.remove(k);
+            arcs.remove(k);
+            free.remove(k);
+            // Do not advance: the new occupant of `k` has a new neighbour.
+            if k == verts.len() {
+                k = 0;
+            }
+            continue;
+        }
+        k += 1;
+    }
+}
+
+fn chord_cuts(fraction: f64) -> usize {
+    if !fraction.is_finite() {
+        return 2;
+    }
+    ((fraction * 4.0).ceil() as usize).clamp(2, 64)
+}
+
 fn extract_world_subcurve(
     f2d: &Freeform2D,
     t0: f64,
@@ -2145,40 +2263,42 @@ fn rebuild_inner(
                     let c3 = unproject(*center);
                     // 이 arc 의 반호들(D7 분할)에 공유 owner — 한 선택 단위.
                     let arc_owner = mesh.next_curve_owner_id();
-                    // Halves normally; THIRDS for a full circle, which reaches
-                    // here only when the region has holes (a ring). Two verts
-                    // would leave the loop below three and the ring would be
-                    // dropped — the same 2-edge bigon the DCEL cannot hold that
-                    // the closed-curve materializer splits for.
-                    let full = (a1 - a0).abs() >= two_pi - 1e-6;
-                    let cuts: Vec<f64> = if full {
-                        let step = (a1 - a0) / 3.0;
-                        vec![*a0, a0 + step, a0 + 2.0 * step, *a1]
-                    } else {
-                        vec![*a0, (a0 + a1) / 2.0, *a1]
-                    };
-                    for w in cuts.windows(2) {
-                        seg_verts.push(mesh.add_vertex(unproject(cpt(*center, *radius, w[0]))));
-                        seg_arcs.push(Some((c3, *radius, w[0], w[1], Some(arc_owner))));
+                    // A quarter turn per chord — see `chord_cuts`. A full circle
+                    // reaches here only when the region has holes (a ring), and
+                    // gets four, which is above the three the loop needs.
+                    let n = chord_cuts((a1 - a0).abs() / two_pi);
+                    let step = (a1 - a0) / n as f64;
+                    for k in 0..n {
+                        let w0 = a0 + step * k as f64;
+                        let w1 = a0 + step * (k + 1) as f64;
+                        seg_verts.push(mesh.add_vertex(unproject(cpt(*center, *radius, w0))));
+                        seg_arcs.push(Some((c3, *radius, w0, w1, Some(arc_owner))));
                         seg_freeform.push(None);
                     }
                 }
-                // B4b-2b — smooth freeform attach: D7 midpoint split (lens
-                // 2-vert → 4-vert + P-Q multigraph 회피) + sub-bezier per half.
+                // B4b-2b — smooth freeform attach: split (lens 2-vert → 4-vert
+                // + P-Q multigraph 회피) + sub-bezier per piece. A near-whole
+                // ellipse needles exactly like a near-whole arc, so it is cut by
+                // the same rule — see `chord_cuts`.
                 SubCurve::Freeform { f2d, t0, t1 } => {
-                    let tmid = (t0 + t1) / 2.0;
-                    let sub_a = extract_world_subcurve(f2d, *t0, tmid, &unproject);
-                    let sub_b = extract_world_subcurve(f2d, tmid, *t1, &unproject);
-                    seg_verts.push(mesh.add_vertex(unproject(f2d.eval(*t0))));
-                    seg_arcs.push(None);
-                    seg_freeform.push(sub_a.map(|c| (c, f2d.owner_id)));
-                    seg_verts.push(mesh.add_vertex(unproject(f2d.eval(tmid))));
-                    seg_arcs.push(None);
-                    seg_freeform.push(sub_b.map(|c| (c, f2d.owner_id)));
+                    let (lo, hi) = f2d.param_range();
+                    let n = chord_cuts(if hi > lo { (t1 - t0).abs() / (hi - lo) } else { 1.0 });
+                    let step = (t1 - t0) / n as f64;
+                    for k in 0..n {
+                        let s0 = t0 + step * k as f64;
+                        let s1 = t0 + step * (k + 1) as f64;
+                        seg_verts.push(mesh.add_vertex(unproject(f2d.eval(s0))));
+                        seg_arcs.push(None);
+                        seg_freeform.push(
+                            extract_world_subcurve(f2d, s0, s1, &unproject)
+                                .map(|c| (c, f2d.owner_id)),
+                        );
+                    }
                 }
             }
         }
-        if seg_verts.len() < 3 {
+        drop_welded_chords(&mut seg_verts, &mut seg_arcs, &mut seg_freeform);
+        if seg_verts.len() < 3 || !loop_closes(&af.outer) {
             continue;
         }
         // holes — **원형(full-circle) hole 은 skip** (circle-in-polygon containment 은
@@ -2205,31 +2325,40 @@ fn rebuild_inner(
                         hf.push(None);
                     }
                     SubCurve::Arc { center, radius, a0, a1 } => {
-                        let amid = (a0 + a1) / 2.0;
                         let c3 = unproject(*center);
                         let arc_owner = mesh.next_curve_owner_id();
-                        hv.push(mesh.add_vertex(unproject(cpt(*center, *radius, *a0))));
-                        ha.push(Some((c3, *radius, *a0, amid, Some(arc_owner))));
-                        hf.push(None);
-                        hv.push(mesh.add_vertex(unproject(cpt(*center, *radius, amid))));
-                        ha.push(Some((c3, *radius, amid, *a1, Some(arc_owner))));
-                        hf.push(None);
+                        let n = chord_cuts((a1 - a0).abs() / two_pi);
+                        let step = (a1 - a0) / n as f64;
+                        for k in 0..n {
+                            let w0 = a0 + step * k as f64;
+                            let w1 = a0 + step * (k + 1) as f64;
+                            hv.push(mesh.add_vertex(unproject(cpt(*center, *radius, w0))));
+                            ha.push(Some((c3, *radius, w0, w1, Some(arc_owner))));
+                            hf.push(None);
+                        }
                     }
-                    // B4b-2b — smooth freeform hole (D7 midpoint + sub-bezier).
+                    // B4b-2b — smooth freeform hole, cut by the same rule as the
+                    // outer boundary (`chord_cuts`).
                     SubCurve::Freeform { f2d, t0, t1 } => {
-                        let tmid = (t0 + t1) / 2.0;
-                        let sub_a = extract_world_subcurve(f2d, *t0, tmid, &unproject);
-                        let sub_b = extract_world_subcurve(f2d, tmid, *t1, &unproject);
-                        hv.push(mesh.add_vertex(unproject(f2d.eval(*t0))));
-                        ha.push(None);
-                        hf.push(sub_a.map(|c| (c, f2d.owner_id)));
-                        hv.push(mesh.add_vertex(unproject(f2d.eval(tmid))));
-                        ha.push(None);
-                        hf.push(sub_b.map(|c| (c, f2d.owner_id)));
+                        let (lo, hi) = f2d.param_range();
+                        let n =
+                            chord_cuts(if hi > lo { (t1 - t0).abs() / (hi - lo) } else { 1.0 });
+                        let step = (t1 - t0) / n as f64;
+                        for k in 0..n {
+                            let s0 = t0 + step * k as f64;
+                            let s1 = t0 + step * (k + 1) as f64;
+                            hv.push(mesh.add_vertex(unproject(f2d.eval(s0))));
+                            ha.push(None);
+                            hf.push(
+                                extract_world_subcurve(f2d, s0, s1, &unproject)
+                                    .map(|c| (c, f2d.owner_id)),
+                            );
+                        }
                     }
                 }
             }
-            if hv.len() >= 3 {
+            drop_welded_chords(&mut hv, &mut ha, &mut hf);
+            if hv.len() >= 3 && loop_closes(h) {
                 hole_vlists.push(hv);
                 hole_arcs.push(ha);
                 hole_freeform.push(hf);

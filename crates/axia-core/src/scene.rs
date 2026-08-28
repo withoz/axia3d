@@ -25892,22 +25892,37 @@ mod tests {
                 by_owner.entry(owner).or_default().push((e.v_small(), e.v_large()));
             }
         }
-        // 4 arc edges (2 real arcs × D7 split), 2 owner groups, 2 edges each.
-        assert_eq!(arc_count, 4, "원-직선 교차 → 2 arc × D7 분할 = 4 arc edge");
+        // 두 arc, 각각 여러 조각 — 그리고 각 arc 의 조각들은 **한 사슬** 이다.
+        // 이 테스트의 이름이 지키는 것은 그 grouping 이다.
+        //
+        // 조각 **개수** 는 더 이상 고정하지 않는다: 경계 곡선은 이제 스팬으로
+        // 잘리므로(`chord_cuts`) 203° 호는 3조각, 157° 호는 2조각이 된다.
+        // 전에 4로 못박혀 있던 것은 "항상 절반" 규칙의 부산물이었지 이 테스트의
+        // 주제가 아니었다.
         assert_eq!(by_owner.len(), 2, "2 별개 arc = 2 owner group (교차점 절단 분리 유지)");
+        assert!(arc_count >= 4, "두 arc 모두 최소 2조각이어야 (arc_count={arc_count})");
         for (owner, edges) in &by_owner {
-            assert_eq!(edges.len(), 2, "owner {} 는 D7 두 반호 = 2 edge", owner);
-            // 두 반호는 공통 D7 midpoint vertex 하나를 공유한다.
-            let (a0, a1) = edges[0];
-            let (b0, b1) = edges[1];
-            let set0 = [a0, a1];
-            let set1 = [b0, b1];
-            let shared = set1.iter().filter(|v| set0.contains(v)).count();
-            assert_eq!(
-                shared, 1,
-                "owner {} 의 두 반호는 D7 midpoint 하나만 공유 (한 선택 단위)",
-                owner
-            );
+            assert!(edges.len() >= 2, "owner {owner} 는 최소 2 조각");
+            // 한 열린 사슬: 양 끝 정점만 한 번, 나머지는 두 번. 분기나 두 번째
+            // 성분이 생기면 1 또는 3+ 로 드러난다.
+            //
+            // ⚠ 정직하게: 이 단언은 **오늘의 구성으로는 깨뜨릴 수 없다**. 한
+            // SubCurve 당 owner 하나 + 그 조각들이 seg_verts 에서 연속이라
+            // 사슬이 구조적으로 보장된다. 변이를 시도했으나(두 번째 호의 한
+            // 조각을 첫 호의 그룹에 넣기) 두 호가 서로 다른 면에서 재료화되어
+            // 상태에 도달하지 못했다 — owner 분포가 clean 과 동일했다.
+            // 앞의 `by_owner.len()` 단언은 변이로 검증된다(조각마다 새 owner →
+            // 그룹 5개). 이 사슬 단언은 그 두 전제 중 하나가 바뀌는 순간
+            // (예: 나뉜 원의 두 호를 한 선택 단위로 묶는 변경) 살아난다.
+            let mut seen: HashMap<VertId, usize> = HashMap::new();
+            for (a, b) in edges {
+                *seen.entry(*a).or_default() += 1;
+                *seen.entry(*b).or_default() += 1;
+            }
+            let ends = seen.values().filter(|&&n| n == 1).count();
+            let branched = seen.values().filter(|&&n| n > 2).count();
+            assert_eq!(ends, 2, "owner {owner} 의 조각들이 한 사슬이 아님 (끝점 {ends}개)");
+            assert_eq!(branched, 0, "owner {owner} 에 분기 정점 (한 선택 단위가 아님)");
         }
         // manifold 보존.
         assert!(scene.mesh.verify_face_invariants().is_valid());
