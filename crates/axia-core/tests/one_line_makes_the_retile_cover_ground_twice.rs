@@ -64,6 +64,34 @@
 //! re-measure: it is the re-derive, it is 1,435 mm² of triple cover, and the
 //! duplicate tile is identifiable by having almost no ground of its own.
 //!
+//! ## Traced to one call (2026-08-28)
+//!
+//! Trapping `Face::new` — the only catch-all, since `split_face` does NOT go
+//! through `add_face_with_holes` — gives the whole scene in one run, and the
+//! creation order came out 1:1 with FaceId:
+//!
+//! ```text
+//!   0 1 2   add_face_closed_curve   circle / re-derive / ellipse    removed
+//!   3   5   add_face_with_holes  <- rebuild_inner                   removed
+//!   4       add_face_with_holes  <- rebuild_inner   33,948 before   1,510
+//!   --- the line ---
+//!   6 7     split_face_by_chain  <- split_arc_face_by_line          2 / 74
+//!   8       split_face           <- split_face_by_line              35,349
+//!   9 10    dissolve_and_fan_split                                  602 / 3,521
+//! ```
+//!
+//! ⚠ The arithmetic names it: the line splits FaceId(4) — 33,948 mm² — into
+//! 1,510 + 35,349 = **36,859**. The two halves are 2,911 mm² bigger than the
+//! whole, which is the difference the totals show. Splitting a curve-bounded
+//! face leaves both halves claiming the same bulge.
+//!
+//! ⚠ A reading withdrawn and then restored: "a face survived the re-tile" is
+//! RIGHT. FaceId(4) is created before the line and mutated in place by
+//! `split_face_by_line` (loop 6 verts → 4). I replaced it with "ids recycle"
+//! after seeing ids 3 and 5 vanish and the slot count drop — but removal plus
+//! in-place mutation looks identical from outside. Check with a creation trap,
+//! not with id-set arithmetic.
+//!
 //! ⚠ `should_panic` while it stands. When it goes red, rewrite it into an
 //! ordinary assertion rather than deleting it.
 
@@ -188,6 +216,40 @@ fn one_line_across_makes_the_retile_overlap() {
     assert!(
         extra < 300.0,
         "{extra:.0} mm² is covered more than once after the line"
+    );
+}
+
+/// The largest face, so a split can be caught growing one.
+fn largest(s: &Scene) -> f64 {
+    faces_tris(s)
+        .iter()
+        .map(|(_, t)| t.iter().map(tri_area).sum::<f64>())
+        .fold(0.0f64, f64::max)
+}
+
+/// ⚠ Open, and the sharpest statement of it: **a split cannot grow a face.**
+///
+/// Cutting a region in two gives two pieces of it. Neither can be larger than
+/// what it came from, whatever the boundary is made of. Measured:
+///
+/// ```text
+///   before the line   largest face   33,948
+///   after the line    largest face   35,349      +1,401
+/// ```
+///
+/// This is the same defect the overlap tests measure, said in the form that
+/// points at the operation: `split_face_by_line` on a curve-bounded face.
+/// Asserting on the largest face rather than on totals keeps it readable when
+/// the fix lands — the number has to come back down under the original.
+#[test]
+#[should_panic(expected = "larger than anything it was cut from")]
+fn a_split_does_not_grow_a_face() {
+    let before = largest(&scene(false, true));
+    let after = largest(&scene(true, true));
+    assert!(
+        after <= before + 1.0,
+        "after the line a face is {after:.0} mm², larger than anything it was cut \
+         from (the largest before was {before:.0})"
     );
 }
 
