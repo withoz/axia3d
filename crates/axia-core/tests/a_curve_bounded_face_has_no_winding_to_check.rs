@@ -53,30 +53,53 @@
 //! - *"the bounding box shrinks to 190×138"*. Same outline points. The
 //!   tessellation's bbox is the full ±110.
 //!
-//! ## What is genuinely off, and why it is not fixed here
+//! ## Fixed (2026-08-28) — the cause, which was the chord net
 //!
-//! One thing survived every instrument: on circle × ellipse the re-derive hands
-//! a new face a Plane surface whose normal is **exactly opposite** the face's
-//! cached normal. Seven overlap pairs measured, six clean:
+//! One thing had survived every instrument: on circle × ellipse the re-derive
+//! handed a new face a Plane surface whose normal was **exactly opposite** the
+//! face's cached normal. Flipping the face to satisfy ADR-007 Invariant 2 broke
+//! four pinned reproductions in `pushing_in_three_deep_stacks_faces.rs` — measured,
+//! then reverted — and setting the cached normal from the surface would only have
+//! traded this complaint for an I2 one. Neither was the cause.
+//!
+//! The cause was upstream, in how a boundary curve goes back into the DCEL. The
+//! materialiser cut every curve into exactly two chords whatever it spanned, so a
+//! 355 degree arc became two chords lying almost on top of each other, and the
+//! near-whole ellipse did the same. Two needles, crossing. Cut by span instead
+//! (`chord_cuts` in `face_rederive.rs`, a quarter turn per chord) and the loop is
+//! an ordinary inscribed polygon: no self-crossing, a signed area with a sign,
+//! and the orientation is answerable again.
+//!
+//! Fuzz sessions 40 and 73 stopped reporting `cached normal opposite to winding`
+//! in the same change — 40 had failed at op 41, 73 at op 38, and 89 at op 46. All
+//! three were the `dot = -1.000` form, and all three are gone.
+//!
+//! ## What the fuzz aggregate does and does not say
+//!
+//! ⚠ Sessions are a random walk: the operation list per seed is fixed, but the
+//! mesh diverges from the first curve this change touches, so session N before and
+//! session N after are different experiments. Comparing them one by one misleads.
+//! Two 100-session samples, each run on both sides:
 //!
 //! ```text
-//!   circle × ellipse    dot = -1.000        every other pair    clean
-//!   (and clean with the re-derive off)
+//!                       stopped   NaN   non-manifold   winding
+//!    0- 99   before          49     5             36         4
+//!    0- 99   after           50    10             34         4
+//!   100-199  before          58     9             45         3
+//!   100-199  after           58     9             39         5
 //! ```
 //!
-//! ADR-007 Invariant 2 (LOCKED #2) asks for `normal · hint >= 0`, so that is a
-//! real disagreement. ⚠ But flipping the face to satisfy it **breaks four pinned
-//! reproductions** in `pushing_in_three_deep_stacks_faces.rs` with stacked
-//! non-manifold edges — measured, then reverted. Setting the cached normal from
-//! the surface instead would only trade this complaint for an I2 one.
+//! The totals are flat and non-manifold falls in both samples. The NaN doubling in
+//! the first sample is **not reproduced** in the second, the five NaN sessions the
+//! first sample already had come back byte-identical (2@49, 3@30, 37@40, 41@29,
+//! 68@30), and the two baselines disagree with each other 5 against 9 — so that
+//! column is noise at this sample size, not a cost of the fix. Recorded because it
+//! looked like a regression for an hour and the next reader deserves the numbers
+//! rather than the hour.
 //!
-//! The chord net is degenerate, and no cheap instrument settles which way that
-//! face should point. Fixing it means making the arrangement produce a chord net
-//! that does not cross itself — the cause, not the symptom.
-//!
-//! ⚠ When that lands, `a_region_of_a_circle_has_a_chord_polygon_that_crosses_
-//! itself` goes green-with-nothing-to-say and should be rewritten, not deleted:
-//! it is the evidence that the winding check was never the problem.
+//! `no_region_of_a_circle_has_a_chord_polygon_that_crosses_itself` below is the
+//! rewritten form of the test that used to assert a crossing WAS there. It is now
+//! the guard on the fix, and it fires if the cutting rule goes back.
 
 use axia_core::scene::Scene;
 use axia_core::Command;
@@ -189,18 +212,15 @@ fn the_regions_still_cover_the_circle() {
     );
 }
 
-/// ⚠ Open, and NOT the same thing as the winding report — a second finding from
-/// the same reduction, kept apart so neither is read as the other.
+/// NOT the same thing as the winding report — a second finding from the same
+/// reduction, kept apart so neither is read as the other.
 ///
-/// Adding the line takes the total from 38,093 to **41,058**: about 2,965 mm² of
-/// ground covered twice. The extent is still right and no region is missing, so
-/// this is double coverage rather than loss — the pattern the Ø400-circle-over-a-
-/// box-top case shows too.
-///
-/// `should_panic` while it stands. It says nothing about which face is at fault;
-/// establishing that is its own hunt.
+/// Adding the line used to take the total from 38,093 to **41,058**: about
+/// 2,965 mm² of ground covered twice. The extent was still right and no region
+/// was missing, so it was double coverage rather than loss. The chord-net fix
+/// closed it; `one_line_makes_the_retile_cover_ground_twice.rs` measures the same
+/// thing per-face and carries the arithmetic.
 #[test]
-#[should_panic(expected = "covered twice")]
 fn one_line_across_makes_the_regions_overlap() {
     let (with_line, _, _) = tessellated(&circle_and_ellipse(true));
     let (without, _, _) = tessellated(&circle_and_ellipse(false));
@@ -213,9 +233,13 @@ fn one_line_across_makes_the_regions_overlap() {
     );
 }
 
-/// ⚠ And this is the thing I2 is actually reading.
+/// This is the thing I2 was actually reading, and the guard on the fix for it.
+///
+/// ⚠ Do not weaken this to "few crossings". A chord net either is a polygon or it
+/// is not; one crossing is enough to make the signed area meaningless, which is
+/// how the winding report came about in the first place.
 #[test]
-fn a_region_of_a_circle_has_a_chord_polygon_that_crosses_itself() {
+fn no_region_of_a_circle_has_a_chord_polygon_that_crosses_itself() {
     let s = circle_and_ellipse(true);
     let crossing: Vec<String> = s
         .mesh
@@ -229,21 +253,21 @@ fn a_region_of_a_circle_has_a_chord_polygon_that_crosses_itself() {
         })
         .collect();
     assert!(
-        !crossing.is_empty(),
-        "no chord polygon crosses itself any more — if the arrangement was fixed, \
-         rewrite this file rather than deleting it: it is the evidence that the \
-         winding report was about the chord net and not the face"
+        crossing.is_empty(),
+        "a chord polygon crosses itself again: {crossing:?} — a boundary curve is \
+         being cut into too few chords somewhere, and every instrument that reads \
+         the loop instead of the curves is now reporting on a needle"
     );
 
-    // And the extent is still the circle's, which is the whole point: a crossing
-    // chord net does not mean a lost region. (The total area with the line is
-    // 41,058 rather than 38,093 — that is double coverage, and it has its own
-    // test above. Asserting extent here keeps the two findings apart.)
+    // And the extent is still the circle's. This was the whole point while the
+    // crossing stood — a degenerate chord net never meant a lost region — and it
+    // is worth keeping now, because a cutting rule that produced a clean polygon
+    // by dropping part of the boundary would satisfy the assertion above.
     let (_, lo, hi) = tessellated(&s);
     assert!(
         lo.x < -108.0 && hi.x > 108.0,
-        "a self-crossing chord net went with a shrunken region after all \
-         (x[{:.1},{:.1}]) — then this IS a geometry defect and the premise is wrong",
+        "the chord net is clean but the region shrank (x[{:.1},{:.1}]) — the \
+         crossing was removed by losing boundary, not by cutting it properly",
         lo.x,
         hi.x
     );
@@ -284,14 +308,15 @@ fn the_pairs_that_do_not_do_it() {
     }
 }
 
-/// ⚠ Open, and deliberately not fixed here. On circle × ellipse a new face is
-/// handed a Plane surface pointing the opposite way to its own cached normal.
-/// Flipping the face to satisfy ADR-007 Invariant 2 breaks four pinned
-/// reproductions in `pushing_in_three_deep_stacks_faces.rs`; that was measured
-/// and reverted. `should_panic` until the arrangement stops producing the
-/// degenerate chord net that makes the orientation unanswerable.
+/// ADR-007 Invariant 2 (LOCKED #2): a face and its own Plane point the same way.
+///
+/// On circle × ellipse a new face used to be handed a Plane pointing the opposite
+/// way. Flipping the face to satisfy the invariant broke four pinned reproductions
+/// in `pushing_in_three_deep_stacks_faces.rs` — measured, then reverted — because
+/// the flip treats the symptom. The cached normal came from a chord net that
+/// crossed itself, so it had no orientation to report; cutting the boundary curves
+/// by span gave it one, and the disagreement went away without touching the face.
 #[test]
-#[should_panic(expected = "opposite to its own Plane")]
 fn a_new_face_is_handed_a_plane_it_points_away_from() {
     let s = circle_and_ellipse(false);
     let mut bad = Vec::new();

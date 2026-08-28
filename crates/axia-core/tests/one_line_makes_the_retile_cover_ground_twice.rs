@@ -57,12 +57,28 @@
 //!   because the arrangement cannot regenerate one. Mutation-checked: forcing it
 //!   to always remove changes nothing at all.
 //!
-//! ## Not fixed here
+//! ## Fixed (2026-08-28) — the boundary curves were cut into too few chords
 //!
-//! The remaining step is inside the boundary kernel's region extraction, which is
-//! its own subsystem. What this file does is stop the next reader from having to
-//! re-measure: it is the re-derive, it is 1,435 mm² of triple cover, and the
-//! duplicate tile is identifiable by having almost no ground of its own.
+//! Not the region extraction after all. The materialiser cut every boundary curve
+//! into exactly two chords (three for a full circle) whatever it spanned, so the
+//! circle's 355 degree arc became two chords lying almost on top of each other —
+//! out to the far side and back. A needle, not a region.
+//!
+//! `split_face_by_line` works on `loop_verts`, the chord polygon, and knows
+//! nothing about the arcs attached to it. Splitting a needle gave two halves that
+//! each carried arcs bulging out to the true circle, so both claimed the same
+//! ground. Cutting by span instead (`chord_cuts`, a quarter turn per chord) makes
+//! the loop a real inscribed polygon and the split lands where it should:
+//!
+//! ```text
+//!                        before        after
+//!   covered twice        3,019 mm²     176 mm²
+//!   largest face        33,949 -> 35,349 (grew)   33,949 -> 27,751 (shrank)
+//! ```
+//!
+//! 27,751 is what the arithmetic asks for: the circle minus the ellipse is 33,948,
+//! the part below y = -50 is a circular segment of 8,394 less the ellipse's lower
+//! half of 2,356, so the upper piece should be about 27,910. Within 0.6%.
 //!
 //! ## Traced to one call (2026-08-28)
 //!
@@ -92,8 +108,8 @@
 //! in-place mutation looks identical from outside. Check with a creation trap,
 //! not with id-set arithmetic.
 //!
-//! ⚠ `should_panic` while it stands. When it goes red, rewrite it into an
-//! ordinary assertion rather than deleting it.
+//! The three tests below were `should_panic` while it stood; they are ordinary
+//! assertions now, and they are what holds the fix in place.
 
 use axia_core::scene::Scene;
 use axia_core::Command;
@@ -208,9 +224,9 @@ fn without_the_re_derive_the_line_splits_them_cleanly() {
     );
 }
 
-/// ⚠ Open. With the re-derive on, the line's re-tile covers ~3,000 mm² twice.
+/// With the re-derive on, the line's re-tile used to cover ~3,000 mm² twice. It
+/// is 176 mm² now — the sliver where a chord still cuts a corner off its arc.
 #[test]
-#[should_panic(expected = "covered more than once")]
 fn one_line_across_makes_the_retile_overlap() {
     let (_, extra) = coverage(&scene(true, true));
     assert!(
@@ -227,22 +243,20 @@ fn largest(s: &Scene) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
-/// ⚠ Open, and the sharpest statement of it: **a split cannot grow a face.**
+/// The sharpest statement of it: **a split cannot grow a face.**
 ///
 /// Cutting a region in two gives two pieces of it. Neither can be larger than
 /// what it came from, whatever the boundary is made of. Measured:
 ///
 /// ```text
-///   before the line   largest face   33,948
-///   after the line    largest face   35,349      +1,401
+///   before the line   largest face   33,949
+///   after the line    largest face   35,349      +1,401   <- was
+///   after the line    largest face   27,751      -6,198   <- is
 /// ```
 ///
-/// This is the same defect the overlap tests measure, said in the form that
-/// points at the operation: `split_face_by_line` on a curve-bounded face.
-/// Asserting on the largest face rather than on totals keeps it readable when
-/// the fix lands — the number has to come back down under the original.
+/// Asserting on the largest face rather than on totals is what makes this
+/// readable: the number had to come back down under the original, and it did.
 #[test]
-#[should_panic(expected = "larger than anything it was cut from")]
 fn a_split_does_not_grow_a_face() {
     let before = largest(&scene(false, true));
     let after = largest(&scene(true, true));
@@ -253,12 +267,12 @@ fn a_split_does_not_grow_a_face() {
     );
 }
 
-/// ⚠ Open, and the sharper half: one of the tiles owns almost no ground.
+/// The sharper half: no tile may own almost no ground.
 ///
-/// A region of a partition is mostly its own. This one is 1,510 mm² of which 4
-/// are not somebody else's, which is what a duplicate looks like as a number.
+/// A region of a partition is mostly its own. The duplicate this caught was
+/// 1,510 mm² of which 4 were not somebody else's, which is what a duplicate looks
+/// like as a number.
 #[test]
-#[should_panic(expected = "of its own")]
 fn a_tile_is_produced_that_owns_almost_nothing() {
     let s = scene(true, true);
     let ft = faces_tris(&s);
