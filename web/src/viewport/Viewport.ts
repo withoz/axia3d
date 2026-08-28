@@ -7,6 +7,17 @@ import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import {
+  perspectiveRadiusWorld,
+  orthographicRadiusWorld,
+  miniGridSegments,
+} from './miniGridGeometry';
+import {
+  getMiniGridVisible,
+  getMiniGridRadiusPx,
+  getMiniGridCells,
+  getMiniGridLineHwPx,
+} from '../tools/MiniGridSettings';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -167,6 +178,10 @@ export class Viewport {
   }
   private _boundHandlers: { target: EventTarget; type: string; handler: EventListener }[] = [];
   private _frameId: number | null = null;
+  /** The cursor's mini work-plane grid — see `setMiniGridCursor`. */
+  private _miniGrid: LineSegments2 | null = null;
+  private _miniGridMat: LineMaterial | null = null;
+
   private _onFrameCallbacks: (() => void)[] = [];
   /** Callbacks that have already thrown once — see the loop in `animate()`. */
   private _onFrameFailed = new WeakSet<() => void>();
@@ -776,6 +791,14 @@ export class Viewport {
 
   /** Cleanup all resources — call when Viewport is destroyed */
   dispose(): void {
+    // The cursor grid owns a geometry and a material of its own.
+    if (this._miniGrid) {
+      this.scene.remove(this._miniGrid);
+      this._miniGrid.geometry.dispose();
+      this._miniGrid = null;
+    }
+    this._miniGridMat?.dispose();
+    this._miniGridMat = null;
     // Stop render loop
     this.stop();
     // …and forget what it was running. `stop()` only cancels the pending
@@ -3047,6 +3070,80 @@ export class Viewport {
    * `dispose()` clears the list, so a disposed viewport does not re-run stale
    * callbacks if it were ever restarted.
    */
+  /**
+   * Draw the cursor's mini work-plane grid, or clear it.
+   *
+   * Called from the pointer handler with the point the next click would land on
+   * and the plane it would land in; called with `null` when no draw tool is
+   * waiting for a first point, when the pointer leaves, or when the setting is
+   * off.
+   *
+   * ⚠ The radius is a SCREEN quantity. Under the perspective camera it is
+   * reprojected from the cursor's own depth every call, which is what keeps the
+   * patch the same apparent size at any zoom. Under the ORTHOGRAPHIC camera —
+   * our axis views — depth does not affect magnification at all, so the frustum
+   * height is what it scales with instead. Kayac has only the first branch (its
+   * axis views stay perspective); feeding depth into an ortho view would grow
+   * the patch as the camera flies back while nothing on screen changed size.
+   */
+  setMiniGridCursor(
+    center: THREE.Vector3 | null,
+    u?: THREE.Vector3,
+    v?: THREE.Vector3,
+  ): void {
+    if (!center || !u || !v || !getMiniGridVisible()) {
+      if (this._miniGrid) this._miniGrid.visible = false;
+      return;
+    }
+
+    const cam = this.activeCamera;
+    const h = Math.max(1, this.container.clientHeight);
+    let radius: number;
+    if ((cam as THREE.PerspectiveCamera).isPerspectiveCamera) {
+      const p = cam as THREE.PerspectiveCamera;
+      const depth = p.position.distanceTo(center);
+      radius = perspectiveRadiusWorld(getMiniGridRadiusPx(), depth, (p.fov * Math.PI) / 180, h);
+    } else {
+      const o = cam as THREE.OrthographicCamera;
+      radius = orthographicRadiusWorld(getMiniGridRadiusPx(), o.top - o.bottom, h);
+    }
+
+    const positions = miniGridSegments(center, u, v, radius, getMiniGridCells());
+    if (positions.length === 0) {
+      if (this._miniGrid) this._miniGrid.visible = false;
+      return;
+    }
+
+    if (!this._miniGrid) {
+      // Red, nearly opaque. Kayac's reasoning holds here too: the surfaces this
+      // lands on are desaturated blue-greys, and a saturated red is the one hue
+      // that cannot be read as a face tint — pale grey washes out, orange reads
+      // as the hover tint, dark grey as a shaded side face.
+      this._miniGridMat = new LineMaterial({
+        color: 0xf22626,
+        // `line_hw_px` is a HALF-width; `LineMaterial.linewidth` is the full one.
+        linewidth: getMiniGridLineHwPx() * 2,
+        transparent: true,
+        opacity: 0.95,
+        depthTest: false,
+        resolution: new THREE.Vector2(this.container.clientWidth, h),
+      });
+      const geo = new LineSegmentsGeometry();
+      geo.setPositions(positions);
+      this._miniGrid = new LineSegments2(geo, this._miniGridMat);
+      this._miniGrid.frustumCulled = false;
+      this._miniGrid.renderOrder = 1001;
+      this.scene.add(this._miniGrid);
+    } else {
+      (this._miniGrid.geometry as LineSegmentsGeometry).setPositions(positions);
+      if (this._miniGridMat) {
+        this._miniGridMat.linewidth = getMiniGridLineHwPx() * 2;
+        this._miniGridMat.resolution.set(this.container.clientWidth, h);
+      }
+    }
+    this._miniGrid.visible = true;
+  }
+
   onFrame(cb: () => void): void {
     this._onFrameCallbacks.push(cb);
   }

@@ -119,9 +119,15 @@ describe('edge styling restyles by role, so overlays keep their meaning', () => 
       .toBe(6);
     // The axis lines also build a LineMaterial (Viewport.ts:389) but live in
     // `scene`, not `meshGroup`, and use their own resize array — so they are
-    // deliberately outside this scheme. Five constructions, four tagged.
+    // deliberately outside this scheme.
+    //
+    // The cursor mini-grid (`setMiniGridCursor`) is the same exception for the
+    // same reason: it hangs off `scene`, the viewport owns and disposes that one
+    // object itself, and its width comes from `MiniGridSettings` — not from the
+    // edge-style picker. Tagging it would hand a cursor decoration to a picker
+    // that must not restyle it. Six constructions, four tagged.
     const built = [...SRC.matchAll(/new LineMaterial\(/g)].length;
-    expect(built, 'a LineMaterial appeared or vanished — check whether it reaches the pool').toBe(5);
+    expect(built, 'a LineMaterial appeared or vanished — check whether it reaches the pool').toBe(6);
   });
 });
 
