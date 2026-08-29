@@ -2377,9 +2377,13 @@ export const EN: Record<string, string> = {
   '커서 그리드 표시': 'Show cursor grid',
   '그리기 도구가 첫 점을 기다릴 때 커서 아래 작업 평면을 보여줍니다':
     'Shows the work plane under the cursor while a draw tool waits for its first point.',
-  '반지름 (px)': 'Radius (px)',
-  '가장자리까지 칸 수': 'Cells to the rim',
-  '선 반폭 (px)': 'Line half-width (px)',
-  '반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다':
-    'A HALF-width, so 0.5 is one CSS pixel at DPR 2. Fatter values pile up at the crossings.',
+  '커서 그리드 반지름 (px)': 'Cursor grid radius (px)',
+  '화면 크기라 줌과 무관하게 같은 크기로 보입니다 (기본 48)':
+    'A screen size, so it looks the same at any zoom (default 48).',
+  '커서 그리드 칸 수 (중심→가장자리)': 'Cursor grid cells (centre to rim)',
+  '많을수록 촘촘하지만 읽기 어려워집니다 (기본 4)':
+    'More cells is denser but harder to read (default 4).',
+  '커서 그리드 선 반폭 (px)': 'Cursor grid line half-width (px)',
+  '반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다 (기본 0.5)':
+    'A HALF-width, so 0.5 is one CSS pixel at DPR 2. Fatter values pile up at the crossings (default 0.5).',
 };
