@@ -181,6 +181,15 @@ export class Viewport {
   /** The cursor's mini work-plane grid — see `setMiniGridCursor`. */
   private _miniGrid: LineSegments2 | null = null;
   private _miniGridMat: LineMaterial | null = null;
+  /**
+   * The last frame the grid was drawn at, so a settings change re-applies at
+   * once instead of waiting for the next mouse move.
+   *
+   * Without this, unticking "커서 그리드 표시" left the disc on screen until the
+   * pointer moved, and a radius or cell change did nothing until then. The panel
+   * calls the setters; nothing was listening.
+   */
+  private _miniGridLast: { center: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3 } | null = null;
 
   private _onFrameCallbacks: (() => void)[] = [];
   /** Callbacks that have already thrown once — see the loop in `animate()`. */
@@ -3091,7 +3100,15 @@ export class Viewport {
     u?: THREE.Vector3,
     v?: THREE.Vector3,
   ): void {
-    if (!center || !u || !v || !getMiniGridVisible()) {
+    if (!center || !u || !v) {
+      this._miniGridLast = null;
+      if (this._miniGrid) this._miniGrid.visible = false;
+      return;
+    }
+    // Keep the frame even when the setting is off: turning it back on should
+    // bring the disc straight back where the cursor already is.
+    this._miniGridLast = { center: center.clone(), u: u.clone(), v: v.clone() };
+    if (!getMiniGridVisible()) {
       if (this._miniGrid) this._miniGrid.visible = false;
       return;
     }
@@ -3126,6 +3143,11 @@ export class Viewport {
         transparent: true,
         opacity: 0.95,
         depthTest: false,
+        // MUST NOT write depth. An overlay that skips the depth test but still
+        // writes depth corrupts everything drawn after it -- the bug
+        // `miniGridDoesNotCorruptLines.test.ts` exists to prevent, first found
+        // with the plane indicator this replaced.
+        depthWrite: false,
         resolution: new THREE.Vector2(this.container.clientWidth, h),
       });
       const geo = new LineSegmentsGeometry();
@@ -3142,6 +3164,22 @@ export class Viewport {
       }
     }
     this._miniGrid.visible = true;
+  }
+
+  /**
+   * Re-draw the cursor grid from the frame it was last given.
+   *
+   * What `MiniGridSettings` changes reach: the size or line width the user just
+   * typed, or the disc going away when they untick it. A no-op before the first
+   * `setMiniGridCursor` — there is nothing on screen to revise.
+   */
+  refreshMiniGrid(): void {
+    const last = this._miniGridLast;
+    if (!last) {
+      if (this._miniGrid) this._miniGrid.visible = false;
+      return;
+    }
+    this.setMiniGridCursor(last.center, last.u, last.v);
   }
 
   onFrame(cb: () => void): void {

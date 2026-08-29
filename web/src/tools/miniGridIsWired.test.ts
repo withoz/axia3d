@@ -114,6 +114,37 @@ describe('mini grid wiring', () => {
     expect(leave.slice(0, 400)).toContain('setMiniGridCursor?.(null)');
   });
 
+  it('a tool switch clears it, which no pointer event would', () => {
+    const t = src('tools/ToolManagerRefactored.ts');
+    // ⚠ `setTool` is not reached by the mousemove flush, so without a clear here
+    // the disc sat on screen after switching to a non-drawing tool until the
+    // mouse next moved. The old fixed-size gizmo had this and the grid did not.
+    const at = t.indexOf('setTool(name: string)');
+    expect(at, 'setTool was renamed — retarget this guard').toBeGreaterThan(-1);
+    const body = t.slice(at, at + 2500);
+    expect(body, 'setTool never clears the cursor grid').toMatch(
+      /DRAW_PLANE_TOOLS\.has\(name\)\)\s*\{\s*[\s\S]{0,200}?setMiniGridCursor\?\.\(null\)/,
+    );
+  });
+
+  it('the settings panel reaches the disc without waiting for a mouse move', () => {
+    // ⚠ `MiniGridSettings` notifies listeners; for a while nobody listened, so
+    // unticking the box left the grid up and a radius change did nothing until
+    // the pointer moved. Both halves of the link are asserted: someone
+    // subscribes, and the viewport can redraw from the frame it last had.
+    const m = src('main.ts');
+    expect(m, 'nothing subscribes to onMiniGridChange').toContain('onMiniGridChange(');
+    expect(m, 'the subscription does not redraw the grid').toMatch(
+      /onMiniGridChange\(\s*\(\)\s*=>\s*[\s\S]{0,80}?refreshMiniGrid\(\)/,
+    );
+    const v = src('viewport/Viewport.ts');
+    expect(v, 'the viewport cannot redraw without a new pointer event').toContain(
+      'refreshMiniGrid()',
+    );
+    expect(v, 'the last cursor frame is not remembered, so a redraw has nothing to use')
+      .toContain('_miniGridLast');
+  });
+
   it('the settings panel offers all four controls', () => {
     const p = src('units/SettingsPanel.ts');
     for (const id of [
