@@ -278,7 +278,18 @@ async function main() {
   const units = new UnitSystem();
   // bridge: switching the language reloads (ADR-294 D7) and the scene lives in
   // memory only, so the panel asks before discarding a drawing.
-  const settingsPanel = new SettingsPanel(units, { bridge });
+  const settingsPanel = new SettingsPanel(units, {
+    bridge,
+    // Bring the cursor work-plane grid back while the panel is up, at the spot
+    // the pointer last had on the canvas — reaching for the grid's own sliders
+    // means leaving the canvas, and a disc that is gone cannot be previewed.
+    // Closing forgets it; the next move over the canvas draws it under the
+    // pointer again.
+    onToggle: (open) => {
+      if (open) viewport.refreshMiniGrid();
+      else viewport.setMiniGridCursor?.(null);
+    },
+  });
 
   // Settings button
   const settingsBtn = document.getElementById('settings-btn');

@@ -68,6 +68,14 @@ export interface SettingsPanelDeps {
     getStats?: () => { verts: number };
     exportSnapshotSilent?: () => Uint8Array | null;
   };
+  /**
+   * Called when the panel opens and closes.
+   *
+   * Its one caller brings the cursor work-plane grid back while the panel is up,
+   * so the grid's own size sliders have something to act on — reaching for them
+   * means leaving the canvas, which is what hid the disc in the first place.
+   */
+  onToggle?: (open: boolean) => void;
 }
 
 export class SettingsPanel {
@@ -107,11 +115,13 @@ export class SettingsPanel {
     this.updateDisplay();
     this.panel.style.display = 'block';
     this.isOpen = true;
+    this.deps.onToggle?.(true);
   }
 
   close() {
     this.panel.style.display = 'none';
     this.isOpen = false;
+    this.deps.onToggle?.(false);
   }
 
   /**

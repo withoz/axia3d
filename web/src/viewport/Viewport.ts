@@ -3167,11 +3167,24 @@ export class Viewport {
   }
 
   /**
+   * Hide the cursor grid but keep the frame it was drawn at.
+   *
+   * For leaving the canvas: the disc should not sit under a pointer that is no
+   * longer there, but the trip to the settings panel must not destroy what its
+   * sliders are about to preview. `setMiniGridCursor(null)` is the other one —
+   * that forgets.
+   */
+  hideMiniGrid(): void {
+    if (this._miniGrid) this._miniGrid.visible = false;
+  }
+
+  /**
    * Re-draw the cursor grid from the frame it was last given.
    *
    * What `MiniGridSettings` changes reach: the size or line width the user just
-   * typed, or the disc going away when they untick it. A no-op before the first
-   * `setMiniGridCursor` — there is nothing on screen to revise.
+   * typed, or the disc going away when they untick it. Also what brings the disc
+   * back when the settings panel opens, so the sliders have something to act on.
+   * A no-op before the first `setMiniGridCursor` — there is nothing to revise.
    */
   refreshMiniGrid(): void {
     const last = this._miniGridLast;

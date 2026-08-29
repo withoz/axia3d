@@ -109,9 +109,35 @@ describe('mini grid wiring', () => {
     const cleared = flush.match(/setMiniGridCursor\?\.\(null\)/g) ?? [];
     expect(cleared.length, 'a path out of the flush leaves a stale grid on screen').toBe(3);
 
-    // and when the pointer leaves the canvas
+    // ⚠ and when the pointer leaves the canvas it HIDES rather than forgets —
+    // reaching for the grid's own sliders means leaving the canvas, so the frame
+    // has to survive the trip or there is nothing left to preview.
     const leave = t.slice(t.indexOf("addEventListener('mouseleave'"));
-    expect(leave.slice(0, 400)).toContain('setMiniGridCursor?.(null)');
+    expect(leave.slice(0, 700), 'leaving the canvas forgets the frame the sliders preview')
+      .toContain('hideMiniGrid?.()');
+  });
+
+  it('the panel is an exception, and it is bounded by open and close', () => {
+    const v = src('viewport/Viewport.ts');
+    // Two different verbs, or there is no way to hide without forgetting.
+    expect(v, 'nothing can hide the disc without forgetting where it was')
+      .toContain('hideMiniGrid()');
+    expect(v, 'nothing can bring it back').toContain('refreshMiniGrid()');
+
+    const m = src('main.ts');
+    // ⚠ Both directions. Opening without closing leaves a stale disc on screen
+    // whenever the panel is dismissed with the pointer off the canvas.
+    expect(m, 'the panel does not tell anyone it opened').toMatch(/onToggle:\s*\(open\)/);
+    expect(m, 'opening the panel does not bring the disc back').toMatch(
+      /if \(open\) viewport\.refreshMiniGrid\(\)/,
+    );
+    expect(m, 'closing the panel does not forget the disc').toMatch(
+      /else viewport\.setMiniGridCursor\?\.\(null\)/,
+    );
+
+    const sp = src('units/SettingsPanel.ts');
+    expect(sp, 'open() never fires the callback').toContain('this.deps.onToggle?.(true)');
+    expect(sp, 'close() never fires the callback').toContain('this.deps.onToggle?.(false)');
   });
 
   it('a tool switch clears it, which no pointer event would', () => {

@@ -4926,7 +4926,12 @@ export class ToolManager {
     canvas.addEventListener('mouseleave', () => {
       this.selection.clearHover();
       this.selection.clearEdgeHover();
-      this.viewport.setMiniGridCursor?.(null);
+      // Hide the cursor grid but REMEMBER where it was. The settings panel holds
+      // the grid's own size controls, and reaching for the radius slider means
+      // leaving the canvas — so the frame has to survive the trip or there is
+      // nothing left to preview. Opening the panel brings it back at that spot;
+      // closing the panel forgets it.
+      this.viewport.hideMiniGrid?.();
     });
 
     // ===== MOUSE UP =====
