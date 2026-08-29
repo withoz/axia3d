@@ -12,7 +12,6 @@ import { DimensionLabel, DimLine } from '../ui/DimensionLabel';
 import { UnitSystem } from '../units/UnitSystem';
 import { SnapManager, type SnapPoint } from '../snap/SnapManager';
 import { SnapVisual } from '../snap/SnapVisual';
-import { DrawPlaneIndicator } from '../viewport/DrawPlaneIndicator';
 import { SelectionManager } from './SelectionManager';
 import { PickBox } from '../ui/PickBox';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
@@ -187,7 +186,6 @@ export class ToolManager {
   private static readonly DRAW_PLANE_TOOLS = new Set(['line', 'rect', 'circle', 'hole', 'arc', 'freehand', 'bezier']);
 
   // ═══ Draw-plane hover indicator ═══
-  private drawPlaneIndicator: DrawPlaneIndicator | null = null;
   private drawPlaneRafPending = false;
   private drawPlaneLastEvent: MouseEvent | null = null;
 
@@ -320,7 +318,6 @@ export class ToolManager {
     this.pickBox = new PickBox(viewport.container);
 
     // Initialize draw-plane hover indicator (shown only for drawing tools)
-    this.drawPlaneIndicator = new DrawPlaneIndicator(viewport.scene);
 
     // ═══ Selection Dimension Display ═══
     // 2026-04-27:
@@ -591,9 +588,11 @@ export class ToolManager {
       this.snapVisual.clear();
     }
 
-    // Hide draw-plane indicator if the new tool doesn't use it
+    // Clear the cursor work-plane grid if the new tool doesn't use it. A tool
+    // switch is not a pointer event, so without this the disc sat on screen
+    // until the mouse next moved.
     if (!ToolManager.DRAW_PLANE_TOOLS.has(name)) {
-      this.drawPlaneIndicator?.hide();
+      this.viewport.setMiniGridCursor?.(null);
     }
 
     // Clear selection dimensions when switching tools
@@ -3837,7 +3836,6 @@ export class ToolManager {
       return;
     }
     if (this.isToolBusy()) {
-      this.drawPlaneIndicator?.hide();
       this.viewport.setMiniGridCursor?.(null);
       return;
     }
@@ -3852,12 +3850,10 @@ export class ToolManager {
     }
     if (!origin) origin = this.get3DPoint(e);
     if (!origin) {
-      this.drawPlaneIndicator?.hide();
       this.viewport.setMiniGridCursor?.(null);
       return;
     }
 
-    this.drawPlaneIndicator?.show(origin, plane);
     // `right` and `up` are already perpendicular unit vectors in the plane, so
     // they are the u/v the disc is laid out on.
     this.viewport.setMiniGridCursor?.(origin, plane.right, plane.up);
@@ -4923,7 +4919,6 @@ export class ToolManager {
           requestAnimationFrame(() => this.flushDrawPlaneIndicator());
         }
       } else {
-        this.drawPlaneIndicator?.hide();
       }
     });
 
@@ -4931,7 +4926,6 @@ export class ToolManager {
     canvas.addEventListener('mouseleave', () => {
       this.selection.clearHover();
       this.selection.clearEdgeHover();
-      this.drawPlaneIndicator?.hide();
       this.viewport.setMiniGridCursor?.(null);
     });
 

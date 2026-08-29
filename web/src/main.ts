@@ -51,6 +51,7 @@ import { makeFloatingDraggable } from './ui/makeFloatingDraggable';
 import './ui/DraggablePanels.css';
 import { t } from './i18n';
 import { takeStashedScene } from './i18n/localeSwitchScene';
+import { onMiniGridChange } from './tools/MiniGridSettings';
 
 // Install in-UI console panel as early as possible so any errors during
 // app boot are captured and visible to the user without DevTools.
@@ -309,6 +310,17 @@ async function main() {
   // Register core services
   container.register('bridge', bridge);
   container.register('viewport', viewport);
+
+  // The cursor work-plane grid reads its size and visibility from
+  // `MiniGridSettings`, which the settings panel writes. Nothing was listening.
+  //
+  // ⚠ Honestly: this is not reachable through the pointer today. Measured —
+  // clicking the settings button takes the cursor off the canvas, `mouseleave`
+  // clears the grid, and by the time the user is back over the canvas a
+  // mousemove has re-run the flush anyway. It is here because a settings module
+  // whose notifications nobody receives is a trap for whoever adds the next
+  // control, and because the panel need not always be outside the viewport.
+  onMiniGridChange(() => viewport.refreshMiniGrid());
   container.register('units', units);
   container.register('panelManager', panelManager);
   container.register('fileManager', fileManager);
