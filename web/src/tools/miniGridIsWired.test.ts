@@ -192,13 +192,54 @@ describe('mini grid wiring', () => {
     }
   });
 
+  it('its controls look like every other control in the panel', () => {
+    const p = src('units/SettingsPanel.ts');
+
+    // ⚠ The checkbox idiom. Nine of the panel's ten checkboxes are
+    // `<label class="sp-label"><input type="checkbox" .../> text</label>`; the
+    // cursor grid arrived with an `sp-toggle` class that is styled NOWHERE in the
+    // project, and put the text before the box. One of ten is drift, not a
+    // second idiom.
+    expect(p, 'sp-toggle is a class this project does not style').not.toContain('sp-toggle');
+    expect(p, 'the cursor-grid checkbox does not follow the panel idiom').toMatch(
+      /<label class="sp-label">\s*<input type="checkbox" id="sp-mini-grid" \/>/,
+    );
+
+    // One `sp-section` per control, like every sibling. The four arrived crammed
+    // into a single section, which is why they read as a sub-panel instead of as
+    // four more rows of the same list.
+    const sections = p.split('<div class="sp-section">');
+    for (const id of [
+      'sp-mini-grid',
+      'sp-mini-grid-radius',
+      'sp-mini-grid-cells',
+      'sp-mini-grid-hw',
+    ]) {
+      const owning = sections.filter((sec) => sec.includes(`id="${id}"`));
+      expect(owning.length, `#${id} is missing from the panel`).toBe(1);
+    }
+    // ...and no section holds two of them. ⚠ Count the INPUTS: each slider's
+    // section also carries its `-val` readout span, so matching ids alone finds
+    // two per section and reports crowding that is not there. (It did.)
+    const crowded = sections.filter(
+      (sec) => (sec.match(/<input[^>]*id="sp-mini-grid[a-z-]*"/g) ?? []).length > 1,
+    );
+    expect(crowded.length, 'two cursor-grid controls share one section').toBe(0);
+
+    // Each slider is a `sp-row` with a `sp-value` readout, as the panel's other
+    // sliders are — the readout is how the user knows what they picked.
+    for (const id of ['sp-mini-grid-radius', 'sp-mini-grid-cells', 'sp-mini-grid-hw']) {
+      expect(p, `#${id} has no value readout`).toContain(`id="${id}-val" class="sp-value"`);
+    }
+  });
+
   it('every Korean string it added has an English side', () => {
     const en = src('i18n/en.ts');
     for (const k of [
       '커서 그리드 표시',
-      '반지름 (px)',
-      '가장자리까지 칸 수',
-      '선 반폭 (px)',
+      '커서 그리드 반지름 (px)',
+      '커서 그리드 칸 수 (중심→가장자리)',
+      '커서 그리드 선 반폭 (px)',
     ]) {
       expect(en, `'${k}' has no entry in en.ts`).toContain(`'${k}'`);
     }

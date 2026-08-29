@@ -215,34 +215,42 @@ export class SettingsPanel {
         <div class="sp-hint">${t('많을수록 매끈하지만 면·정점 증가 (기본 16)')}</div>
       </div>
 
-          <div class="sp-divider"></div>
+      <div class="sp-divider"></div>
 
-          <div class="sp-section">
-            <label class="sp-toggle">
-              <span>${t('커서 그리드 표시')}</span>
-              <input type="checkbox" id="sp-mini-grid" />
-            </label>
-            <div class="sp-hint">${t('그리기 도구가 첫 점을 기다릴 때 커서 아래 작업 평면을 보여줍니다')}</div>
+      <div class="sp-section">
+        <label class="sp-label">
+          <input type="checkbox" id="sp-mini-grid" />
+          ${t('커서 그리드 표시')}
+        </label>
+        <div class="sp-hint">${t('그리기 도구가 첫 점을 기다릴 때 커서 아래 작업 평면을 보여줍니다')}</div>
+      </div>
 
-            <label class="sp-label">${t('반지름 (px)')}</label>
-            <div class="sp-row">
-              <input type="range" id="sp-mini-grid-radius" min="${MINI_GRID_RADIUS_PX_MIN}" max="${MINI_GRID_RADIUS_PX_MAX}" step="1" />
-              <span id="sp-mini-grid-radius-val" class="sp-value"></span>
-            </div>
+      <div class="sp-section">
+        <label class="sp-label">${t('커서 그리드 반지름 (px)')}</label>
+        <div class="sp-row">
+          <input type="range" id="sp-mini-grid-radius" min="${MINI_GRID_RADIUS_PX_MIN}" max="${MINI_GRID_RADIUS_PX_MAX}" step="1" />
+          <span id="sp-mini-grid-radius-val" class="sp-value"></span>
+        </div>
+        <div class="sp-hint">${t('화면 크기라 줌과 무관하게 같은 크기로 보입니다 (기본 48)')}</div>
+      </div>
 
-            <label class="sp-label">${t('가장자리까지 칸 수')}</label>
-            <div class="sp-row">
-              <input type="range" id="sp-mini-grid-cells" min="${MINI_GRID_CELLS_MIN}" max="${MINI_GRID_CELLS_MAX}" step="1" />
-              <span id="sp-mini-grid-cells-val" class="sp-value"></span>
-            </div>
+      <div class="sp-section">
+        <label class="sp-label">${t('커서 그리드 칸 수 (중심→가장자리)')}</label>
+        <div class="sp-row">
+          <input type="range" id="sp-mini-grid-cells" min="${MINI_GRID_CELLS_MIN}" max="${MINI_GRID_CELLS_MAX}" step="1" />
+          <span id="sp-mini-grid-cells-val" class="sp-value"></span>
+        </div>
+        <div class="sp-hint">${t('많을수록 촘촘하지만 읽기 어려워집니다 (기본 4)')}</div>
+      </div>
 
-            <label class="sp-label">${t('선 반폭 (px)')}</label>
-            <div class="sp-row">
-              <input type="range" id="sp-mini-grid-hw" min="${MINI_GRID_LINE_HW_PX_MIN}" max="${MINI_GRID_LINE_HW_PX_MAX}" step="0.1" />
-              <span id="sp-mini-grid-hw-val" class="sp-value"></span>
-            </div>
-            <div class="sp-hint">${t('반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다')}</div>
-          </div>
+      <div class="sp-section">
+        <label class="sp-label">${t('커서 그리드 선 반폭 (px)')}</label>
+        <div class="sp-row">
+          <input type="range" id="sp-mini-grid-hw" min="${MINI_GRID_LINE_HW_PX_MIN}" max="${MINI_GRID_LINE_HW_PX_MAX}" step="0.1" />
+          <span id="sp-mini-grid-hw-val" class="sp-value"></span>
+        </div>
+        <div class="sp-hint">${t('반폭이라 0.5 가 DPR 2 에서 1 CSS 픽셀. 굵히면 교차점에서 뭉칩니다 (기본 0.5)')}</div>
+      </div>
 
       <div class="sp-divider"></div>
 
@@ -400,6 +408,14 @@ export class SettingsPanel {
     });
 
     // 원통 세그먼트
+    const cylSegSlider = panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
+    const cylSegVal = panel.querySelector('#sp-cyl-seg-val')!;
+    cylSegSlider.addEventListener('input', () => {
+      const v = parseInt(cylSegSlider.value, 10);
+      setCylinderSegments(v);
+      cylSegVal.textContent = `${v}`;
+    });
+
     // 커서 그리드
     const mgOn = panel.querySelector('#sp-mini-grid') as HTMLInputElement;
     const mgR = panel.querySelector('#sp-mini-grid-radius') as HTMLInputElement;
@@ -423,14 +439,6 @@ export class SettingsPanel {
       const v = parseFloat(mgW.value);
       setMiniGridLineHwPx(v);
       mgWVal.textContent = v.toFixed(1);
-    });
-
-    const cylSegSlider = panel.querySelector('#sp-cyl-seg') as HTMLInputElement;
-    const cylSegVal = panel.querySelector('#sp-cyl-seg-val')!;
-    cylSegSlider.addEventListener('input', () => {
-      const v = parseInt(cylSegSlider.value, 10);
-      setCylinderSegments(v);
-      cylSegVal.textContent = `${v}`;
     });
 
     // 병합 허용 각도
