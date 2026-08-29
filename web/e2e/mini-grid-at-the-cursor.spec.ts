@@ -153,38 +153,44 @@ test.describe('the cursor mini grid', () => {
    * ⚠ This used to set localStorage and reload, which tested that the preference
    * PERSISTS — not that the checkbox does anything.
    *
-   * ⚠ And the first rewrite asserted the disc changed "without moving the mouse",
-   * which is a scenario no user is in: measured, clicking the settings button
-   * takes the pointer off the canvas, `mouseleave` fires, and the grid is already
-   * down before the checkbox is touched. The journey below is the real one —
-   * leave the canvas, change the setting, come back.
+   * ⚠ The first rewrite then asserted the disc changed "without moving the
+   * mouse", which is a scenario no user is in. The second walked to the panel and
+   * back, which was real but could not see the control take effect.
+   *
+   * The disc now STAYS while the pointer is over the settings panel — that is
+   * where its own size controls are — so the effect is visible where the user is
+   * looking, and that is what these assert.
    */
-  test('unticking the settings box stops the disc coming back', async ({ page }) => {
+  test('the disc stays while the pointer is on the settings panel', async ({ page }) => {
     await armAtCentre(page);
+    await openSettings(page);
+    await expect(page.locator('#sp-mini-grid')).toBeVisible({ timeout: 5000 });
 
+    // ⚠ Before this change the disc was gone by now: leaving the canvas cleared
+    // it, so the radius slider had nothing to preview.
+    expect(
+      await page.evaluate(gridIsUp),
+      'the disc vanished on the way to its own controls',
+    ).toBe(true);
+  });
+
+  test('unticking the box clears it while the panel is still open', async ({ page }) => {
+    await armAtCentre(page);
     await openSettings(page);
     const box = page.locator('#sp-mini-grid');
     await expect(box).toBeVisible({ timeout: 5000 });
     await expect(box).toBeChecked();
+
     await box.uncheck();
+    await page.waitForFunction(gridIsDown, undefined, { timeout: 5000 });
 
-    // Back to the canvas, where the disc would otherwise return.
-    const canvas = await page.locator('canvas').first().boundingBox();
-    if (!canvas) throw new Error('no canvas');
-    await page.mouse.move(canvas.x + canvas.width / 2 + 15, canvas.y + canvas.height / 2 + 15);
-    await page.waitForTimeout(300);
-    expect(await page.evaluate(gridIsUp), 'the disc came back with the setting off').toBe(false);
-
-    // And ticking it brings it back. ⚠ Do not call `openSettings` again — the
-    // status-bar button toggles, so a second click closes the panel and the
-    // checkbox goes with it. The panel is still open.
-    await page.locator('#sp-mini-grid').check();
-    await page.mouse.move(canvas.x + canvas.width / 2 - 15, canvas.y + canvas.height / 2 - 15);
+    // ⚠ Do not call `openSettings` again — the status-bar button toggles, so a
+    // second click closes the panel and takes the checkbox with it.
+    await box.check();
     await page.waitForFunction(gridIsUp, undefined, { timeout: 5000 });
   });
 
-  /** The size controls have to reach the disc on the next pass over the canvas. */
-  test('the radius slider resizes it', async ({ page }) => {
+  test('the radius slider resizes it live, with the pointer still on the panel', async ({ page }) => {
     await armAtCentre(page);
     const small = (await page.evaluate(READ_GRID)) as { size: number };
     expect(small.size).toBeGreaterThan(0);
@@ -195,15 +201,44 @@ test.describe('the cursor mini grid', () => {
     await slider.fill('200');
     await slider.dispatchEvent('input');
 
-    const canvas = await page.locator('canvas').first().boundingBox();
-    if (!canvas) throw new Error('no canvas');
-    await page.mouse.move(canvas.x + canvas.width / 2 + 10, canvas.y + canvas.height / 2 + 10);
-    await page.waitForFunction(gridIsUp, undefined, { timeout: 5000 });
+    // No trip back to the canvas: the disc is still up at its last cursor spot
+    // and redraws from the new radius. 48 px -> 200 px is a bit over 4x.
+    await page.waitForFunction(
+      (was: number) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const vp = (window as any).__axia.get('viewport');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let g: any = null;
+        vp.scene.traverse((o: { renderOrder: number; type: string; visible: boolean }) => {
+          if (o.renderOrder === 1001 && o.type === 'LineSegments2' && o.visible) g = o;
+        });
+        if (!g) return false;
+        g.geometry.computeBoundingBox();
+        const bb = g.geometry.boundingBox;
+        return bb.max.x - bb.min.x > was * 2;
+      },
+      small.size,
+      { timeout: 5000 },
+    );
+  });
 
-    const big = (await page.evaluate(READ_GRID)) as { size: number };
-    // 48 px -> 200 px is a bit over 4x; well clear of the depth difference the
-    // 10 px cursor shift makes.
-    expect(big.size).toBeGreaterThan(small.size * 2);
+  /**
+   * The other half of the rule. The panel is an exception, not a licence to
+   * leave a stale disc on screen.
+   *
+   * ⚠ The first attempt keyed on `mouseleave`'s `relatedTarget` being inside the
+   * panel, which cannot work: the button that opens the panel lives in the
+   * toolbar, so at the moment the pointer leaves the canvas the panel does not
+   * exist on screen yet. Open and close are the events that carry the intent.
+   */
+  test('closing the panel forgets it', async ({ page }) => {
+    await armAtCentre(page);
+    await openSettings(page);
+    await expect(page.locator('#sp-mini-grid')).toBeVisible({ timeout: 5000 });
+    expect(await page.evaluate(gridIsUp)).toBe(true);
+
+    await openSettings(page); // the status-bar button toggles
+    await page.waitForFunction(gridIsDown, undefined, { timeout: 5000 });
   });
 
   /** A tool switch is not a pointer event, and the disc must still go. */
