@@ -35,16 +35,47 @@ import { debugLog, debugWarn } from '../utils/debug';
 const STORAGE_KEY = 'axia:step-iges-prewarm';
 
 /**
- * Pre-warm 활성 여부 (default ON). localStorage `'false'` 명시 시 opt-out.
+ * 이 빌드가 (사용자 설정이 없을 때) pre-warm 을 기본으로 하는가.
+ *
+ * ⚠ ADR-119 L-119-4 는 default ON 을 lock 했고, **로컬에서 앱을 돌리는 사람에게는
+ * 그대로 참입니다** — pre-warm 이 ADR-082 Drift #5 의 180초 대기를 되사 온
+ * 장치이기 때문입니다. 공개 배포본은 거래 조건이 다릅니다. 배포본에서
+ * `performance.getEntriesByType('resource')` 로 실측:
+ *
+ *     앱 자체 (엔진 WASM 4.3 MB + JS + CSS + 폰트) ....   6.4 MB
+ *     OCCT 7개, 첫 요청 ~1.24s ....................... 115.1 MB
+ *
+ * STEP 파일을 열지 않아도 받습니다. GitHub Pages 의 대역폭 소프트 한도가 월
+ * 100 GB 이므로 방문 약 820회 대 약 16,000회의 차이입니다.
+ *
+ * 그래서 **배포 파이프라인만** OFF 를 요청합니다 (deploy.yml 의 Build 스텝이
+ * `VITE_STEP_PREWARM=off`). 로컬 `npm run build` 는 변화 없습니다.
+ *
+ * 함수인 이유: 모듈 로드 시점 상수로 두면 `vi.stubEnv` 로 검증할 수 없어
+ * 가드가 아무것도 붙잡지 못합니다.
+ */
+function buildDefaultOn(): boolean {
+  try {
+    return (import.meta.env?.VITE_STEP_PREWARM ?? '') !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Pre-warm 활성 여부. localStorage 명시 설정이 **양방향 모두** 우선하므로,
+ * 배포본 방문자도 원하면 켤 수 있고 로컬 사용자도 끌 수 있습니다.
  *
  * Pattern reference: SpherePathBSettings / CylinderPathBSettings.
  */
 export function getPrewarmEnabled(): boolean {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved !== 'false'; // default ON
+    if (saved === 'true') return true;
+    if (saved === 'false') return false;
+    return buildDefaultOn();
   } catch {
-    return true; // private mode → default ON
+    return buildDefaultOn(); // private mode → 이 빌드의 기본값
   }
 }
 

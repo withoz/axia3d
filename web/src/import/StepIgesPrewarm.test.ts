@@ -131,3 +131,65 @@ describe('StepIgesPrewarm — ADR-118 γ-7 (pre-warm)', () => {
     });
   });
 });
+
+/**
+ * The deployed build does not pre-warm — and an explicit preference still wins.
+ *
+ * ⚠ ADR-119 L-119-4 locked the default ON and that is unchanged for anyone
+ * running the app locally. What changed is that the *deploy pipeline* asks for
+ * OFF, because the bargain is different on a public site: measured on
+ * https://withoz.github.io/axia3d/ with `performance.getEntriesByType`, the app
+ * is 6.4 MB and the pre-warm adds 115.1 MB to every visit, first request ~1.24 s
+ * after load, whether or not the visitor ever opens a STEP file.
+ *
+ * The last guard is the one that matters most: a flag the pipeline stops setting
+ * fails silently everywhere else, because the code would just fall back to ON
+ * and nothing would look broken.
+ */
+describe('StepIgesPrewarm — deployed builds do not pre-warm', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+    vi.unstubAllEnvs();
+  });
+
+  it('VITE_STEP_PREWARM=off makes the default OFF', async () => {
+    vi.stubEnv('VITE_STEP_PREWARM', 'off');
+    const m = await import('./StepIgesPrewarm');
+    expect(m.getPrewarmEnabled()).toBe(false);
+  });
+
+  it('leaves the default ON when the flag is absent — a local build is untouched', async () => {
+    const m = await import('./StepIgesPrewarm');
+    expect(m.getPrewarmEnabled()).toBe(true);
+  });
+
+  it('any other value is not "off", so a typo cannot silently disable it', async () => {
+    vi.stubEnv('VITE_STEP_PREWARM', 'OFF');
+    const m = await import('./StepIgesPrewarm');
+    expect(m.getPrewarmEnabled()).toBe(true);
+  });
+
+  it('an explicit "true" beats a build that defaults OFF', async () => {
+    vi.stubEnv('VITE_STEP_PREWARM', 'off');
+    localStorage.setItem('axia:step-iges-prewarm', 'true');
+    const m = await import('./StepIgesPrewarm');
+    expect(m.getPrewarmEnabled()).toBe(true);
+  });
+
+  it('an explicit "false" beats a build that defaults ON', async () => {
+    localStorage.setItem('axia:step-iges-prewarm', 'false');
+    const m = await import('./StepIgesPrewarm');
+    expect(m.getPrewarmEnabled()).toBe(false);
+  });
+
+  it('deploy.yml actually sets the flag on the step that builds', async () => {
+    const { readFileSync } = await import('node:fs');
+    const yml = readFileSync('../.github/workflows/deploy.yml', 'utf8');
+    // The env has to sit on the Build step. Anywhere else and Vite never sees
+    // it, which is exactly the kind of drift that looks fine in a diff.
+    const build = yml.slice(yml.indexOf('- name: Build'));
+    expect(build).toMatch(/env:\s*\n\s*VITE_STEP_PREWARM:\s*'off'/);
+    expect(build.indexOf('VITE_STEP_PREWARM')).toBeLessThan(build.indexOf('run: npm run build'));
+  });
+});

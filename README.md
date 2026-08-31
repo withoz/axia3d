@@ -18,14 +18,16 @@
 | | |
 |---|---|
 | 앱 (엔진 WASM 4.3 MB + JS + CSS + 폰트) | **6.4 MB** |
-| STEP/IGES 용 OpenCascade — 배경에서 미리 받음 | **115.1 MB** |
+| STEP/IGES 용 OpenCascade | STEP 파일을 **열 때만**, 115.1 MB |
 
-⚠ 두 번째 줄은 STEP 파일을 열지 않아도 받습니다. ADR-119 의 pre-warm 이 로드
-1.2초 뒤에 시작하며, 그 대가로 나중에 STEP 을 열 때 ADR-082 Drift #5 의
-180초 대기가 사라집니다. 원치 않으면 브라우저 콘솔에서 끕니다:
+⚠ 두 번째 줄은 배포본에서만 이렇습니다. ADR-119 의 pre-warm 은 로컬에서 기본
+ON 이라 로드 1.2초 뒤 OCCT 를 미리 받아 두고, 그 대가로 STEP 을 열 때
+ADR-082 Drift #5 의 180초 대기가 사라집니다. 공개 사이트에서는 STEP 을 열지
+않는 방문자까지 115 MB 를 받게 되므로 배포 빌드만 끕니다
+(`deploy.yml` 의 `VITE_STEP_PREWARM=off`). 미리 받아 두고 싶으면 켜면 됩니다:
 
 ```js
-localStorage.setItem('axia:step-iges-prewarm', 'false');
+localStorage.setItem('axia:step-iges-prewarm', 'true');
 ```
 
 아래 **시작하기** 는 엔진을 직접 고칠 때의 개발자 경로입니다.

@@ -67,8 +67,17 @@ jobs:
       - name: Install dependencies (npm workspace root)
         run: npm ci
 
+      # ⚠ The deployed build does not pre-warm OpenCascade. ADR-119 turned the
+      # pre-warm on by default to buy back ADR-082 Drift #5's 180-second wait,
+      # which is the right bargain for someone running the app locally and the
+      # wrong one for a public site: measured on the live site, it adds 115.1 MB
+      # to every visit against an app that is 6.4 MB, whether or not the visitor
+      # ever opens a STEP file. A visitor who wants it can still set
+      # `axia:step-iges-prewarm = 'true'`; ADR-119's local default is untouched.
       - name: Build
         working-directory: ./web
+        env:
+          VITE_STEP_PREWARM: 'off'
         run: npm run build
 
       - name: Setup Pages
