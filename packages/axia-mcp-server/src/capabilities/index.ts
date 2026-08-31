@@ -11,6 +11,9 @@ import { drawCircleCapability } from './draw_circle.js';
 import { drawLineCapability } from './draw_line.js';
 import { pushPullCapability } from './push_pull.js';
 import { exportAxiaCapability } from './export_axia.js';
+import { exportObjCapability } from './export_obj.js';
+import { exportStlCapability } from './export_stl.js';
+import { exportStepCapability } from './export_step.js';
 import { listXiasCapability } from './list_xias.js';
 import { getSceneSummaryCapability } from './get_scene_summary.js';
 import { booleanSubtractCapability } from './boolean_subtract.js';
@@ -53,6 +56,9 @@ export const ALL_CAPABILITY_HANDLERS: ReadonlyArray<CapabilityHandler<any, any>>
   createXiaCapability,
   createGroupCapability,
   exportAxiaCapability,
+  exportObjCapability,
+  exportStlCapability,
+  exportStepCapability,
   // Tier 2 — modificative
   pushPullCapability,
   moveXiaCapability,

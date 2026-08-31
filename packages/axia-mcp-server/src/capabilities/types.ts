@@ -65,6 +65,15 @@ export interface EngineInstance {
    */
   promoteShapeToXia(shapeId: number, materialId: number): number;
   exportSnapshotStrict(): Uint8Array;
+  /**
+   * The tessellated scene, the same three arrays the browser viewport reads
+   * through `WasmBridge.getMeshBuffers`. Used by export_obj / export_stl /
+   * export_step so a file and the screen come from one tessellation.
+   * (WASM js_names "getPositions" / "getNormals" / "getIndices".)
+   */
+  getPositions(): Float32Array;
+  getNormals(): Float32Array;
+  getIndices(): Uint32Array;
 
   // Tier 3 — destructive. Names verified against the generated
   // web/src/wasm/axia_wasm.d.ts, which is the only place the real JS names
