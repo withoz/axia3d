@@ -1139,7 +1139,7 @@ export class DrawLineTool implements ITool {
       }
       if (dp.onFace && sk >= 2 && this.seamKind === null && !this.curvedHintShown) {
         this.curvedHintShown = true;
-        Toast.info(t('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.'), 3000);
+        Toast.info(t('곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 원뿔은 자유곡선·베지어, 구·원통·토러스는 닫힌 원을 쓰세요.'), 3000);
       }
     } else {
       // Fall back to view-based workplane through the computed click point.

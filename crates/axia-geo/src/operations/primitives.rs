@@ -404,7 +404,15 @@ impl Mesh {
         material: MaterialId,
     ) -> Result<Vec<FaceId>> {
         // ADR-104 β-1-ζ — Path B dispatch (engine OFF, production ON via
-        // localStorage). Returns 2 hemisphere FaceIds.
+        // localStorage).
+        //
+        // ⚠ Returns ONE face, not the two hemispheres the comment claimed until
+        // 2026-08-30. The axis definition below replaced the equator one, and
+        // that changes what can be done to the result: a hemisphere pair shares
+        // a rim, and a rim is a boundary an open seam can cut against. This
+        // sphere has no boundary at all — its meridian seam is interior, both
+        // half-edges bounding the one face — so only a CLOSED curve divides it.
+        // Measured in `an_open_seam_on_the_shapes_the_app_builds.rs`.
         if self.sphere_path_b_default {
             // The axis definition (poles + one meridian seam, one face). Z-up
             // canonical per LOCKED #43, same as the equator definition it
