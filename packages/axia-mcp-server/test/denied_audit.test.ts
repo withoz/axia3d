@@ -52,18 +52,37 @@ describe('denied calls are audited (intrusion signal)', () => {
     const sink = new MemoryAuditSink();
     await expect(
       dispatch(
-        'export_obj', // Tier 1 (default-on), declared in tiers.ts, no handler
+        // ⚠ Must be a capability that genuinely has no handler. This said
+        // `export_obj` until 2026-08-30, when export_obj/stl/step were
+        // implemented — at which point the test was asserting a denial for
+        // something that works. `import_step` is Tier 3, declared in tiers.ts,
+        // and still unwritten; `delete_xia` is the other one.
+        'import_step',
         {},
-        { engine: mockEngine(), auditSink: sink, versions: VERSIONS },
+        // ⚠ Tier 3 must be enabled or POLICY denies first and this path is
+        // never reached — which is what the reason said on the first try.
+        {
+          engine: mockEngine(),
+          auditSink: sink,
+          versions: VERSIONS,
+          config: { enabled_tiers: [0, 1, 2, 3] },
+        },
       ),
     ).rejects.toThrow();
     await Promise.resolve();
     expect(sink.entries, 'the throw must not be silent').toHaveLength(1);
     const entry = sink.entries[0]!;
     expect(entry.result).toBe('denied');
-    expect(entry.capability).toBe('export_obj');
-    // distinguishable from a genuine unknown: this one IS declared, at a tier
-    expect(entry.tier).toBe(1);
+    expect(entry.capability).toBe('import_step');
+    // distinguishable from a genuine unknown: this one IS declared, at a tier.
+    //
+    // ⚠ Tier 3 now, and that is the point rather than a weakening: this said
+    // Tier 1 because `export_obj` was declared default-on with no handler, so
+    // an agent met it in `tools/list` and got a denial. Nothing default-on is
+    // unimplemented any more, and the only two left (import_step, delete_xia)
+    // are Tier 3 — off unless an operator turns them on. If a Tier 0 or 1
+    // capability ever loses its handler again, `registry.test.ts` says so first.
+    expect(entry.tier).toBe(3);
     expect(entry.reason).toMatch(/declared but not implemented/);
     expect(entry.engine_version).toBe('0.1.0');
     expect(entry.request_id).toMatch(/^[0-9a-f-]{36}$/);
