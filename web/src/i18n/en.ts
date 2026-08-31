@@ -1027,8 +1027,8 @@ export const EN: Record<string, string> = {
   '면을 따라 그렸습니다': 'Drawn along the surface',
   '루프 닫힘 — 면 생성 실패 (비평면 또는 자체교차)':
     'Loop closed, but no face — it is not flat, or it crosses itself',
-  '곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 자유곡선·베지어(구·원뿔) 또는 닫힌 원(원통·토러스)을 쓰세요.':
-    'A straight line on a curved surface is only a flat guide. To split one, use a freehand or Bezier curve (sphere, cone) or a closed circle (cylinder, torus).',
+  '곡면 위 직선은 평면 보조선입니다. 곡면을 나누려면 원뿔은 자유곡선·베지어, 구·원통·토러스는 닫힌 원을 쓰세요.':
+    'A straight line on a curved face is a flat guide. To divide one: freehand or bezier on a cone, a closed circle on a sphere, cylinder or torus.',
   '곡면 위 선 — 반대쪽 가장자리까지 3번 이상 클릭한 뒤 Esc 를 누르면 면이 나뉩니다.':
     'A line across a curved face: click three or more times, out to the far edge, then press Esc to split it.',
   '곡면을 나누려면 반대쪽 가장자리까지 3번 이상 클릭하세요.':
@@ -2252,7 +2252,8 @@ export const EN: Record<string, string> = {
   '3에서 24 사이의 숫자를 입력해주세요.': 'Enter a number between 3 and 24.',
   'Triangulation handle null (BRepMesh 결과 부재)': 'Triangulation handle is null (no BRepMesh result)',
   'Polygon3D handle null (BRepMesh 결과 부재 또는 edge 미tessellate)': 'Polygon3D handle is null (no BRepMesh result, or the edge was not tessellated)',
-  '원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.': 'An open line cannot divide a cylinder or torus. Draw a closed circle to make a porthole instead.',
+  '구·원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 곡선을 그리거나 원을 그려 보세요.':
+    'A sphere, a cylinder and a torus cannot be divided by an open line. Draw a closed curve, or a circle.',
   '이 곡면에는 타원을 그릴 수 없습니다': 'You cannot draw an ellipse on this surface',
   '벽 생성 실패 (형상이 유효하지 않음)': 'Could not create the wall (the shape is not valid)',
   'NURBS 패치 재생성 실패': 'Could not rebuild the NURBS patch',

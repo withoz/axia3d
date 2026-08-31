@@ -124,12 +124,20 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
     tool.onMouseUp({} as MouseEvent);
   }
 
-  it('OPEN stroke on a sphere face → drawOpenSeamOnCurved (not planar wire)', () => {
+  /**
+   * ⚠ This asserted the opposite until 2026-08-30: that an open stroke on a
+   * sphere reached `drawOpenSeamOnCurved`. It did reach it, and the engine
+   * declined every time — the app's sphere is ONE face with an interior meridian
+   * seam and no boundary, so an open cut has nothing to run between (measured in
+   * `an_open_seam_on_the_shapes_the_app_builds.rs`). The tool only
+   * `console.warn`ed, so the stroke vanished with nothing said. The sphere is now
+   * guided like the cylinder and the torus, which cannot be open-cut either.
+   */
+  it('OPEN stroke on a sphere face → guidance, no split, no stray wire', () => {
     const ctx = sphereCtx();
     // rim A → interior(z>0) → rim B: first/last far apart → open.
     draw(ctx, [[10, 0, 0], [3, 3, 8], [0, 10, 0]]);
-    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
-    expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
     expect(ctx.bridge.drawPolylineAsShape).not.toHaveBeenCalled();
     expect(ctx.bridge.drawPolylineOnCurved).not.toHaveBeenCalled();
   });

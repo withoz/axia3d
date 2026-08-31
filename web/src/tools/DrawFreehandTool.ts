@@ -14,7 +14,8 @@ import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
 import { freehandFromPoints, tessellateCurve } from '../curves/Curve';
 import { getCurveRegistry } from '../curves/CurveRegistry';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+
 import { t } from '../i18n';
 
 /** 연속 점 사이 최소 거리 (mm) — 너무 촘촘한 샘플링 방지 */
@@ -178,11 +179,23 @@ export class DrawFreehandTool implements ITool {
         return;
       }
       // ADR-284 β-4-3/β-4-4 — OPEN stroke on a Sphere OR Cone face → rim-to-rim
-      // seam split (both are self-loop rim faces with a rim-sharing twin).
+      // seam split: the cone's side shares the base rim with the base disk,
+      // and a rim is a boundary an open cut can run between.
+      //
+      // The sphere used to be here too, on the premise that both were
+      // "self-loop rim faces with a rim-sharing twin". That stopped being
+      // true when Path B moved to the axis definition: the sphere the app
+      // builds is ONE face with an interior meridian seam and no boundary
+      // anywhere, so the engine declines every open seam on it -- and this
+      // branch only console.warn'ed, so the stroke vanished with nothing
+      // said. Measured both ways, over the pole and meridian-to-meridian,
+      // in `an_open_seam_on_the_shapes_the_app_builds.rs`. It is guided
+      // below now, with the cylinder and the torus, which cannot be
+      // open-cut either.
       // (Cylinder/torus open = multi-rim, deferred; those fall through to a
       // planar wire. A straight 2-click line is degenerate — ADR-284 §β-4-1 —
       // so this is the freehand/bezier path.)
-      if (!closed && (this.curvedKind === 'sphere' || this.curvedKind === 'cone')
+      if (!closed && this.curvedKind === 'cone'
           && typeof this.ctx.bridge.drawOpenSeamOnCurved === 'function') {
         const res = this.ctx.bridge.drawOpenSeamOnCurved(this.curvedHostFace, pts);
         if (!res || res.includes('"error"')) {
@@ -198,8 +211,9 @@ export class DrawFreehandTool implements ITool {
       // single open cut can't disconnect a tube; a torus has no rim — see the
       // `adr284_beta44_sim_cylinder_torus_not_open_splittable` proof). Guide the
       // user to a closed loop (S9) instead of silently drawing a stray wire.
-      if (!closed && (this.curvedKind === 'cylinder' || this.curvedKind === 'torus')) {
-        Toast.info(t('원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.'));
+      if (!closed && (this.curvedKind === 'cylinder' || this.curvedKind === 'torus'
+                      || this.curvedKind === 'sphere')) {
+        Toast.info(t('구·원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 곡선을 그리거나 원을 그려 보세요.'));
         return;
       }
     }

@@ -109,7 +109,12 @@ describe('DrawBezierTool (ADR-089 A-ψ-β closure detection)', () => {
     expect(ctx.bridge.drawClosedBezierAsCurve).not.toHaveBeenCalled();
   });
 
-  it('ADR-284 β-4-3 — open Bezier on a sphere face → drawOpenSeamOnCurved', () => {
+  /**
+   * ⚠ This asserted the opposite until 2026-08-30 — see the note on the same
+   * case in `DrawFreehandTool.test.ts`. The engine declines an open seam on the
+   * app's sphere, so offering it here made the stroke disappear silently.
+   */
+  it('ADR-284 β-4-3 — open Bezier on a sphere face → guidance, no split', () => {
     ctx.bridge.drawOpenSeamOnCurved = vi.fn().mockReturnValue('{"a":4,"b":5}');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (tool as any).plane = { normal: new THREE.Vector3(0, 0, 1) };
@@ -129,8 +134,7 @@ describe('DrawBezierTool (ADR-089 A-ψ-β closure detection)', () => {
     ];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (tool as any).commit();
-    expect(ctx.bridge.drawOpenSeamOnCurved).toHaveBeenCalledTimes(1);
-    expect(ctx.bridge.drawOpenSeamOnCurved.mock.calls[0][0]).toBe(0); // host face id
+    expect(ctx.bridge.drawOpenSeamOnCurved).not.toHaveBeenCalled();
     expect(ctx.bridge.drawBezierWithCurve).not.toHaveBeenCalled();
   });
 });

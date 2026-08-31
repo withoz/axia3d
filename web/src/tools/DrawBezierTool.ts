@@ -17,7 +17,8 @@ import { debugLog } from '../utils/debug';
 import { tessellateCurve, nextCurveId, BezierCurve } from '../curves/Curve';
 import { getCurveRegistry } from '../curves/CurveRegistry';
 import { getDrawCurveMode } from './DrawCurveSettings';
-import { Toast } from '../ui/Toast';
+import { Toast } from '../ui/Toast';
+
 import { t } from '../i18n';
 
 /** ADR-089 A-ψ-β — closure detection threshold (mm). 1e-3 = ADR-026 P12
@@ -227,7 +228,11 @@ export class DrawBezierTool implements ITool {
     // the interior toward the pole/apex) to P3; tessellate + project/split.
     // (Cylinder/torus open = multi-rim deferred; a straight 2-click line is
     // degenerate — ADR-284 §β-4-1.)
-    if ((this.curvedKind === 'sphere' || this.curvedKind === 'cone') && this.curvedHostFace >= 0
+    // The sphere used to be here. The app's sphere is one face with an
+    // interior meridian seam and no boundary, so the engine declines every
+    // open seam on it and this branch said nothing. See the note in
+    // `DrawFreehandTool` and `an_open_seam_on_the_shapes_the_app_builds.rs`.
+    if (this.curvedKind === 'cone' && this.curvedHostFace >= 0
         && typeof this.ctx.bridge.drawOpenSeamOnCurved === 'function') {
       const openCurve: BezierCurve = {
         kind: 'bezier',
@@ -262,8 +267,9 @@ export class DrawBezierTool implements ITool {
     // ADR-284 β-4-4 — an OPEN bezier on a cylinder/torus can't split it (tube /
     // closed surface — see the `adr284_beta44_sim_cylinder_torus_not_open_
     // splittable` proof). Guide the user to a closed loop (S9).
-    if ((this.curvedKind === 'cylinder' || this.curvedKind === 'torus') && this.curvedHostFace >= 0) {
-      Toast.info(t('원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 원(곡선)을 그려 포트홀을 만들어 보세요.'));
+    if ((this.curvedKind === 'cylinder' || this.curvedKind === 'torus'
+         || this.curvedKind === 'sphere') && this.curvedHostFace >= 0) {
+      Toast.info(t('구·원통·토러스는 열린 선으로 면을 나눌 수 없습니다. 닫힌 곡선을 그리거나 원을 그려 보세요.'));
       return;
     }
 
