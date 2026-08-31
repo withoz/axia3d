@@ -74,10 +74,23 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-      # ⚠ A clean build is ~231 MB, of which ~222 MB is the OpenCascade WASM
-      # that ADR-082/083 load lazily for STEP/IGES import. Under the 1 GB Pages
-      # limit, but it is why this upload is slow -- and why the first paint is
-      # still ~725 kB: a visitor who never opens a STEP file never fetches OCCT.
+      # ⚠ A clean build is ~231 MB, of which ~222 MB is the OpenCascade WASM for
+      # STEP/IGES. Under the 1 GB Pages limit, and it is why this upload is slow.
+      #
+      # ⚠ The first version of this comment said "a visitor who never opens a
+      # STEP file never fetches OCCT". That was asserted, not measured, and it is
+      # false. ADR-119's pre-warm (`axia:step-iges-prewarm`, default ON) starts
+      # pulling OCCT through `requestIdleCallback` about 1.2 s after load, so it
+      # arrives whether or not anyone opens a STEP file. Measured on the live
+      # site with `performance.getEntriesByType('resource')`:
+      #
+      #   app itself (engine WASM 4.3 MB + JS + CSS + fonts) ...  6.4 MB
+      #   OCCT, 7 files, first request at ~1.24 s ............. 115.1 MB
+      #
+      # That is deliberate for a desktop user -- it is what ADR-119 bought back
+      # from ADR-082 Drift #5's 180-second wait -- but on a public site every
+      # visitor pays it. Whether the deployed build should keep the default is a
+      # product question, not a CI one; see ADR-119 L-119-4.
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

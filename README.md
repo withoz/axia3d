@@ -4,6 +4,32 @@
 > 
 > Lighter than Blender, More Precise than SketchUp
 
+## 🌐 지금 바로 써보기
+
+**<https://withoz.github.io/axia3d/>**
+
+설치도, Rust 도, npm 도 필요 없습니다 — 브라우저만 있으면 어느 컴퓨터에서든
+열립니다. 엔진이 WebAssembly 라 **계산은 그 컴퓨터에서 로컬로** 돕니다: 형상이
+서버로 올라가지 않습니다. `main` 에 push 될 때마다 자동 배포됩니다
+(`.github/workflows/deploy.yml`).
+
+받아오는 양 (배포본에서 `performance.getEntriesByType('resource')` 로 실측):
+
+| | |
+|---|---|
+| 앱 (엔진 WASM 4.3 MB + JS + CSS + 폰트) | **6.4 MB** |
+| STEP/IGES 용 OpenCascade — 배경에서 미리 받음 | **115.1 MB** |
+
+⚠ 두 번째 줄은 STEP 파일을 열지 않아도 받습니다. ADR-119 의 pre-warm 이 로드
+1.2초 뒤에 시작하며, 그 대가로 나중에 STEP 을 열 때 ADR-082 Drift #5 의
+180초 대기가 사라집니다. 원치 않으면 브라우저 콘솔에서 끕니다:
+
+```js
+localStorage.setItem('axia:step-iges-prewarm', 'false');
+```
+
+아래 **시작하기** 는 엔진을 직접 고칠 때의 개발자 경로입니다.
+
 ## ✨ 주요 기능
 
 ### 🎨 모델링 도구
