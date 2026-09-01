@@ -79,7 +79,18 @@ pub const FACE_AREA_TOLERANCE: f64 = 1e-4;
 /// Triangle winding order fix tolerance
 pub const WINDING_ORDER_TOLERANCE: f64 = 1e-12;
 
-/// Normal computation epsilon (keep at 0 to avoid missing thin faces)
+/// Normal computation epsilon (keep at 0 to avoid missing thin faces).
+///
+/// ⚠ The consequence, not only the intent: at 0.0 the `len < NORMAL_EPSILON`
+/// branch in `Mesh::compute_normal` is unreachable, so that function cannot
+/// return `Err` for a degenerate polygon — it returns a non-finite normal and
+/// the verifier flags it (invariant I6). ADR-304, reaffirmed 2026-07-29:
+/// creation is lenient, detection lives in the verifier.
+///
+/// Raising this above 0 is a policy change, not a tuning knob. It would make
+/// `compute_normal` fallible again and re-open doors ADR-307 measured shut.
+/// Guarded: `axia-geo/tests/practicality_edge_cases.rs` fails on any positive
+/// value (measured with 1e-12, 2026-08-31).
 pub const NORMAL_EPSILON: f64 = 0.0;
 
 // ══════════════════════════════════════════════════════════════════════════
