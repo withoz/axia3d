@@ -253,6 +253,11 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
         const p = resolve(repoRoot, '.github/workflows', f);
         if (!existsSync(p)) continue;
         for (const line of readFileSync(p, 'utf8').split('\n')) {
+          // ⚠ A comment cannot install anything. This scanned every line
+          // until 2026-08-31, when a comment in deploy.yml explaining what a
+          // deploy costs — it named the command in prose — failed this check
+          // while the step it describes had been pinned all along.
+          if (line.trim().startsWith('#')) continue;
           if (line.includes('cargo install wasm-pack') && !line.includes('--version')) {
             unpinned.push(`${f}: ${line.trim()}`);
           }
@@ -260,6 +265,18 @@ describe('ADR-044 P29.7 — release metadata regression', () => {
       }
       expect(unpinned, 'an unpinned install can ship WASM built by a different toolchain')
         .toEqual([]);
+    });
+
+    it('runs when the workflows it reads change', () => {
+      // ⚠ This catches something worse than an unpinned install, because it
+      // hides one. The assertions here read six workflow files, but mcp.yml
+      // only triggered on '.github/workflows/mcp.yml' — so an edit to any of
+      // the other five could break this suite with the suite never running.
+      // Measured 2026-08-31: it did. PR #239 touched deploy.yml, mcp.yml sat
+      // out (6 checks instead of 12), and main went red unnoticed.
+      const mcp = readFileSync(resolve(repoRoot, '.github/workflows/mcp.yml'), 'utf8');
+      expect(mcp, 'mcp.yml must watch every workflow this file reads')
+        .toContain("'.github/workflows/**'");
     });
 
     it('every workflow pins the SAME version', () => {
