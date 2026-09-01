@@ -22,6 +22,27 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [ main ]
+    # ⚠ Prose cannot change the site, so it must not spend a deploy. Measured
+    # 2026-08-31: two documentation-only merges each ran the whole job --
+    # `cargo install wasm-pack`, a Rust build, a WASM build, `npm ci`, vite, and
+    # a 231 MB artifact upload, about fifteen minutes -- to publish bytes
+    # identical to the ones already there.
+    #
+    # Safe because markdown cannot reach the built site, checked rather than
+    # assumed: `web/dist` contains no `.md`, nothing under `web/src` imports one,
+    # `vite.config.ts` and `index.html` reference neither `docs/` nor any `.md`,
+    # and `web/public/` (which would be copied verbatim) does not exist. `docs/`
+    # holds ADRs, plans and reports, none of them read by the build.
+    #
+    # ⚠ Whatever is added here must be provably unable to change `web/dist`.
+    # `crates/**`, `web/**` (other than markdown), the lockfile and this file
+    # itself all change the artifact and must never appear below.
+    # GitHub skips the run only when EVERY changed path matches, so a commit
+    # touching both a doc and the engine still deploys. `workflow_dispatch`
+    # remains the escape hatch.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
