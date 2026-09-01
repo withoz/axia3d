@@ -9237,7 +9237,21 @@ ADR-303/304 에는 **"추출기가 뭔가 찾았는지" 자체를 단언**하는
   **⚠ 결합**: 저 "도달 불가" 판정 둘이 `compute_normal` 이 Err 을 못 낸다는 데 기대는데,
   그건 설계 보장이 아니라 ADR-304 의 **죽은 코드**다 — 아래 정책 질문에 "예" 라 답하면
   그 문들이 다시 열린다 (L-307-1).
-- `compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).
+- ~~`compute_normal` 의 cross-product fallback 은 도달 불가한 죽은 코드 (ADR-304 §6).~~
+  → **닫힘 (2026-08-31, PR #237). 다만 "고쳐서" 가 아니라 "재서".** 지우려고
+  들어갔다가 측정이 두 번 막았다. ① `axia-wasm/src/lib.rs` 세 곳(~9617·9805·9963)이
+  `len < NORMAL_EPSILON` 을 **이름으로 인용**한다 — ADR-307 이 그 아래 무조건
+  `restore_scene_snapshot` 을 넣어 결합은 끊었지만, 그 인용이 독자가 주장을 확인하는
+  통로다. 식을 지우면 설명 셋이 허공을 가리킨다. ② "상수를 바꾸면 조용히 통과하니 새
+  가드가 필요하다" 는 내 가정이 **틀렸다**: `NORMAL_EPSILON = 1e-12` 로 변형하니
+  `zero_area_triangle_is_accepted_and_flagged` 와
+  `duplicate_vertex_in_face_is_accepted_and_flagged` 가 실패한다 (둘 다
+  `axia-geo/tests/practicality_edge_cases.rs`). **이미 가드가 있었다.** 그리고
+  `nan_vertex_is_accepted_and_flagged` 는 그 둘에 없다 — `NaN < 1e-12` 이 false 라
+  어느 쪽이든 통과하기 때문. L-100-1 의 비대칭 그대로다.
+  빠진 것은 코드가 아니라 **연결**이었다: 죽은 분기·상수·세 wasm 주석·두 테스트가 각각
+  한 조각씩 알고 서로를 가리키지 않았다. `mesh.rs` 의 분기와 `tolerances.rs` 의 상수가
+  이제 서로와 가드를 가리킨다. **변경은 주석뿐** (비-주석 변경 0줄).
 - ~~생성이 퇴화를 거부해야 하는지~~ → **2026-07-29 결재: 아니오 — 생성은 관대하게 두고,
   모호함에 기대던 쪽을 없앤다** (ADR-304 §6 amendment). 측정된 불리함: ① `normalize_for_
   import` 의 `degenerate_removed` 카운터가 보여주듯 **임포트가 accept-then-repair 로 설계**
