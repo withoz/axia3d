@@ -11547,6 +11547,25 @@ impl Mesh {
         }
 
         let len = normal.length();
+        // ⚠ UNREACHABLE BY POLICY, AND DELIBERATELY KEPT. `NORMAL_EPSILON` is
+        // 0.0, so `len < 0.0` is never true for a real length and false for NaN
+        // — a degenerate face divides by zero below and comes back as a
+        // non-finite normal instead of failing here. That is ADR-304's answer,
+        // reaffirmed 2026-07-29: creation is lenient, the verifier detects
+        // (invariant I6, non-finite only).
+        //
+        // Do not delete this block. Three sites in `axia-wasm/src/lib.rs`
+        // (~9617, ~9805, ~9963) cite `len < NORMAL_EPSILON` by name when
+        // explaining why they now restore a snapshot unconditionally; ADR-307
+        // decoupled them from it, but the citation is how a reader checks the
+        // claim. Deleting the expression leaves those comments pointing at
+        // nothing.
+        //
+        // Do not wake it either. Measured 2026-08-31: setting NORMAL_EPSILON to
+        // 1e-12 fails `zero_area_triangle_is_accepted_and_flagged` and
+        // `duplicate_vertex_in_face_is_accepted_and_flagged` in
+        // `axia-geo/tests/practicality_edge_cases.rs`. The constant is guarded;
+        // a change to it will not pass silently.
         if len < NORMAL_EPSILON {
             // Fall back to cross product of first two edges
             let p0 = self.vertex_pos(verts[0])?;
