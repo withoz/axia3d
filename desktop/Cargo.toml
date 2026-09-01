@@ -1,0 +1,27 @@
+# The desktop shell. Deliberately NOT a member of the root workspace: Tauri
+# pulls several hundred crates (wry, webview2-com, windows-rs) and putting them
+# in the workspace lock would make `cargo test --workspace` — the 3281-test
+# suite the engine is judged by — build a GUI toolkit to run kernel tests.
+# The root Cargo.toml excludes this path, which makes it its own workspace root.
+[package]
+name = "axia-desktop"
+version = "0.1.0"
+description = "AxiA 3D — desktop shell"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+# The shell is a window and a webview; nothing here is hot. Optimise for the
+# size of the thing a user downloads instead.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
