@@ -98,3 +98,8 @@ npm-debug.log*
 # Claude
 .claudeignore
 .claude/worktrees/
+
+# Tauri regenerates these schemas on every build (editor autocomplete for
+# capability files, of which this shell has none). `target/` above already
+# covers the binaries.
+desktop/gen/schemas/
