@@ -358,3 +358,236 @@ fn can_the_repair_clear_it_when_asked_directly() {
 
     assert!(after.is_empty(), "asked directly, the repair still left {}", after.len());
 }
+
+#[test]
+fn why_the_repair_cannot_express_the_fix() {
+    // The repair's own note: "a closed curve is a single anchor vertex, so the
+    // containment punch and the difference walk both have no polygon to work
+    // with". Count the boundary of each face in the standing damage and see
+    // whether that is what is happening here.
+    let s = solid_then_draw_over_it();
+    let vcount = |f: axia_geo::FaceId| {
+        s.mesh.collect_loop_verts(s.mesh.faces[f].outer().start).map(|v| v.len()).unwrap_or(0)
+    };
+    for (a, b) in s.mesh.damaging_contacts() {
+        println!(
+            "    {:>3} (verts {}, solid {})  x  {:>3} (verts {}, solid {})",
+            a.raw(), vcount(a), s.mesh.is_face_in_volume(a),
+            b.raw(), vcount(b), s.mesh.is_face_in_volume(b),
+        );
+    }
+}
+
+#[test]
+fn where_each_standing_pair_falls_out_of_the_repair() {
+    // The straddling walk needs `crossings >= 2 && even`; below that only the
+    // containment punch can act, and it needs the small one genuinely inside
+    // the big one. Measure which case each standing pair actually is.
+    use axia_geo::operations::coplanar as cop;
+    let s = solid_then_draw_over_it();
+    for (a, b) in s.mesh.damaging_contacts() {
+        let big_first = s.mesh.face_outer_area(a) >= s.mesh.face_outer_area(b);
+        let (big, small) = if big_first { (a, b) } else { (b, a) };
+        match cop::coplanar_intersection_segments(&s.mesh, big, small) {
+            Ok(ci) => println!(
+                "    {:>3} x {:>3}   crossings {}   lens pts {}   areas {:.0} / {:.0}",
+                big.raw(), small.raw(), ci.crossings.len(), ci.lens_polygon.len(),
+                s.mesh.face_outer_area(big), s.mesh.face_outer_area(small)),
+            Err(e) => println!("    {:>3} x {:>3}   Err({e})", big.raw(), small.raw()),
+        }
+    }
+}
+
+#[test]
+fn the_same_pairs_with_the_sheet_as_subject_and_the_solid_as_clip() {
+    // LOCKED #105: the clipper needs the CLIP convex; a concave SUBJECT is fine.
+    // The solid's cap is a polygonised circle and convex; the sheets left by the
+    // arrangement are crescents and are not. So the ordering that fails is the
+    // one that hands the crescent in as the clip.
+    use axia_geo::operations::coplanar as cop;
+    let s = solid_then_draw_over_it();
+    for (a, b) in s.mesh.damaging_contacts() {
+        let (solid, sheet) = if s.mesh.is_face_in_volume(a) { (a, b) } else { (b, a) };
+        for (label, subject, clip) in [("solid-as-subject", solid, sheet), ("SHEET-as-subject", sheet, solid)] {
+            match cop::coplanar_intersection_segments(&s.mesh, subject, clip) {
+                Ok(ci) => println!("    {:>3} x {:>3}  {label:<16} crossings {}  lens {}",
+                    subject.raw(), clip.raw(), ci.crossings.len(), ci.lens_polygon.len()),
+                Err(e) => println!("    {:>3} x {:>3}  {label:<16} Err({})",
+                    subject.raw(), clip.raw(), e.to_string().chars().take(58).collect::<String>()),
+            }
+        }
+    }
+}
+
+#[test]
+fn what_surfaces_sit_on_the_solids_ground_boundary() {
+    // ADR-281 β-1's re-tile is the imprint that would fix this: feed the solid's
+    // on-plane perimeter to the arrange as INPUT and do not remove it, so the
+    // walls keep the edges they stand on. It is gated on `retile_is_planar`,
+    // which requires every face touching that boundary to be Plane or None.
+    //
+    // A solid made by pushing a CIRCLE has a Cylinder wall. Measure whether that
+    // is what closes the gate here.
+    let s = solid_then_draw_over_it();
+    let kind = |f: axia_geo::FaceId| -> String {
+        match s.mesh.faces.get(f).and_then(|x| x.surface()) {
+            None => "None".into(),
+            Some(su) => format!("{:?}", std::mem::discriminant(su)),
+        }
+    };
+    // the ground-plane faces of the solid, and what shares their edges
+    for (fid, f) in s.mesh.faces.iter() {
+        if !f.is_active() || !s.mesh.is_face_in_volume(fid) { continue; }
+        let flat = s.mesh.face_tessellation(fid)
+            .map_or(false, |t| t.iter().flatten().all(|v| v.z.abs() < 1e-6));
+        if !flat { continue; }
+        println!("  solid ground face {:>3}  surface {}", fid.raw(), kind(fid));
+        if let Ok(edges) = s.mesh.face_outer_edges(fid) {
+            let mut seen = std::collections::BTreeSet::new();
+            for e in edges.iter().take(40) {
+                let (faces, _) = s.mesh.get_faces_sharing_edge(*e);
+                for nf in faces { if nf != fid { seen.insert((nf.raw(), kind(nf))); } }
+            }
+            for (r, k) in seen.iter().take(8) { println!("      neighbour {r:>3}  surface {k}"); }
+        }
+    }
+}
+
+/// The two predicates, simulated on both shapes, WITHOUT touching the engine.
+///
+/// `retile_is_planar` today asks: is every face touching the solid's on-plane
+/// boundary planar? A cylinder's cap fails it because the WALLS are curved,
+/// even though the wall is not re-tiled — it only stands on the rim, and
+/// keeping its edges is exactly what ADR-281 β-1's re-tile is for.
+///
+/// The proposed question is narrower: are the faces that LIE IN the plane —
+/// the ones a planar re-tile would actually rebuild — planar, and is there at
+/// least one? That must stay false for a sphere, whose equator bounds two
+/// curved faces and no planar one; re-tiling there deleted both (2026-08-06).
+#[test]
+fn simulate_both_predicates_on_a_cylinder_and_on_a_sphere() {
+    let probe = |s: &Scene, label: &str| {
+        let plane_z = 0.0;
+        let in_plane = |f: axia_geo::FaceId| {
+            s.mesh.face_tessellation(f)
+                .map_or(false, |t| !t.is_empty() && t.iter().flatten().all(|v| (v.z - plane_z).abs() < 1e-6))
+        };
+        let planar_surface = |f: axia_geo::FaceId| {
+            match s.mesh.faces.get(f).and_then(|x| x.surface()) {
+                None => true,
+                Some(su) => matches!(su, axia_geo::surfaces::AnalyticSurface::Plane { .. }),
+            }
+        };
+        // on-plane edges of volume faces
+        let mut onp: Vec<axia_geo::EdgeId> = Vec::new();
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() || !s.mesh.is_face_in_volume(fid) { continue; }
+            if let Ok(es) = s.mesh.face_outer_edges(fid) {
+                for e in es {
+                    if let Some(ed) = s.mesh.edges.get(e) {
+                        let (a, b) = (s.mesh.vertex_pos(ed.v_small()), s.mesh.vertex_pos(ed.v_large()));
+                        if let (Ok(a), Ok(b)) = (a, b) {
+                            if (a.z - plane_z).abs() < 1e-6 && (b.z - plane_z).abs() < 1e-6 && !onp.contains(&e) { onp.push(e); }
+                        }
+                    }
+                }
+            }
+        }
+        let old = !onp.is_empty() && onp.iter().all(|&e| {
+            let (fs, _) = s.mesh.get_faces_sharing_edge(e);
+            fs.iter().all(|&f| s.mesh.faces.get(f).map_or(true, |x| !x.is_active() || planar_surface(f)))
+        });
+        let new = !onp.is_empty() && onp.iter().all(|&e| {
+            let (fs, _) = s.mesh.get_faces_sharing_edge(e);
+            let ip: Vec<_> = fs.iter().copied()
+                .filter(|&f| s.mesh.faces.get(f).map_or(false, |x| x.is_active()) && in_plane(f))
+                .collect();
+            !ip.is_empty() && ip.iter().all(|&f| planar_surface(f))
+        });
+        println!("  {label:<22} on-plane solid edges {:>3}   old {old:<5}  new {new}", onp.len());
+    };
+
+    // a) the reported shape: a circle pushed into a cylinder
+    let mut cyl = production();
+    circle(&mut cyl, 0.0, 0.0, 100.0);
+    let f = cyl.mesh.faces.iter().find(|(_, x)| x.is_active()).map(|(id, _)| id).unwrap();
+    let _ = cyl.execute(Command::CreateSolid {
+        face_id: f, mode: axia_geo::CreateSolidMode::Extrude { distance: 200.0 },
+    });
+    probe(&cyl, "cylinder (cap+walls)");
+
+    // b) the shape the guard exists for: a sphere sitting on the plane, its
+    //    equator an on-plane closed curve between two curved faces.
+    let mut sph = production();
+    let _ = sph.mesh.create_sphere(glam::DVec3::ZERO, 100.0, 24, 12, axia_core::FORM_MATERIAL);
+    probe(&sph, "sphere (two caps)");
+}
+
+/// `onp_ve`'s filter, simulated, before the engine is touched.
+///
+/// The engine keeps an on-plane volume edge when `!saw_a_wall || reaches_below`.
+/// `reaches_below` asks whether an adjacent face has a vertex on the NEGATIVE
+/// side of the plane — which is true when the plane is a solid's TOP, and false
+/// when the solid stands ON the plane, because then its walls go up.
+///
+/// That is why a draw beside a standing cylinder never reaches the re-tile:
+/// measured 2026-09-01, `onp_ve` came out 0 on every draw.
+#[test]
+fn simulate_widening_the_on_plane_volume_edge_filter() {
+    let probe = |s: &Scene, plane_z: f64, label: &str| {
+        let on_plane = |p: glam::DVec3| (p.z - plane_z).abs() < 1e-6;
+        let (mut kept_now, mut kept_widened, mut total) = (0usize, 0usize, 0usize);
+        for (fid, f) in s.mesh.faces.iter() {
+            if !f.is_active() || !s.mesh.is_face_in_volume(fid) { continue; }
+            let Ok(edges) = s.mesh.face_outer_edges(fid) else { continue };
+            for e in edges {
+                let Some(ed) = s.mesh.edges.get(e) else { continue };
+                let (Ok(a), Ok(b)) = (s.mesh.vertex_pos(ed.v_small()), s.mesh.vertex_pos(ed.v_large()))
+                    else { continue };
+                if !(on_plane(a) && on_plane(b)) { continue; }
+                total += 1;
+                let (adj, _) = s.mesh.get_faces_sharing_edge(e);
+                let (mut saw_a_wall, mut below, mut above) = (false, false, false);
+                for nf in adj {
+                    let Some(face) = s.mesh.faces.get(nf) else { continue };
+                    if !face.is_active() { continue; }
+                    let Ok(vv) = s.mesh.collect_loop_verts(face.outer().start) else { continue };
+                    for vid in vv {
+                        if let Ok(p) = s.mesh.vertex_pos(vid) {
+                            if !on_plane(p) {
+                                saw_a_wall = true;
+                                if p.z < plane_z { below = true; } else { above = true; }
+                            }
+                        }
+                    }
+                }
+                if !saw_a_wall || below { kept_now += 1; }
+                if !saw_a_wall || below || above { kept_widened += 1; }
+            }
+        }
+        println!("  {label:<32} on-plane {total:>3}   kept now {kept_now:>3}   kept widened {kept_widened:>3}");
+    };
+
+    // 1) the reported case — a cylinder standing ON the plane
+    let mut cyl = production();
+    circle(&mut cyl, 0.0, 0.0, 100.0);
+    let f = cyl.mesh.faces.iter().find(|(_, x)| x.is_active()).map(|(id, _)| id).unwrap();
+    let _ = cyl.execute(Command::CreateSolid {
+        face_id: f, mode: axia_geo::CreateSolidMode::Extrude { distance: 200.0 },
+    });
+    probe(&cyl, 0.0, "cylinder on the plane (z=0)");
+
+    // 2) the case this filter was built for — the same solid's TOP
+    probe(&cyl, 200.0, "the same solid's top (z=200)");
+
+    // 3) the case the `!saw_a_wall` arm exists for
+    let mut sph = production();
+    let _ = sph.mesh.create_sphere(glam::DVec3::ZERO, 100.0, 24, 12, axia_core::FORM_MATERIAL);
+    probe(&sph, 0.0, "sphere through its middle");
+
+    // 4) a plain box, both ways
+    let mut bx = production();
+    let _ = bx.mesh.create_box(glam::DVec3::new(0.0, 0.0, 100.0), 200.0, 200.0, 200.0, axia_core::FORM_MATERIAL);
+    probe(&bx, 0.0, "box sitting on z=0");
+    probe(&bx, 200.0, "box's own top (z=200)");
+}
