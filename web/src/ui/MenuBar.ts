@@ -345,32 +345,41 @@ export function initMenuBar(deps: MenuBarDeps): void {
       // ── 내보내기 (Export) ──
       case 'export-dxf': {
         lazyExportDxf(viewport.scene, timestampedName('dxf'))
-          .then(() => debugLog('[MenuBar] DXF 내보내기 완료'))
+          .then(() => Toast.success(t('DXF 내보내기 완료')))
           .catch((err) => {
             console.error('[MenuBar] DXF 내보내기 실패:', err);
-            alert(t('DXF 내보내기에 실패했습니다'));
+            Toast.error(t('DXF 내보내기에 실패했습니다'), 5000);
           });
         break;
       }
       case 'export-obj': {
         const objName = timestampedName('obj');
         lazyExportObj(viewport.scene, objName)
-          .then(() => debugLog('[MenuBar] OBJ 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] OBJ 내보내기 실패:', err); alert(t('OBJ 내보내기에 실패했습니다')); });
+          .then(() => Toast.success(t('OBJ 내보내기 완료')))
+          .catch((err) => {
+            console.error('[MenuBar] OBJ 내보내기 실패:', err);
+            Toast.error(t('OBJ 내보내기에 실패했습니다'), 5000);
+          });
         break;
       }
       case 'export-gltf': {
         const glbName = timestampedName('glb');
         lazyExportGltf(viewport.scene, glbName)
-          .then(() => debugLog('[MenuBar] glTF 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] glTF 내보내기 실패:', err); alert(t('glTF 내보내기에 실패했습니다')); });
+          .then(() => Toast.success(t('glTF 내보내기 완료')))
+          .catch((err) => {
+            console.error('[MenuBar] glTF 내보내기 실패:', err);
+            Toast.error(t('glTF 내보내기에 실패했습니다'), 5000);
+          });
         break;
       }
       case 'export-stl': {
         const stlName = timestampedName('stl');
         lazyExportStl(viewport.scene, stlName)
-          .then(() => debugLog('[MenuBar] STL 내보내기 완료'))
-          .catch((err) => { console.error('[MenuBar] STL 내보내기 실패:', err); alert(t('STL 내보내기에 실패했습니다')); });
+          .then(() => Toast.success(t('STL 내보내기 완료')))
+          .catch((err) => {
+            console.error('[MenuBar] STL 내보내기 실패:', err);
+            Toast.error(t('STL 내보내기에 실패했습니다'), 5000);
+          });
         break;
       }
       // ── 내보내기 IFC (ADR-203) — 부재별 IfcWall + 재질 (γ) 우선,
@@ -393,7 +402,10 @@ export function initMenuBar(deps: MenuBarDeps): void {
             downloadText(ifc, timestampedName('ifc'), 'application/x-step');
             Toast.success(analytic ? t('IFC 내보내기 완료 (analytic)') : t('IFC 내보내기 완료'));
           })
-          .catch((err) => { console.error('[MenuBar] IFC 내보내기 실패:', err); alert(t('IFC 내보내기에 실패했습니다')); });
+          .catch((err) => {
+            console.error('[MenuBar] IFC 내보내기 실패:', err);
+            Toast.error(t('IFC 내보내기에 실패했습니다'), 5000);
+          });
         break;
       }
 

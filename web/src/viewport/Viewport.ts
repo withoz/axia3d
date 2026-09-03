@@ -2701,12 +2701,20 @@ export class Viewport {
    * ADR-047 R-track R1 — install / refresh the non-manifold edge overlay.
    *
    * `segments` is a flat `[x0,y0,z0, x1,y1,z1, ...]` Float32Array (2 endpoints
-   * × 3 coords per non-manifold edge), as returned by
+   * × 3 coords per edge), as returned by
    * `WasmBridge.getNonManifoldEdgeSegments`. Pass empty array to clear.
    *
-   * Edges shared by ≥3 active faces are an intentional ADR-021 P7 (stacked
-   * inner) topological artifact. Without this overlay users see only z-fighting
-   * fills + wireframe and mistake them for "missing face / 면 사라짐".
+   * Marks edges where two faces COVER THE SAME GROUND. Those are invisible
+   * except as z-fighting fills, and users read them as "missing face /
+   * 면 사라짐" — which is what this overlay is for.
+   *
+   * ⚠ It is NOT every edge with ≥3 faces. That is the normal case: a sheet
+   * hanging off a solid puts the wall, the cap and the plate on one edge and
+   * nothing is wrong (사용자 결정 2026-08-06, and `verify_face_invariants`'s I5
+   * says so in full). This overlay used to fire on those, so a circle drawn
+   * straddling a box's rim came up in warning orange on a mesh the checker
+   * called clean. The filter now lives in the engine
+   * (`edge_stacked_face_pair`, the same judgement I5 uses).
    */
   updateNonManifoldOverlay(segments: Float32Array): void {
     // Tear down stale overlay
