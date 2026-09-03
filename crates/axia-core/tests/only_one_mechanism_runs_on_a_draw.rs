@@ -114,6 +114,60 @@
 //! That is the first shape that respects the constraint. It is an
 //! implementation, not a lever, and it is not built.
 
+//!
+//! ## The sixth shape, built and simulated end to end (2026-09-03)
+//!
+//! Split the SHEET alone, along where the footprint crosses it, then drop the
+//! piece that sits on the solid's ground. Six steps, all read-only on the solid:
+//!
+//! ```text
+//!   1  polygonize the sheet          FIRST — a crossing measured on the
+//!                                    analytic rim is not on the polygon
+//!   2  coplanar_intersection_segments(sheet, solid)      2 crossings
+//!   3  split_edge on the sheet's boundary at each        -> 2 loop verts
+//!   4  sample the footprint arc between them, add_edge   -> a chain
+//!   5  split_face_by_chain(sheet, chain)                 -> two pieces
+//!   6  remove the piece whose interior lies on the footprint
+//! ```
+//!
+//! It works, and it is the first thing here that does:
+//!
+//! ```text
+//!   solid faces          25 -> 25     the solid is never named
+//!   invariant violations  0 ->  0
+//!   the user's drawing    kept — the outside piece, 22,199 of 31,416 mm²
+//!   split_face_by_chain   Ok
+//! ```
+//!
+//! ⚠ And one thing does not close: the surviving piece still reads as a
+//! `CoplanarOverlap` with the solid's face, because it reaches **0.884225 mm**
+//! inside the footprint circle. That number is IDENTICAL with a 9-point chain
+//! and a 207-point one, which is what says it is not the chain:
+//!
+//! ```text
+//!   crossing point (59.26, ±79.43)   distance from the axis  99.10
+//!   footprint radius                                        100.00
+//!   difference                                                0.90  = the reach
+//! ```
+//!
+//! `coplanar_intersection_segments` computes crossings POLYGON-to-POLYGON — the
+//! solid's face is sampled at 23 vertices, so its chords sit a sagitta inside
+//! the true circle — while `classify_contact` reads that face ANALYTICALLY
+//! (`face_outer_area` = 31,415.9 = πr², from its curve). Every point of the cut
+//! inherits that 0.9 mm, so the piece the cut leaves outside is 0.9 mm inside.
+//!
+//! Giving the chain edges their true `AnalyticCurve::Arc` does not help either:
+//! `face_tessellation` still walks the chords (areas move by 2 mm², the reach
+//! does not move at all).
+//!
+//! ### So the last gap is one mismatch, and it is not in this shape
+//!
+//! The cut can only be as exact as the crossings it is given. Closing it means
+//! `coplanar_intersection_segments` intersecting against a face's CURVE where it
+//! has one, rather than against its sampled boundary — which is a change to the
+//! measurement, not to the divider. That is the next piece, and it is a
+//! different file.
+
 use axia_core::{Command, Scene};
 use glam::DVec3;
 
