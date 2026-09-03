@@ -118,6 +118,48 @@
 //! measured and barred, and what is left is the one neither touches: the
 //! arrangement producing a tiling that covers the footprint exactly once.
 
+//!
+//! ## The third lever, 2026-09-03 — decouple the feed from the protection
+//!
+//! `face_rederive`'s `solid_top_boundary` decides TWO things through one
+//! variable: what the arrange is FED, and whether the solid's own on-plane face
+//! stays PROTECTED (`part_of_solid && solid_top_boundary.is_empty()`). Widening
+//! it (#245) turned both on at once, and the second is what stacked three other
+//! scenes. So: feed the standing footprint, keep the protection, and skip any
+//! region the arrange tiles over ground a protected face already holds.
+//!
+//! All four pieces were built (a separate `standing_footprint` set, the union
+//! fed to `reconstruct_input_curves`, the protected outlines collected in
+//! Phase 1, a probe test in Phase 4). It reads well and it is worse:
+//!
+//! ```text
+//!                        main      feed+skip    feed only
+//!   standing damage        3           2            3
+//!   push                MoveOnly   Cylinder    Error("Face needs at least 3 verts")
+//!   after push: inv        0           6            0
+//!   + rect: damaging       0           8            7
+//! ```
+//!
+//! ⚠ The isolation is the finding. **The FEED alone already breaks the push** —
+//! `Face needs at least 3 verts` — so the arrange, given a standing solid's
+//! footprint, emits that region as a closed-curve (one-anchor) face that the
+//! downstream cannot use. The skip then hides one contact and leaves six
+//! invariant violations behind it. Reverted.
+//!
+//! ### What that leaves, named
+//!
+//! Three levers are now measured and barred: the filter (#245), the repair
+//! (#247), and this. Each fails for its own reason, and none of them is the
+//! arrangement being unable to divide — it is that a solid's on-plane face
+//! cannot be handed to it in any form it can use.
+//!
+//! The next question is upstream of all three: `auto_intersect_coplanar` has
+//! **no solid/volume check at all** (measured: zero hits for `is_face_in_volume`
+//! / `solid` / `volume` in `operations/coplanar.rs`), and it runs on every draw
+//! in production. So why does it not divide the drawn sheet against the solid's
+//! footprint, when the footprint IS polygonal here — `FaceId(2)`, 23 verts,
+//! `is_face_in_volume = true`? Answer that before building a fourth lever.
+
 use axia_core::{Command, CommandResult, Scene};
 use glam::DVec3;
 
