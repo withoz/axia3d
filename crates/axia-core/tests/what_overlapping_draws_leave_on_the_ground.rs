@@ -70,6 +70,54 @@
 //!
 //! Flags are the production ones (ADR-176 / face-rederive), not `Scene::new()`
 //! defaults, because that is the configuration the report came from.
+//!
+//! ## 2026-09-03 — where the repair actually stops, and why the obvious lever is barred
+//!
+//! `where_each_standing_pair_falls_out_of_the_repair` reports two of the three
+//! as `Err(coplanar clipping requires convex faces)`. That is honest, not an
+//! instrument fault: the corner cross products were read directly and the
+//! refused faces really are reflex —
+//!
+//! ```text
+//!   FaceId( 2) verts 23  solid true    corner signs +++++++++++++++++++++++
+//!   FaceId(30) verts  4  solid false   corner signs +-++     worst -1670.5
+//!   FaceId(32) verts  7  solid false   corner signs -+++++-  worst -3579.9
+//! ```
+//!
+//! Sutherland-Hodgman needs a convex CLIP, and an arrangement's leftovers are
+//! crescents. `the_same_pairs_with_the_sheet_as_subject_and_the_solid_as_clip`
+//! already measured that swapping the roles makes every pair readable — the
+//! solid's cap is the convex one.
+//!
+//! Two levers were built from that and both were reverted:
+//!
+//!   - **Sheet as subject by rule.** Fixes nothing here and BREAKS a case that
+//!     worked: a rect's draw stopped clearing the six standing contacts it used
+//!     to clear (`drawing_again_after_a_push_is_where_faces_stack`, 6 -> 0).
+//!   - **Try the other order when the first errors.** Safe — everything from
+//!     the intersection call to the first `add_vertex` is read-only — and it
+//!     earns nothing: axia-core 826/826 identical with and without it, no test
+//!     differing. Nothing reaches it, because the pair that fails, fails LATER.
+//!
+//! ⚠ Where it actually stops, measured by instrumenting the gates:
+//!
+//! ```text
+//!   [PROBE] diff walk Err FaceId(2)/FaceId(28):
+//!           polygon_difference_by_clip: clip polygon has fewer than 3 vertices
+//! ```
+//!
+//! The clip is a kernel-native closed curve — ADR-089 Path B, one anchor vertex
+//! and one self-loop edge — so there is no polygon to walk. That is exactly what
+//! this file's own note says, and the only way to give it one is
+//! `polygonize_closed_curve_face`, which turns the user's circle into a polygon.
+//! ADR-189 moved AWAY from that by 사용자 결재 ("다각형화 제거 + 자동 분할
+//! 유지"), so reaching for it here would walk a decision back.
+//!
+//! So the repair is not the lever either. Between this and
+//! `face_rederive`'s filter (see the note above), both obvious levers are
+//! measured and barred, and what is left is the one neither touches: the
+//! arrangement producing a tiling that covers the footprint exactly once.
+
 use axia_core::{Command, CommandResult, Scene};
 use glam::DVec3;
 
