@@ -197,15 +197,25 @@ pub fn coplanar_intersection_segments(
     //
     // The crossings below are pairwise segment intersections and were never
     // convexity-bound at all.
-    if !is_convex_ccw_2d(&b_2d) {
+    // ⚠ EXPERIMENT — A ∩ B is symmetric, so ONE of them being convex is enough.
+    //
+    // Sutherland-Hodgman needs a convex CLIP. When `b` is not convex but `a` is,
+    // clipping the other way round computes the same region — the lens is a
+    // point list, not an indexed one, so nothing downstream depends on which
+    // side produced it. The crossings below were never convexity-bound at all.
+    let (lens_subject, lens_clip) = if is_convex_ccw_2d(&b_2d) {
+        (&a_2d, &b_2d)
+    } else if is_convex_ccw_2d(&a_2d) {
+        (&b_2d, &a_2d)
+    } else {
         bail!(
             "coplanar clipping requires convex faces; face {:?} is non-convex",
             face_b
         );
-    }
+    };
 
     // ── Lens polygon (Sutherland-Hodgman) ──
-    let lens_polygon = match sutherland_hodgman(&a_2d, &b_2d) {
+    let lens_polygon = match sutherland_hodgman(lens_subject, lens_clip) {
         Some(lens_2d) => lens_2d.into_iter().map(|(x, y)| plane.lift(x, y)).collect(),
         None => Vec::new(),
     };
@@ -1989,8 +1999,22 @@ mod tests {
         assert!((area(&diff) - 8000.0).abs() < 1e-9, "and 8800 − 800: {:.3}", area(&diff));
     }
 
+    /// ⚠ REWRITTEN 2026-09-03. It used to assert that a non-convex CLIP is
+    /// refused; now one convex side is enough, so it asserts what that produces
+    /// — and that the genuine both-concave case is still refused.
+    ///
+    /// A ∩ B is symmetric and the lens is a plain point list, so when the clip
+    /// is concave and the subject is convex, clipping the other way round
+    /// computes the same region. Sutherland-Hodgman intersecting ANY simple
+    /// polygon with a CONVEX one by successive half-plane cuts is exactly
+    /// correct; only a concave CLIP is undefined.
+    ///
+    /// Before this, `coplanar_intersection_segments` could not so much as
+    /// MEASURE two of the three standing pairs in the 2026-09-01 report — the
+    /// crescents an arrangement leaves are concave, and both the repair and
+    /// `auto_intersect_coplanar` bail on the same line.
     #[test]
-    fn adr101_phase_b2_non_convex_face_errors() {
+    fn one_convex_side_is_enough_for_the_lens() {
         let mut mesh = Mesh::new();
         // L-shape (concave at index 2).
         let verts = [
@@ -2003,32 +2027,56 @@ mod tests {
             xy(1.0, 1.0), xy(5.0, 1.0), xy(5.0, 5.0), xy(1.0, 5.0),
         ]);
 
-        // A non-convex CLIP is still refused — Sutherland-Hodgman cuts the
-        // subject once per clip edge, which only describes an intersection when
-        // the clip is convex.
-        let err = coplanar_intersection_segments(&mesh, convex, l_shape)
-            .expect_err("a non-convex clip has to be refused");
-        assert!(
-            format!("{err}").contains("non-convex"),
-            "got error: {err}"
-        );
+        let inter = coplanar_intersection_segments(&mesh, convex, l_shape)
+            .expect("a concave clip is fine when the other side is convex");
 
-        // A non-convex SUBJECT is fine, and used to be refused with it. That
-        // refusal is what left `subtract_double_covered_faces` unable to measure
-        // an overlap with any face earlier operations had divided.
-        let ok = coplanar_intersection_segments(&mesh, l_shape, convex)
-            .expect("a concave subject is what SH is for");
-        println!(
-            "
-  오목 대상 × 볼록 클립 → 교차점 {}개, lens {}정점
-",
-            ok.crossings.len(),
-            ok.lens_polygon.len()
-        );
-        assert!(
-            !ok.crossings.is_empty(),
-            "and it has to actually measure something: {ok:?}"
-        );
+        // L ∩ [1,5]x[1,5] is itself an L: [1,4]x[1,2] plus [1,2]x[2,4].
+        let got: Vec<(f64, f64)> =
+            inter.lens_polygon.iter().map(|p| (p.x, p.y)).collect();
+        let area = |p: &[(f64, f64)]| {
+            let mut acc = 0.0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                acc += p[i].0 * p[j].1 - p[j].0 * p[i].1;
+            }
+            (acc / 2.0).abs()
+        };
+        let want = [(1.0, 1.0), (4.0, 1.0), (4.0, 2.0), (2.0, 2.0), (2.0, 4.0), (1.0, 4.0)];
+        assert_eq!(got.len(), want.len(), "lens corners: {got:?}");
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(
+                (g.0 - w.0).abs() < 1e-9 && (g.1 - w.1).abs() < 1e-9,
+                "corner mismatch: got {g:?} want {w:?}\n    full: {got:?}"
+            );
+        }
+        // 3 + 2. A wrong clip order would still give SOME polygon, so the area
+        // is what says it is the right one.
+        assert!((area(&got) - 5.0).abs() < 1e-9, "lens area {:.6}", area(&got));
+
+        // And the crossings, which were never convexity-bound, are unaffected.
+        assert_eq!(inter.crossings.len(), 2, "crossings: {:?}", inter.crossings);
+    }
+
+    /// The other half of the rewrite: two concave faces still have no convex
+    /// side to clip against, and that IS refused. Without this, the assertion
+    /// above would also pass on an implementation that had simply dropped the
+    /// convexity requirement altogether.
+    #[test]
+    fn two_concave_faces_are_still_refused() {
+        let mut mesh = Mesh::new();
+        let mk = |m: &mut Mesh, dx: f64, dy: f64| {
+            let verts = [
+                xy(0.0 + dx, 0.0 + dy), xy(4.0 + dx, 0.0 + dy), xy(4.0 + dx, 2.0 + dy),
+                xy(2.0 + dx, 2.0 + dy), xy(2.0 + dx, 4.0 + dy), xy(0.0 + dx, 4.0 + dy),
+            ];
+            let vids: Vec<_> = verts.iter().map(|p| m.add_vertex(*p)).collect();
+            m.add_face(&vids, MaterialId::new(0)).expect("add_face OK")
+        };
+        let a = mk(&mut mesh, 0.0, 0.0);
+        let b = mk(&mut mesh, 1.0, 1.0);
+        let err = coplanar_intersection_segments(&mesh, a, b)
+            .expect_err("neither side is convex, so there is nothing to clip against");
+        assert!(format!("{err}").contains("non-convex"), "got error: {err}");
     }
 
     // ── Edge ownership info: crossings carry valid (edge_index, t) ──
