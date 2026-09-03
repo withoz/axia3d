@@ -46,6 +46,74 @@
 //! ⚠ The splitter is NOT dead code — three other call sites read
 //! `auto_intersect_on_draw || face_rederive_on_draw` and reach it by other paths.
 //! The claim here is scoped to `intersect_faces_inner`'s own coplanar scan.
+//!
+//! ## The constraint, 2026-09-03 — proved by the fifth lever
+//!
+//! With #250's correction (only the re-derive runs on a production draw), the
+//! narrowest possible lever became obvious: call the splitter after the
+//! re-derive on exactly the gap — pairs where one side is in a volume and the
+//! other is not. Measured:
+//!
+//! ```text
+//!                       main    sheet-over-solid only
+//!   + circle B: damaging   1              0        <- the gap closes
+//!   standing damage        3              2
+//!   + rect: damaging       0              0        <- and no later draw hurt
+//!   + circle C: invariants 0              6        <- but six stacked edges
+//! ```
+//!
+//! And the reason, measured directly on the solid:
+//!
+//! ```text
+//!   solid faces, main        25 -> 25
+//!   solid faces, lever 5     25 -> 21     <- four of them gone
+//! ```
+//!
+//! `auto_intersect_coplanar` REMOVES BOTH OPERANDS and adds three faces. Used on
+//! a pair that includes a solid's on-plane face, it eats the face the solid's
+//! walls stand on — which is exactly what Phase 1's protection exists to prevent,
+//! and exactly what widening the filter did (#245). Two levers, one cause.
+//!
+//! **So the constraint is: whatever divides the sheet must not remove or rebuild
+//! the solid's face.** Measured against the engine's dividers —
+//!
+//! ```text
+//!   auto_intersect_coplanar   removes both operands        violates it
+//!   the arrangement           rebuilds what it is fed      violates it
+//!   split_face_by_line        takes ONE face id            respects it
+//!   split_face_by_chain       takes ONE face id            respects it
+//! ```
+//!
+//! ### The sixth shape, and where it stops today
+//!
+//! Split the SHEET alone, along where the footprint crosses it. Simulated:
+//!
+//! ```text
+//!   split_face_by_line(sheet, crossing0, crossing1)
+//!     solid faces 25 -> 25   viol 0      the solid really is untouched
+//!     damaging     1  -> 2               and it divides the wrong way
+//! ```
+//!
+//! The boundary between "inside the footprint" and "outside" is the footprint's
+//! ARC, not the chord between the crossings, so a straight cut leaves both
+//! pieces straddling. Splitting along the sampled arc instead is the right
+//! shape and stops one step earlier:
+//!
+//! ```text
+//!   split_face_by_chain(sheet, arc_samples)
+//!     Err("chain start vert 49 not on any loop of face 29")
+//! ```
+//!
+//! The chain's endpoints have to BE vertices of the face's loop, and the
+//! crossings are mid-edge. Making them vertices means splitting the sheet's
+//! boundary edges there — and the sheet is a kernel-native closed curve, so
+//! that polygonises it. ⚠ That is an ADR-189 cost, but a much smaller one than
+//! the levers before it: only the drawn sheet loses its analytic rim, and the
+//! solid keeps everything.
+//!
+//! That is the first shape that respects the constraint. It is an
+//! implementation, not a lever, and it is not built.
+
 use axia_core::{Command, Scene};
 use glam::DVec3;
 
