@@ -168,6 +168,53 @@
 //! measurement, not to the divider. That is the next piece, and it is a
 //! different file.
 
+//!
+//! ## Fixing the measurement — the seventh attempt, and why it stops here
+//!
+//! The mismatch is in one function. `collect_face_boundary` returns a face's raw
+//! loop vertices when the loop has three or more, so a boundary whose EDGES
+//! carry arcs is read as its chords; only the 1-vertex self-loop case samples a
+//! curve. Meanwhile `face_outer_area` on the same face reads the curve. Two
+//! readers, one boundary — 메타-원칙 #4 says make it one.
+//!
+//! Built: walk the loop's half-edges, and where an edge carries a curve, sample
+//! it at a chord tolerance of 1e-3 mm instead of taking the straight hop.
+//! Measured:
+//!
+//! ```text
+//!   axia-geo   2552 passed / 0 failed      internally consistent
+//!   axia-core   822 passed / 6 failed
+//! ```
+//!
+//! and the failures are not recorded values moving:
+//!
+//! ```text
+//!   adr101_b4_two_circles_partial_overlap_auto_splits
+//!       two circles partial overlap -> 3 sub-faces, got 2
+//!   a_fuzz_session_leaves_the_mesh_sound
+//!       session 10 op 11: edge shared by 4 active faces (stacked)
+//! ```
+//!
+//! A denser boundary changes the crossing indices, and `face_a_edge` /
+//! `face_b_edge` are contracts: `subtract_double_covered_faces` builds its own
+//! `base2d` from `collect_loop_verts` and indexes into it with numbers this
+//! function produced. Densify one side only and they no longer refer to the same
+//! polygon. Reverted.
+//!
+//! ### What that means for the next attempt
+//!
+//! Not another lever. Making one boundary reader means moving every consumer of
+//! the crossing indices onto it in the same change — `scene.rs`'s repair, the
+//! internal `auto_intersect_coplanar` walk, and the index contract in the
+//! doc comment. That is a coordinated change across two crates with LOCKED #41's
+//! three-sub-face behaviour as its acceptance test, not something a probe can
+//! settle.
+//!
+//! ⚠ Seven attempts, seven reverts, and the pattern held every time: each was
+//! sound in isolation and each damaged a scene that was fine. The engine is
+//! unchanged after all of them. What the file now carries instead is where each
+//! one stops, which is the part that does not have to be paid for twice.
+
 use axia_core::{Command, Scene};
 use glam::DVec3;
 
