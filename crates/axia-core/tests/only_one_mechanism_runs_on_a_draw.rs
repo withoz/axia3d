@@ -1,0 +1,129 @@
+//! ⚠ CORRECTION — #247 SAID TWO MECHANISMS SHARE THIS PLANE. ONLY ONE RUNS.
+//!
+//! That commit's message ends: *"the splitter runs on what the user drew, the
+//! arrangement runs on what is left, and neither is given the other's result."*
+//! The first half is wrong for the configuration that ships. What it measured
+//! was the ORDER OF FUNCTION ENTRY —
+//!
+//! ```text
+//!   [ORDER] intersect seeds=[FaceId(27)]
+//!   [ORDER] re-derive
+//! ```
+//!
+//! — and `intersect_faces_inner` delegates and returns before it reaches its own
+//! coplanar scan:
+//!
+//! ```rust
+//!   if self.face_rederive_on_draw {          // scene.rs:5396, production ON
+//!       let coplanar = self.rederive_coplanar_on_draw(face_ids)?;
+//!       let crossing = self.split_faces_crossing_other_planes(&before)?;
+//!       return Ok(coplanar + crossing);      // 5415
+//!   }
+//!   ...
+//!   auto_intersect_coplanar(...)             // 5598 — never reached
+//! ```
+//!
+//! Measured, with a probe on every branch of that scan: on the draw that leaves
+//! the reported damage, **`auto_intersect_coplanar` is not called once**. Not the
+//! seed loop, not the candidate loop, not the annulus branches — the whole scan
+//! is behind that return. `ADR-186 δ-4b` says so in the code
+//! ("flag ON 시 case-by-case auto_intersect/annulus 대신 boundary kernel
+//! re-derive"), which is exactly the design; the mistake was mine, reading an
+//! entry trace as a call trace.
+//!
+//! ## Why the correction matters more than the original claim
+//!
+//! "Two mechanisms that do not know about each other" invites a fifth lever that
+//! introduces them. There is nothing to introduce. On a production draw the
+//! re-derive is the ONLY mechanism, and the standing-solid footprint is a gap in
+//! IT — which is a smaller and more answerable question than the redesign #247
+//! pointed at.
+//!
+//! It also re-reads the four levers: #247's fourth (a second splitter pass after
+//! the re-derive) was not "running it again", it was **running it at all**, which
+//! is why it cleared a draw's damage (1 -> 0) that nothing else had touched.
+//!
+//! ⚠ The splitter is NOT dead code — three other call sites read
+//! `auto_intersect_on_draw || face_rederive_on_draw` and reach it by other paths.
+//! The claim here is scoped to `intersect_faces_inner`'s own coplanar scan.
+use axia_core::{Command, Scene};
+use glam::DVec3;
+
+fn production() -> Scene {
+    let mut s = Scene::new();
+    s.auto_intersect_on_draw = true;
+    s.auto_face_synthesis_on_draw = true;
+    s.face_rederive_on_draw = true;
+    s.freeform_overlap_on_draw = true;
+    s
+}
+
+/// The gate, read from the source, because the fact IS about control flow: the
+/// coplanar scan sits after a `return` that production always takes.
+#[test]
+fn the_coplanar_scan_sits_behind_the_re_derives_return() {
+    let src = include_str!("../src/scene.rs");
+    let gate = src
+        .find("if self.face_rederive_on_draw {")
+        .expect("the re-derive gate moved — re-measure before trusting this file");
+    let ret = src[gate..]
+        .find("return Ok(coplanar + crossing);")
+        .map(|i| gate + i)
+        .expect("the gate's early return moved");
+    let call = src
+        .find("auto_intersect_coplanar(")
+        .expect("the splitter call moved");
+    println!("  gate @{gate}  return @{ret}  splitter @{call}");
+    assert!(
+        ret < call,
+        "the splitter is no longer behind the re-derive's return — the two \
+         mechanisms may now both run, which is what #247 assumed. Re-measure."
+    );
+}
+
+/// And the behaviour that follows: the drawn sheet and the solid's footprint
+/// overlap BEFORE anything could have split them, and nothing does.
+///
+/// ⚠ This asserts the damage that ships. When the re-derive learns to divide
+/// against a standing solid's footprint it goes RED — that is the signal to
+/// rewrite it, not to delete it.
+#[test]
+fn a_draw_over_a_standing_footprint_is_left_overlapping() {
+    let mut s = production();
+    s.execute(Command::DrawCircleAsCurve {
+        center: DVec3::ZERO,
+        normal: DVec3::Z,
+        radius: 100.0,
+    });
+    let first = s.mesh.faces.iter().find(|(_, f)| f.is_active()).map(|(id, _)| id).unwrap();
+    let _ = s.execute(Command::CreateSolid {
+        face_id: first,
+        mode: axia_geo::CreateSolidMode::Extrude { distance: 200.0 },
+    });
+    assert!(s.mesh.damaging_contacts().is_empty(), "the solid alone is sound");
+
+    s.execute(Command::DrawCircleAsCurve {
+        center: DVec3::new(120.0, 0.0, 0.0),
+        normal: DVec3::Z,
+        radius: 100.0,
+    });
+    let dmg = s.mesh.damaging_contacts();
+    for (a, b) in &dmg {
+        let vc = |f: axia_geo::FaceId| {
+            s.mesh.collect_loop_verts(s.mesh.faces[f].outer().start).map(|v| v.len()).unwrap_or(0)
+        };
+        println!(
+            "  {a:?}(v{} solid {}) x {b:?}(v{} solid {})",
+            vc(*a), s.mesh.is_face_in_volume(*a), vc(*b), s.mesh.is_face_in_volume(*b)
+        );
+    }
+    assert_eq!(dmg.len(), 1, "the standing overlap changed: {dmg:?}");
+    // One side is the solid's own on-plane face — the one the re-derive protects
+    // and therefore never divides against.
+    let (a, b) = dmg[0];
+    assert!(
+        s.mesh.is_face_in_volume(a) != s.mesh.is_face_in_volume(b),
+        "expected a sheet over a SOLID's footprint, got two of a kind"
+    );
+    assert_eq!(s.mesh.verify_face_invariants().violations.len(), 0, "invariants still hold");
+}
