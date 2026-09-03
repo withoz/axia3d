@@ -268,6 +268,83 @@ pub fn polyline_on_cylinder(
     Some(out)
 }
 
+/// A cylinder written as the rational NURBS it already is.
+///
+/// ⚠ Why this exists: every SSI entry point is control-grid based
+/// (`intersect_bezier_pair`, `subdivide_intersect`,
+/// `nurbs_wrapper::intersect_bspline_pair`) and none of them takes an
+/// `AnalyticSurface::Cylinder`. That is what stops crossing bores of UNEQUAL
+/// radii — a genuine quartic space curve with no plane decomposition, so the
+/// cheap analytic route does not apply and the general one has nothing to chew
+/// on (`project-cross-bore-kernel`, step 3).
+///
+/// Nothing new is computed here. A circle is exactly a degree-2 rational
+/// B-spline — nine control points, corner weights √2/2 — which [`nurbs::ellipse`]
+/// already builds, and sweeping a rational profile along a straight line is
+/// [`sweep::extrusion_surface_nurbs`], which replicates the weights at v = 0 and
+/// v = 1. This joins the two.
+///
+/// The result is EXACT, not a fit: a rational quadratic represents a circle
+/// without error, and a degree-1 sweep is a translation. `u ∈ [0,4]` is the
+/// circle's own knot parameterisation (one unit per quarter turn), not the
+/// cylinder's angle; `v ∈ [0,1]` spans `v_range`.
+///
+/// Returns `None` for a degenerate axis or a non-positive radius, and for a
+/// partial `u_range` — a trimmed cylinder is a different surface and guessing at
+/// one would be worse than declining.
+pub fn cylinder_to_nurbs_surface(
+    surface: &crate::surfaces::AnalyticSurface,
+) -> Option<crate::surfaces::AnalyticSurface> {
+    use crate::surfaces::AnalyticSurface;
+    let AnalyticSurface::Cylinder {
+        axis_origin,
+        axis_dir,
+        radius,
+        ref_dir,
+        u_range,
+        v_range,
+    } = surface
+    else {
+        return None;
+    };
+    if *radius <= 0.0 || axis_dir.length_squared() < 1e-30 {
+        return None;
+    }
+    // Full turn only. `u_range` is an angle here and the NURBS `u` is the knot
+    // parameter, so a partial sweep is not a matter of clipping the range.
+    let two_pi = std::f64::consts::TAU;
+    if (u_range.1 - u_range.0 - two_pi).abs() > 1e-9 {
+        return None;
+    }
+    let height = v_range.1 - v_range.0;
+    if height.abs() < 1e-12 {
+        return None;
+    }
+
+    // The profile circle at v_range.0, in the cylinder's own basis, so the
+    // promotion lands on the same points `Cylinder::evaluate` does.
+    let (axis, r_dir, p_dir) = basis(*axis_dir, *ref_dir);
+    let base = *axis_origin + axis * v_range.0;
+    let (ctrl, weights, knots, degree) =
+        crate::curves::nurbs::ellipse(base, *radius, *radius, r_dir, p_dir);
+
+    let (ctrl_grid, weights_grid, knots_u, knots_v, deg_u, deg_v) =
+        crate::surfaces::sweep::extrusion_surface_nurbs(
+            &ctrl, &weights, &knots, degree, axis, height,
+        )
+        .ok()?;
+
+    Some(AnalyticSurface::NURBSSurface {
+        ctrl_grid,
+        weights: weights_grid,
+        knots_u,
+        knots_v,
+        deg_u: deg_u as u32,
+        deg_v: deg_v as u32,
+        trim_loops: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

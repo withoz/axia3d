@@ -110,17 +110,49 @@ fn face_lineage_is_still_not_built() {
     );
 }
 
+/// ⚠ REWRITTEN 2026-09-03 — the promotion LANDED, and this now guards the next
+/// half of the same claim.
+///
+/// The old assertion said no Cylinder→NURBS promotion existed, and it fired the
+/// moment `cylinder_to_nurbs_surface` did. Its own header asks for a rewrite
+/// rather than a deletion, so: the promotion is here and exact (proved in
+/// `a_cylinder_written_as_the_nurbs_it_already_is.rs`), and cross-bore step 3
+/// is still NOT done — nothing routes an unequal-radius crossing through SSI.
+///
+/// That distinction is the expensive one. "The prerequisite exists" reads far
+/// too easily as "the feature works", and a session that acted on it would find
+/// `canDrillCrossingBore` still answering `ok = false` for unequal radii.
 #[test]
-fn the_cylinder_to_nurbs_promotion_is_still_not_built() {
-    // The prerequisite for cross-bore step 3 (crossing bores of unequal radius).
-    // A cylinder IS a rational NURBS; nothing yet promotes one.
+fn the_promotion_exists_and_cross_bore_step_3_still_does_not() {
     let mut hits = files_mentioning("cylinder_to_nurbs");
     hits.extend(files_mentioning("cylinder_as_nurbs"));
     assert!(
-        hits.is_empty(),
-        "a Cylinder→NURBS promotion now exists in {} file(s) — cross-bore step 3 \
-         is unblocked. Update the records and retire this assertion. Files: {:?}",
-        hits.len(),
-        hits
+        !hits.is_empty(),
+        "the Cylinder→NURBS promotion vanished — cross-bore step 3 lost its \
+         prerequisite again"
+    );
+
+    // The half that has NOT landed: a CONSUMER. Until something outside the
+    // promotion's own file and its test calls it, this is a capability nobody
+    // uses, and cross-bore step 3 is exactly as blocked as it was.
+    //
+    // ⚠ Asks for a CALL, not for words. The first version of this check looked
+    // for SSI entry-point names in the same file and fired on the promotion's
+    // own doc comment, which lists them as the reason it exists — the
+    // guard-that-reads-prose trap this repo has hit before (#241).
+    let callers: Vec<_> = files_mentioning("cylinder_to_nurbs_surface(")
+        .into_iter()
+        .filter(|p| {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            name != "cylinder.rs" && name != "a_cylinder_written_as_the_nurbs_it_already_is.rs"
+        })
+        .collect();
+    assert!(
+        callers.is_empty(),
+        "the promotion has {} caller(s) outside its own file — someone is using \
+         it, so re-measure `canDrillCrossingBore` on unequal radii, update the \
+         records, and rewrite this. Files: {:?}",
+        callers.len(),
+        callers
     );
 }
