@@ -9166,19 +9166,37 @@ impl AxiaEngine {
         self.scene.mesh.collect_free_edge_segments()
     }
 
-    /// ADR-047 R-track — non-manifold edge endpoints for rendering overlay.
+    /// ADR-047 R-track — endpoints of edges where two faces COVER THE SAME
+    /// GROUND, for the renderer's warning overlay.
     ///
     /// Returns `Float32Array` of `[x0,y0,z0, x1,y1,z1, ...]` line segments
-    /// (2 endpoints × 3 coords per non-manifold edge). The renderer uses
-    /// this to draw a highlight outline on edges shared by ≥3 active
-    /// faces — these are ADR-021 P7 stacked-inner artifacts; without
-    /// the highlight users mistake the overlapping faces for "missing
-    /// face / wireframe only" (z-fight visual confusion).
+    /// (2 endpoints × 3 coords per edge).
+    ///
+    /// ⚠ It used to return every edge with ≥3 active faces, and that made it
+    /// warn about the normal case. 사용자 결정 2026-08-06 settled what three
+    /// faces on one edge means, and `verify_face_invariants`'s I5 says it in
+    /// full: a sheet hanging off a solid puts the wall, the cap and the plate
+    /// on one edge, the solid is still closed, SketchUp builds exactly that.
+    /// So a circle drawn straddling a box's rim — a perfectly good draw — lit
+    /// up in warning orange while the invariant checker called the same mesh
+    /// clean (measured in the running app 2026-09-03: 1 overlay segment,
+    /// 0 violations).
+    ///
+    /// The overlay's own reason for existing is the OTHER case: two faces
+    /// covering one patch of ground are invisible except as z-fighting, and
+    /// users read that as "면이 사라졌다". That is what `edge_stacked_face_pair`
+    /// holds — the same judgement I5 uses — so this asks it, and a T-junction
+    /// no longer raises an alarm.
     #[wasm_bindgen(js_name = "getNonManifoldEdgeSegments")]
     pub fn get_non_manifold_edge_segments(&self) -> Vec<f32> {
         let edges = self.scene.mesh.collect_non_manifold_edges();
         let mut buf = Vec::with_capacity(edges.len() * 6);
         for eid in edges {
+            // Three faces on an edge is not damage; two of them covering the
+            // same ground is. Ask the judgement rather than the count.
+            if self.scene.mesh.edge_stacked_face_pair(eid).is_none() {
+                continue;
+            }
             let edge = &self.scene.mesh.edges[eid];
             let v0 = edge.v_small();
             let v1 = edge.v_large();
