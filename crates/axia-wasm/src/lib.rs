@@ -10545,8 +10545,12 @@ impl AxiaEngine {
                 None => break,
             };
 
-            // Attempt merge; silently skip non-coplanar candidates
-            match self.scene.merge_faces_by_edge_owned(edge_id, None, None) {
+            // Attempt merge; silently skip non-coplanar candidates.
+            // Whichever of the two the caller listed FIRST keeps the ownership,
+            // exactly as in `try_merge_adjacent_faces_tol` above — same operation,
+            // same 사용자 결재, and this variant used to pass `None` and lose it.
+            let preferred = current.iter().copied().find(|&f| f == f1 || f == f2);
+            match self.scene.merge_faces_by_edge_owned(edge_id, preferred, None) {
                 Ok(new_face) => {
                     merges_done += 1;
                     // Replace f1/f2 with new_face in the working set
