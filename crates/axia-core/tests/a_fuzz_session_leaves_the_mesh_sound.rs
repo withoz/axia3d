@@ -457,3 +457,43 @@ fn the_same_seed_replays_exactly() {
     };
     assert_ne!(a, other, "a different seed must give a different session");
 }
+
+/// The gate is green because it stops at op 20, not because the class is gone.
+///
+/// ⚠ Measured 2026-09-02 on main, unchanged: run the SAME gate seeds ten
+/// operations deeper and two of them fail — session 6 at op 20 and session 9 at
+/// op 25, both `cover the same ground (stacked)`. So "12 x 20 green with an
+/// empty `KNOWN_BREAKS`" says the first twenty operations of twelve particular
+/// seeds avoid the stacking, and nothing more.
+///
+/// That matters when judging a change by the gate. A change that shifts the
+/// operation stream moves which seeds reach a PRE-EXISTING defect, and reads as
+/// "it broke three sessions". Across two independent ranges (98 sessions,
+/// 12..109) a widened `face_rederive` filter and today's narrow one failed **4
+/// and 4** — the same population. The comparison to make is across an
+/// independent seed range, never session by session.
+///
+/// ⚠ **When the stacking is fixed this test goes RED.** That is the signal to
+/// rewrite it saying how deep the seeds now run clean — not to delete it. The
+/// same instruction the pinned files in this repo carry.
+#[test]
+fn the_gate_seeds_do_not_stay_clean_past_twenty_operations() {
+    // Session 6 is the earliest; 21 ops is one past the gate's depth, which is
+    // the cheapest possible demonstration.
+    let outcome = run_session(6, 21);
+    match outcome {
+        Ok((faces, damage)) => panic!(
+            "session 6 now survives 21 operations ({faces} faces, {damage} damaging) \
+             — the stacking this pinned is fixed or moved. Re-measure how deep the \
+             gate seeds run clean and rewrite this test to say so."
+        ),
+        Err((op, why, _log)) => {
+            println!("  session 6 fails at op {op}: {why}");
+            assert!(
+                why.contains("cover the same ground"),
+                "session 6 was pinned as a STACKED-faces failure and now fails \
+                 differently: {why}"
+            );
+        }
+    }
+}

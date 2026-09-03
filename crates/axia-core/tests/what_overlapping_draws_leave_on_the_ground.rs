@@ -19,6 +19,55 @@
 //! The gate did its job — it refused an extrude on a mesh that was already
 //! broken. This file asks the question the gate cannot: **what broke it.**
 //!
+//! ## 2026-09-02 — the filter is not the lever, and here is why
+//!
+//! `face_rederive`'s on-plane volume-edge filter keeps an edge when
+//! `!saw_a_wall || reaches_below`, so a solid STANDING on the plane (walls only
+//! above) has its footprint dropped. Widening that does fix this file: the three
+//! damaging contacts below go to **0**. It was measured three ways and all three
+//! ended in the same place.
+//!
+//! ```text
+//!   keep every on-plane volume edge        bug fixed; gate 12x20 breaks 3
+//!   keep it when the plane also holds an   bug fixed; gate breaks 1
+//!     on-plane face of that solid
+//!   ...and stand down when the plane also  bug fixed; gate GREEN
+//!     cuts a solid BELOW it
+//! ```
+//!
+//! The third looked like the answer — gate green, `KNOWN_BREAKS` still empty,
+//! both clauses mutation-checked and each caught by a different guard. Then the
+//! full suite: **three pinned scenes gained stacked pairs**
+//! (`a_vertex_whose_outgoing_half_edge_is_gone` twice, and
+//! `the_fifty_operation_inventory`'s MoveOnly push, 0 -> 6). Same class as the
+//! defect. Traded, not fixed, so it was reverted.
+//!
+//! ⚠ **The structural reason, which is the part worth keeping.** The filter does
+//! not decide what to imprint — it decides whether the solid's own on-plane face
+//! stays PROTECTED. `face_rederive.rs`'s `part_of_solid && solid_top_boundary
+//! .is_empty()` skips it, so making the boundary non-empty un-protects it and the
+//! face is removed and re-tiled (ADR-281 beta-1, written for a solid's TOP). The
+//! new clause fires only when an adjacent face lies wholly in the plane — the
+//! solid's bottom — so **every time it fires, something already covers that
+//! ground**, and the re-tile has to reproduce it exactly or leave a stack.
+//!
+//! And it cannot be guarded on the way out: the rollback branches in
+//! `guard_imprint` were removed by 사용자 결정 2026-08-06, *A DRAW IS NEVER
+//! REFUSED*. Rolling a draw back for a stacked pair is the thing that decision
+//! forbids.
+//!
+//! So the fix is not in this predicate. It is in the re-tile producing a tiling
+//! that covers the footprint exactly once — or in the repair being able to clear
+//! what it leaves, which the three tests below measure it cannot.
+//!
+//! ⚠ One more thing the same session measured, because it changes how the fuzz
+//! gate should be read: run the SAME 12 gate seeds ten operations deeper on
+//! today's main and **session 6 fails at op 20 and session 9 at op 25**, both
+//! "cover the same ground (stacked)". The gate is green because it stops at op
+//! 20, not because the class is absent. Across two independent seed ranges (98
+//! sessions, 12..109) narrow and widened failed **4 and 4** — the same
+//! population, differing only in which seeds reach it.
+//!
 //! Flags are the production ones (ADR-176 / face-rederive), not `Scene::new()`
 //! defaults, because that is the configuration the report came from.
 use axia_core::{Command, CommandResult, Scene};
