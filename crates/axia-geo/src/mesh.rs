@@ -12712,8 +12712,25 @@ impl Mesh {
     /// duplicated a boundary, or any preserved-profile boss before ADR-264) —
     /// under-counts (1 + 2) and is silently missed. This groups every active
     /// face-bearing half-edge by its **quantized endpoint positions** and
-    /// returns all EdgeIds touching a location shared by ≥3 faces. It is a
-    /// SUPERSET of the radial detector (also catches true ≥3-shared edges).
+    /// returns the EdgeIds at a location carrying ≥3 face-bearing half-edges
+    /// **from ≥2 distinct EdgeIds** — the crack signature.
+    ///
+    /// ⚠ It is therefore NOT a superset of the radial detector, whatever an
+    /// earlier version of this comment said. The `distinct.len() >= 2` test
+    /// below deliberately drops the single-EdgeId case, so the two detectors
+    /// are disjoint on the thing readers most expect them to share. Measured
+    /// 2026-09-03 on a circle drawn across a box's rim:
+    ///
+    /// ```text
+    ///   after the draw    radial >=3  1     geometric cracks  0
+    ///   after a push      radial >=3  0     geometric cracks  8   (SI 3)
+    /// ```
+    ///
+    /// That is the intent — a single EdgeId carrying ≥3 half-edges is the
+    /// T-junction a sheet makes against a solid, which 사용자 결정 2026-08-06
+    /// settled is normal — but "superset" reads as "the radial one is
+    /// redundant", and it is not: `verify_face_invariants`'s I5 is what covers
+    /// that side, via `edge_stacked_face_pair`.
     ///
     /// Used by solid-op manifold checks (ADR-264 D3). The ADR-021 P7 form
     /// overlay keeps the radial [`collect_non_manifold_edges`] (LOCKED #1).

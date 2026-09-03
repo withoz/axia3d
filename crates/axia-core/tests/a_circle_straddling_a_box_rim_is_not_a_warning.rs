@@ -27,6 +27,35 @@
 //! invisible except as z-fighting, which users read as "면이 사라졌다", and
 //! that is exactly what it exists to mark. This file holds both halves — the
 //! straddling draw stays quiet, and an edge that IS stacked still speaks.
+//! ## The sweep this came from (2026-09-03)
+//!
+//! Every warning surface was checked for the same shape — something told to the
+//! user by a COUNT where the engine holds a finer judgement.
+//!
+//! ```text
+//!   non-manifold-overlay          raw >=3 count      ← the defect, fixed here
+//!   free-edge-overlay             styling, dashed and muted; not a warning
+//!   integrity gate, invariants    uses I5 (narrow)              correct
+//!   integrity gate, cracks        >=2 DISTINCT EdgeIds required  correct
+//!   Scene::stacked_planes         already filters by the judgement
+//!   Scene::stacked_pair_count     already filters by the judgement
+//!   3 sites in face synthesis     eprintln traces, not user-facing
+//! ```
+//!
+//! So the overlay was the ONLY production place reporting the raw count to a
+//! user. Measured alongside it, and worth not re-deriving:
+//!
+//!   - The integrity gate is right to refuse a push on the straddling circle's
+//!     piece. Run it with the gate off and the result carries 8 geometric
+//!     cracks and 3 self-intersecting pairs — real damage, correctly declined.
+//!   - `collect_non_manifold_edges_geometric` is NOT a superset of the radial
+//!     detector, though its doc comment said so for a while. It requires >=2
+//!     distinct EdgeIds, so it deliberately skips the T-junction the radial one
+//!     finds. Corrected in `mesh.rs` with the numbers.
+//!   - "엣지 복사는 아직 미지원" and "트림 미지원 빌드" are both accurate — the
+//!     clipboard holds `kind: 'faces'` only, and the trim line is a fallback for
+//!     an older WASM build.
+//!
 use axia_core::{Command, CommandResult, Scene, FORM_MATERIAL};
 use glam::DVec3;
 
