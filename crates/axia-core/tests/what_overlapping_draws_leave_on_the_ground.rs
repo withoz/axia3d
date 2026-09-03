@@ -160,6 +160,69 @@
 //! footprint, when the footprint IS polygonal here — `FaceId(2)`, 23 verts,
 //! `is_face_in_volume = true`? Answer that before building a fourth lever.
 
+//!
+//! ## The mechanism, 2026-09-03 — auto-intersect never sees these faces
+//!
+//! Asked directly on the final scene, `auto_intersect_coplanar` CAN divide two
+//! of the three standing pairs:
+//!
+//! ```text
+//!   FaceId( 2) x FaceId(30)   Err (non-convex — the same wall the repair hits)
+//!   FaceId(31) x FaceId( 2)   SPLIT
+//!   FaceId(32) x FaceId( 2)   SPLIT
+//! ```
+//!
+//! So the splitter is not the limit. Instrumenting the draw pipeline says what
+//! is — the order:
+//!
+//! ```text
+//!   [ORDER] intersect seeds=[FaceId(0)]     circle A
+//!   [ORDER] re-derive
+//!   [ORDER] intersect seeds=[FaceId(27)]    circle B
+//!   [ORDER] re-derive
+//!   [ORDER] intersect seeds=[FaceId(29)]    circle C
+//!   [ORDER] re-derive
+//! ```
+//!
+//! **auto-intersect runs BEFORE the re-derive, every time.** It only ever sees
+//! the face the user drew; the faces that end up covering the footprint are the
+//! ones the re-derive creates afterwards. That is the same fact the repair note
+//! states from the other side — "the repair fixes the PREVIOUS draw's stacking,
+//! never its own".
+//!
+//! ### The fourth lever: a second pass after the re-derive
+//!
+//! Built — `damaging_contacts()` after the re-derive, `auto_intersect_coplanar`
+//! on each pair, XIA links carried, calling the splitter directly so it cannot
+//! re-enter the re-derive. Measured:
+//!
+//! ```text
+//!                        main     second pass
+//!   + circle B: damaging   1           0        ← better
+//!   standing damage        3           3        ← unchanged
+//!   + rect: damaging       0           5        ← worse
+//!   + rect: invariants     0           4        ← worse
+//! ```
+//!
+//! One draw's stacking clears immediately and the reported three do not, while
+//! a later draw gains five contacts and four violations. Reverted.
+//!
+//! ### Four levers, four reverts — and what they have in common
+//!
+//! ```text
+//!   #245  widen the filter        un-protects the face; three scenes stack
+//!   #247  repair role-swap        clip is a closed curve, no polygon to walk
+//!   #247  decouple feed/protect   the FEED alone breaks the push
+//!   #247  second auto-intersect   fixes one draw, damages a later one
+//! ```
+//!
+//! ⚠ Every one of them makes the pipeline do MORE on this plane, and every one
+//! damages a scene that was fine. That is a consistent enough answer to stop
+//! adding levers: the problem is not a missing pass, it is that this plane is
+//! processed by two mechanisms that do not know about each other — the splitter
+//! runs on what the user drew, the arrangement runs on what is left, and neither
+//! is given the other's result. A fifth pass would be a fifth guess.
+
 use axia_core::{Command, CommandResult, Scene};
 use glam::DVec3;
 
