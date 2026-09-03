@@ -70,6 +70,159 @@
 //!
 //! Flags are the production ones (ADR-176 / face-rederive), not `Scene::new()`
 //! defaults, because that is the configuration the report came from.
+//!
+//! ## 2026-09-03 — where the repair actually stops, and why the obvious lever is barred
+//!
+//! `where_each_standing_pair_falls_out_of_the_repair` reports two of the three
+//! as `Err(coplanar clipping requires convex faces)`. That is honest, not an
+//! instrument fault: the corner cross products were read directly and the
+//! refused faces really are reflex —
+//!
+//! ```text
+//!   FaceId( 2) verts 23  solid true    corner signs +++++++++++++++++++++++
+//!   FaceId(30) verts  4  solid false   corner signs +-++     worst -1670.5
+//!   FaceId(32) verts  7  solid false   corner signs -+++++-  worst -3579.9
+//! ```
+//!
+//! Sutherland-Hodgman needs a convex CLIP, and an arrangement's leftovers are
+//! crescents. `the_same_pairs_with_the_sheet_as_subject_and_the_solid_as_clip`
+//! already measured that swapping the roles makes every pair readable — the
+//! solid's cap is the convex one.
+//!
+//! Two levers were built from that and both were reverted:
+//!
+//!   - **Sheet as subject by rule.** Fixes nothing here and BREAKS a case that
+//!     worked: a rect's draw stopped clearing the six standing contacts it used
+//!     to clear (`drawing_again_after_a_push_is_where_faces_stack`, 6 -> 0).
+//!   - **Try the other order when the first errors.** Safe — everything from
+//!     the intersection call to the first `add_vertex` is read-only — and it
+//!     earns nothing: axia-core 826/826 identical with and without it, no test
+//!     differing. Nothing reaches it, because the pair that fails, fails LATER.
+//!
+//! ⚠ Where it actually stops, measured by instrumenting the gates:
+//!
+//! ```text
+//!   [PROBE] diff walk Err FaceId(2)/FaceId(28):
+//!           polygon_difference_by_clip: clip polygon has fewer than 3 vertices
+//! ```
+//!
+//! The clip is a kernel-native closed curve — ADR-089 Path B, one anchor vertex
+//! and one self-loop edge — so there is no polygon to walk. That is exactly what
+//! this file's own note says, and the only way to give it one is
+//! `polygonize_closed_curve_face`, which turns the user's circle into a polygon.
+//! ADR-189 moved AWAY from that by 사용자 결재 ("다각형화 제거 + 자동 분할
+//! 유지"), so reaching for it here would walk a decision back.
+//!
+//! So the repair is not the lever either. Between this and
+//! `face_rederive`'s filter (see the note above), both obvious levers are
+//! measured and barred, and what is left is the one neither touches: the
+//! arrangement producing a tiling that covers the footprint exactly once.
+
+//!
+//! ## The third lever, 2026-09-03 — decouple the feed from the protection
+//!
+//! `face_rederive`'s `solid_top_boundary` decides TWO things through one
+//! variable: what the arrange is FED, and whether the solid's own on-plane face
+//! stays PROTECTED (`part_of_solid && solid_top_boundary.is_empty()`). Widening
+//! it (#245) turned both on at once, and the second is what stacked three other
+//! scenes. So: feed the standing footprint, keep the protection, and skip any
+//! region the arrange tiles over ground a protected face already holds.
+//!
+//! All four pieces were built (a separate `standing_footprint` set, the union
+//! fed to `reconstruct_input_curves`, the protected outlines collected in
+//! Phase 1, a probe test in Phase 4). It reads well and it is worse:
+//!
+//! ```text
+//!                        main      feed+skip    feed only
+//!   standing damage        3           2            3
+//!   push                MoveOnly   Cylinder    Error("Face needs at least 3 verts")
+//!   after push: inv        0           6            0
+//!   + rect: damaging       0           8            7
+//! ```
+//!
+//! ⚠ The isolation is the finding. **The FEED alone already breaks the push** —
+//! `Face needs at least 3 verts` — so the arrange, given a standing solid's
+//! footprint, emits that region as a closed-curve (one-anchor) face that the
+//! downstream cannot use. The skip then hides one contact and leaves six
+//! invariant violations behind it. Reverted.
+//!
+//! ### What that leaves, named
+//!
+//! Three levers are now measured and barred: the filter (#245), the repair
+//! (#247), and this. Each fails for its own reason, and none of them is the
+//! arrangement being unable to divide — it is that a solid's on-plane face
+//! cannot be handed to it in any form it can use.
+//!
+//! The next question is upstream of all three: `auto_intersect_coplanar` has
+//! **no solid/volume check at all** (measured: zero hits for `is_face_in_volume`
+//! / `solid` / `volume` in `operations/coplanar.rs`), and it runs on every draw
+//! in production. So why does it not divide the drawn sheet against the solid's
+//! footprint, when the footprint IS polygonal here — `FaceId(2)`, 23 verts,
+//! `is_face_in_volume = true`? Answer that before building a fourth lever.
+
+//!
+//! ## The mechanism, 2026-09-03 — auto-intersect never sees these faces
+//!
+//! Asked directly on the final scene, `auto_intersect_coplanar` CAN divide two
+//! of the three standing pairs:
+//!
+//! ```text
+//!   FaceId( 2) x FaceId(30)   Err (non-convex — the same wall the repair hits)
+//!   FaceId(31) x FaceId( 2)   SPLIT
+//!   FaceId(32) x FaceId( 2)   SPLIT
+//! ```
+//!
+//! So the splitter is not the limit. Instrumenting the draw pipeline says what
+//! is — the order:
+//!
+//! ```text
+//!   [ORDER] intersect seeds=[FaceId(0)]     circle A
+//!   [ORDER] re-derive
+//!   [ORDER] intersect seeds=[FaceId(27)]    circle B
+//!   [ORDER] re-derive
+//!   [ORDER] intersect seeds=[FaceId(29)]    circle C
+//!   [ORDER] re-derive
+//! ```
+//!
+//! **auto-intersect runs BEFORE the re-derive, every time.** It only ever sees
+//! the face the user drew; the faces that end up covering the footprint are the
+//! ones the re-derive creates afterwards. That is the same fact the repair note
+//! states from the other side — "the repair fixes the PREVIOUS draw's stacking,
+//! never its own".
+//!
+//! ### The fourth lever: a second pass after the re-derive
+//!
+//! Built — `damaging_contacts()` after the re-derive, `auto_intersect_coplanar`
+//! on each pair, XIA links carried, calling the splitter directly so it cannot
+//! re-enter the re-derive. Measured:
+//!
+//! ```text
+//!                        main     second pass
+//!   + circle B: damaging   1           0        ← better
+//!   standing damage        3           3        ← unchanged
+//!   + rect: damaging       0           5        ← worse
+//!   + rect: invariants     0           4        ← worse
+//! ```
+//!
+//! One draw's stacking clears immediately and the reported three do not, while
+//! a later draw gains five contacts and four violations. Reverted.
+//!
+//! ### Four levers, four reverts — and what they have in common
+//!
+//! ```text
+//!   #245  widen the filter        un-protects the face; three scenes stack
+//!   #247  repair role-swap        clip is a closed curve, no polygon to walk
+//!   #247  decouple feed/protect   the FEED alone breaks the push
+//!   #247  second auto-intersect   fixes one draw, damages a later one
+//! ```
+//!
+//! ⚠ Every one of them makes the pipeline do MORE on this plane, and every one
+//! damages a scene that was fine. That is a consistent enough answer to stop
+//! adding levers: the problem is not a missing pass, it is that this plane is
+//! processed by two mechanisms that do not know about each other — the splitter
+//! runs on what the user drew, the arrangement runs on what is left, and neither
+//! is given the other's result. A fifth pass would be a fifth guess.
+
 use axia_core::{Command, CommandResult, Scene};
 use glam::DVec3;
 
