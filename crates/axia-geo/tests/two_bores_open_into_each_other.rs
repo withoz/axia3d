@@ -135,19 +135,18 @@ fn it_refuses_what_it_cannot_sew_without_touching_the_mesh() {
             R,
             32,
         ),
+        // ⚠ "unequal radii" and "a segment count whose stations miss the curve"
+        // used to be here. Both are capabilities now — the two walls are split
+        // at the union of their station sets before either is trimmed, so
+        // neither has to be cut at its own stations. See
+        // `bores_of_different_sizes_can_cross.rs`. What is left refused is what
+        // the surgery still cannot sew.
         (
-            "unequal radii",
-            Box::new(|| box_bored_along_z(32)),
-            DVec3::X,
-            25.0,
-            32,
-        ),
-        (
-            "a segment count whose stations miss the curve",
-            Box::new(|| box_bored_along_z(30)),
+            "a segment count the seam does not close at",
+            Box::new(|| box_bored_along_z(9)),
             DVec3::X,
             R,
-            30,
+            9,
         ),
     ];
     for (name, build, axis, radius, segments) in cases {

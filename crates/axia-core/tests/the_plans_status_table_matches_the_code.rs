@@ -110,75 +110,65 @@ fn face_lineage_is_still_not_built() {
     );
 }
 
-/// ⚠ REWRITTEN TWICE. 2026-09-03: the promotion landed and the old "no such
-/// symbol" assertion fired. 2026-09-05: a caller landed and the replacement
-/// fired too. Each rewrite kept the claim and changed the instrument, which is
-/// what the header asks for.
+/// REWRITTEN THREE TIMES, and this one is the other way round.
 ///
-/// The claim that has to stay alive is **cross-bore step 3 is not done**. Both
-/// earlier versions asked it of the source text — first "does the promotion
-/// exist", then "does anything call it" — and both went stale the moment the
-/// thing they described changed, without the claim itself changing at all.
-/// `cylinder_to_nurbs_surface` now has a caller (`two_cylinders_meet_as_the_
-/// nurbs_they_are`, which intersects two promoted cylinders through the
-/// rational SSI, including the unequal radii the closed form defers on), and
-/// step 3 is still not done, because nothing routes that capability into the
-/// drill.
+/// 2026-09-03: the promotion landed and the "no such symbol" assertion fired.
+/// 2026-09-05 morning: a caller landed and its replacement fired. 2026-09-05
+/// afternoon: **cross-bore step 3 itself landed**, and the behavioural version
+/// fired too. Each rewrite kept the claim and changed the instrument; this one
+/// has no claim of absence left to keep, so it guards the presence instead.
 ///
-/// So this version asks the drill instead. Measured 2026-09-05 on a 200 box
-/// bored 40 along Z, then asked to cross on X:
+/// What was measured when step 3 landed, and why the earlier framing was wrong:
+/// the records said it needed SSI subdivision, because
+/// `cylinder_cylinder_branches` defers on unequal radii. That is true of the
+/// CURVE and irrelevant to the surgery, which wants the per-station band --
+/// `s^2 < r_other^2 - r_self^2 sin^2(theta)`, closed form for any two radii,
+/// exact to 7.1e-15. The obstacle was the SEGMENTATION: at r 40 x 25 only four
+/// points ever coincide between two uniform station sets, at any count. Both
+/// walls are split at the union now.
 ///
-/// ```text
-///   r 40  ->  Ok, other_radius 40
-///   r 39  ->  refused: "these two bores do not cut each other at shared points"
-///   r 25  ->  refused, same
-/// ```
-///
-/// A behavioural question cannot go stale the way a grep can: if someone wires
-/// the SSI into `crossing_bore_plan`, the unequal case starts planning and this
-/// fails, which is the signal to update the plan's table,
-/// `project-cross-bore-kernel` and LOCKED #88.
+/// So this asks the drill for the capability rather than for its absence. If it
+/// ever goes back to refusing, that is a regression and the message says where
+/// to look.
 #[test]
-fn the_promotion_exists_and_cross_bore_step_3_still_does_not() {
+fn cross_bore_step_3_has_landed_and_stays_landed() {
     let mut hits = files_mentioning("cylinder_to_nurbs");
     hits.extend(files_mentioning("cylinder_as_nurbs"));
-    assert!(
-        !hits.is_empty(),
-        "the Cylinder\u{2192}NURBS promotion vanished \u{2014} cross-bore step 3 lost its \
-         prerequisite again"
-    );
+    assert!(!hits.is_empty(), "the Cylinder-to-NURBS promotion vanished");
 
-    let mut mesh = axia_geo::Mesh::new();
-    mesh.create_box(glam::DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
-        .expect("box");
-    mesh.drill_circular_through_hole(
-        glam::DVec3::new(0.0, 0.0, 100.0),
-        glam::DVec3::Z,
-        40.0,
-        32,
-    )
-    .expect("bore along Z");
+    let bored = |radius: f64, segments: u32| {
+        let mut mesh = axia_geo::Mesh::new();
+        mesh.create_box(glam::DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
+            .expect("box");
+        mesh.drill_circular_through_hole(
+            glam::DVec3::new(0.0, 0.0, 100.0),
+            glam::DVec3::Z,
+            radius,
+            segments,
+        )
+        .expect("bore along Z");
+        mesh
+    };
 
-    // The control. Without it, "unequal is refused" could pass because the
-    // fixture never had a bore to cross in the first place.
-    assert!(
-        mesh.crossing_bore_plan(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, 40.0, 32)
-            .is_ok(),
-        "equal radii are supposed to be planned \u{2014} the fixture or the plan changed, \
-         so the refusal below proves nothing"
-    );
+    // The control: the case that worked before step 3.
+    let mut equal = bored(40.0, 32);
+    equal
+        .drill_crossing_bore(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, 40.0, 32)
+        .expect("equal radii were always supposed to cross");
 
-    for radius in [39.0_f64, 25.0] {
-        let planned = mesh
-            .crossing_bore_plan(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, radius, 32)
-            .is_ok();
+    for radius in [39.0_f64, 25.0, 8.0] {
+        let mut mesh = bored(40.0, 32);
+        mesh.drill_crossing_bore(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, radius, 32)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "a crossing bore of radius {radius} against a 40 bore is refused again: \
+                     {e}. Step 3 landed on 2026-09-05 -- see \
+                     `bores_of_different_sizes_can_cross.rs` for what it rests on."
+                )
+            });
         assert!(
-            !planned,
-            "a crossing bore of radius {radius} against a 40 bore is now PLANNED. \
-             That is cross-bore step 3 landing: the rational SSI \
-             (`intersect_rational_bspline_pair`) reached the drill. Update the \
-             plan's table, `project-cross-bore-kernel` and LOCKED #88, then \
-             rewrite this \u{2014} do not delete it."
+            mesh.verify_outward_normals().is_closed_solid,
+            "radius {radius}: the crossing was accepted but the solid is open"
         );
     }
 }

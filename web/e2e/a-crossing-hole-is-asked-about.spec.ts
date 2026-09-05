@@ -67,7 +67,13 @@ test.describe('a crossing hole is asked about, not guessed at', () => {
     expect(got.faces).toBe(134);
   });
 
-  test('a crossing the kernel cannot do is reported, not silently punched', async ({ page }) => {
+  test('a smaller crossing bore is done, not refused', async ({ page }) => {
+    // ⚠ This case used to be the refusal. A radius of 25 against a bore of 40
+    // was called "a genuine quartic, which the kernel path refuses" — true of
+    // the CURVE and never what the surgery wanted, which is the per-station
+    // band, closed form for any two radii. What actually blocked it was the
+    // segmentation, and both walls are split at the union of their stations
+    // now. See `crates/axia-geo/tests/bores_of_different_sizes_can_cross.rs`.
     const got = await page.evaluate(({ r }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const bridge = (window as any).__axia.get('bridge');
@@ -75,7 +81,6 @@ test.describe('a crossing hole is asked about, not guessed at', () => {
       eng.create_box(0, 0, 0, 200, 200, 200);
       bridge.drillThroughHole([0, 0, 100], [0, 0, 1], r, 32);
       const before = bridge.getStats().faces;
-      // A smaller radius: a genuine quartic, which the kernel path refuses.
       const plan = bridge.canDrillCrossingBore([100, 0, 0], [1, 0, 0], 25, 32);
       const kept = bridge.drillCrossingBore([100, 0, 0], [1, 0, 0], 25, 32);
       return {
@@ -84,8 +89,39 @@ test.describe('a crossing hole is asked about, not guessed at', () => {
         before,
         after: bridge.getStats().faces,
         closed: bridge.verifyOutwardNormals().isClosedSolid,
+        valid: bridge.verifyInvariants().valid,
       };
     }, { r: R });
+
+    expect(got.plan.crossing).toBe(true);
+    expect(got.plan.ok).toBe(true);
+    expect(got.kept).toBeGreaterThan(0);
+    expect(got.after).toBeGreaterThan(got.before);
+    expect(got.closed).toBe(true);
+    expect(got.valid).toBe(true);
+  });
+
+  test('a crossing the kernel cannot do is reported, not silently punched', async ({ page }) => {
+    const got = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bridge = (window as any).__axia.get('bridge');
+      const eng = bridge.engine;
+      eng.create_box(0, 0, 0, 200, 200, 200);
+      // 9 segments: the seam does not close there, and the plan says so because
+      // it tries it on a copy rather than predicting. An option that would fail
+      // is not an option.
+      bridge.drillThroughHole([0, 0, 100], [0, 0, 1], 40, 9);
+      const before = bridge.getStats().faces;
+      const plan = bridge.canDrillCrossingBore([100, 0, 0], [1, 0, 0], 40, 9);
+      const kept = bridge.drillCrossingBore([100, 0, 0], [1, 0, 0], 40, 9);
+      return {
+        plan,
+        kept,
+        before,
+        after: bridge.getStats().faces,
+        closed: bridge.verifyOutwardNormals().isClosedSolid,
+      };
+    });
 
     // It IS a crossing — so the face-hole fallback must not run — but not one
     // the kernel can do, so only the reason is offered.
