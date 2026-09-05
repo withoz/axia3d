@@ -37,7 +37,7 @@ fn nothing_is_left_standing_inside_the_crossing_bore() {
     for segments in [8u32, 16, 32, 64] {
         let (mut mesh, tube) = bored(segments);
         let survivors = mesh
-            .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R)
+            .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R, R)
             .expect("trim");
 
         // Each wall quad spans the bore, so each one is cut in two.
@@ -73,7 +73,7 @@ fn the_cut_lands_on_both_cylinders() {
     // they are genuinely on its cylinder too.
     let (mut mesh, tube) = bored(32);
     let survivors = mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R)
+        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R, R)
         .expect("trim");
 
     let mut cuts = 0;
@@ -95,7 +95,7 @@ fn the_cut_lands_on_both_cylinders() {
 fn the_wall_keeps_its_winding_its_surface_and_its_soundness() {
     let (mut mesh, tube) = bored(32);
     let survivors = mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R)
+        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, R, R)
         .expect("trim");
 
     for &f in &survivors {
@@ -129,7 +129,7 @@ fn a_bore_that_does_not_cross_is_left_alone() {
     let (mut mesh, tube) = bored(32);
     let before = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
     let survivors = mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::new(0.0, 0.0, 300.0), DVec3::Z, DVec3::X, R)
+        .trim_bore_wall_for_crossing(&tube, DVec3::new(0.0, 0.0, 300.0), DVec3::Z, DVec3::X, R, R)
         .expect("trim");
     let after = mesh.faces.iter().filter(|(_, f)| f.is_active()).count();
     assert_eq!(before, after, "no face should have been rebuilt");
@@ -147,7 +147,7 @@ fn a_meeting_point_off_the_walls_axis_is_refused() {
     // its radius from its own axis.
     let (mut mesh, tube) = bored(32);
     let err = mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::new(0.0, 200.0, 0.0), DVec3::Z, DVec3::X, R)
+        .trim_bore_wall_for_crossing(&tube, DVec3::new(0.0, 200.0, 0.0), DVec3::Z, DVec3::X, R, R)
         .expect_err("an off-axis meeting point must be refused, not guessed at");
     assert!(
         err.to_string().contains("not on this wall's axis"),
@@ -159,10 +159,10 @@ fn a_meeting_point_off_the_walls_axis_is_refused() {
 fn it_refuses_what_it_cannot_cut() {
     let (mut mesh, tube) = bored(32);
     assert!(mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::ZERO, DVec3::X, R)
+        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::ZERO, DVec3::X, R, R)
         .is_err());
     assert!(mesh
-        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, 0.0)
+        .trim_bore_wall_for_crossing(&tube, DVec3::ZERO, DVec3::Z, DVec3::X, 0.0, R)
         .is_err());
     // A cap is not a tube wall — four corners, but it does not span the bore.
     let cap = mesh
@@ -176,7 +176,7 @@ fn it_refuses_what_it_cannot_cut() {
         .map(|(fid, _)| fid);
     if let Some(cap) = cap {
         assert!(mesh
-            .trim_bore_wall_for_crossing(&[cap], DVec3::ZERO, DVec3::Z, DVec3::X, R)
+            .trim_bore_wall_for_crossing(&[cap], DVec3::ZERO, DVec3::Z, DVec3::X, R, R)
             .is_err());
     }
 }

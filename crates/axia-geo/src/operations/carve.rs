@@ -455,7 +455,7 @@ impl Mesh {
     /// loop before pairing them, so the quad order is its business, not ours.
     /// Angles are unwrapped relative to the quad's first corner, which is exact
     /// for any quad spanning less than half a turn — true for `segments >= 3`.
-    fn attach_bore_cylinder(
+    pub(crate) fn attach_bore_cylinder(
         &mut self,
         tube_faces: &[FaceId],
         axis_origin: DVec3,
