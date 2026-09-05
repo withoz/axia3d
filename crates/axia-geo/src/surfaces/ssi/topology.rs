@@ -87,10 +87,30 @@ pub fn assemble_chains(
             uv_b.push(candidates[i].uv_b);
         }
 
-        // Closure check: endpoints within merge_tol
+        // Closure check, against the walk's OWN standard.
+        //
+        // ⚠ It used to ask for `merge_tol * 4`, which the walk never had to
+        // meet: the walk links a point whenever the next one is within
+        // `gap_tol`, and `gap_tol` is a hundred times `merge_tol` at every call
+        // site. So a loop sampled at the subdivision's own spacing could not
+        // close. Measured on a plane cutting a promoted cylinder: 72 points on a
+        // r=40 circle, accurate to 3e-10, closing gap 7.4544 -- exactly the
+        // largest gap the walk had already accepted INSIDE the chain -- and
+        // `7.4544 < 0.4` said open. Every such chain was then dropped by
+        // `nurbs_boolean_v2`, which skips what is not closed, so a Boolean
+        // against a cylinder produced no faces at all.
+        //
+        // The rule now is the walk's: the ends join if the gap between them is
+        // no wider than the gaps already inside. That is self-scaling -- no new
+        // tolerance to pick -- and it still says a LINE is open, because a
+        // line's ends are further apart than any step along it.
+        let closing = (*points.first().unwrap() - *points.last().unwrap()).length();
+        let widest_step = points
+            .windows(2)
+            .map(|w| (w[1] - w[0]).length())
+            .fold(0.0_f64, f64::max);
         let closed = chain_idx.len() >= 3
-            && (points.first().unwrap().clone() - points.last().unwrap().clone()).length()
-                < merge_tol * 4.0;
+            && (closing < merge_tol * 4.0 || closing <= widest_step * 1.5);
 
         // Tangent warning if any candidate flagged depth_capped
         let tangent_warning = chain_idx.iter()
