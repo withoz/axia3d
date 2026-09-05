@@ -509,8 +509,8 @@ fn strictly_larger(outer_size: f64, inner_size: f64) -> bool {
 /// and a coplanar arrangement leaves exactly that.
 ///
 /// Measured 2026-09-05 on the four-draw scene
-/// (`axia-core/tests/four_draws_that_break_the_manifold_contract.rs`). The
-/// sliver where a rect corner pokes outside a circle keeps its arc edge with
+/// (`axia-core/tests/four_draws_that_used_to_break_the_manifold_contract.rs`).
+/// The sliver where a rect corner pokes outside a circle keeps its arc edge with
 /// three half-edges — two already bearing the sliver and its neighbouring
 /// arrangement cell, one free:
 ///
