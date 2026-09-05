@@ -25,15 +25,73 @@ use super::super::bezier_patch;
 /// `ctrl_grid` are the de-Casteljau-split control points local to this region;
 /// `uv_bounds` records `((u_min, u_max), (v_min, v_max))` in the original
 /// patch's parameter space (so caller can map back).
+///
+/// A **rational** patch is carried the way the rest of this crate carries one:
+/// `ctrl_grid` holds the homogeneous points `w.P` and `w_grid` holds the
+/// weights lifted into `.x`. Splitting is then a plain affine operation on both
+/// channels -- de Casteljau in 4D is de Casteljau twice -- and only the places
+/// that need ordinary coordinates (bounding box, chord, evaluation) divide.
+/// `w_grid: None` means polynomial, and every such path is the arithmetic that
+/// was here before: no lift, no division.
 #[derive(Clone, Debug)]
 pub struct PatchRegion {
     pub ctrl_grid: Vec<Vec<DVec3>>,
+    pub w_grid: Option<Vec<Vec<DVec3>>>,
     pub uv_bounds: ((f64, f64), (f64, f64)),
 }
 
 impl PatchRegion {
     pub fn from_full(ctrl_grid: Vec<Vec<DVec3>>) -> Self {
-        Self { ctrl_grid, uv_bounds: ((0.0, 1.0), (0.0, 1.0)) }
+        Self { ctrl_grid, w_grid: None, uv_bounds: ((0.0, 1.0), (0.0, 1.0)) }
+    }
+
+    /// A rational patch from ordinary control points and their weights.
+    ///
+    /// Both are lifted here, once, so nothing below this line has to know the
+    /// patch is rational except where it divides.
+    pub fn from_full_rational(ctrl: &[Vec<DVec3>], weights: &[Vec<f64>]) -> Self {
+        let ctrl_grid: Vec<Vec<DVec3>> = ctrl
+            .iter()
+            .zip(weights.iter())
+            .map(|(p_row, w_row)| {
+                p_row.iter().zip(w_row.iter()).map(|(p, &w)| *p * w).collect()
+            })
+            .collect();
+        let w_grid: Vec<Vec<DVec3>> = weights
+            .iter()
+            .map(|w_row| w_row.iter().map(|&w| DVec3::new(w, 0.0, 0.0)).collect())
+            .collect();
+        Self { ctrl_grid, w_grid: Some(w_grid), uv_bounds: ((0.0, 1.0), (0.0, 1.0)) }
+    }
+
+    /// The control net in ordinary coordinates, or `None` when it already is.
+    ///
+    /// The division is safe by construction rather than by a guard: the source
+    /// weights are validated strictly positive, and de Casteljau at t = 0.5 is a
+    /// convex combination, so no split can reach zero.
+    fn projected(&self) -> Option<Vec<Vec<DVec3>>> {
+        let w = self.w_grid.as_ref()?;
+        Some(
+            self.ctrl_grid
+                .iter()
+                .zip(w.iter())
+                .map(|(h_row, w_row)| {
+                    h_row.iter().zip(w_row.iter()).map(|(h, wp)| *h / wp.x).collect()
+                })
+                .collect(),
+        )
+    }
+
+    /// The patch at its own parametric centre, in ordinary coordinates.
+    fn eval_center(&self) -> DVec3 {
+        let h = bezier_patch::evaluate(&self.ctrl_grid, 0.5, 0.5).unwrap_or(DVec3::ZERO);
+        match &self.w_grid {
+            None => h,
+            Some(w) => {
+                let wc = bezier_patch::evaluate(w, 0.5, 0.5).map(|p| p.x).unwrap_or(1.0);
+                h / wc
+            }
+        }
     }
 
     pub fn uv_center(&self) -> (f64, f64) {
@@ -50,8 +108,17 @@ impl PatchRegion {
         )
     }
 
+    /// Bounding box of the patch.
+    ///
+    /// The control net bounds the surface in both cases: a polynomial Bezier by
+    /// the convex-hull property, a rational one by the same property applied to
+    /// the ORDINARY control points -- its basis functions are non-negative and
+    /// sum to one whenever every weight is positive, which validation enforces.
+    /// Bounding the homogeneous points instead would be wrong.
     pub fn bbox(&self) -> (DVec3, DVec3) {
-        bezier_patch::bbox_xyz(&self.ctrl_grid).unwrap_or((DVec3::ZERO, DVec3::ZERO))
+        let grid = self.projected();
+        let net = grid.as_deref().unwrap_or(&self.ctrl_grid);
+        bezier_patch::bbox_xyz(net).unwrap_or((DVec3::ZERO, DVec3::ZERO))
     }
 
     pub fn bbox_diag(&self) -> f64 {
@@ -71,12 +138,16 @@ impl PatchRegion {
             return None;
         }
 
-        // Chord-length heuristic
+        // Chord-length heuristic, on ordinary coordinates -- the homogeneous
+        // points are scaled by their weights and would rank the axes by weight
+        // as much as by shape.
+        let projected = self.projected();
+        let net = projected.as_deref().unwrap_or(&self.ctrl_grid);
         let chord_u = if n_u >= 2 {
-            (self.ctrl_grid[n_u - 1][0] - self.ctrl_grid[0][0]).length()
+            (net[n_u - 1][0] - net[0][0]).length()
         } else { 0.0 };
         let chord_v = if n_v >= 2 {
-            (self.ctrl_grid[0][n_v - 1] - self.ctrl_grid[0][0]).length()
+            (net[0][n_v - 1] - net[0][0]).length()
         } else { 0.0 };
 
         let split_u = (n_u >= 2) && (n_v < 2 || chord_u >= chord_v);
@@ -86,6 +157,18 @@ impl PatchRegion {
         } else {
             bezier_patch::split_v(&self.ctrl_grid, 0.5).ok()?
         };
+        // The weight channel splits with the same de Casteljau, at the same t.
+        let (left_w, right_w) = match &self.w_grid {
+            None => (None, None),
+            Some(w) => {
+                let (l, r) = if split_u {
+                    bezier_patch::split_u(w, 0.5).ok()?
+                } else {
+                    bezier_patch::split_v(w, 0.5).ok()?
+                };
+                (Some(l), Some(r))
+            }
+        };
 
         let ((u_min, u_max), (v_min, v_max)) = self.uv_bounds;
         if split_u {
@@ -93,10 +176,12 @@ impl PatchRegion {
             Some((
                 PatchRegion {
                     ctrl_grid: left_grid,
+                    w_grid: left_w,
                     uv_bounds: ((u_min, mid), (v_min, v_max)),
                 },
                 PatchRegion {
                     ctrl_grid: right_grid,
+                    w_grid: right_w,
                     uv_bounds: ((mid, u_max), (v_min, v_max)),
                 },
             ))
@@ -105,10 +190,12 @@ impl PatchRegion {
             Some((
                 PatchRegion {
                     ctrl_grid: left_grid,
+                    w_grid: left_w,
                     uv_bounds: ((u_min, u_max), (v_min, mid)),
                 },
                 PatchRegion {
                     ctrl_grid: right_grid,
+                    w_grid: right_w,
                     uv_bounds: ((u_min, u_max), (mid, v_max)),
                 },
             ))
@@ -152,6 +239,27 @@ pub fn subdivide_intersect(
 ) -> Vec<IntersectionCandidate> {
     let region_a = PatchRegion::from_full(patch_a_ctrl.to_vec());
     let region_b = PatchRegion::from_full(patch_b_ctrl.to_vec());
+    let mut results = Vec::new();
+    recurse(&region_a, &region_b, tol, 0, max_depth, &mut results);
+    results
+}
+
+/// Subdivide-and-prune for two RATIONAL Bezier patches.
+///
+/// Same recursion, same pruning; the patches carry their weights so every split
+/// happens in homogeneous coordinates and every measurement in ordinary ones.
+/// Pass unit weights and you get [`subdivide_intersect`] back, at the cost of
+/// the divisions.
+pub fn subdivide_intersect_rational(
+    patch_a_ctrl: &[Vec<DVec3>],
+    patch_a_weights: &[Vec<f64>],
+    patch_b_ctrl: &[Vec<DVec3>],
+    patch_b_weights: &[Vec<f64>],
+    tol: f64,
+    max_depth: usize,
+) -> Vec<IntersectionCandidate> {
+    let region_a = PatchRegion::from_full_rational(patch_a_ctrl, patch_a_weights);
+    let region_b = PatchRegion::from_full_rational(patch_b_ctrl, patch_b_weights);
     let mut results = Vec::new();
     recurse(&region_a, &region_b, tol, 0, max_depth, &mut results);
     results
@@ -223,10 +331,8 @@ fn emit_candidate(
     let (ub, vb) = b.uv_center();
     // Use the local sub-patch (already split to this region) — local uv of
     // center is (0.5, 0.5).
-    let pa = bezier_patch::evaluate(&a.ctrl_grid, 0.5, 0.5)
-        .unwrap_or(DVec3::ZERO);
-    let pb = bezier_patch::evaluate(&b.ctrl_grid, 0.5, 0.5)
-        .unwrap_or(DVec3::ZERO);
+    let pa = a.eval_center();
+    let pb = b.eval_center();
     let point = 0.5 * (pa + pb);
     out.push(IntersectionCandidate {
         point,

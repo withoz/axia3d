@@ -202,6 +202,117 @@ fn validate(
     Ok(())
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Rational Bezier extraction (the 4D lift `bspline_surface` asks for)
+// ────────────────────────────────────────────────────────────────────────
+
+/// One rational Bezier patch cut out of a NURBS surface.
+///
+/// `ctrl` / `weights` are `(deg_u + 1) × (deg_v + 1)`; `u_range` / `v_range`
+/// say where the patch sits in the parent surface's parameter space, so a
+/// caller can map a patch-local `(u, v) ∈ [0,1]²` back.
+#[derive(Clone, Debug)]
+pub struct RationalBezierPatch {
+    pub ctrl: Vec<Vec<DVec3>>,
+    pub weights: Vec<Vec<f64>>,
+    pub u_range: (f64, f64),
+    pub v_range: (f64, f64),
+}
+
+/// Split a rational tensor NURBS surface into rational Bezier patches.
+///
+/// ⚠ Why this exists: `bspline_surface::extract_bezier_patches` is the entry to
+/// every SSI path in this crate and it is **non-rational** — its own header asks
+/// for "a 4D-lift variant", and `boolean_dispatch` refuses
+/// `NURBSSurface(rational)` for exactly that reason. A cylinder promoted by
+/// [`crate::surfaces::cylinder::cylinder_to_nurbs_surface`] is rational (corner
+/// weights √2/2), so without this the promotion has no caller it *could* have.
+///
+/// Nothing new is computed. Knot insertion is an affine combination of control
+/// points, so lifting each `(P, w)` to `(w·P, w)` and running the existing
+/// extraction on the two channels separately gives exactly the homogeneous
+/// insertion — the same lift `evaluate_homogeneous` already uses one level up.
+/// Projecting back per control point recovers `(P', w')` of each sub-patch.
+///
+/// The result is EXACT: no fitting, no sampling.
+pub fn extract_rational_bezier_patches(
+    ctrl_grid: &[Vec<DVec3>],
+    weights: &[Vec<f64>],
+    knots_u: &[f64],
+    knots_v: &[f64],
+    deg_u: usize,
+    deg_v: usize,
+) -> Result<Vec<RationalBezierPatch>> {
+    validate(ctrl_grid, weights, knots_u, knots_v, deg_u, deg_v)?;
+
+    // Lift to 4D, in the two-DVec3 form the rest of this module uses.
+    let lifted_xyz: Vec<Vec<DVec3>> = ctrl_grid
+        .iter()
+        .zip(weights.iter())
+        .map(|(p_row, w_row)| {
+            p_row.iter().zip(w_row.iter()).map(|(p, &w)| *p * w).collect()
+        })
+        .collect();
+    let lifted_w: Vec<Vec<DVec3>> = weights
+        .iter()
+        .map(|w_row| w_row.iter().map(|&w| DVec3::new(w, 0.0, 0.0)).collect())
+        .collect();
+
+    let patches_h =
+        bspline_surface::extract_bezier_patches(&lifted_xyz, knots_u, knots_v, deg_u, deg_v)?;
+    let patches_w =
+        bspline_surface::extract_bezier_patches(&lifted_w, knots_u, knots_v, deg_u, deg_v)?;
+
+    // The two runs see the same knots, degrees and grid dimensions, so they
+    // must agree. Checked rather than assumed: a silent disagreement would pair
+    // each point with someone else's weight, and the result would still look
+    // like a surface.
+    if patches_h.len() != patches_w.len() {
+        bail!(
+            "nurbs_surface::extract_rational_bezier_patches: the homogeneous and \
+             weight channels split into {} and {} patches",
+            patches_h.len(),
+            patches_w.len()
+        );
+    }
+
+    let mut out = Vec::with_capacity(patches_h.len());
+    for ((grid_h, u_range, v_range), (grid_w, u_range_w, v_range_w)) in
+        patches_h.into_iter().zip(patches_w.into_iter())
+    {
+        if u_range != u_range_w || v_range != v_range_w {
+            bail!(
+                "nurbs_surface::extract_rational_bezier_patches: channel ranges \
+                 disagree ({:?},{:?}) vs ({:?},{:?})",
+                u_range, v_range, u_range_w, v_range_w
+            );
+        }
+        let mut ctrl = Vec::with_capacity(grid_h.len());
+        let mut w_out = Vec::with_capacity(grid_h.len());
+        for (row_h, row_w) in grid_h.iter().zip(grid_w.iter()) {
+            let mut ctrl_row = Vec::with_capacity(row_h.len());
+            let mut w_row = Vec::with_capacity(row_h.len());
+            for (h, w_pt) in row_h.iter().zip(row_w.iter()) {
+                let w = w_pt.x;
+                if w <= MIN_WEIGHT {
+                    bail!(
+                        "nurbs_surface::extract_rational_bezier_patches: a split \
+                         control point has weight {} — insertion cannot produce \
+                         this from strictly positive weights",
+                        w
+                    );
+                }
+                ctrl_row.push(*h / w);
+                w_row.push(w);
+            }
+            ctrl.push(ctrl_row);
+            w_out.push(w_row);
+        }
+        out.push(RationalBezierPatch { ctrl, weights: w_out, u_range, v_range });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -110,49 +110,75 @@ fn face_lineage_is_still_not_built() {
     );
 }
 
-/// ⚠ REWRITTEN 2026-09-03 — the promotion LANDED, and this now guards the next
-/// half of the same claim.
+/// ⚠ REWRITTEN TWICE. 2026-09-03: the promotion landed and the old "no such
+/// symbol" assertion fired. 2026-09-05: a caller landed and the replacement
+/// fired too. Each rewrite kept the claim and changed the instrument, which is
+/// what the header asks for.
 ///
-/// The old assertion said no Cylinder→NURBS promotion existed, and it fired the
-/// moment `cylinder_to_nurbs_surface` did. Its own header asks for a rewrite
-/// rather than a deletion, so: the promotion is here and exact (proved in
-/// `a_cylinder_written_as_the_nurbs_it_already_is.rs`), and cross-bore step 3
-/// is still NOT done — nothing routes an unequal-radius crossing through SSI.
+/// The claim that has to stay alive is **cross-bore step 3 is not done**. Both
+/// earlier versions asked it of the source text — first "does the promotion
+/// exist", then "does anything call it" — and both went stale the moment the
+/// thing they described changed, without the claim itself changing at all.
+/// `cylinder_to_nurbs_surface` now has a caller (`two_cylinders_meet_as_the_
+/// nurbs_they_are`, which intersects two promoted cylinders through the
+/// rational SSI, including the unequal radii the closed form defers on), and
+/// step 3 is still not done, because nothing routes that capability into the
+/// drill.
 ///
-/// That distinction is the expensive one. "The prerequisite exists" reads far
-/// too easily as "the feature works", and a session that acted on it would find
-/// `canDrillCrossingBore` still answering `ok = false` for unequal radii.
+/// So this version asks the drill instead. Measured 2026-09-05 on a 200 box
+/// bored 40 along Z, then asked to cross on X:
+///
+/// ```text
+///   r 40  ->  Ok, other_radius 40
+///   r 39  ->  refused: "these two bores do not cut each other at shared points"
+///   r 25  ->  refused, same
+/// ```
+///
+/// A behavioural question cannot go stale the way a grep can: if someone wires
+/// the SSI into `crossing_bore_plan`, the unequal case starts planning and this
+/// fails, which is the signal to update the plan's table,
+/// `project-cross-bore-kernel` and LOCKED #88.
 #[test]
 fn the_promotion_exists_and_cross_bore_step_3_still_does_not() {
     let mut hits = files_mentioning("cylinder_to_nurbs");
     hits.extend(files_mentioning("cylinder_as_nurbs"));
     assert!(
         !hits.is_empty(),
-        "the Cylinder→NURBS promotion vanished — cross-bore step 3 lost its \
+        "the Cylinder\u{2192}NURBS promotion vanished \u{2014} cross-bore step 3 lost its \
          prerequisite again"
     );
 
-    // The half that has NOT landed: a CONSUMER. Until something outside the
-    // promotion's own file and its test calls it, this is a capability nobody
-    // uses, and cross-bore step 3 is exactly as blocked as it was.
-    //
-    // ⚠ Asks for a CALL, not for words. The first version of this check looked
-    // for SSI entry-point names in the same file and fired on the promotion's
-    // own doc comment, which lists them as the reason it exists — the
-    // guard-that-reads-prose trap this repo has hit before (#241).
-    let callers: Vec<_> = files_mentioning("cylinder_to_nurbs_surface(")
-        .into_iter()
-        .filter(|p| {
-            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            name != "cylinder.rs" && name != "a_cylinder_written_as_the_nurbs_it_already_is.rs"
-        })
-        .collect();
+    let mut mesh = axia_geo::Mesh::new();
+    mesh.create_box(glam::DVec3::ZERO, 200.0, 200.0, 200.0, Default::default())
+        .expect("box");
+    mesh.drill_circular_through_hole(
+        glam::DVec3::new(0.0, 0.0, 100.0),
+        glam::DVec3::Z,
+        40.0,
+        32,
+    )
+    .expect("bore along Z");
+
+    // The control. Without it, "unequal is refused" could pass because the
+    // fixture never had a bore to cross in the first place.
     assert!(
-        callers.is_empty(),
-        "the promotion has {} caller(s) outside its own file — someone is using \
-         it, so re-measure `canDrillCrossingBore` on unequal radii, update the \
-         records, and rewrite this. Files: {:?}",
-        callers.len(),
-        callers
+        mesh.crossing_bore_plan(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, 40.0, 32)
+            .is_ok(),
+        "equal radii are supposed to be planned \u{2014} the fixture or the plan changed, \
+         so the refusal below proves nothing"
     );
+
+    for radius in [39.0_f64, 25.0] {
+        let planned = mesh
+            .crossing_bore_plan(glam::DVec3::new(100.0, 0.0, 0.0), glam::DVec3::X, radius, 32)
+            .is_ok();
+        assert!(
+            !planned,
+            "a crossing bore of radius {radius} against a 40 bore is now PLANNED. \
+             That is cross-bore step 3 landing: the rational SSI \
+             (`intersect_rational_bspline_pair`) reached the drill. Update the \
+             plan's table, `project-cross-bore-kernel` and LOCKED #88, then \
+             rewrite this \u{2014} do not delete it."
+        );
+    }
 }
