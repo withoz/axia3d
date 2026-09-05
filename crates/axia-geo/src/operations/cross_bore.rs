@@ -881,6 +881,26 @@ impl crate::Mesh {
             );
         }
 
+        // ⚠ And then it tries it, on a copy.
+        //
+        // The tool asks this to decide whether to OFFER the crossing, and PR
+        // #113's rule is that an option which would fail is not an option. The
+        // conditions above are necessary and not sufficient: whether both walls
+        // end up carrying every shared point depends on where the drill's
+        // stations actually land, and 9, 11, 13 and 15 come out open where 8,
+        // 10, 14, 16, 30, 32 and 64 close. Nothing short of doing it answers
+        // that, so it is done here where the answer is free of consequences.
+        let mut dry = self.clone();
+        let done = dry
+            .drill_crossing_bore_inner(center, meet, n, other_axis, radius, other_radius, segments)
+            .is_ok()
+            && dry.verify_outward_normals().is_closed_solid;
+        if !done {
+            bail!(
+                "crossing bore: the two walls do not close along the seam at                  {segments} segments — try an even count, or use Boolean"
+            );
+        }
+
         Ok(CrossBorePlan { meet, axis: n, other_axis, other_radius })
     }
 

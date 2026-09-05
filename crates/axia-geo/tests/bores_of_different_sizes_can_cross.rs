@@ -365,6 +365,45 @@ fn a_count_the_seam_cannot_close_is_refused_with_the_mesh_untouched() {
     }
 }
 
+/// The plan says no to exactly what the drill cannot do.
+///
+/// ⚠ This is PR #113's rule and it is easy to lose: the tool asks
+/// `crossing_bore_plan` to decide whether to OFFER the crossing, so a plan that
+/// says `ok` on a case the drill then refuses puts a button in front of the
+/// user that cannot work. When unequal radii became possible the plan's
+/// necessary conditions stopped being sufficient — the seam still fails at some
+/// segment counts — so the plan tries it on a copy rather than predicting.
+#[test]
+fn the_plan_refuses_exactly_what_the_drill_cannot_do() {
+    for (radius, segments, should_plan) in [
+        (40.0_f64, 32u32, true),
+        (25.0, 32, true),  // step 3
+        (8.0, 32, true),
+        (40.0, 9, false),  // the seam does not close here
+        (25.0, 9, false),
+    ] {
+        let mesh = bored(40.0, segments);
+        let planned = mesh
+            .crossing_bore_plan(DVec3::new(BOX / 2.0, 0.0, 0.0), DVec3::X, radius, segments)
+            .is_ok();
+        assert_eq!(
+            planned, should_plan,
+            "r {radius} n {segments}: the plan said {planned}"
+        );
+
+        // And the drill agrees. Without this half the plan could be wrong in the
+        // other direction — refusing something that would have worked.
+        let mut mesh = bored(40.0, segments);
+        let drilled = mesh
+            .drill_crossing_bore(DVec3::new(BOX / 2.0, 0.0, 0.0), DVec3::X, radius, segments)
+            .is_ok();
+        assert_eq!(
+            drilled, planned,
+            "r {radius} n {segments}: the plan said {planned} and the drill said {drilled}"
+        );
+    }
+}
+
 /// Still refused, and for the reason given: the shared set needs axes that meet
 /// at right angles.
 #[test]
