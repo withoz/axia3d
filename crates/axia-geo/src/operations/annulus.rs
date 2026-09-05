@@ -69,6 +69,14 @@ pub enum AnnulusError {
         inner_radius: f64,
         outer_radius: f64,
     },
+
+    /// The inner's boundary already carries two faces, so there is no free side
+    /// left for a container to take as a hole. See [`reject_used_boundary`].
+    BoundaryAlreadyUsed {
+        face_id: u32,
+        edge_id: u32,
+        faces: usize,
+    },
 }
 
 impl std::fmt::Display for AnnulusError {
@@ -104,6 +112,14 @@ impl std::fmt::Display for AnnulusError {
                 "ADR-145: inner Circle not fully contained in outer Circle \
                  (center_distance={:.3} + inner_radius={:.3} > outer_radius={:.3})",
                 center_distance, inner_radius, outer_radius,
+            ),
+
+            Self::BoundaryAlreadyUsed { face_id, edge_id, faces } => write!(
+                f,
+                "ADR-145: inner face {} cannot become a hole, its boundary \
+                 edge {} already carries {} faces, so no side is free for \
+                 a container to take",
+                face_id, edge_id, faces,
             ),
         }
     }
@@ -484,17 +500,70 @@ fn strictly_larger(outer_size: f64, inner_size: f64) -> bool {
     outer_size > inner_size * (1.0 + 1e-9)
 }
 
+/// Is the inner's boundary still free to take a second face?
+///
+/// The reparent hands the inner's twin half-edges to the container as a HOLE, so
+/// it needs the other side of every boundary edge to be unclaimed. Asking the
+/// chosen twin whether it bears a face is a different question, and it is the
+/// one that was being asked: a radial ring may hold more than two half-edges,
+/// and a coplanar arrangement leaves exactly that.
+///
+/// Measured 2026-09-05 on the four-draw scene
+/// (`axia-core/tests/four_draws_that_used_to_break_the_manifold_contract.rs`).
+/// The sliver where a rect corner pokes outside a circle keeps its arc edge with
+/// three half-edges — two already bearing the sliver and its neighbouring
+/// arrangement cell, one free:
+///
+/// ```text
+///   EdgeId(47)   FaceId(14) sliver outer + FaceId(19) outer + FaceId(2) HOLE
+///   EdgeId(50)   FaceId(16) sliver outer + FaceId(18) outer + FaceId(24) HOLE
+/// ```
+///
+/// The third column is what the reparent added, and the twin it took was
+/// genuinely free — so the twin test passed and the edge still ended up with
+/// three faces. ADR-279 β removed one producer of that shape (a circle assigned
+/// to its parent AND its grandparent) by picking a single parent; asking the
+/// EDGE removes the rest, including the neighbour that is nobody's ancestor.
+///
+/// ⚠ Refusing is the whole answer here. Whether that sliver deserves some other
+/// treatment is a separate question, and guessing at one would put a third face
+/// back on the edge.
+fn reject_used_boundary(mesh: &Mesh, inner_face: FaceId) -> Result<(), AnnulusError> {
+    let Some(face) = mesh.faces.get(inner_face) else {
+        return Ok(());
+    };
+    let Ok(hes) = mesh.collect_loop_hes(face.outer().start) else {
+        return Ok(());
+    };
+    for h in hes {
+        let e = mesh.hes[h].edge();
+        if !mesh.edges.contains(e) {
+            continue;
+        }
+        let (faces, _) = mesh.get_faces_sharing_edge(e);
+        if faces.len() >= 2 {
+            return Err(AnnulusError::BoundaryAlreadyUsed {
+                face_id: inner_face.raw(),
+                edge_id: e.raw(),
+                faces: faces.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Shared gate for every "make `inner` a hole of `outer`" split, so both the
 /// pairwise legacy path (`detect_*_containment` → `split_face_by_inner_*`) and the
 /// innermost-parent pass (`assign_*`) are protected by one rule (메타-원칙 #4).
 ///
-/// Rejects the two ways a pair can be structurally un-nestable:
+/// Rejects the three ways a pair can be structurally un-nestable:
 /// 1. either face carries a CURVED surface — a wall is not a planar region
-///    (ADR-197 already excludes such faces from the coplanar re-derive), and
+///    (ADR-197 already excludes such faces from the coplanar re-derive),
 /// 2. the two regions are the same size — a Path B primitive's curved side and its
 ///    own cap share one rim circle, and without this they "contain" each other:
 ///    the cap gains an inner loop anchored at its own outer anchor and the solid
-///    is silently un-capped (`is_closed_solid` true → false).
+///    is silently un-capped (`is_closed_solid` true → false), and
+/// 3. the inner's boundary is already fully used — see [`reject_used_boundary`].
 fn reject_non_nestable(
     mesh: &Mesh,
     outer_face: FaceId,
@@ -516,7 +585,7 @@ fn reject_non_nestable(
             outer_radius: o,
         });
     }
-    Ok(())
+    reject_used_boundary(mesh, inner_face)
 }
 
 /// Which face currently owns this one's boundary as a HOLE, if any?
@@ -953,6 +1022,9 @@ pub fn split_face_by_inner_closed_curve_generic(
     outer_face: FaceId,
     inner_face: FaceId,
 ) -> Result<(), AnnulusError> {
+    // This one does not take the `reject_non_nestable` gate (a freeform closed
+    // curve has no comparable "size"), so it asks the boundary question itself.
+    reject_used_boundary(mesh, inner_face)?;
     use crate::boundary_kernel::geom2::{point_in_polygon_even_odd, Pip, Vec2};
 
     // 1. active
