@@ -9,14 +9,19 @@
 //! 3. Remapping each patch's local uv to the parent surface's global uv.
 //! 4. Stitching all chains across patch boundaries via topology assembly.
 //!
-//! **Non-rational only** for now. Rational NURBS surfaces need 4D-lifted
-//! Bezier extraction (separate work item).
+//! Two entry points, one pipeline: [`intersect_bspline_pair`] for polynomial
+//! surfaces and [`intersect_rational_bspline_pair`] for rational ones. The
+//! rational path differs only in where it divides -- extraction, splitting and
+//! Newton all run on the 4D lift, and the pruning boxes are taken from the
+//! ordinary control net, which bounds a rational patch exactly as it bounds a
+//! polynomial one when every weight is positive.
 
 use glam::DVec3;
 
 use super::SurfaceIntersection;
 use super::{newton, subdivide, topology};
 use super::super::bspline_surface;
+use super::super::nurbs_surface;
 
 /// Intersect two non-rational tensor B-spline surfaces.
 pub fn intersect_bspline_pair(
@@ -76,6 +81,71 @@ pub fn intersect_bspline_pair(
     }
 
     // Phase 2 — global topology assembly across all patches.
+    let chains = topology::assemble_chains(all_refined, tol * 100.0, tol);
+    Ok(chains)
+}
+
+/// Intersect two RATIONAL tensor NURBS surfaces.
+///
+/// The polynomial sibling above cannot take these: a circle is a rational
+/// quadratic, so every surface of revolution promoted from an analytic one --
+/// a cylinder, for instance -- arrives here with weights, and dropping them
+/// would silently intersect a different surface.
+pub fn intersect_rational_bspline_pair(
+    ctrl_grid_a: &[Vec<DVec3>], weights_a: &[Vec<f64>],
+    knots_u_a: &[f64], knots_v_a: &[f64],
+    deg_u_a: usize, deg_v_a: usize,
+    ctrl_grid_b: &[Vec<DVec3>], weights_b: &[Vec<f64>],
+    knots_u_b: &[f64], knots_v_b: &[f64],
+    deg_u_b: usize, deg_v_b: usize,
+    tol: f64,
+) -> anyhow::Result<Vec<SurfaceIntersection>> {
+    let patches_a = nurbs_surface::extract_rational_bezier_patches(
+        ctrl_grid_a, weights_a, knots_u_a, knots_v_a, deg_u_a, deg_v_a,
+    )?;
+    let patches_b = nurbs_surface::extract_rational_bezier_patches(
+        ctrl_grid_b, weights_b, knots_u_b, knots_v_b, deg_u_b, deg_v_b,
+    )?;
+
+    if patches_a.is_empty() || patches_b.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pad = 2.0 * tol;
+    let newton_tol = (tol * 1e-3).max(1e-9);
+    let mut all_refined: Vec<newton::RefinementResult> = Vec::new();
+
+    for pa in &patches_a {
+        let bbox_a = bbox_of_grid(&pa.ctrl);
+        for pb in &patches_b {
+            let bbox_b = bbox_of_grid(&pb.ctrl);
+            if !aabb_overlap_padded(bbox_a, bbox_b, pad) {
+                continue;
+            }
+            let candidates = subdivide::subdivide_intersect_rational(
+                &pa.ctrl, &pa.weights, &pb.ctrl, &pb.weights,
+                tol, subdivide::DEFAULT_MAX_DEPTH,
+            );
+            for cand in candidates {
+                let refined = newton::refine_rational_pair(
+                    &pa.ctrl, &pa.weights, &pb.ctrl, &pb.weights,
+                    cand.uv_a, cand.uv_b,
+                    newton_tol, newton::DEFAULT_NEWTON_MAX_ITER,
+                );
+                let global_uv_a = remap_local_to_global(refined.uv_a, pa.u_range, pa.v_range);
+                let global_uv_b = remap_local_to_global(refined.uv_b, pb.u_range, pb.v_range);
+                all_refined.push(newton::RefinementResult {
+                    uv_a: global_uv_a,
+                    uv_b: global_uv_b,
+                    point: refined.point,
+                    residual: refined.residual,
+                    iterations: refined.iterations,
+                    converged: refined.converged,
+                });
+            }
+        }
+    }
+
     let chains = topology::assemble_chains(all_refined, tol * 100.0, tol);
     Ok(chains)
 }

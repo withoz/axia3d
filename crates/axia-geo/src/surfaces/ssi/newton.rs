@@ -44,6 +44,118 @@ pub fn refine_bezier_pair(
     tol: f64,
     max_iter: usize,
 ) -> RefinementResult {
+    refine(
+        &PatchEval::Poly(patch_a_ctrl),
+        &PatchEval::Poly(patch_b_ctrl),
+        initial_uv_a,
+        initial_uv_b,
+        tol,
+        max_iter,
+    )
+}
+
+/// Refine a candidate intersection between two RATIONAL Bezier patches.
+///
+/// Same Newton, same Jacobian; only the surface and its partials come from the
+/// quotient `H/W` instead of a single polynomial. Pass unit weights and the
+/// answer is the polynomial one.
+pub fn refine_rational_pair(
+    patch_a_ctrl: &[Vec<DVec3>],
+    patch_a_weights: &[Vec<f64>],
+    patch_b_ctrl: &[Vec<DVec3>],
+    patch_b_weights: &[Vec<f64>],
+    initial_uv_a: (f64, f64),
+    initial_uv_b: (f64, f64),
+    tol: f64,
+    max_iter: usize,
+) -> RefinementResult {
+    refine(
+        &PatchEval::rational(patch_a_ctrl, patch_a_weights),
+        &PatchEval::rational(patch_b_ctrl, patch_b_weights),
+        initial_uv_a,
+        initial_uv_b,
+        tol,
+        max_iter,
+    )
+}
+
+/// A Bezier patch in the form Newton needs it: something that can give a point
+/// and its two partials at `(u, v)`.
+///
+/// `Poly` borrows the caller's grid and calls straight through, so the
+/// polynomial path performs exactly the arithmetic it did before this enum
+/// existed. `Rational` owns the 4D lift, built once per refinement rather than
+/// once per iteration.
+enum PatchEval<'a> {
+    Poly(&'a [Vec<DVec3>]),
+    Rational { h: Vec<Vec<DVec3>>, w: Vec<Vec<DVec3>> },
+}
+
+impl<'a> PatchEval<'a> {
+    fn rational(ctrl: &[Vec<DVec3>], weights: &[Vec<f64>]) -> PatchEval<'static> {
+        let h = ctrl
+            .iter()
+            .zip(weights.iter())
+            .map(|(p_row, w_row)| {
+                p_row.iter().zip(w_row.iter()).map(|(p, &w)| *p * w).collect()
+            })
+            .collect();
+        let w = weights
+            .iter()
+            .map(|w_row| w_row.iter().map(|&x| DVec3::new(x, 0.0, 0.0)).collect())
+            .collect();
+        PatchEval::Rational { h, w }
+    }
+
+    fn evaluate(&self, u: f64, v: f64) -> Option<DVec3> {
+        match self {
+            PatchEval::Poly(c) => bezier_patch::evaluate(c, u, v).ok(),
+            PatchEval::Rational { h, w } => {
+                let hp = bezier_patch::evaluate(h, u, v).ok()?;
+                let wp = bezier_patch::evaluate(w, u, v).ok()?.x;
+                if wp.abs() < MIN_WEIGHT {
+                    return None;
+                }
+                Some(hp / wp)
+            }
+        }
+    }
+
+    /// `dS/du` and `dS/dv`. For a rational patch this is the quotient rule
+    /// `(H' - W'.S) / W`, the same form `nurbs_surface::derivative_u` uses.
+    fn derivatives(&self, u: f64, v: f64) -> (DVec3, DVec3) {
+        match self {
+            PatchEval::Poly(c) => (
+                bezier_patch::derivative_u(c, u, v).unwrap_or(DVec3::ZERO),
+                bezier_patch::derivative_v(c, u, v).unwrap_or(DVec3::ZERO),
+            ),
+            PatchEval::Rational { h, w } => {
+                let wp = bezier_patch::evaluate(w, u, v).map(|p| p.x).unwrap_or(0.0);
+                if wp.abs() < MIN_WEIGHT {
+                    return (DVec3::ZERO, DVec3::ZERO);
+                }
+                let s = bezier_patch::evaluate(h, u, v).unwrap_or(DVec3::ZERO) / wp;
+                let h_u = bezier_patch::derivative_u(h, u, v).unwrap_or(DVec3::ZERO);
+                let h_v = bezier_patch::derivative_v(h, u, v).unwrap_or(DVec3::ZERO);
+                let w_u = bezier_patch::derivative_u(w, u, v).map(|p| p.x).unwrap_or(0.0);
+                let w_v = bezier_patch::derivative_v(w, u, v).map(|p| p.x).unwrap_or(0.0);
+                ((h_u - s * w_u) / wp, (h_v - s * w_v) / wp)
+            }
+        }
+    }
+}
+
+/// Lower bound on a usable weight, matching `nurbs_surface`.
+const MIN_WEIGHT: f64 = 1e-9;
+
+fn refine(
+    patch_a: &PatchEval<'_>,
+    patch_b: &PatchEval<'_>,
+    initial_uv_a: (f64, f64),
+    initial_uv_b: (f64, f64),
+    tol: f64,
+    max_iter: usize,
+) -> RefinementResult {
     let mut ua = initial_uv_a.0.clamp(0.0, 1.0);
     let mut va = initial_uv_a.1.clamp(0.0, 1.0);
     let mut ub = initial_uv_b.0.clamp(0.0, 1.0);
@@ -54,13 +166,13 @@ pub fn refine_bezier_pair(
     let mut last_point = DVec3::ZERO;
 
     while iter < max_iter {
-        let pa = match bezier_patch::evaluate(patch_a_ctrl, ua, va) {
-            Ok(p) => p,
-            Err(_) => break,
+        let pa = match patch_a.evaluate(ua, va) {
+            Some(p) => p,
+            None => break,
         };
-        let pb = match bezier_patch::evaluate(patch_b_ctrl, ub, vb) {
-            Ok(p) => p,
-            Err(_) => break,
+        let pb = match patch_b.evaluate(ub, vb) {
+            Some(p) => p,
+            None => break,
         };
         let f = pa - pb;
         residual = f.length();
@@ -72,10 +184,8 @@ pub fn refine_bezier_pair(
             };
         }
 
-        let dau = bezier_patch::derivative_u(patch_a_ctrl, ua, va).unwrap_or(DVec3::ZERO);
-        let dav = bezier_patch::derivative_v(patch_a_ctrl, ua, va).unwrap_or(DVec3::ZERO);
-        let dbu = bezier_patch::derivative_u(patch_b_ctrl, ub, vb).unwrap_or(DVec3::ZERO);
-        let dbv = bezier_patch::derivative_v(patch_b_ctrl, ub, vb).unwrap_or(DVec3::ZERO);
+        let (dau, dav) = patch_a.derivatives(ua, va);
+        let (dbu, dbv) = patch_b.derivatives(ub, vb);
 
         // J = [dau  dav  -dbu  -dbv]  (3×4)
         // We solve  J Δx = -F  via pseudo-inverse: Δx = Jᵀ (J Jᵀ)⁻¹ (-F).
