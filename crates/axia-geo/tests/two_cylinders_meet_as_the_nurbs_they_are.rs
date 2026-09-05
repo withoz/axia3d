@@ -58,6 +58,28 @@
 //! Nor does it claim a Boolean works. Routing `boolean_dispatch` at
 //! `NURBSSurface(rational)` and `Cylinder` is a separate decision — it changes
 //! what Boolean accepts, which is a large pinned surface.
+//!
+//! ## Two measured limits, both older than this change
+//!
+//! **The recursion never terminates by smallness at these scales.** Every
+//! candidate on every pair measured here came back `depth_capped` — a patch
+//! spans a quarter turn and the cylinder's whole 200 mm length, so
+//! `DEFAULT_MAX_DEPTH = 16` alternating splits leaves the box near 0.8 mm,
+//! above any tolerance worth asking for. So `tol` here is not the termination
+//! threshold it reads as; it controls how many seeds come out, and the accuracy
+//! is Newton's. Raising the depth does improve it, monotonically:
+//!
+//! ```text
+//!   worst deviation, r 40 x 8      depth 16   6.15e-3
+//!                                  depth 22   4.20e-4
+//!                                  depth 28   1.14e-4
+//! ```
+//!
+//! **A much smaller tube is answered less well.** At depth 16, r 40 x 8 sits at
+//! 6.1e-3 and r 40 x 4 at 3.3e-1, and in both cases exactly 8 points carry the
+//! error while the rest are at 1e-5. Neither number moves with `tol`. Both are
+//! the depth cap, which is the polynomial path's cap too — unchanged here, and
+//! worth its own measurement before anyone relies on small-radius crossings.
 
 use axia_geo::surfaces::ssi::{analytic, nurbs_wrapper};
 use axia_geo::surfaces::{cylinder, nurbs_surface, AnalyticSurface};
@@ -274,4 +296,154 @@ fn the_points_converge_as_the_tolerance_tightens() {
          0.1 -> {medium:e}, 0.01 -> {fine:e}"
     );
     assert!(fine < 1e-5, "at tol 0.01 the points are {fine:e} off");
+}
+
+/// Why the SPLIT has to happen in homogeneous coordinates, measured through
+/// the constructor the pipeline actually calls.
+///
+/// ⚠ The end-to-end tests above do NOT hold this. Dropping the weights in
+/// `PatchRegion::from_full_rational` and treating the patch as polynomial
+/// leaves all five of them green — the subdivision only places candidate seeds
+/// and Newton, still rational, pulls them onto the true surfaces anyway. So a
+/// scene is the wrong instrument for this one.
+///
+/// What is at stake is the pruning box. A sub-region's box is trusted to
+/// contain its piece of the surface; a branch whose box misses the other
+/// patch's is discarded and never looked at again. Split the ORDINARY control
+/// points with the polynomial de Casteljau and the resulting box does not
+/// contain the surface: measured on a quarter of a r=40 cylinder, samples of
+/// the true sub-patch fall outside by up to **1.7157 mm**, which is exactly
+/// `40 - 40·cos 45°` — the arc's bulge past its chord, thrown away.
+///
+/// An intersection lying in that sliver would be pruned and the curve would
+/// come back quietly incomplete.
+#[test]
+fn a_polynomial_split_of_a_rational_patch_loses_the_surface() {
+    use axia_geo::surfaces::ssi::subdivide::PatchRegion;
+
+    // A SHORT cylinder on purpose. `split_adaptive` picks the axis with the
+    // longer chord, and on a long one that is v — the straight sweep, where a
+    // polynomial split is exact because the weights are constant along it and
+    // the degree is 1. The arc lives in u, so the test has to make u the longer
+    // chord: quarter-arc chord is 40√2 ≈ 56.6, so 20 mm of length puts u first.
+    let (ctrl, w, ku, kv, du, dv) = promoted(&cyl(DVec3::Z, DVec3::X, 40.0, 10.0));
+    let patches = nurbs_surface::extract_rational_bezier_patches(&ctrl, &w, &ku, &kv, du, dv)
+        .expect("extracts");
+    let patch = &patches[0];
+
+    let bez_u = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    let bez_v = [0.0, 0.0, 1.0, 1.0];
+
+    // How far the true surface escapes a region's own box, over that region's
+    // own uv rectangle. `uv_bounds` says which half the split produced, so this
+    // does not have to know which axis `split_adaptive` chose.
+    let escapes = |region: &PatchRegion| -> (usize, f64) {
+        let ((u0, u1), (v0, v1)) = region.uv_bounds;
+        let (mn, mx) = region.bbox();
+        let (mut n, mut worst) = (0usize, 0.0_f64);
+        for su in 0..=40 {
+            for sv in 0..=8 {
+                let u = u0 + (u1 - u0) * su as f64 / 40.0;
+                let v = v0 + (v1 - v0) * sv as f64 / 8.0;
+                let p =
+                    nurbs_surface::evaluate(&patch.ctrl, &patch.weights, &bez_u, &bez_v, 2, 1, u, v)
+                        .expect("evaluates");
+                let d = (mn - p).max(p - mx).max(DVec3::ZERO).length();
+                if d > 1e-12 {
+                    n += 1;
+                    worst = worst.max(d);
+                }
+            }
+        }
+        (n, worst)
+    };
+
+    // The path in use: weights carried, split in 4D.
+    let rational = PatchRegion::from_full_rational(&patch.ctrl, &patch.weights);
+    let (r_left, r_right) = rational.split_adaptive().expect("a 3x2 patch splits");
+    // If the heuristic ever picks v here the control below goes quiet, because a
+    // v-split of this patch IS exact polynomially. Say so rather than pass.
+    let ((u0, u1), (v0, v1)) = r_left.uv_bounds;
+    assert!(
+        (u1 - u0 - 0.5).abs() < 1e-12 && (v1 - v0 - 1.0).abs() < 1e-12,
+        "expected the arc direction (u) to be split first, got u [{u0}, {u1}]          v [{v0}, {v1}] — a v-split would make this test vacuous"
+    );
+    for (name, half) in [("left", &r_left), ("right", &r_right)] {
+        let (n, worst) = escapes(half);
+        assert_eq!(
+            n, 0,
+            "the {name} half's box must contain its piece of the surface, but              {n} samples escape by up to {worst:e} — the split stopped being              homogeneous"
+        );
+    }
+
+    // The control: what dropping the weights would give. This half of the test
+    // is what makes the half above mean something — if a polynomial split were
+    // also sound, carrying the weights would be decoration.
+    let as_poly = PatchRegion::from_full(patch.ctrl.clone());
+    let (p_left, p_right) = as_poly.split_adaptive().expect("splits");
+    let (n_l, worst_l) = escapes(&p_left);
+    let (n_r, worst_r) = escapes(&p_right);
+    assert!(
+        n_l + n_r >= 10 && worst_l.max(worst_r) > 1.0,
+        "a polynomial split of these control points was expected to MISS the          surface ({} samples out, worst {:e}); if it now contains it, either the          promotion stopped being rational or the splitter changed, and the          reason for lifting is gone",
+        n_l + n_r,
+        worst_l.max(worst_r)
+    );
+}
+
+/// Why Newton's partials go through the quotient rule, measured in steps
+/// rather than in millimetres.
+///
+/// ⚠ Accuracy does not hold this either. Feed Newton `H'` instead of
+/// `(H' - W'·S)/W` and the answers still land on both cylinders in the easy
+/// cases — the residual test reads the *evaluated* points, which are rational
+/// and correct, so a wrong Jacobian only picks a worse direction and damping
+/// absorbs it. What it costs shows up in the count of steps, and on the hard
+/// cases in the answer:
+///
+/// ```text
+///                    quotient rule      H' alone
+///   r 40 x 40  iters      1312            5392      (4.1x)
+///   r 40 x 25  iters       896            2008      (2.2x)
+///   r 40 x  8  worst    6.15e-3         7.60e-2     (12x worse)
+/// ```
+///
+/// The step count is the sharper instrument, so that is what is pinned.
+#[test]
+fn newtons_partials_pay_for_themselves_in_steps() {
+    use axia_geo::surfaces::ssi::{newton, subdivide};
+
+    let (ca, wa, kua, kva, dua, dva) = promoted(&cyl(DVec3::Z, DVec3::X, 40.0, 100.0));
+    let (cb, wb, kub, kvb, dub, dvb) = promoted(&cyl(DVec3::X, DVec3::Y, 40.0, 100.0));
+    let pa = nurbs_surface::extract_rational_bezier_patches(&ca, &wa, &kua, &kva, dua, dva)
+        .expect("extracts");
+    let pb = nurbs_surface::extract_rational_bezier_patches(&cb, &wb, &kub, &kvb, dub, dvb)
+        .expect("extracts");
+
+    let (mut candidates, mut iterations, mut unconverged) = (0usize, 0usize, 0usize);
+    for a in &pa {
+        for b in &pb {
+            for c in subdivide::subdivide_intersect_rational(
+                &a.ctrl, &a.weights, &b.ctrl, &b.weights, 0.1, subdivide::DEFAULT_MAX_DEPTH,
+            ) {
+                candidates += 1;
+                let r = newton::refine_rational_pair(
+                    &a.ctrl, &a.weights, &b.ctrl, &b.weights, c.uv_a, c.uv_b, 1e-4, 50,
+                );
+                iterations += r.iterations;
+                if !r.converged {
+                    unconverged += 1;
+                }
+            }
+        }
+    }
+
+    assert_eq!(candidates, 640, "the seeding changed; the budget below was measured for 640");
+    assert_eq!(unconverged, 0, "every seed on this pair should converge");
+    assert!(
+        iterations < 2500,
+        "{iterations} Newton steps for {candidates} seeds. With the quotient rule \
+         this is 1312; feeding the homogeneous derivative straight in costs 5392. \
+         A number in that range means the partials stopped being rational."
+    );
 }
