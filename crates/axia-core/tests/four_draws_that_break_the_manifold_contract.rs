@@ -231,3 +231,131 @@ fn every_one_of_the_four_operations_is_needed() {
     // that never violates anything.
     assert_eq!(violations(&the_scene()), 4, "the full scene stopped failing");
 }
+
+// ── Where it comes from, and why nothing clears it ───────────────────────
+//
+// Measured 2026-09-05, after the reduction. Both halves are here because the
+// next person's first two questions are "which mechanism" and "why does the
+// repair not fix it", and answering them by hand costs an hour.
+
+/// One flag decides it, and it is not the one that draws.
+///
+/// ```text
+///   intersect  synth  rederive  freeform   faces   violations
+///     true     true     true      true       19        4
+///     false    true     true      true       19        4
+///     true     false    true      true       19        4
+///     true     true     FALSE     true       10        0
+///     true     true     true      false      19        4
+/// ```
+///
+/// The re-derive alone. It also nearly triples the faces on that plane — five
+/// without it, fourteen with — and four of those are 7 mm² slivers.
+#[test]
+fn only_the_re_derive_makes_them() {
+    let mut with = production();
+    let mut without = production();
+    without.face_rederive_on_draw = false;
+    for s in [&mut with, &mut without] {
+        rect(s);
+        solid(s);
+        circle(s, C110, 110.0);
+        circle(s, C70, 70.0);
+    }
+
+    assert_eq!(violations(&with), 4);
+    assert_eq!(
+        violations(&without),
+        0,
+        "turning the re-derive off no longer clears it, so something else makes \
+         them now and the diagnosis below is stale"
+    );
+    assert!(
+        active_faces(&with) > active_faces(&without),
+        "the re-derive stopped adding faces: {} against {}",
+        active_faces(&with),
+        active_faces(&without)
+    );
+
+    // The slivers. ⚠ Their existence is not the defect — a fine arrangement may
+    // well produce small regions. Two of them being STACKED on a larger face is.
+    let tiny = with
+        .mesh
+        .faces
+        .iter()
+        .filter(|(fid, f)| f.is_active() && with.mesh.face_outer_area(*fid) < 50.0)
+        .count();
+    assert!(tiny >= 2, "the 7 mm² slivers are gone; only {tiny} tiny faces left");
+}
+
+/// The repair declines, and the two pairs decline for different reasons.
+///
+/// ```text
+///   pair    in the detector's list?   verts     crossings / lens
+///   24x16          no                 1 / 4        0 / 4
+///    2x19          yes                8 / 7        2 / 5
+/// ```
+///
+/// The first is invisible to `detect_self_intersections` at all: its larger side
+/// is a one-vertex closed-curve face carrying a surface, which ADR-271 skips on
+/// purpose. And `coplanar_intersection_segments` gives it a non-empty lens with
+/// ZERO crossings — the shape ADR-128's vertex-on-edge fallback exists for,
+/// which does not fire here.
+///
+/// The second is seen, has an even crossing count, and passes every gate the
+/// repair applies — and the repair still changes nothing. ⚠ That may be correct:
+/// both faces are IN a volume, and two solids standing in the same place is a
+/// legal model (LOCKED #105). What is not legal is the non-manifold edge it
+/// leaves, so the answer is not simply "make the repair subtract one of them".
+#[test]
+fn the_repair_declines_and_the_two_pairs_decline_differently() {
+    use axia_geo::operations::coplanar as cop;
+
+    let mut s = the_scene();
+    let seen = s.mesh.detect_self_intersections().intersecting_pairs;
+
+    // Recover the stacked pairs from the report rather than naming face ids,
+    // which shift the moment anything upstream changes.
+    let report = s.mesh.verify_face_invariants();
+    let mut invisible = 0usize;
+    let mut passes_every_gate = 0usize;
+    for v in &report.violations {
+        let text = format!("{v}");
+        let ids: Vec<u32> = text
+            .split("FaceId(")
+            .skip(1)
+            .filter_map(|t| t.split(')').next().and_then(|n| n.parse().ok()))
+            .collect();
+        if ids.len() != 2 {
+            continue;
+        }
+        let (fa, fb) = (axia_geo::FaceId::new(ids[0]), axia_geo::FaceId::new(ids[1]));
+        let listed = seen
+            .iter()
+            .any(|(x, y)| (*x == fa && *y == fb) || (*x == fb && *y == fa));
+        let vc = |f| s.mesh.collect_loop_verts(s.mesh.faces[f].outer().start).map(|v| v.len()).unwrap_or(0);
+        let (big, small) = if vc(fa) >= vc(fb) { (fa, fb) } else { (fb, fa) };
+        let crossings = cop::coplanar_intersection_segments(&s.mesh, big, small)
+            .map(|ci| ci.crossings.len())
+            .unwrap_or(usize::MAX);
+        if !listed {
+            invisible += 1;
+        } else if crossings >= 2 && crossings % 2 == 0 {
+            passes_every_gate += 1;
+        }
+    }
+    assert!(invisible > 0, "no pair is invisible to the detector any more");
+    assert!(passes_every_gate > 0, "no pair reaches the repair's arithmetic any more");
+
+    // And asked to fix everything — an EMPTY "already overlapping" set, which is
+    // how you say "nothing here was broken before, repair what you find" — it
+    // changes nothing.
+    let nothing_was_already_broken = std::collections::HashSet::new();
+    let changed = s.subtract_double_covered_faces(&nothing_was_already_broken);
+    assert_eq!(
+        changed, 0,
+        "the repair now changes {changed} thing(s) on this scene. If it clears the \
+         violations, rewrite this file to guard that."
+    );
+    assert_eq!(violations(&s), 4, "the repair moved the violations without being asked");
+}
