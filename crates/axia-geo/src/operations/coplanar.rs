@@ -694,8 +694,40 @@ pub fn auto_intersect_coplanar(
     let lens_2d: Vec<(f64, f64)> = lens_3d.iter().map(|p| plane.project(*p)).collect();
 
     // Step 3: Collect 2D boundaries.
-    let poly_a_3d = collect_face_boundary(mesh, face_a)?;
-    let poly_b_3d = collect_face_boundary(mesh, face_b)?;
+    //
+    // From the LOOP, not from the reading. Whatever comes out of the walk below
+    // is lifted straight back into `add_face`, so every point in these polygons
+    // becomes a mesh vertex. Handing it a sampled boundary turns the arcs into
+    // vertices — measured on two 32-gon circles whose every edge carries an
+    // `Arc`:
+    //
+    // ```text
+    //            sub-face verts    Arc metadata
+    //   loop      20 / 34 / 34     kept
+    //   sampled  152 / 324 / 324   all gone      -> 148 non-manifold edges
+    // ```
+    //
+    // It also matches the numbering the crossings now come back in
+    // (`remap_to_loop_edge`). A loop of fewer than three vertices is a closed
+    // curve with no polygon to walk — Step 0 has usually polygonised it away by
+    // here, and where it has not, the reading is the only boundary there is and
+    // the crossings were left in its numbering to match.
+    let loop_boundary = |f: FaceId| -> Option<Vec<DVec3>> {
+        let start = mesh.faces.get(f)?.outer().start;
+        let verts = mesh.collect_loop_verts(start).ok()?;
+        if verts.len() < 3 {
+            return None;
+        }
+        verts.iter().map(|&v| mesh.vertex_pos(v).ok()).collect()
+    };
+    let poly_a_3d = match loop_boundary(face_a) {
+        Some(p) => p,
+        None => collect_face_boundary(mesh, face_a)?,
+    };
+    let poly_b_3d = match loop_boundary(face_b) {
+        Some(p) => p,
+        None => collect_face_boundary(mesh, face_b)?,
+    };
     let poly_a_2d: Vec<(f64, f64)> = poly_a_3d.iter().map(|p| plane.project(*p)).collect();
     let poly_b_2d_raw: Vec<(f64, f64)> = poly_b_3d.iter().map(|p| plane.project(*p)).collect();
 
