@@ -186,13 +186,48 @@ fn the_lens_follows_the_rim_now() {
         ci.lens_polygon.len()
     );
 
-    // The FACE's own chord area is unchanged at 1719.8 — the segment is still a
-    // 3-vertex loop carrying two arcs. Only the reading moved, which is what
-    // makes the difference a region rather than a rounding.
+    // The FACE is unchanged — still a 3-vertex loop carrying two arcs. Only the
+    // reading moved, which is what makes the difference a region rather than a
+    // rounding.
+    //
+    // ⚠ 1719.8 is the segment's TRUE area, not its chord area. Measured
+    // 2026-09-12, because two sessions in a row wrote down the opposite:
+    //
+    // ```text
+    //   shoelace of the 3-vertex loop      1264.91   <- the chord
+    //   face_outer_area                    1719.81   <- shoelace + arc bulge
+    //   R²·acos(d/R) − d·√(R²−d²)          1719.81   <- closed form, R=110 d=90
+    // ```
+    //
+    // `face_outer_area` adds `loop_curve_bulge` and is EXACT here, so it is not
+    // lying about this face — the 1264.91 is. Both numbers are pinned so they
+    // cannot be conflated again.
     let area = m.face_outer_area(segment);
     assert!(
-        (area - 1719.8).abs() < 1.0,
-        "the segment's chord area moved: {area}"
+        (area - 1719.81).abs() < 0.01,
+        "the segment's true area moved: {area} — this is shoelace + bulge and \
+         matches the closed form, so a drift here is the face changing, not the \
+         reading"
+    );
+
+    let verts = m
+        .collect_loop_verts(m.faces[segment].outer().start)
+        .expect("the segment's loop");
+    let pts: Vec<glam::DVec3> = verts
+        .iter()
+        .map(|&v| m.vertex_pos(v).expect("a position"))
+        .collect();
+    assert_eq!(pts.len(), 3, "the segment is still a 3-vertex loop");
+    let mut area_vec = glam::DVec3::ZERO;
+    for i in 1..pts.len() - 1 {
+        area_vec += (pts[i] - pts[0]).cross(pts[i + 1] - pts[0]);
+    }
+    let chord = area_vec.length() * 0.5;
+    assert!(
+        (chord - 1264.91).abs() < 0.01,
+        "the chord polygon measures {chord}, not 1264.91 — THIS is the number \
+         that under-reports the segment by 455 mm², and it is what a reader \
+         taking the chord would have handed the split"
     );
 }
 
