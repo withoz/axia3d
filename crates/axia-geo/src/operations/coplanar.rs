@@ -1050,12 +1050,14 @@ fn collect_face_boundary(mesh: &Mesh, face_id: FaceId) -> Result<Vec<DVec3>> {
 
 /// The boundary, plus which LOOP EDGE each of its segments lies on.
 ///
-/// See [`Mesh::loop_polygon_owned`]. Today the two numberings agree because the
-/// chord reading emits one segment per loop edge; this is what lets the detector
-/// keep handing out indices a caller can use against `collect_loop_verts` if the
-/// reading ever stops being the chord.
+/// See [`Mesh::loop_polygon_owned`]. The two numberings no longer agree — an arc
+/// reading emits many segments per loop edge — which is exactly why the owner
+/// column exists: `remap_to_loop_edge` uses it to translate a crossing's index
+/// back onto the loop every consumer rebuilds from `collect_loop_verts`.
 fn collect_face_boundary_owned(mesh: &Mesh, face_id: FaceId) -> Result<(Vec<DVec3>, Vec<usize>)> {
-    let face = mesh.faces.get(face_id)
+    let face = mesh
+        .faces
+        .get(face_id)
         .ok_or_else(|| anyhow::anyhow!("face {:?} not found", face_id))?;
     if !face.is_active() {
         bail!("face {:?} is inactive", face_id);
@@ -1064,43 +1066,16 @@ fn collect_face_boundary_owned(mesh: &Mesh, face_id: FaceId) -> Result<(Vec<DVec
     if outer_start.is_null() {
         bail!("face {:?} has null outer loop", face_id);
     }
-    let verts = mesh.collect_loop_verts(outer_start)?;
-    if verts.len() >= 3 {
-        let positions: Vec<DVec3> = verts.iter()
-            .map(|&vid| mesh.verts.get(vid).map(|v| v.pos()).unwrap_or(DVec3::ZERO))
-            .collect();
-        let owners: Vec<usize> = (0..positions.len()).collect();
-        return Ok((positions, owners));
-    }
-    // A kernel-native closed curve (ADR-089) carries its whole boundary on one
-    // self-loop edge, so the loop holds a single anchor vertex and the count
-    // above says "fewer than 3". The face is not degenerate — its shape lives in
-    // the curve. Sample it, the same way the self-intersection detector does,
-    // so a drawn circle takes part in coplanar work instead of being invisible
-    // to it. The mesh is untouched: this polygon is for the arithmetic only, and
-    // the face keeps its arc.
-    use crate::curves::CurveOps;
-    let curve = mesh
-        .hes
-        .get(outer_start)
-        .and_then(|he| mesh.edges.get(he.edge()))
-        .and_then(|e| e.curve())
-        .ok_or_else(|| anyhow::anyhow!(
-            "face {:?} boundary has fewer than 3 verts and no curve", face_id))?;
-    let pts = curve.tessellate(CURVE_BOUNDARY_CHORD_TOL, mesh)?;
-    // `tessellate` closes the polyline by repeating the first point.
-    let pts = match pts.split_last() {
-        Some((last, head)) if head.first().map_or(false, |f| f.abs_diff_eq(*last, 1e-9)) => {
-            head.to_vec()
-        }
-        _ => pts,
-    };
-    if pts.len() < 3 {
-        bail!("face {:?} curve sampled to fewer than 3 points", face_id);
-    }
-    // A closed curve is one self-loop edge — nothing for a caller to index.
-    let owners = vec![0usize; pts.len()];
-    Ok((pts, owners))
+    // The rim, not the chord. `loop_polygon_owned` handles both a polygon loop
+    // and the one self-loop half-edge a closed curve is (ADR-089), so the two
+    // branches this function used to carry are the same call now — which is
+    // what makes this the FOURTH reader joining the other three rather than a
+    // fourth way of reading.
+    mesh.loop_polygon_owned(
+        outer_start,
+        crate::mesh::ChordTol::fixed(CURVE_BOUNDARY_CHORD_TOL).following_arcs(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("face {:?} has no readable boundary", face_id))
 }
 
 /// Shoelace signed area (CCW > 0).
