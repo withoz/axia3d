@@ -46,10 +46,28 @@
 //! contained in the rect and shares its whole top edge, so "0 crossings,
 //! containment" is what you expect, and 2 looks like the arc sampling turning a
 //! shared boundary into two false crossings. It is not: **both readers say 2**.
-//! That was written down wrong once already; the assertion below is here so it
-//! cannot be written down wrong again.
 //!
-//! What differs is the LENS — the overlap polygon handed to the split.
+//! ⚠ Nor the lens, though the lens is where the difference first becomes
+//! visible (3 points against 35). That was written down as the discriminator
+//! once, and it is a symptom.
+//!
+//! ## What it actually is: the crossing INDICES
+//!
+//! A `Crossing` carries `face_a_edge` / `face_b_edge` — indices into the
+//! polygon **the detector built**, via `collect_face_boundary`. The repair in
+//! `Scene::subtract_double_covered_faces` then walks polygons it builds itself,
+//! from `collect_loop_verts` — raw loop vertices. With today's chord reader
+//! those two are the same polygon and the indices land; with arcs they are not:
+//!
+//! ```text
+//!   chord   face_b_edge max  2   clip has 3 edges   in range
+//!   arcs    face_b_edge max 34   clip has 3 edges   OUT OF RANGE
+//! ```
+//!
+//! So the contract is the bug: `CoplanarIntersection` hands out indices whose
+//! meaning depends on a polygon it does not return, and every consumer has to
+//! rebuild that polygon identically by hand. Making the four readers one is
+//! blocked on making the detector hand back the polygons it indexed.
 
 use axia_geo::curves::AnalyticCurve;
 use axia_geo::mesh::ChordTol;
@@ -158,14 +176,12 @@ fn both_readers_call_it_a_two_crossing_overlap() {
     assert_eq!(back.crossings.len(), 2, "the verdict depends on argument order");
 }
 
-/// The discriminator, pinned: the LENS. Today's chord reader hands the split a
-/// 3-point triangle; following the arcs hands it 35 points that bulge past the
-/// triangle by the sagitta.
+/// Where the difference first becomes visible: the LENS. Today's chord reader
+/// hands the split a 3-point triangle; following the arcs hands it 35 points
+/// that bulge past the triangle by the sagitta.
 ///
-/// ⚠ When the unification lands, THIS is the assertion that fires — not the
-/// crossing one. The fix belongs wherever the lens is consumed, and the failure
-/// message should be read as "the split now sees a different region", not as
-/// "the detector broke".
+/// ⚠ This is a symptom, not the cause — see `the_crossing_indices_are_only_
+/// valid_against_the_detectors_own_polygon` below for what actually breaks.
 #[test]
 fn the_lens_is_the_chord_triangle_not_the_arc_region() {
     let (m, rect, segment) = segment_and_rect();
@@ -188,5 +204,48 @@ fn the_lens_is_the_chord_triangle_not_the_arc_region() {
     assert!(
         (area - 1719.8).abs() < 1.0,
         "the segment's chord area moved: {area}"
+    );
+}
+
+/// THE CAUSE, pinned separately from its symptom.
+///
+/// A `Crossing` carries `face_a_edge` / `face_b_edge`: indices into the polygon
+/// `collect_face_boundary` built. `Scene::subtract_double_covered_faces` then
+/// walks polygons built from `collect_loop_verts` — the raw loop vertices — and
+/// hands those indices to `polygon_difference_by_clip`. Nothing states that the
+/// two have to be the same polygon, and with today's reader they happen to be.
+///
+/// Measured on this pair:
+///
+/// ```text
+///   chord   face_b_edge max  2   the clip loop has 3 edges   in range
+///   arcs    face_b_edge max 34   the clip loop has 3 edges   OUT OF RANGE
+/// ```
+///
+/// ⚠ Unifying the readers is blocked on this, not on the lens. The fix is for
+/// the detector to return the polygons it indexed, so a consumer cannot index
+/// the wrong one — the same "one source" rule the unification is about, one
+/// level up.
+#[test]
+fn the_crossing_indices_are_only_valid_against_the_detectors_own_polygon() {
+    let (m, rect, segment) = segment_and_rect();
+    let ci = cop::coplanar_intersection_segments(&m, rect, segment).expect("coplanar");
+
+    // What a consumer rebuilds by hand, the way the repair does.
+    let clip_loop = m
+        .collect_loop_verts(m.faces[segment].outer().start)
+        .expect("the segment's loop");
+
+    let max_clip_edge = ci
+        .crossings
+        .iter()
+        .map(|c| c.face_b_edge)
+        .max()
+        .expect("two crossings");
+
+    assert!(
+        max_clip_edge < clip_loop.len(),
+        "a crossing indexes clip edge {max_clip_edge} but the loop the repair          walks has only {} edges. That is the unification's real blocker: the          detector's indices refer to a polygon it does not return. If this now          fires on today's reader, something changed `collect_face_boundary` and          every consumer that rebuilds the polygon by hand is reading garbage.",
+        clip_loop.len()
     );
 }
