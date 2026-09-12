@@ -2645,7 +2645,6 @@ impl Mesh {
     /// diagonal corruption of `find_intersections`).
     /// ADR-276 Phase 2 building block — verified via `adr276_phase2_audit`; not
     /// yet on the live path (pending split-by-chain, see boolean_impl Stage 1).
-    #[allow(dead_code)]
     fn face_polygon_plane(&self, fid: FaceId) -> Option<(Vec<DVec3>, DVec3, DVec3)> {
         let face = self.faces.get(fid)?;
         if !face.is_active() { return None; }
@@ -2662,7 +2661,6 @@ impl Mesh {
     /// the plane with normal `plane_n`. `dir` must lie in that plane (it does:
     /// dir = n_a × n_b ⊥ both normals). Returns the (min_t, max_t) arc-length
     /// interval where the line is inside the polygon, or None (< 2 crossings).
-    #[allow(dead_code)]
     fn clip_line_to_convex_poly(
         poly: &[DVec3], plane_n: DVec3, line_o: DVec3, line_dir: DVec3,
     ) -> Option<(f64, f64)> {
@@ -2700,7 +2698,6 @@ impl Mesh {
     /// to BOTH face polygons. This yields the exact rectangular-loop segments of
     /// a box-box intersection (no fan-triangulation diagonals), so
     /// `split_faces_by_intersections` produces watertight polygon sub-faces.
-    #[allow(dead_code)]
     fn find_intersections_polygonal(
         &self, solid_a: &SolidData, solid_b: &SolidData,
     ) -> Vec<IntersectionSegment> {
@@ -2740,7 +2737,6 @@ impl Mesh {
     /// If a boundary vertex already sits there, reuse it; otherwise find the
     /// boundary EDGE containing `p` and `split_edge` to insert it. Returns the
     /// vertex id, or None if `p` is not on the boundary.
-    #[allow(dead_code)]
     fn ensure_boundary_vertex(&mut self, face_id: FaceId, p: DVec3, tol: f64) -> Option<VertId> {
         let start = self.faces.get(face_id)?.outer().start;
         let loop_verts = self.collect_loop_verts(start).ok()?;
@@ -2803,7 +2799,6 @@ impl Mesh {
     }
 
     /// chain edges are created. Returns the resulting sub-faces, or None.
-    #[allow(dead_code)]
     fn apply_chain_split(&mut self, face_id: FaceId, chain: &[DVec3], material: MaterialId) -> Option<Vec<FaceId>> {
         use crate::operations::face_split::split_face_by_chain;
         if chain.len() < 2 { return None; }
@@ -2834,7 +2829,6 @@ impl Mesh {
     /// annulus (outer + loop-as-hole) + an inner disk (the loop). For subtract,
     /// classify keeps the annulus (outside B) + drops the disk (inside B). Used
     /// for the notch-mouth / slot-exit holes. Returns [annulus, disk] or None.
-    #[allow(dead_code)]
     fn apply_closed_loop_split(&mut self, face_id: FaceId, loop_pts: &[DVec3], material: MaterialId) -> Option<Vec<FaceId>> {
         if loop_pts.len() < 3 { return None; }
         let face = self.faces.get(face_id)?;
@@ -2895,7 +2889,6 @@ impl Mesh {
     /// only). MVP: exactly one chain per face (box-box corner or straight cut).
     /// 0 / multi-chain or an unrealizable chain → face kept whole (the caller's
     /// closed-solid gate then rolls back any non-watertight result).
-    #[allow(dead_code)]
     fn split_faces_by_chains(
         &mut self,
         face_ids: &[FaceId],
@@ -9124,7 +9117,6 @@ fn arrange_polygon_2d(poly: &[Pt2], cuts: &[(Pt2, Pt2)]) -> Vec<Region2D> {
 /// degree-2 nodes are interior). Points are position-deduped (0.1μm grid).
 /// For a box-box corner this returns one 3-point chain (boundary, corner,
 /// boundary); for a straight cut, one 2-point chain.
-#[allow(dead_code)]
 fn assemble_chains(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
     fn key(p: DVec3) -> (i64, i64, i64) {
         ((p.x * 10000.0).round() as i64, (p.y * 10000.0).round() as i64, (p.z * 10000.0).round() as i64)
@@ -9179,7 +9171,6 @@ fn assemble_chains(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
 /// (cycles: every node degree-2, no open ends). Complements `assemble_chains`
 /// (open only). A box-box notch/slot mouth is one such closed loop → punched as
 /// a hole. Returns each loop as an ordered ring of 3D points (first != last).
-#[allow(dead_code)]
 fn assemble_closed_loops(segs: &[(DVec3, DVec3)]) -> Vec<Vec<DVec3>> {
     fn key(p: DVec3) -> (i64, i64, i64) {
         ((p.x * 10000.0).round() as i64, (p.y * 10000.0).round() as i64, (p.z * 10000.0).round() as i64)
@@ -10414,7 +10405,6 @@ fn imprint_curved_face(
 }
 
 /// 두 face의 AABB가 겹치는지 빠른 사전 필터
-#[allow(dead_code)] // find_intersections에서 호출 (현재 비활성 경로)
 /// 두 솔리드 전체의 AABB가 겹치는지 검사 (빠른 사전 필터)
 fn solid_aabb_overlap(a: &SolidData, b: &SolidData) -> bool {
     if a.all_triangles.is_empty() || b.all_triangles.is_empty() {
@@ -10428,7 +10418,6 @@ fn solid_aabb_overlap(a: &SolidData, b: &SolidData) -> bool {
         && a_min.z <= b_max.z + margin && a_max.z >= b_min.z - margin
 }
 
-#[allow(dead_code)] // find_intersections에서 호출 (현재 비활성 경로)
 fn face_aabb_overlap(a: &FaceTriangles, b: &FaceTriangles) -> bool {
     let (a_min, a_max) = compute_aabb(&a.tris);
     let (b_min, b_max) = compute_aabb(&b.tris);
@@ -10439,7 +10428,6 @@ fn face_aabb_overlap(a: &FaceTriangles, b: &FaceTriangles) -> bool {
         && a_min.z <= b_max.z + margin && a_max.z >= b_min.z - margin
 }
 
-#[allow(dead_code)] // solid_aabb_overlap, face_aabb_overlap에서 호출
 fn compute_aabb(tris: &[(DVec3, DVec3, DVec3)]) -> (DVec3, DVec3) {
     let mut min = DVec3::splat(f64::MAX);
     let mut max = DVec3::splat(f64::MIN);

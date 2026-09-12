@@ -153,7 +153,6 @@ pub fn offset_surface_robust(
 
 // Suppress unused-import warning for `bail` (kept for future patch
 // support arm).
-#[allow(dead_code)]
 fn _phantom_bail_user() -> Result<()> { bail!("phantom"); }
 
 // ────────────────────────────────────────────────────────────────────

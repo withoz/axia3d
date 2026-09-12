@@ -19974,7 +19974,6 @@ mod tests {
             report.violations.iter().take(3).cloned().collect::<Vec<_>>().join("\n"));
     }
 
-    #[allow(dead_code)]
     #[test]
     fn test_user_stress_bisect_20_plus_1cross_diag() {
         let mut scene = Scene::new();
@@ -20004,7 +20003,6 @@ mod tests {
         eprintln!("[20+1X-no-large] active_faces={}, orphan_edges={}", active_faces, orphans);
     }
 
-    #[allow(dead_code)]
     #[test]
     fn test_user_stress_bisect_20_2large_1cross_diag() {
         let mut scene = Scene::new();
@@ -20039,7 +20037,6 @@ mod tests {
             active_faces, orphans, report.violations.len());
     }
 
-    #[allow(dead_code)]
     #[test]
     fn test_user_stress_bisect_20_2large_2cross_diag() {
         let mut scene = Scene::new();
@@ -20076,7 +20073,6 @@ mod tests {
         // Diagnostic only — known limitation: thin crossing in dense ring 환경.
     }
 
-    #[allow(dead_code)]
     #[test]
     fn test_user_stress_bisect_20_plus_2large_diag() {
         let mut scene = Scene::new();

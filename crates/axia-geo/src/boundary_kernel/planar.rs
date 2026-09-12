@@ -3,7 +3,6 @@
 //! **ADR-186 Phase 3 β-2** — AixiAcad `boundary_kernel/planar.rs` (ADR-057)
 //! 1:1 faithful port. geom2 만 의존, deterministic (BTreeMap), zero-dep.
 
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;

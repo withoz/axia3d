@@ -74,7 +74,6 @@ pub enum P7EnforceError {
     /// β-1 scope sentinel — `rebuild_as_ring_face` (β-2) 미구현 시 반환.
     /// β-2 활성 후 본 variant 는 *deprecated* — 정상 path 는 `P7EnforceResult`.
     /// 회귀 자산 backward-compat 위해 variant 자체는 보존.
-    #[allow(dead_code)]
     RebuildDeferred {
         component_count: usize,
         hole_loop_lengths: Vec<usize>,
