@@ -15299,27 +15299,73 @@ impl Mesh {
     /// self-loop does not bound a region. The closing duplicate point is
     /// dropped, so the result is the unique corners.
     pub fn loop_polygon(&self, start: crate::HeId, tol: ChordTol) -> Option<Vec<DVec3>> {
+        self.loop_polygon_owned(start, tol).map(|(pts, _)| pts)
+    }
+
+    /// The same polygon, plus WHICH LOOP EDGE each of its segments lies on.
+    ///
+    /// `owners[k]` is the loop-edge index that segment `k` (`pts[k] → pts[k+1]`)
+    /// belongs to, numbered the way a caller reading `collect_loop_verts` would
+    /// number them: edge `j` joins vertex `j` to vertex `j+1`.
+    ///
+    /// ⚠ Why this exists. An index into THIS polygon is not an index into the
+    /// loop once arcs are followed — the arc between two vertices becomes many
+    /// segments. Every consumer that takes a crossing's `edge` field and applies
+    /// it to a polygon it rebuilt from `collect_loop_verts` is assuming the two
+    /// agree, and today they only agree because the chord reading emits exactly
+    /// one segment per loop edge. Measured on a circular segment sharing its
+    /// chord with a rect (2026-09-12):
+    ///
+    /// ```text
+    ///   chord   largest crossing edge index  2   the loop has 3 edges
+    ///   arcs    largest crossing edge index 34   the loop has 3 edges
+    /// ```
+    ///
+    /// With owners, the detector can hand back indices in the loop's own
+    /// numbering and the assumption stops being load-bearing.
+    ///
+    /// For a loop with fewer than three vertices — a closed curve, which is one
+    /// self-loop half-edge (ADR-089) — there is no loop polygon to index, so
+    /// every segment is owned by edge 0 and a caller must use the points here
+    /// rather than rebuilding.
+    pub fn loop_polygon_owned(
+        &self,
+        start: crate::HeId,
+        tol: ChordTol,
+    ) -> Option<(Vec<DVec3>, Vec<usize>)> {
         if let Ok(verts) = self.collect_loop_verts(start) {
             if verts.len() >= 3 {
                 if !tol.follow_arc_edges {
                     let pts: Vec<DVec3> =
                         verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
-                    return (pts.len() == verts.len()).then_some(pts);
+                    // One segment per loop edge, so the numbering is the same.
+                    let owners: Vec<usize> = (0..pts.len()).collect();
+                    return (pts.len() == verts.len()).then_some((pts, owners));
                 }
                 // Follow each arc edge to its rim rather than cutting across it.
                 let hes = self.collect_loop_hes(start).unwrap_or_default();
-                let mut pts: Vec<DVec3> = Vec::with_capacity(verts.len());
+                let n = verts.len();
+                let mut pts: Vec<DVec3> = Vec::with_capacity(n);
+                let mut owners: Vec<usize> = Vec::with_capacity(n);
                 for (i, &v) in verts.iter().enumerate() {
                     let Ok(dst) = self.vertex_pos(v) else { return None };
                     if i < hes.len() {
                         let prev = if i == 0 { *verts.last().unwrap() } else { verts[i - 1] };
                         if let Ok(o) = self.vertex_pos(prev) {
-                            pts.extend(self.he_arc_fill_points(hes[i], o, dst, tol.base));
+                            // The fill sits on the edge ARRIVING at `v`, which in
+                            // the caller's numbering is the one before `i`.
+                            let arriving = (i + n - 1) % n;
+                            for f in self.he_arc_fill_points(hes[i], o, dst, tol.base) {
+                                pts.push(f);
+                                owners.push(arriving);
+                            }
                         }
                     }
+                    // And the segment LEAVING `v` is edge `i`.
                     pts.push(dst);
+                    owners.push(i);
                 }
-                return (pts.len() >= 3).then_some(pts);
+                return (pts.len() >= 3).then_some((pts, owners));
             }
         }
         use crate::curves::AnalyticCurve;
@@ -15366,7 +15412,8 @@ impl Mesh {
         } else {
             &pts[..]
         };
-        (unique.len() >= 3).then(|| unique.to_vec())
+        // One self-loop edge: nothing to index against, so everything is edge 0.
+        (unique.len() >= 3).then(|| (unique.to_vec(), vec![0usize; unique.len()]))
     }
 
     /// The area ONE loop encloses — polygon or closed curve, outer or hole.
