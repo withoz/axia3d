@@ -427,7 +427,6 @@ impl Scene {
 
 // Use MaterialId to silence unused-import warning while we compile against
 //   the public API surface (future recovery may want to preserve material).
-#[allow(dead_code)]
 fn _material_hint(_m: MaterialId) {}
 
 #[cfg(test)]

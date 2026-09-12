@@ -22,7 +22,6 @@
 //!    - Intersection: split + active 에서 swap + 새 인접 pair check.
 //! ```
 
-#![allow(dead_code)]
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;

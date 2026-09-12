@@ -15,7 +15,6 @@
 //! - 교차하는 곡선만 (standalone/containment hole = 후속 step)
 //! - collinear-overlap line 미처리 (별도)
 
-#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::f64::consts::PI;

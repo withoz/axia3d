@@ -150,7 +150,6 @@ fn inject_via_add_face(
 pub use glam::DVec3 as ImportPos;
 
 // Suppress unused for MVP — inner_loops field reserved for future sub-step.
-#[allow(dead_code)]
 fn _silence_unused_inner_loops_in_mvp() {
     let _: Vec<Vec<DVec3>> = vec![];
 }

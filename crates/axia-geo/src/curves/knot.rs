@@ -540,7 +540,6 @@ impl AnalyticCurve {
 }
 
 // Suppress unused import warning (DVec4 reserved for future 4D path)
-#[allow(dead_code)]
 fn _force_use_dvec4() -> DVec4 { DVec4::ZERO }
 
 // ────────────────────────────────────────────────────────────────────

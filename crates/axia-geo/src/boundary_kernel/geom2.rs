@@ -7,7 +7,6 @@
 //! `orient2d_sign` 은 `robust` crate (ADR-058 Shewchuk 1.1, deterministic) 사용 —
 //! "가벼움=속도" 정정 (빠름 AND 정확, 메타-원칙 #15).
 
-#![allow(dead_code)]
 
 /// 2D 벡터 (kernel 내부 전용).
 #[derive(Clone, Copy, Debug, PartialEq)]

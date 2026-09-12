@@ -279,5 +279,4 @@ mod tests {
 // Suppress unused-import warning when BRepFilletResult re-export is
 // not directly referenced from other modules yet (Phase O integration
 // will use it).
-#[allow(dead_code)]
 fn _phantom_brep_fillet_result() -> Option<BRepFilletResult> { None }
