@@ -129,8 +129,8 @@ pub fn coplanar_intersection_segments(
     face_a: FaceId,
     face_b: FaceId,
 ) -> Result<CoplanarIntersection> {
-    let poly_a = collect_face_boundary(mesh, face_a)?;
-    let poly_b = collect_face_boundary(mesh, face_b)?;
+    let (poly_a, owners_a) = collect_face_boundary_owned(mesh, face_a)?;
+    let (poly_b, owners_b) = collect_face_boundary_owned(mesh, face_b)?;
 
     let normal_a = face_unit_normal(&poly_a)
         .ok_or_else(|| anyhow::anyhow!(
@@ -356,7 +356,66 @@ pub fn coplanar_intersection_segments(
         }
     }
 
+    // ── Hand the indices back in the LOOP's numbering ───────────────────
+    //
+    // Until here `face_*_edge` indexes the polygon this function READ. A caller
+    // applies it to a polygon it rebuilt from `collect_loop_verts`, and the two
+    // are the same only while the reading is the chord. Translating here means a
+    // caller never has to know which reading was used.
+    //
+    // `t` survives as a projection onto the loop edge's chord: it is consumed
+    // only for ORDERING — `polygon_difference_by_clip` sorts on `base_t` and
+    // never reads `clip_t` at all — so any parameter that increases along the
+    // edge does. The projection is exactly today's `t` when the segment IS the
+    // loop edge, which is why this translation is an identity on the chord
+    // reading and changes nothing that works now.
+    for c in &mut crossings {
+        remap_to_loop_edge(mesh, face_a, &owners_a, &mut c.face_a_edge, &mut c.face_a_t, c.point);
+        remap_to_loop_edge(mesh, face_b, &owners_b, &mut c.face_b_edge, &mut c.face_b_t, c.point);
+    }
+
     Ok(CoplanarIntersection { plane, lens_polygon, crossings })
+}
+
+/// Move one crossing's edge index from the read polygon's numbering into the
+/// loop's, and re-express `t` along that loop edge.
+///
+/// A loop with fewer than three vertices is a closed curve (ADR-089): there is
+/// no loop polygon to index, so the read polygon IS the only numbering and this
+/// leaves the crossing alone.
+fn remap_to_loop_edge(
+    mesh: &Mesh,
+    face_id: FaceId,
+    owners: &[usize],
+    edge: &mut usize,
+    t: &mut f64,
+    point: DVec3,
+) {
+    let Some(&owner) = owners.get(*edge) else { return };
+    let Some(face) = mesh.faces.get(face_id) else { return };
+    let Ok(verts) = mesh.collect_loop_verts(face.outer().start) else { return };
+    if verts.len() < 3 {
+        return;
+    }
+    let n = verts.len();
+    if owner >= n {
+        return;
+    }
+    *edge = owner;
+    let (Ok(a), Ok(b)) = (
+        mesh.vertex_pos(verts[owner]),
+        mesh.vertex_pos(verts[(owner + 1) % n]),
+    ) else {
+        return;
+    };
+    let dir = b - a;
+    let len2 = dir.length_squared();
+    if len2 <= f64::EPSILON {
+        return;
+    }
+    // Clamped inside (0, 1): a crossing that lands on a vertex must still sort
+    // after that vertex's own start, the way `VERTEX_INCIDENCE_T_OFFSET` does.
+    *t = ((point - a).dot(dir) / len2).clamp(VERTEX_INCIDENCE_T_OFFSET, 1.0 - VERTEX_INCIDENCE_T_OFFSET);
 }
 
 /// ADR-128 — Detect vertex-on-edge / vertex-on-vertex incidences and
@@ -635,8 +694,40 @@ pub fn auto_intersect_coplanar(
     let lens_2d: Vec<(f64, f64)> = lens_3d.iter().map(|p| plane.project(*p)).collect();
 
     // Step 3: Collect 2D boundaries.
-    let poly_a_3d = collect_face_boundary(mesh, face_a)?;
-    let poly_b_3d = collect_face_boundary(mesh, face_b)?;
+    //
+    // From the LOOP, not from the reading. Whatever comes out of the walk below
+    // is lifted straight back into `add_face`, so every point in these polygons
+    // becomes a mesh vertex. Handing it a sampled boundary turns the arcs into
+    // vertices — measured on two 32-gon circles whose every edge carries an
+    // `Arc`:
+    //
+    // ```text
+    //            sub-face verts    Arc metadata
+    //   loop      20 / 34 / 34     kept
+    //   sampled  152 / 324 / 324   all gone      -> 148 non-manifold edges
+    // ```
+    //
+    // It also matches the numbering the crossings now come back in
+    // (`remap_to_loop_edge`). A loop of fewer than three vertices is a closed
+    // curve with no polygon to walk — Step 0 has usually polygonised it away by
+    // here, and where it has not, the reading is the only boundary there is and
+    // the crossings were left in its numbering to match.
+    let loop_boundary = |f: FaceId| -> Option<Vec<DVec3>> {
+        let start = mesh.faces.get(f)?.outer().start;
+        let verts = mesh.collect_loop_verts(start).ok()?;
+        if verts.len() < 3 {
+            return None;
+        }
+        verts.iter().map(|&v| mesh.vertex_pos(v).ok()).collect()
+    };
+    let poly_a_3d = match loop_boundary(face_a) {
+        Some(p) => p,
+        None => collect_face_boundary(mesh, face_a)?,
+    };
+    let poly_b_3d = match loop_boundary(face_b) {
+        Some(p) => p,
+        None => collect_face_boundary(mesh, face_b)?,
+    };
     let poly_a_2d: Vec<(f64, f64)> = poly_a_3d.iter().map(|p| plane.project(*p)).collect();
     let poly_b_2d_raw: Vec<(f64, f64)> = poly_b_3d.iter().map(|p| plane.project(*p)).collect();
 
@@ -954,6 +1045,16 @@ pub fn face_anchor_position(mesh: &Mesh, face_id: FaceId) -> Option<DVec3> {
 // ─── Helpers ──────────────────────────────────────────────────────────
 
 fn collect_face_boundary(mesh: &Mesh, face_id: FaceId) -> Result<Vec<DVec3>> {
+    collect_face_boundary_owned(mesh, face_id).map(|(pts, _)| pts)
+}
+
+/// The boundary, plus which LOOP EDGE each of its segments lies on.
+///
+/// See [`Mesh::loop_polygon_owned`]. Today the two numberings agree because the
+/// chord reading emits one segment per loop edge; this is what lets the detector
+/// keep handing out indices a caller can use against `collect_loop_verts` if the
+/// reading ever stops being the chord.
+fn collect_face_boundary_owned(mesh: &Mesh, face_id: FaceId) -> Result<(Vec<DVec3>, Vec<usize>)> {
     let face = mesh.faces.get(face_id)
         .ok_or_else(|| anyhow::anyhow!("face {:?} not found", face_id))?;
     if !face.is_active() {
@@ -968,7 +1069,8 @@ fn collect_face_boundary(mesh: &Mesh, face_id: FaceId) -> Result<Vec<DVec3>> {
         let positions: Vec<DVec3> = verts.iter()
             .map(|&vid| mesh.verts.get(vid).map(|v| v.pos()).unwrap_or(DVec3::ZERO))
             .collect();
-        return Ok(positions);
+        let owners: Vec<usize> = (0..positions.len()).collect();
+        return Ok((positions, owners));
     }
     // A kernel-native closed curve (ADR-089) carries its whole boundary on one
     // self-loop edge, so the loop holds a single anchor vertex and the count
@@ -996,7 +1098,9 @@ fn collect_face_boundary(mesh: &Mesh, face_id: FaceId) -> Result<Vec<DVec3>> {
     if pts.len() < 3 {
         bail!("face {:?} curve sampled to fewer than 3 points", face_id);
     }
-    Ok(pts)
+    // A closed curve is one self-loop edge — nothing for a caller to index.
+    let owners = vec![0usize; pts.len()];
+    Ok((pts, owners))
 }
 
 /// Shoelace signed area (CCW > 0).
