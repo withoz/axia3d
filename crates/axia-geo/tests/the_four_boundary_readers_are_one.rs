@@ -1,73 +1,64 @@
-//! WHAT STOPS THE FOUR BOUNDARY READERS BECOMING ONE.
+//! THE FOUR BOUNDARY READERS ARE ONE, AND WHAT IT TOOK.
 //!
-//! `coplanar.rs::collect_face_boundary` is the fourth reader of a face boundary
-//! and the only one that takes the CHORD; the other three ask for the arc by
-//! name — `mesh.rs:14872`, `face_split.rs:166`, `self_intersect.rs:351`, each
-//! with `.following_arcs()`. The chord is a 29 mm blind strip along a quarter
-//! arc of r=100 (`the_detector_reads_the_rim_not_the_chord.rs`), so unifying
-//! them reads like a pure refinement.
+//! `coplanar.rs::collect_face_boundary` was the fourth reader of a face
+//! boundary and the only one that took the CHORD; the other three ask for the
+//! arc by name (`mesh.rs:14872`, `face_split.rs:166`, `self_intersect.rs:351`).
+//! The chord is a 29 mm blind strip along a quarter arc of r=100
+//! (`the_detector_reads_the_rim_not_the_chord.rs`), so the change reads like a
+//! pure refinement and is four lines.
 //!
-//! It is not, and this file is the reason — kept so the next attempt starts
-//! here instead of re-deriving four sessions of measurement.
+//! It took two fixes first, and this file is the record of why — kept so nobody
+//! re-derives four sessions of measurement, and so the two WRONG diagnoses made
+//! on the way are assertions instead of prose.
 //!
-//! ## The change, and what it costs
+//! ## What was actually in the way
 //!
-//! The whole body collapses to one call; `loop_polygon` already handles both
-//! the ≥3-vert case and the 1-vertex closed curve:
+//! Two places where the polygon this module READ was handed to code that had
+//! rebuilt that boundary a different way. Neither showed while the chord
+//! reading and the vertex loop were the same polygon.
 //!
-//! ```text
-//!   mesh.loop_polygon(outer_start,
-//!       ChordTol::fixed(CURVE_BOUNDARY_CHORD_TOL).following_arcs())
-//! ```
+//! 1. **The crossings carried indices into a polygon nobody else had.** A
+//!    `Crossing`'s `face_a_edge` indexes the read polygon; every consumer
+//!    applies it to one rebuilt from `collect_loop_verts`.
 //!
-//! Measured 2026-09-12 on the pinned 7-operation reduction
-//! (`axia-core/tests/pushing_in_three_deep_stacks_faces.rs`), same ops, same
-//! face ids, same 36 faces either way:
+//!    ```text
+//!      chord   largest crossing edge index   2   the loop has 3 edges
+//!      arcs    largest crossing edge index  34   the loop has 3 edges
+//!    ```
 //!
-//! ```text
-//!                    seam edge faces   invariant violations
-//!   chord (today)           3                  0
-//!   following arcs          4                  1
-//! ```
+//! 2. **The split rebuilt its faces from the reading.** Whatever leaves
+//!    `polygon_difference_walking` goes straight into `add_face`, so every
+//!    point becomes a mesh vertex. On two 32-gon circles whose every edge
+//!    carries an `Arc`:
 //!
-//! The seam is `(-63.25, 10, 100) → (63.25, 10, 100)`, where a solid's pushed
-//! cap meets the circular segment the arrangement leaves below it. ⚠ The
-//! collision is **made by the change, not pre-existing** — that question was
-//! open in the records until this run and is now closed.
+//!    ```text
+//!               sub-face verts    Arc metadata
+//!      loop      20 / 34 / 34     kept            sound
+//!      sampled  152 / 324 / 324   all gone        148 non-manifold edges
+//!    ```
 //!
-//! `face_rederive_on_draw` is the mechanism: with it off, both readers give the
-//! same 9 faces and the same sound seam. On today's reader the re-derive
-//! removes the pushed cap and emits a face across the segment's arcs; with the
-//! arc reader it keeps the cap and leaves those arcs with one face each.
-//!
-//! ## What is NOT the discriminator
-//!
-//! ⚠ Not the crossing count. It reads like the obvious culprit — the segment is
-//! contained in the rect and shares its whole top edge, so "0 crossings,
-//! containment" is what you expect, and 2 looks like the arc sampling turning a
-//! shared boundary into two false crossings. It is not: **both readers say 2**.
-//!
-//! ⚠ Nor the lens, though the lens is where the difference first becomes
-//! visible (3 points against 35). That was written down as the discriminator
-//! once, and it is a symptom.
-//!
-//! ## What it actually is: the crossing INDICES
-//!
-//! A `Crossing` carries `face_a_edge` / `face_b_edge` — indices into the
-//! polygon **the detector built**, via `collect_face_boundary`. The repair in
-//! `Scene::subtract_double_covered_faces` then walks polygons it builds itself,
-//! from `collect_loop_verts` — raw loop vertices. With today's chord reader
-//! those two are the same polygon and the indices land; with arcs they are not:
+//! Both are fixed (`remap_to_loop_edge`; Step 3 walking the loop), and with
+//! them the four-line change costs nothing:
 //!
 //! ```text
-//!   chord   face_b_edge max  2   clip has 3 edges   in range
-//!   arcs    face_b_edge max 34   clip has 3 edges   OUT OF RANGE
+//!                              before the two fixes   after
+//!   the 7-op reduction              5 failing         all pass
+//!   two overlapping circles      148 non-manifold     sound
+//!   whole workspace                 5 failing         0
 //! ```
 //!
-//! So the contract is the bug: `CoplanarIntersection` hands out indices whose
-//! meaning depends on a polygon it does not return, and every consumer has to
-//! rebuild that polygon identically by hand. Making the four readers one is
-//! blocked on making the detector hand back the polygons it indexed.
+//! ## ⚠ Two wrong diagnoses, kept as assertions
+//!
+//! Both read like the obvious culprit and both were written down before being
+//! measured.
+//!
+//! - **Not the crossing count.** The segment is contained in the rect and
+//!   shares its whole chord, so "0 crossings, containment" is what you expect,
+//!   and 2 looks like arc sampling faking two crossings. Both readings say 2.
+//! - **Not the lens.** It is where the difference first becomes visible — 3
+//!   points against 35 — and it is a symptom of (1), not a cause.
+//!
+//! The assertions below hold both, so a third reader cannot reach for either.
 
 use axia_geo::curves::AnalyticCurve;
 use axia_geo::mesh::ChordTol;
@@ -176,30 +167,28 @@ fn both_readers_call_it_a_two_crossing_overlap() {
     assert_eq!(back.crossings.len(), 2, "the verdict depends on argument order");
 }
 
-/// Where the difference first becomes visible: the LENS. Today's chord reader
-/// hands the split a 3-point triangle; following the arcs hands it 35 points
-/// that bulge past the triangle by the sagitta.
+/// The lens follows the rim now. It was a 3-point chord triangle while the
+/// reading was the chord; it is the sampled arc region since the readers became
+/// one — the 29 mm of ground the detector used to be blind to.
 ///
-/// ⚠ This is a symptom, not the cause — see `the_crossing_indices_are_only_
-/// valid_against_the_detectors_own_polygon` below for what actually breaks.
+/// ⚠ This was written down as the CAUSE once. It is a symptom of the indices —
+/// see `the_crossing_indices_are_only_valid_against_the_detectors_own_polygon`.
 #[test]
-fn the_lens_is_the_chord_triangle_not_the_arc_region() {
+fn the_lens_follows_the_rim_now() {
     let (m, rect, segment) = segment_and_rect();
     let ci = cop::coplanar_intersection_segments(&m, rect, segment).expect("coplanar");
 
-    assert_eq!(
-        ci.lens_polygon.len(),
-        3,
-        "the overlap polygon is {} points, not the 3-point chord triangle. If \
-         `collect_face_boundary` now follows arcs this is expected to be ~35 — \
-         see this file's header for the 7-op reduction it breaks and for what \
-         was already ruled out.",
+    assert!(
+        ci.lens_polygon.len() > 30,
+        "the overlap polygon is {} points. It was 3 — the chord triangle — \
+         until the readers became one, so a small number again means \
+         `collect_face_boundary_owned` has stopped following arcs.",
         ci.lens_polygon.len()
     );
 
-    // The triangle really is the chord one: its area is the straight-sided
-    // 1719.8, below the true segment, which is what makes the difference a
-    // region rather than a rounding.
+    // The FACE's own chord area is unchanged at 1719.8 — the segment is still a
+    // 3-vertex loop carrying two arcs. Only the reading moved, which is what
+    // makes the difference a region rather than a rounding.
     let area = m.face_outer_area(segment);
     assert!(
         (area - 1719.8).abs() < 1.0,
@@ -222,10 +211,10 @@ fn the_lens_is_the_chord_triangle_not_the_arc_region() {
 ///   arcs    face_b_edge max 34   the clip loop has 3 edges   OUT OF RANGE
 /// ```
 ///
-/// ⚠ Unifying the readers is blocked on this, not on the lens. The fix is for
-/// the detector to return the polygons it indexed, so a consumer cannot index
-/// the wrong one — the same "one source" rule the unification is about, one
-/// level up.
+/// ⚠ Unifying the readers WAS blocked on this, not on the lens. The fix was for
+/// the detector to translate its indices back onto the loop every consumer
+/// walks (`remap_to_loop_edge`) — the same "one source" rule the unification
+/// is about, one level up.
 #[test]
 fn the_crossing_indices_are_only_valid_against_the_detectors_own_polygon() {
     let (m, rect, segment) = segment_and_rect();
@@ -245,7 +234,11 @@ fn the_crossing_indices_are_only_valid_against_the_detectors_own_polygon() {
 
     assert!(
         max_clip_edge < clip_loop.len(),
-        "a crossing indexes clip edge {max_clip_edge} but the loop the repair          walks has only {} edges. That is the unification's real blocker: the          detector's indices refer to a polygon it does not return. If this now          fires on today's reader, something changed `collect_face_boundary` and          every consumer that rebuilds the polygon by hand is reading garbage.",
+        "a crossing indexes clip edge {max_clip_edge} but the loop a consumer \
+         walks has only {} edges. This was the unification's real blocker and is \
+         held by `remap_to_loop_edge`; if it fires, that translation stopped \
+         happening and every consumer that rebuilds the polygon by hand is \
+         reading garbage.",
         clip_loop.len()
     );
 }
