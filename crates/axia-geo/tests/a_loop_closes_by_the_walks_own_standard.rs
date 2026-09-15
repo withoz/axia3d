@@ -27,8 +27,11 @@
 //! The rule is the walk's now: **the ends join if the gap between them is no
 //! wider than the gaps already inside.** Self-scaling, no tolerance to pick, and
 //! a LINE still reads open because a line's ends are further apart than any step
-//! along it. The old `merge_tol * 4` is kept as an OR, so anything that closed
-//! before still closes.
+//! along it. The old `merge_tol * 4` is kept as an OR.
+//!
+//! ⚠ That is no longer the whole rule, and "anything that closed before still
+//! closes" no longer holds: a closed chain must also turn back, and the walk
+//! that builds it changed. See *What a closed chain has to be*.
 //!
 //! ⚠ `assemble_closed_loop_detected` in `topology.rs` already recorded this in
 //! its own comment — *"with merge_tol=0.01, merge_tol*4=0.04 — too tight for raw
@@ -37,35 +40,73 @@
 //!
 //! ## What this does NOT fix, measured
 //!
-//! A Boolean against a cylinder still produces nothing, for two further reasons
-//! this change does not touch. Both were measured while looking:
+//! A Boolean against a cylinder still produces nothing. On the ±100 plane used
+//! below:
 //!
 //! ```text
-//!   geometric  0.001 (the production default)   72 chains, 0 closed, 0 trim loops
-//!   geometric  0.05                             32 chains, 8 closed, 8 trim loops
-//!   geometric  0.1                               1 chain,  1 closed, 1 trim loop
+//!   geometric  0.001 (the production default)   72 chains, 0 closed
+//!   geometric  0.05                             32 chains, 0 closed
+//!   geometric  0.1                               1 chain,  1 closed   (the circle)
 //! ```
+//!
+//! ⚠ This table used to read **8 closed, 8 trim loops** at 0.05. None of those
+//! eight was a loop — see *What a closed chain has to be*, below.
 //!
 //! 1. **The assembler's reach is tied to accuracy, not to sampling.**
 //!    `gap_tol = tol * 100` is 0.1 mm at the production tolerance, while the
 //!    candidates are about 1 mm apart because the subdivision hits
 //!    `DEFAULT_MAX_DEPTH` long before it reaches 1 μm. So the walk links nothing
 //!    and 72 points come back as 72 chains of one.
-//! 2. **The DCEL rebuild does nothing with a closed trim loop.** At
-//!    `geometric = 0.1`, where a closed loop does come back,
-//!    `boolean_dispatch_dcel_multi` still reports 0 new and 0 removed faces.
+//! 2. ⚠ **This file used to say "the DCEL rebuild does nothing with a closed
+//!    trim loop". That was a misdiagnosis.** The dispatch never builds the ±100
+//!    plane: `surface_to_bspline` spans the face's Plane `u_range`, ±150 for a
+//!    face of a 200 mm box, and on that grid the circle does not come back whole
+//!    at 0.1, 0.05, 0.01 or 0.001 — only fragments, some of which were being
+//!    called closed. Handed a REAL loop (the ±100 circle, on an unmerged routing
+//!    spike, 2026-09-15), the rebuild does worse than nothing: it evaluates the
+//!    loop's knot-space `uv` on the analytic surface, so an r = 40 circle became
+//!    a face of area 0.1 (= π · 0.2²) and the face it replaced was removed.
+//!    Not fixed or pinned here.
 //!
-//! So routing a rational surface into the Boolean — which is a four-line change
-//! and correct — buys nothing yet, and was deliberately NOT landed: the dispatch
-//! would report the NURBS path and hand back an unchanged mesh, which is a worse
-//! answer than the honest refusal it gives today. What a Boolean against a
-//! cylinder costs meanwhile, measured against the drill:
+//! So routing a rational surface into the Boolean — a four-line change — was
+//! deliberately NOT landed. At the production tolerance it reports the NURBS
+//! path and hands back an unchanged mesh; at looser ones it removes faces and
+//! builds wrong ones. What a Boolean against a cylinder costs meanwhile,
+//! measured against the drill:
 //!
 //! ```text
 //!            faces   with a surface   volume
 //!   drill      38    38 (32 Cylinder) 6,994,690.4   = the analytic value
 //!   Boolean    38     4 (Plane only)  7,001,137.6   +6,447
 //! ```
+//!
+//! ## What a closed chain has to be
+//!
+//! Measured 2026-09-15 on the ±150 grid: the rule above — ends joined when the
+//! gap is no wider than the steps inside — called eight chains closed at each of
+//! tol 0.1, 0.05 and 0.01, and **none went round the bore**:
+//!
+//! ```text
+//!   four 4-point runs   ~1.0° of arc   closing 0.7158, widest step 0.7153
+//!   four 6-point runs   ~1.2° wide     visited out of order: the walk ran to one
+//!                                      end, then leapt 0.719 back across its
+//!                                      own start to carry on the other side
+//! ```
+//!
+//! Neither the rule nor the walk survived. Two changes, each mutation-checked on
+//! its own (undo either and its tests fail):
+//!
+//! - **The head walk leaves a point for the tail when it lies nearer the start
+//!   than the head**, so a run seeded in its middle is laid out end to end
+//!   instead of folded. (Growing both ends at once unfolded it too, but walked
+//!   two equal cylinders crossing at right angles as ONE chain crossing itself —
+//!   see `two_cylinders_meet_as_the_nurbs_they_are.rs`.)
+//! - **A closed chain must turn back**: its end gap may be at most half of what
+//!   it walked. A triangle sits exactly on that line, a real loop well inside
+//!   it, a straight run outside it.
+//!
+//! The circle still closes. On the ±150 grid nothing closes at any tolerance
+//! measured — which is the truth: no loop comes back there.
 
 use axia_geo::surfaces::ssi::nurbs_wrapper::intersect_rational_bspline_pair;
 use axia_geo::surfaces::{cylinder, AnalyticSurface};
@@ -199,4 +240,52 @@ fn at_the_production_tolerance_the_walk_still_cannot_link_them() {
          and this test should be rewritten to guard that.",
         chains.len()
     );
+}
+
+/// The grid a Boolean actually builds, and what closes on it.
+///
+/// `surface_to_bspline` spans a face's Plane `u_range`, which for a face of a
+/// 200 mm box is ±150 — not the ±100 used above. On that grid the circle comes
+/// back as fragments at every tolerance measured, and eight of them at each
+/// tolerance were being called closed: four 4-point runs a degree long, and
+/// four 6-point runs the walk had folded back across their own start.
+#[test]
+fn a_fragment_that_does_not_go_round_does_not_close() {
+    let (pg, pw, pk) = plane(100.0, 150.0);
+    let (cg, cw, cku, ckv, cdu, cdv) = promoted_cylinder(40.0, 150.0);
+
+    for tol in [0.1, 0.05, 0.01] {
+        let chains = intersect_rational_bspline_pair(
+            &pg, &pw, &pk, &pk, 1, 1, &cg, &cw, &cku, &ckv, cdu, cdv, tol,
+        )
+        .expect("intersects");
+
+        // The question has to arrive: there must be fragments to misjudge.
+        assert!(
+            chains.len() > 1,
+            "tol {tol}: {} chain(s) — if the circle now comes back whole on this \
+             grid, the fragments this test asks about are gone; rewrite it",
+            chains.len()
+        );
+
+        for chain in chains.iter().filter(|c| c.closed) {
+            // How far round the bore the chain actually walks.
+            let sweep: f64 = chain
+                .points
+                .windows(2)
+                .map(|w| {
+                    let d = w[1].y.atan2(w[1].x) - w[0].y.atan2(w[0].x);
+                    (d + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                        - std::f64::consts::PI
+                })
+                .sum();
+            assert!(
+                sweep.abs() > 1.9 * std::f64::consts::PI,
+                "tol {tol}: a chain of {} points walking {:.2}° round the bore was \
+                 called closed",
+                chain.points.len(),
+                sweep.abs().to_degrees()
+            );
+        }
+    }
 }

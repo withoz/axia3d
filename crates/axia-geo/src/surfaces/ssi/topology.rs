@@ -5,10 +5,12 @@
 //!
 //! ## MVP algorithm — greedy nearest-neighbor chaining
 //! 1. Dedup candidates within `merge_tol` (avoid duplicate refinements).
-//! 2. For each unvisited point, start a chain. Walk to nearest unvisited
-//!    point until next neighbor distance exceeds `gap_tol`.
-//! 3. Try to extend backward from start as well.
-//! 4. Detect closure: chain endpoints within `merge_tol` → mark closed.
+//! 2. For each unvisited point, start a chain. Walk the head to the nearest
+//!    unvisited point until none is within `gap_tol` — leaving any point that
+//!    lies nearer the start than the head for the tail.
+//! 3. Extend the tail backward from the start the same way.
+//! 4. Detect closure: the end gap is no wider than the chain's own steps, and
+//!    the chain turns back — the gap is at most half of what it walked.
 //! 5. Emit each chain as a `SurfaceIntersection`.
 //!
 //! ## Limitations (defer to follow-up)
@@ -37,18 +39,38 @@ pub fn assemble_chains(
 
     for start_idx in 0..n {
         if visited[start_idx] { continue; }
-        // Build chain starting at start_idx, walking forward (greedy NN).
+        // Build chain starting at start_idx: walk the head forward (greedy NN),
+        // then extend the tail backward from the start.
+        //
+        // ⚠ A point nearer the START than the head belongs to the tail, and the
+        // head walk leaves it there. Without that, a head that ran out of points
+        // on its own side still reached one beside the start (within `gap_tol`),
+        // jumped back across the start and carried on along the other side.
+        // Measured on a plane cutting a promoted cylinder: a run from -79.73° to
+        // -79.03° leapt 0.719 back to -80.06° and on to -80.25° -- one open arc
+        // 0.85 wide, visited out of order. The fold made its end gap look like a
+        // step and its path look like it turned back, so it was called closed
+        // at every tolerance tried.
+        //
+        // ⚠ Not "grow both ends at once, nearer end first". That fixes the fold
+        // too, but it chooses differently where branches meet: two equal
+        // cylinders crossing at right angles came back as ONE chain of 348
+        // points crossing itself at both pinch points, where this walk returns
+        // two loops of 174. A trim loop that crosses itself is worse than two
+        // that do not.
         let mut chain_idx: Vec<usize> = vec![start_idx];
         visited[start_idx] = true;
 
         // Forward walk
         loop {
-            let last = *chain_idx.last().unwrap();
-            let last_pt = candidates[last].point;
+            let last_pt = candidates[*chain_idx.last().unwrap()].point;
+            let start_pt = candidates[chain_idx[0]].point;
             let mut best: Option<(usize, f64)> = None;
             for (i, c) in candidates.iter().enumerate() {
                 if visited[i] { continue; }
                 let d = (c.point - last_pt).length();
+                // Nearer the start than the head: the tail's point, not ours.
+                if (c.point - start_pt).length() < d { continue; }
                 if d <= gap_tol && best.map_or(true, |(_, bd)| d < bd) {
                     best = Some((i, d));
                 }
@@ -104,12 +126,27 @@ pub fn assemble_chains(
         // no wider than the gaps already inside. That is self-scaling -- no new
         // tolerance to pick -- and it still says a LINE is open, because a
         // line's ends are further apart than any step along it.
+        //
+        // ⚠ And the chain has to TURN BACK. The gap test alone closed runs that
+        // never do: a depth-capped subdivision leaves near-duplicate pairs
+        // joined by one long step, whose end gap IS its widest step. Measured on
+        // the plane grid a Boolean builds for a 200 mm box face, at each of tol
+        // 0.1, 0.05 and 0.01: four chains of 4 points, each a ~1° arc, closing
+        // 0.7158 against a widest step of 0.7153, all called closed (the other
+        // four closed chains were the folded runs described above). At 0.01 the
+        // Boolean built them into faces of zero area. A loop's end gap is one
+        // step out of many; a run that only goes forward walks about as far as
+        // its own end gap. So the gap may be at most half of what the chain
+        // walked: a triangle sits exactly on that line, a real loop well inside
+        // it, a straight run or a one-step fragment outside it.
         let closing = (*points.first().unwrap() - *points.last().unwrap()).length();
         let widest_step = points
             .windows(2)
             .map(|w| (w[1] - w[0]).length())
             .fold(0.0_f64, f64::max);
+        let walked: f64 = points.windows(2).map(|w| (w[1] - w[0]).length()).sum();
         let closed = chain_idx.len() >= 3
+            && closing <= 0.5 * walked
             && (closing < merge_tol * 4.0 || closing <= widest_step * 1.5);
 
         // Tangent warning if any candidate flagged depth_capped
@@ -244,5 +281,78 @@ mod tests {
         assert_eq!(chains.len(), 1);
         // After dedup, only 2 points (origin and (1,0,0)).
         assert_eq!(chains[0].points.len(), 2);
+    }
+
+    /// A run of points is not a loop because its end gap is no wider than its
+    /// widest step. Measured 2026-09-15 on a plane cutting a promoted cylinder:
+    /// four chains of 4 points, each a ~1° arc, closing 0.7158 against a widest
+    /// step of 0.7153 — every one called closed, turned into a sliver trim loop
+    /// by `nurbs_boolean_v2`, and (at tol 0.01) built into a face of zero area.
+    #[test]
+    fn assemble_a_fragment_that_never_turns_back_is_open() {
+        // Two near-duplicate pairs joined by one long step — the shape a
+        // depth-capped subdivision leaves. The widest-step rule closes it.
+        let chains = assemble_chains(
+            vec![
+                make_cand(DVec3::new(0.0, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.06, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.70, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.76, 0.0, 0.0), 0.0),
+            ],
+            5.0,
+            0.05,
+        );
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].points.len(), 4);
+        assert!(!chains[0].closed, "a straight run of four points was called a loop");
+
+        // Three points in a line inside `merge_tol * 4` — the older rule's
+        // version of the same mistake.
+        let chains = assemble_chains(
+            vec![
+                make_cand(DVec3::new(0.0, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.15, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.30, 0.0, 0.0), 0.0),
+            ],
+            10.0,
+            0.1,
+        );
+        assert_eq!(chains[0].points.len(), 3);
+        assert!(!chains[0].closed, "three points in a line were called a loop");
+
+        // The control: four corners of a square DO turn back, and close.
+        let chains = assemble_chains(
+            vec![
+                make_cand(DVec3::new(0.0, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(1.0, 0.0, 0.0), 0.0),
+                make_cand(DVec3::new(1.0, 1.0, 0.0), 0.0),
+                make_cand(DVec3::new(0.0, 1.0, 0.0), 0.0),
+            ],
+            1.2,
+            0.01,
+        );
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].points.len(), 4);
+        assert!(chains[0].closed, "a square's four corners stopped closing");
+    }
+
+    /// A run seeded in its middle is laid out end to end, not folded back
+    /// across its start. Walking the head to exhaustion first let it leap from
+    /// its far end to a point beside the start, which made an open arc look
+    /// like a loop (measured: -79.73° → -79.03°, then 0.719 back to -80.06°).
+    #[test]
+    fn assemble_a_run_is_not_folded_back_across_its_start() {
+        // Index 0 is the seed, in the middle of the run.
+        let xs = [0.0, 0.133, 0.36, 0.49, -0.33, -0.463];
+        let chains = assemble_chains(
+            xs.iter().map(|&x| make_cand(DVec3::new(x, 0.0, 0.0), 0.0)).collect(),
+            10.0,
+            0.05,
+        );
+        assert_eq!(chains.len(), 1);
+        let got: Vec<f64> = chains[0].points.iter().map(|p| p.x).collect();
+        let monotonic = got.windows(2).all(|w| w[0] < w[1]) || got.windows(2).all(|w| w[0] > w[1]);
+        assert!(monotonic, "the run was folded back across its start: {got:?}");
+        assert!(!chains[0].closed, "an open run, laid out end to end, was called a loop: {got:?}");
     }
 }
