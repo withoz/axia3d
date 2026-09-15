@@ -5,12 +5,13 @@
 //!
 //! ## MVP algorithm — greedy nearest-neighbor chaining
 //! 1. Dedup candidates within `merge_tol` (avoid duplicate refinements).
-//! 2. For each unvisited point, start a chain and grow it from BOTH ends at
-//!    once, always taking the nearer neighbour, until neither end has one
-//!    within `gap_tol`.
-//! 3. Detect closure: the end gap is no wider than the chain's own steps, and
+//! 2. For each unvisited point, start a chain. Walk the head to the nearest
+//!    unvisited point until none is within `gap_tol` — leaving any point that
+//!    lies nearer the start than the head for the tail.
+//! 3. Extend the tail backward from the start the same way.
+//! 4. Detect closure: the end gap is no wider than the chain's own steps, and
 //!    the chain turns back — the gap is at most half of what it walked.
-//! 4. Emit each chain as a `SurfaceIntersection`.
+//! 5. Emit each chain as a `SurfaceIntersection`.
 //!
 //! ## Limitations (defer to follow-up)
 //! - No singular point (branching) detection — multi-branch curves emerge
@@ -38,39 +39,62 @@ pub fn assemble_chains(
 
     for start_idx in 0..n {
         if visited[start_idx] { continue; }
-        // Grow the chain from BOTH ends at once, always taking the nearer
-        // extension.
+        // Build chain starting at start_idx: walk the head forward (greedy NN),
+        // then extend the tail backward from the start.
         //
-        // ⚠ It used to walk the head to exhaustion and only then extend the
-        // tail. A head that runs out can still reach a point within `gap_tol`
-        // that belongs at the TAIL, so it jumped back across its own start and
-        // carried on the other side. Measured on a plane cutting a promoted
-        // cylinder: a run from -79.73° to -79.03° leapt 0.719 back to -80.06°
-        // and on to -80.25° -- one open arc 0.85 wide, visited out of order.
-        // The fold made its end gap look like a step and its path look like it
-        // turned back, so it was called closed at every tolerance tried.
+        // ⚠ A point nearer the START than the head belongs to the tail, and the
+        // head walk leaves it there. Without that, a head that ran out of points
+        // on its own side still reached one beside the start (within `gap_tol`),
+        // jumped back across the start and carried on along the other side.
+        // Measured on a plane cutting a promoted cylinder: a run from -79.73° to
+        // -79.03° leapt 0.719 back to -80.06° and on to -80.25° -- one open arc
+        // 0.85 wide, visited out of order. The fold made its end gap look like a
+        // step and its path look like it turned back, so it was called closed
+        // at every tolerance tried.
+        //
+        // ⚠ Not "grow both ends at once, nearer end first". That fixes the fold
+        // too, but it chooses differently where branches meet: two equal
+        // cylinders crossing at right angles came back as ONE chain of 348
+        // points crossing itself at both pinch points, where this walk returns
+        // two loops of 174. A trim loop that crosses itself is worse than two
+        // that do not.
         let mut chain_idx: Vec<usize> = vec![start_idx];
         visited[start_idx] = true;
+
+        // Forward walk
         loop {
-            let head = candidates[*chain_idx.last().unwrap()].point;
-            let tail = candidates[chain_idx[0]].point;
-            let mut best: Option<(usize, f64, bool)> = None;
+            let last_pt = candidates[*chain_idx.last().unwrap()].point;
+            let start_pt = candidates[chain_idx[0]].point;
+            let mut best: Option<(usize, f64)> = None;
             for (i, c) in candidates.iter().enumerate() {
                 if visited[i] { continue; }
-                let at_head = (c.point - head).length();
-                let at_tail = (c.point - tail).length();
-                let (d, to_head) = if at_head <= at_tail {
-                    (at_head, true)
-                } else {
-                    (at_tail, false)
-                };
-                if d <= gap_tol && best.map_or(true, |(_, bd, _)| d < bd) {
-                    best = Some((i, d, to_head));
+                let d = (c.point - last_pt).length();
+                // Nearer the start than the head: the tail's point, not ours.
+                if (c.point - start_pt).length() < d { continue; }
+                if d <= gap_tol && best.map_or(true, |(_, bd)| d < bd) {
+                    best = Some((i, d));
                 }
             }
             match best {
-                Some((i, _, true)) => { visited[i] = true; chain_idx.push(i); }
-                Some((i, _, false)) => { visited[i] = true; chain_idx.insert(0, i); }
+                Some((i, _)) => { visited[i] = true; chain_idx.push(i); }
+                None => break,
+            }
+        }
+
+        // Backward walk (extend before start)
+        loop {
+            let first = *chain_idx.first().unwrap();
+            let first_pt = candidates[first].point;
+            let mut best: Option<(usize, f64)> = None;
+            for (i, c) in candidates.iter().enumerate() {
+                if visited[i] { continue; }
+                let d = (c.point - first_pt).length();
+                if d <= gap_tol && best.map_or(true, |(_, bd)| d < bd) {
+                    best = Some((i, d));
+                }
+            }
+            match best {
+                Some((i, _)) => { visited[i] = true; chain_idx.insert(0, i); }
                 None => break,
             }
         }

@@ -55,6 +55,13 @@
 //! untouched here. The claim is about the POINTS: they lie on both surfaces and
 //! converge as the tolerance tightens.
 //!
+//! ⚠ **No longer true as written (measured 2026-09-15).** Since #254 changed the
+//! closure rule, the chains at `tol = 0.1` come back CLOSED: equal radii 2 × 174
+//! points (end gap 4.21 against a widest step of 6.92), unequal 2 × 70 (4.01
+//! against 4.70). And the equal-radii pair are not the two ellipses — each is the
+//! z < 0 or z > 0 half of both, switching planes at the pinch points. See
+//! `equal_radii_agree_with_the_bisector_planes`.
+//!
 //! Nor does it claim a Boolean works. Routing `boolean_dispatch` at
 //! `NURBSSurface(rational)` and `Cylinder` is a separate decision — it changes
 //! what Boolean accepts, which is a large pinned surface.
@@ -212,7 +219,17 @@ fn equal_radii_agree_with_the_bisector_planes() {
     )
     .expect("the rational pair intersects");
 
-    assert_eq!(chains.len(), 2, "two ellipses");
+    // Two loops, but not the two ellipses: each is the z < 0 or z > 0 half of
+    // both, switching planes at the pinch points (0, ±40, 0), where the two ways
+    // on both measured 6.14 mm. Which way a chain turns there is the walk's
+    // choice, and a walk that grew both ends at once returned ONE chain of 348
+    // points crossing itself at both pinches (2026-09-15) — a trim loop that
+    // crosses itself, which this count is here to catch.
+    assert_eq!(
+        chains.len(),
+        2,
+        "two loops (the z < 0 and z > 0 halves), not one chain crossing itself"
+    );
     let pts: Vec<DVec3> = chains.iter().flat_map(|c| c.points.iter().copied()).collect();
     assert!(pts.len() > 300, "only {} points on a 710 mm curve", pts.len());
 

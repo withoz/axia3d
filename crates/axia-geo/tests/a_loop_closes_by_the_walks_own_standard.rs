@@ -96,8 +96,11 @@
 //! Neither the rule nor the walk survived. Two changes, each mutation-checked on
 //! its own (undo either and its tests fail):
 //!
-//! - **The walk grows from both ends at once**, always taking the nearer
-//!   neighbour, so a run seeded in its middle is laid out end to end.
+//! - **The head walk leaves a point for the tail when it lies nearer the start
+//!   than the head**, so a run seeded in its middle is laid out end to end
+//!   instead of folded. (Growing both ends at once unfolded it too, but walked
+//!   two equal cylinders crossing at right angles as ONE chain crossing itself —
+//!   see `two_cylinders_meet_as_the_nurbs_they_are.rs`.)
 //! - **A closed chain must turn back**: its end gap may be at most half of what
 //!   it walked. A triangle sits exactly on that line, a real loop well inside
 //!   it, a straight run outside it.
