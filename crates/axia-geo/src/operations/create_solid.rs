@@ -1146,6 +1146,25 @@ impl Mesh {
                 let owner_id = self.next_surface_owner_id();
                 self.set_face_surface_owner_id(cone_side, Some(owner_id));
 
+                // The profile is the only cap. With the apex above it (dist > 0)
+                // it is the bottom and must look away from the apex; with the apex
+                // below, it is the top and already looks out. The rim stays as it
+                // is — it is shared with the cone side.
+                if dist > 0.0 {
+                    self.faces[profile_face].set_normal(-normal);
+                    if let Some(AnalyticSurface::Plane { origin, basis_u, u_range, v_range, .. }) =
+                        self.faces[profile_face].surface().cloned()
+                    {
+                        self.faces[profile_face].set_surface(Some(AnalyticSurface::Plane {
+                            origin,
+                            normal: -normal,
+                            basis_u,
+                            u_range,
+                            v_range,
+                        }));
+                    }
+                }
+
                 return Ok(CreateSolidResult {
                     profile_face,
                     solid_kind: SolidKind::Cone,
@@ -1210,6 +1229,22 @@ impl Mesh {
 
             let owner_id = self.next_surface_owner_id();
             self.set_face_surface_owner_id(annulus, Some(owner_id));
+
+            // The cap on the back of the extrusion looks away from it, as in the
+            // cylinder builder this mirrors (its step 6b).
+            let back_cap = if dist > 0.0 { profile_face } else { top_face };
+            self.faces[back_cap].set_normal(-normal);
+            if let Some(AnalyticSurface::Plane { origin, basis_u, u_range, v_range, .. }) =
+                self.faces[back_cap].surface().cloned()
+            {
+                self.faces[back_cap].set_surface(Some(AnalyticSurface::Plane {
+                    origin,
+                    normal: -normal,
+                    basis_u,
+                    u_range,
+                    v_range,
+                }));
+            }
 
             return Ok(CreateSolidResult {
                 profile_face,
