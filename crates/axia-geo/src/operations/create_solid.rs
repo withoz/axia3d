@@ -2105,7 +2105,7 @@ impl Mesh {
             .ok_or_else(|| anyhow::anyhow!(
                 "B-δ-prep: profile self-loop edge has no AnalyticCurve"
             ))?;
-        let (center, radius, normal, basis_u) = match curve {
+        let (center, radius, rim_normal, basis_u) = match curve {
             AnalyticCurve::Circle { center, radius, normal, basis_u } => {
                 (center, radius, normal, basis_u)
             }
@@ -2114,6 +2114,17 @@ impl Mesh {
                  cylinder (other closed curves → general analytic sweep, \
                  future ADR)"
             ),
+        };
+
+        // The axis is the rim's; the side it goes to is the FACE's. A rim circle
+        // is shared with the side face, so its normal says which way the circle
+        // runs, not which way the profile looks — and a cap this function turns
+        // outward (step 6b) looks against its own rim. Extruding along the rim
+        // would push such a face back into its solid.
+        let normal = if self.faces[profile_face].normal().dot(rim_normal) < 0.0 {
+            -rim_normal
+        } else {
+            rim_normal
         };
 
         // 2. Compute translation along the profile normal.
@@ -2206,6 +2217,27 @@ impl Mesh {
             v_range: (v_lo, v_hi),
         };
         self.faces[annulus_face].set_surface(Some(cylinder_surface));
+
+        // 6b. The cap on the back of the extrusion looks away from it — ADR-183,
+        //     which the polygon path applies and this branch returned before.
+        //     `add_face_closed_curve` gives a disk its circle's normal, so the
+        //     profile (dist > 0) or the new cap (dist < 0) looked INTO the solid:
+        //     every volume read off flux was off by 2·A·z_bottom/3, and the bottom
+        //     drew its back. The rim stays as it is — it is shared with the side —
+        //     so the cap's own normal and its Plane are what say which way it looks.
+        let back_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.faces[back_cap].set_normal(-normal);
+        if let Some(AnalyticSurface::Plane { origin, basis_u, u_range, v_range, .. }) =
+            self.faces[back_cap].surface().cloned()
+        {
+            self.faces[back_cap].set_surface(Some(AnalyticSurface::Plane {
+                origin,
+                normal: -normal,
+                basis_u,
+                u_range,
+                v_range,
+            }));
+        }
 
         // **Path B annulus owner_id hotfix (2026-05-23, 사용자 시연 evidence)**
         // — annulus side face 에도 surface_owner_id 부여. Path A

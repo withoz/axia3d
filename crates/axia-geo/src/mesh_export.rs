@@ -454,11 +454,17 @@ impl Mesh {
 
                         // Build vertex buffer: center + N rim verts.
                         // Triangulate as fan from center → N triangles.
-                        let n_normal = if c_normal.length_squared() < 0.5 {
+                        let rim_normal = if c_normal.length_squared() < 0.5 {
                             face.normal()
                         } else {
                             c_normal.normalize_or_zero()
                         };
+                        // The rim is shared with what lies across it, so its
+                        // normal is the way the CIRCLE runs, not the way this
+                        // face looks: a cylinder's bottom cap looks against its
+                        // rim. The face decides, and the fan turns round with it.
+                        let against_rim = face.normal().dot(rim_normal) < 0.0;
+                        let n_normal = if against_rim { -rim_normal } else { rim_normal };
 
                         // Emit center vertex (vert_offset + 0).
                         positions.push(center.x as f32);
@@ -484,12 +490,14 @@ impl Mesh {
                             normals.push(n_normal.z as f32);
                         }
 
-                        // Emit N triangles: (center, rim[i], rim[i+1]).
+                        // Emit N triangles: (center, rim[i], rim[i+1]) — the
+                        // other way round for a face that looks against its rim.
                         for i in 0..n_seg {
                             let next = (i + 1) % n_seg;
+                            let (a, b) = if against_rim { (next, i) } else { (i, next) };
                             indices.push(vert_offset);
-                            indices.push(vert_offset + 1 + i as u32);
-                            indices.push(vert_offset + 1 + next as u32);
+                            indices.push(vert_offset + 1 + a as u32);
+                            indices.push(vert_offset + 1 + b as u32);
                             face_map.push(face_id.raw());
                         }
                         vert_offset += (n_seg + 1) as u32;
