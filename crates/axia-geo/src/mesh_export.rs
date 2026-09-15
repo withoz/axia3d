@@ -555,6 +555,16 @@ impl Mesh {
                         // Normal: face's stored normal (computed in
                         // add_face_closed_curve via best-fit plane).
                         let n_normal = face.normal();
+                        // The rim runs the way its control points were given,
+                        // and that need not be the way the face looks: the
+                        // stored normal comes from the first control triangle,
+                        // and an extrusion's back cap is turned without
+                        // touching the rim it shares with the side. The face
+                        // decides; the fan turns round when the rim disagrees.
+                        let rim_winding = (0..n_seg).fold(DVec3::ZERO, |acc, i| {
+                            acc + unique_pts[i].cross(unique_pts[(i + 1) % n_seg])
+                        });
+                        let against_rim = rim_winding.dot(n_normal) < 0.0;
 
                         // Emit centroid + rim verts.
                         positions.push(centroid.x as f32);
@@ -579,9 +589,10 @@ impl Mesh {
                         }
                         for i in 0..n_seg {
                             let next = (i + 1) % n_seg;
+                            let (a, b) = if against_rim { (next, i) } else { (i, next) };
                             indices.push(vert_offset);
-                            indices.push(vert_offset + 1 + i as u32);
-                            indices.push(vert_offset + 1 + next as u32);
+                            indices.push(vert_offset + 1 + a as u32);
+                            indices.push(vert_offset + 1 + b as u32);
                             face_map.push(face_id.raw());
                         }
                         vert_offset += (n_seg + 1) as u32;

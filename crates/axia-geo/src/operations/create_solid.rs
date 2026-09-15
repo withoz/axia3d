@@ -2469,6 +2469,39 @@ impl Mesh {
         //    → non-rational `extrusion_surface` (BSplineSurface). NURBS →
         //    `extrusion_surface_nurbs` carrying the profile weights across v
         //    → a rational NURBSSurface (ADR-192 §5.6).
+        //
+        //    The swept surface looks along ∂u × ∂v: ∂u is the way the rim runs,
+        //    ∂v is `normal · dist`. It looks OUT only when the rim runs about
+        //    `normal` and the extrusion goes along it, or both the other way.
+        //    Neither is given — `dist` may be negative, and `normal` comes from
+        //    the first control triangle, which a notched rim contradicts — so
+        //    when they disagree the same surface is swept from the far rim back,
+        //    which turns ∂v and the side with it.
+        const RIM_WINDING_CHORD_TOL: f64 = 1e-2;
+        let rim = match prof_kind {
+            SweptProfile::Nurbs => crate::curves::nurbs::tessellate(
+                &prof_ctrl,
+                prof_weights.as_ref().expect("NURBS profile carries weights"),
+                &prof_knots,
+                prof_degree,
+                RIM_WINDING_CHORD_TOL,
+            ),
+            SweptProfile::Bezier | SweptProfile::BSpline => crate::curves::bspline::tessellate(
+                &prof_ctrl,
+                &prof_knots,
+                prof_degree,
+                RIM_WINDING_CHORD_TOL,
+            ),
+        }
+        .map_err(|e| anyhow::anyhow!("P1.3 rim winding: {}", e))?;
+        let rim_winding = (0..rim.len())
+            .fold(DVec3::ZERO, |acc, i| acc + rim[i].cross(rim[(i + 1) % rim.len()]));
+        let side_looks_out = (rim_winding.dot(normal) >= 0.0) == (dist > 0.0);
+        let (side_ctrl, side_dist): (Vec<DVec3>, f64) = if side_looks_out {
+            (prof_ctrl.clone(), dist)
+        } else {
+            (prof_ctrl.iter().map(|&p| p + translation).collect(), -dist)
+        };
         let side_surface = match prof_kind {
             SweptProfile::Nurbs => {
                 let weights = prof_weights
@@ -2476,12 +2509,12 @@ impl Mesh {
                     .expect("NURBS profile carries weights");
                 let (grid, wgrid, knots_u, knots_v, deg_u, deg_v) =
                     crate::surfaces::sweep::extrusion_surface_nurbs(
-                        &prof_ctrl,
+                        &side_ctrl,
                         weights,
                         &prof_knots,
                         prof_degree,
                         normal,
-                        dist,
+                        side_dist,
                     )
                     .map_err(|e| anyhow::anyhow!("P1.3 NURBS extrusion surface: {}", e))?;
                 AnalyticSurface::NURBSSurface {
@@ -2497,11 +2530,11 @@ impl Mesh {
             SweptProfile::Bezier | SweptProfile::BSpline => {
                 let (grid, knots_u, knots_v, deg_u, deg_v) =
                     crate::surfaces::sweep::extrusion_surface(
-                        &prof_ctrl,
+                        &side_ctrl,
                         &prof_knots,
                         prof_degree,
                         normal,
-                        dist,
+                        side_dist,
                     )
                     .map_err(|e| anyhow::anyhow!("P1.3 extrusion surface: {}", e))?;
                 AnalyticSurface::BSplineSurface {
@@ -2516,6 +2549,32 @@ impl Mesh {
         self.faces[side_face].set_surface(Some(side_surface));
         let owner_id = self.next_surface_owner_id();
         self.set_face_surface_owner_id(side_face, Some(owner_id));
+
+        // 6b. Each cap looks away from the solid, as in the cylinder builder this
+        //     mirrors. `add_face_closed_curve` gives a cap the normal of its first
+        //     control triangle, so the cap on the back looked INTO the solid — and
+        //     a new top on a turned profile would not even agree with `normal`.
+        //     The rims stay as they are: they are shared with the side.
+        fn look(mesh: &mut Mesh, cap: FaceId, looks: DVec3) {
+            mesh.faces[cap].set_normal(looks);
+            if let Some(AnalyticSurface::Plane { origin, basis_u, u_range, v_range, .. }) =
+                mesh.faces[cap].surface().cloned()
+            {
+                mesh.faces[cap].set_surface(Some(AnalyticSurface::Plane {
+                    origin,
+                    normal: looks,
+                    basis_u,
+                    u_range,
+                    v_range,
+                }));
+            }
+        }
+        if dist > 0.0 {
+            look(self, profile_face, -normal);
+            look(self, top_face, normal);
+        } else {
+            look(self, top_face, -normal);
+        }
 
         // 7. Result. base (profile_face) + top inherit Plane (ADR-089 A-η-1).
         let all_solid_faces = vec![profile_face, top_face, side_face];
