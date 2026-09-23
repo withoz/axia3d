@@ -173,24 +173,25 @@ fn a_band_of_quads_adds_up_to_the_whole_cylinder() {
     );
 }
 
-/// And the solid such a band belongs to now measures its volume, where it used to
-/// read eleven to sixteen times it.
+/// And the solid such a band belongs to measures its volume, where it used to read
+/// eleven times it.
 ///
-/// Not to the last digit, and the gap is measured rather than allowed for: a cap
-/// bounded by arcs has its flux read from the CHORD polygon while its area reads
-/// the arcs (this solid's top cap: area 4770.1 against the circle's 5026.5). That
-/// is a different reader and its own change.
+/// To the last digit, but only once two other readings were put right alongside
+/// this one: a cap bounded by arcs had its flux read from the CHORD polygon while
+/// its area read the arcs, and this solid's top rim carried each arc one edge
+/// along (its cap read 4770.1 where the circle is 5026.5). Each has its own guard
+/// in this crate.
 #[test]
-fn a_solid_whose_band_is_one_surface_measures_about_its_volume() {
+fn a_solid_whose_band_is_one_surface_measures_its_volume() {
     let truth = PI * R * R * H;
     let mut m = Mesh::new();
     let f = arc_circle(&mut m, 16, 0.0);
     m.create_solid(f, CreateSolidMode::Extrude { distance: H }, mat()).expect("extrude");
-    let ratio = m.mesh_volume() / truth;
+    let v = m.mesh_volume();
     assert!(
-        (ratio - 1.0).abs() < 0.01,
-        "πr²h = {truth:.1}, it read {:.1} ({ratio:.4}) — it used to read about eleven times it",
-        m.mesh_volume()
+        (v / truth - 1.0).abs() < 1e-9,
+        "πr²h = {truth:.1}, it read {v:.1} ({:.4} of it) — it used to read about eleven times it",
+        v / truth
     );
 }
 

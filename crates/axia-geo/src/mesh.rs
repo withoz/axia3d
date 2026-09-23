@@ -8960,24 +8960,35 @@ impl Mesh {
                     // of 7,280,000, the excess 240,000.0 matching the two caps'
                     // 2·(|p·n|·hole area)/3 = 240,000.0 to the last digit.
                     //
+                    // An ARC is material, and this fan walked CHORDS — so a cap
+                    // bounded by arcs handed over the flux of the polygon its
+                    // vertices trace, while `face_area` had counted the bulges
+                    // since 2026-08-13. The two readers read the same face and
+                    // disagreed. Measured 2026-09-23 on a circle cut by a line
+                    // with one half pushed (r = 300, h = 120): its top cap's
+                    // 141,371.7 mm² of area entered the volume as the 90,000 mm²
+                    // of its chord triangle, and the solid read 0.8789 of πr²h/2.
+                    //
                     // On a plane `p·n` is constant, so the fan is that times the
-                    // area the boundary encloses, and taking the holes out is
-                    // just a ratio of areas. Read through `face_area` rather
-                    // than by fanning the inner loops directly: that reader
-                    // already knows which inner loops are holes at all — on a
-                    // Path B cylinder the two "inner" loops are the tube's RIMS
-                    // (ADR-094) and deducting them took 2πrh down to 2πrh − πr².
-                    // Curved faces never reach this branch, but agreeing with
-                    // the one hole-aware reader in the engine costs nothing and
-                    // keeps them from drifting apart.
-                    if face.inners().is_empty() {
-                        return Some(fan);
+                    // area those chords enclose, and both corrections are one
+                    // ratio: the area this face HAS over the area the fan read.
+                    // Read through `face_area` rather than by fanning the inner
+                    // loops directly: that reader already knows which inner loops
+                    // are holes at all — on a Path B cylinder the two "inner"
+                    // loops are the tube's RIMS (ADR-094) and deducting them took
+                    // 2πrh down to 2πrh − πr². Curved faces never reach this
+                    // branch, but agreeing with the one hole-aware reader in the
+                    // engine costs nothing and keeps them from drifting apart.
+                    //
+                    // Where every edge is straight and nothing is cut out the two
+                    // areas are the same expression, so the ratio is exactly 1.0
+                    // and a box's flux is untouched bit for bit.
+                    let chord_area = self.newell_raw(&verts).map_or(0.0, |n| n.length() * 0.5);
+                    let area = self.face_area(fid);
+                    if chord_area > 0.0 && area > 0.0 {
+                        return Some(fan * (area / chord_area));
                     }
-                    let outer_area = self.face_outer_area(fid);
-                    if !(outer_area > 0.0) {
-                        return Some(fan);
-                    }
-                    return Some(fan * (self.face_area(fid) / outer_area));
+                    return Some(fan);
                 }
             }
         }
