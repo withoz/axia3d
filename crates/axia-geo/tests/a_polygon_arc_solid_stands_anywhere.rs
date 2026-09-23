@@ -191,37 +191,90 @@ fn each_cap_of_a_polygonal_cone_looks_away_from_the_solid() {
     }
 }
 
-/// Left as it is, and pinned so it is not a surprise: turning the caps outward
-/// takes most of the cone's placement dependence away but not all of it, and for
-/// two different reasons.
-///
-/// An apex cone's fan triangles have three corners each, so every one of them
-/// still carries the WHOLE cone (`a_cone_fan_triangle_still_counts_the_whole_cone`),
-/// and a flux read sixteen times over does not stay put when the solid moves:
-/// measured 2026-09-23, +300 standing at z = 100 reads 1.3125 of its z = 0 reading
-/// where it read 1.3542 before the caps were turned.
-///
-/// A frustum's quads do read their own wedge, and what is left is its top rim:
-/// the base carries the circle's arcs and the scaled top rim carries none, so the
-/// band is read as a cone while the cap it closes is read as a 16-gon. That
-/// mismatch is ~0.2% of the solid and moves with height — 0.9987 at z = 100.
+/// Left as it is, and pinned so it is not a surprise: an apex cone's fan triangles
+/// have three corners each, so every one of them still carries the WHOLE cone
+/// (`a_cone_fan_triangle_still_counts_the_whole_cone` in this crate), and a flux
+/// read sixteen times over does not stay put when the solid moves. Measured
+/// 2026-09-23: +300 standing at z = 100 reads 1.3125 of its z = 0 reading, where
+/// it read 1.3542 before the caps were turned outward.
 #[test]
-fn a_polygonal_cone_still_moves_a_little_with_its_height() {
-    let mut at = |top_scale: f64, dist: f64, z: f64| {
+fn an_apex_cone_still_moves_with_its_height() {
+    let mut at = |z: f64| {
         let mut m = Mesh::new();
         let f = arc_circle(&mut m, 16, z);
-        m.create_solid(f, CreateSolidMode::ExtrudeCone { distance: dist, top_scale }, mat())
-            .expect("cone");
+        m.create_solid(f, CreateSolidMode::ExtrudeCone { distance: H, top_scale: 0.0 }, mat())
+            .expect("apex cone");
         m.mesh_volume()
     };
-    let apex = at(0.0, H, 100.0) / at(0.0, H, 0.0);
+    let moved = at(100.0) / at(0.0);
     assert!(
-        apex > 1.2,
-        "an apex cone's fan still counts the whole cone sixteen times, so it still          moves with height; it read {apex:.4} — if this is near 1.0 the fan has learned          about triangles and this pin should become a guard"
+        moved > 1.2,
+        "an apex cone's fan still counts the whole cone sixteen times, so it still          moves with height; it read {moved:.4} — if this is near 1.0 the fan has learned          about triangles and this pin should become a guard"
     );
-    let frustum = at(0.5, H, 100.0) / at(0.5, H, 0.0);
+}
+
+/// The frustum, whose quads do read their own wedge. With the scaled arcs on its
+/// top rim its cap is read as the circle it is rather than as a 16-gon, and it
+/// measures πh(R² + Rr + r²)/3 with r = R·s to within 0.03% wherever it stands —
+/// where it was 0.39% out and moved 0.31% between z = 0 and z = 100.
+///
+/// What is left is one cause with two symptoms: `analytic_face_flux` has closed
+/// forms for Plane, Sphere and Cylinder and NO Cone arm, so the cone band falls
+/// back to its tessellation, whose chords lie inside the surface. Measured
+/// 2026-09-23 the band reads 0.99968 of πh(R² + Rr), and since the caps are exact
+/// and the band is not, the ratio also drifts by about 1e-4 across these heights.
+#[test]
+fn a_polygonal_frustum_measures_its_frustum_wherever_it_stands() {
+    const S: f64 = 0.5;
+    let r_top = R * S;
+    let truth = PI * H * (R * R + R * r_top + r_top * r_top) / 3.0;
+    let mut readings = Vec::new();
+    for dist in [H, -H] {
+        for z in [0.0, 100.0, -150.0] {
+            let mut m = Mesh::new();
+            let f = arc_circle(&mut m, 16, z);
+            let r = m
+                .create_solid(f, CreateSolidMode::ExtrudeCone { distance: dist, top_scale: S }, mat())
+                .expect("frustum");
+            // The caps are exact — that is what the scaled arcs bought.
+            for (label, cap, want) in [
+                ("base", r.profile_face, PI * R * R),
+                ("top", r.top_face, PI * r_top * r_top),
+            ] {
+                let area = m.face_area(cap);
+                assert!(
+                    (area / want - 1.0).abs() < 1e-9,
+                    "{dist:+} at z = {z}: the {label} cap is {want:.1}, it read {area:.1}"
+                );
+            }
+            readings.push((format!("{dist:+} at z = {z}"), m.mesh_volume() / truth));
+        }
+    }
+    for (where_, ratio) in &readings {
+        assert!(
+            (ratio - 1.0).abs() < 5e-4,
+            "πh(R² + Rr + r²)/3 = {truth:.1}; {where_} read {ratio:.6} of it"
+        );
+    }
+    let lo = readings.iter().map(|r| r.1).fold(f64::MAX, f64::min);
+    let hi = readings.iter().map(|r| r.1).fold(f64::MIN, f64::max);
     assert!(
-        (frustum - 1.0).abs() > 1e-4 && (frustum - 1.0).abs() < 5e-3,
-        "a frustum's top rim carries no arcs, so its cap and its band disagree by ~0.2%          and that disagreement moves with height; it read {frustum:.4} — if this is exact          the rim has its arcs and this pin should become a guard"
+        hi - lo < 2e-4,
+        "a frustum should read the same wherever it stands; these spread {:.6}          ({lo:.6}..{hi:.6})",
+        hi - lo
+    );
+
+    // The is-signal for the cause above: the band under-reads because the cone has
+    // no closed-form flux. When it gets one, this fires and the bounds tighten.
+    let mut m = Mesh::new();
+    let f = arc_circle(&mut m, 16, 0.0);
+    let r = m
+        .create_solid(f, CreateSolidMode::ExtrudeCone { distance: H, top_scale: S }, mat())
+        .expect("frustum");
+    let band: f64 = r.side_faces.iter().filter_map(|&q| m.face_outward_flux(q)).sum();
+    let band_ratio = band / (PI * H * (R * R + R * r_top));
+    assert!(
+        band_ratio < 1.0 - 1e-6,
+        "the cone band read {band_ratio:.6} of πh(R² + Rr) — if this is exact,          `analytic_face_flux` has grown a Cone arm and the bounds above should come down"
     );
 }

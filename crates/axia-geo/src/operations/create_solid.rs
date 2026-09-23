@@ -1331,6 +1331,52 @@ impl Mesh {
                 tf.set_surface(Some(synthesize_plane_surface(&top_positions)));
             }
         }
+        // The scaled top rim carries the base rim's arcs, scaled toward the centre
+        // and translated with it — the same as the cylinder's top rim, which takes
+        // its arcs translated. Without them the cap is read as a 16-gon while the
+        // band beside it is read as a cone, and the two disagree: measured
+        // 2026-09-23, a half-scale frustum read 0.9961 of πh(R² + Rr + r²)/3 and
+        // moved ±0.15% with the height it stood at. One shared owner per rim, so a
+        // click on any segment selects the whole circle (ADR-088 P22.5).
+        {
+            let top_rim_owner = self.next_curve_owner_id();
+            for i in 0..n {
+                let next = (i + 1) % n;
+                let below = self
+                    .find_edge(boundary_verts[i], boundary_verts[next])
+                    .and_then(|e| self.edge_curve(e).cloned());
+                let scaled = match below {
+                    Some(AnalyticCurve::Arc {
+                        center: c, radius: rr, normal: nn, basis_u: bu,
+                        start_angle, end_angle,
+                    }) => Some(AnalyticCurve::Arc {
+                        center: center + (c - center) * top_scale + normal * dist,
+                        radius: rr * top_scale,
+                        normal: nn,
+                        basis_u: bu,
+                        start_angle,
+                        end_angle,
+                    }),
+                    Some(AnalyticCurve::Circle { center: c, radius: rr, normal: nn, basis_u: bu }) => {
+                        Some(AnalyticCurve::Circle {
+                            center: center + (c - center) * top_scale + normal * dist,
+                            radius: rr * top_scale,
+                            normal: nn,
+                            basis_u: bu,
+                        })
+                    }
+                    _ => None,
+                };
+                let Some(curve) = scaled else { continue };
+                if let Some(eid) = self.find_edge(top_verts[i], top_verts[next]) {
+                    if let Some(edge_mut) = self.edges.get_mut(eid) {
+                        edge_mut.set_curve(Some(curve));
+                    }
+                    self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
+                }
+            }
+        }
+
         let cone_surface = make_cone(top_v, base_v);
         for &fid in &side_faces {
             if self.faces.get(fid).map(|f| f.is_active()).unwrap_or(false) {
