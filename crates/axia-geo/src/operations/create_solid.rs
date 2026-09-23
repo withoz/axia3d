@@ -1042,6 +1042,30 @@ impl Mesh {
     /// FAIL-CLOSED (D5): caller (dispatch arm) rejects degenerate distance /
     /// `top_scale ≥ 1` / `< 0` / solid face. Any error here → Scene rollback
     /// (byte-identical, `fallback_dist = None`).
+    /// ADR-183 — turn the cap on the back of an extrusion outward.
+    ///
+    /// `extrude_planar_box`, `..._tapered` and `..._mixed` each do this inline.
+    /// The arc-circle paths below never did, so their back cap looked INTO the
+    /// solid. Volume is flux over three and a cap's flux is `(centroid·n)·A`, so
+    /// a cap that looks in reads `+z·A` where it should read `−z·A` and the solid
+    /// measures `2·A·z / 3` too much — nothing at all on z = 0, and measured
+    /// 2026-09-23 on a 300-tall cylinder of r = 40: 122% of itself standing at
+    /// z = 100, 67% at z = −150, and a third of itself when extruded downward.
+    fn turn_cap_outward(&mut self, cap: FaceId) -> Result<()> {
+        self.flip_face(cap)?;
+        let start = self.faces[cap].outer().start;
+        if !start.is_null() {
+            let verts = self.collect_loop_verts(start)?;
+            let pos: Vec<DVec3> =
+                verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
+            if pos.len() >= 3 {
+                let outward = synthesize_plane_surface(&pos);
+                self.faces[cap].set_surface(Some(outward));
+            }
+        }
+        Ok(())
+    }
+
     fn extrude_planar_cone(
         &mut self,
         profile_face: FaceId,
@@ -1259,6 +1283,11 @@ impl Mesh {
             for &fid in &side_faces {
                 self.set_face_surface_owner_id(fid, Some(owner_id));
             }
+            // ADR-183 — an apex cone has no top cap, so its base is the back
+            // cap only when the apex stands above it.
+            if dist > 0.0 {
+                self.turn_cap_outward(profile_face)?;
+            }
             let mut all_solid_faces = Vec::with_capacity(1 + side_faces.len());
             all_solid_faces.push(profile_face);
             all_solid_faces.extend(side_faces.iter().copied());
@@ -1312,6 +1341,10 @@ impl Mesh {
         for &fid in &side_faces {
             self.set_face_surface_owner_id(fid, Some(owner_id));
         }
+        // ADR-183 — the cap on the back of the extrusion looks out.
+        let back_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.turn_cap_outward(back_cap)?;
+
         let mut all_solid_faces = Vec::with_capacity(2 + side_faces.len());
         all_solid_faces.push(profile_face);
         all_solid_faces.push(top_face);
@@ -1842,6 +1875,10 @@ impl Mesh {
         for &side_fid in &side_faces {
             self.set_face_surface_owner_id(side_fid, Some(owner_id));
         }
+
+        // ADR-183 — the cap on the back of the extrusion looks out.
+        let back_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.turn_cap_outward(back_cap)?;
 
         let adjacent_splits = 0;
 
