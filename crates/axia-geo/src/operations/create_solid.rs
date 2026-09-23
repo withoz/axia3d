@@ -1748,28 +1748,52 @@ impl Mesh {
             top_face_mut.set_surface(Some(top_surface));
         }
 
-        // ADR-088 P22.5 — top rim arc curves + shared owner for single-click selection.
-        // All N top-rim arc segments share one owner so clicking any one segment
-        // selects the entire top-cap circle rim (same pattern as step 6/8 in
+        // ADR-088 P22.5 — top rim curves + shared owner for single-click selection.
+        // All N top-rim segments share one owner so clicking any one of them
+        // selects the whole rim (same pattern as step 6/8 in
         // extrude_closed_curve_face_via_tessellation).
+        //
+        // Each top edge takes the curve of the edge BELOW it, translated. The
+        // angles used to be synthesised from the index (`i·2π/n .. (i+1)·2π/n`),
+        // which is the right arc only if `boundary_verts[0]` sits at angle 0 — and
+        // it sits wherever the loop's start half-edge is. Measured 2026-09-23 on a
+        // 16-arc circle whose loop began at (37.0, 15.3), one step along: every arc
+        // landed on the next edge, so each bulge fell on the wrong side of its own
+        // chord and the area reader DEDUCTED it — the top cap read 4770.1 mm²
+        // where its circle is 5026.5 and even its 16-gon is 4898.3, and the solid
+        // lost that much volume with it. `extrude_planar_mixed` has always copied
+        // the edge's own curve; this is the same.
         {
             let top_rim_owner = self.next_curve_owner_id();
-            let top_center = circle_center + translation;
-            let two_pi = std::f64::consts::TAU;
             for i in 0..n {
-                let theta_start = (i as f64) * two_pi / (n as f64);
-                let theta_end = ((i + 1) as f64) * two_pi / (n as f64);
-                let arc = AnalyticCurve::Arc {
-                    center: top_center,
-                    radius: circle_radius,
-                    normal: profile_normal,
-                    basis_u: circle_basis_u,
-                    start_angle: theta_start,
-                    end_angle: theta_end,
+                let below = self
+                    .find_edge(boundary_verts[i], boundary_verts[(i + 1) % n])
+                    .and_then(|e| self.edge_curve(e).cloned());
+                let translated = match below {
+                    Some(AnalyticCurve::Arc {
+                        center, radius, normal, basis_u, start_angle, end_angle,
+                    }) => Some(AnalyticCurve::Arc {
+                        center: center + translation,
+                        radius,
+                        normal,
+                        basis_u,
+                        start_angle,
+                        end_angle,
+                    }),
+                    Some(AnalyticCurve::Circle { center, radius, normal, basis_u }) => {
+                        Some(AnalyticCurve::Circle {
+                            center: center + translation,
+                            radius,
+                            normal,
+                            basis_u,
+                        })
+                    }
+                    _ => None,
                 };
+                let Some(curve) = translated else { continue };
                 if let Some(eid) = self.find_edge(top_verts[i], top_verts[(i + 1) % n]) {
                     if let Some(edge_mut) = self.edges.get_mut(eid) {
-                        edge_mut.set_curve(Some(arc));
+                        edge_mut.set_curve(Some(curve));
                     }
                     self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
                 }
