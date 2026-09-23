@@ -2005,55 +2005,16 @@ impl Mesh {
             substituted, dist, material, profile_surface,
         )?;
 
-        // 8. ADR-092 C-β — attach Arc curves to TOP face's N edges
-        //    (mirror step 6 for bottom). Translated center =
-        //    profile_normal · dist + original center. DCEL topology
-        //    unchanged (manifold-safe per L1/L5). Render fast-path
-        //    (A-κ Arc tessellation) samples the analytic curves and
-        //    emits a smooth ring polyline — fixes "원에 대한 완벽한
-        //    처리가 안되고 있습니다" (2026-05-09 사용자 시연 결함 1).
-        let profile_normal = match profile_surface {
-            AnalyticSurface::Plane { normal, .. } => normal.normalize_or_zero(),
-            _ => DVec3::ZERO, // unreachable — extrude_planar_cylinder enforces Plane
-        };
-        if profile_normal.length_squared() > 0.5 {
-            let translation = profile_normal * dist;
-            let top_center = center + translation;
-            // Top face edges in face_outer_edges() loop order — same N
-            // chord positions as bottom (just translated). Index i
-            // corresponds to angular sector [i, i+1)/N · 2π.
-            //
-            // Note on winding: top face may have reversed loop order
-            // vs bottom (CCW from above vs CCW from below). The Arc
-            // curve is direction-agnostic — the same Arc(theta_a,
-            // theta_b) and Arc(theta_b, theta_a) sample the same point
-            // set. Visual ring is identical regardless of loop order.
-            if let Ok(top_edges) = self.face_outer_edges(result.top_face) {
-                let n_seg_top = top_edges.len();
-                if n_seg_top == n_seg {
-                    // ADR-088 P22.5 — all N top-rim arc segments share one owner
-                    // (different from bottom_rim_owner) so a click selects the whole top circle.
-                    let top_rim_owner = self.next_curve_owner_id();
-                    for (i, &eid) in top_edges.iter().enumerate() {
-                        let theta_start = (i as f64) * two_pi / (n_seg_top as f64);
-                        let theta_end =
-                            ((i + 1) as f64) * two_pi / (n_seg_top as f64);
-                        let arc = AnalyticCurve::Arc {
-                            center: top_center,
-                            radius,
-                            normal,
-                            basis_u,
-                            start_angle: theta_start,
-                            end_angle: theta_end,
-                        };
-                        if let Some(edge_mut) = self.edges.get_mut(eid) {
-                            edge_mut.set_curve(Some(arc));
-                        }
-                        self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
-                    }
-                }
-            }
-        }
+        // 8. ADR-092 C-β used to attach the top rim's arcs here, synthesised
+        //    from each edge's INDEX. Its note said the arc is direction-agnostic,
+        //    which holds for drawing the ring and not for measuring the cap it
+        //    bounds: the top loop runs the other way round, so every arc landed on
+        //    the next edge and its bulge fell on the wrong side of a different
+        //    chord. Measured 2026-09-23 on a 23-segment Path A cylinder: the base
+        //    cap read πr² = 5026.5 mm² and the top read 4902.0, the 23-gon's 4964.3
+        //    with every bulge deducted. The recursion in step 7 now hands each top
+        //    edge the curve of the edge below it, translated, and the shared rim
+        //    owner with it — so there is nothing left to do here.
 
         Ok(result)
     }

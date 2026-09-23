@@ -130,3 +130,45 @@ fn both_caps_of_an_extruded_arc_circle_measure_the_circle() {
         );
     }
 }
+
+/// The same synthesis a second time. `extrude_closed_curve_face_via_tessellation`
+/// (the legacy Path A route) tessellates the circle, recurses into the builder
+/// above — which now hands the top rim the arcs of the rim below it — and then
+/// OVERWRITES them from the index again in its own step 8. Its note says the arc
+/// is direction-agnostic, which holds for drawing the ring and not for measuring
+/// the cap it bounds: measured 2026-09-23, a 23-segment Path A cylinder read its
+/// base cap at 5026.5 mm² (πr², right) and its top at 4902.0 — the 23-gon's
+/// 4964.3 with every bulge deducted instead of added.
+fn disk(m: &mut Mesh, z: f64) -> FaceId {
+    let c = DVec3::new(0.0, 0.0, z);
+    let a = m.add_vertex(c + DVec3::X * R);
+    m.add_face_closed_curve(
+        a,
+        AnalyticCurve::Circle { center: c, radius: R, normal: DVec3::Z, basis_u: DVec3::X },
+        mat(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_path_a_cylinder_keeps_the_arcs_its_recursion_gave_it() {
+    let mut m = Mesh::new();
+    m.set_cylinder_path_b_default(false);
+    let f = disk(&mut m, 0.0);
+    let r = m
+        .create_solid(f, CreateSolidMode::Extrude { distance: H }, mat())
+        .expect("extrude");
+
+    let top = arcs_match_their_edges(&m, r.top_face);
+    assert!(top.is_empty(), "the top rim's arcs:\n  {}", top.join("\n  "));
+
+    let circle = PI * R * R;
+    for (label, cap) in [("base", r.profile_face), ("top", r.top_face)] {
+        let area = m.face_area(cap);
+        assert!(
+            (area / circle - 1.0).abs() < 1e-9,
+            "the {label} cap is bounded by the circle's own arcs, so it is πr² = {circle:.1}; \
+             it read {area:.1}"
+        );
+    }
+}
