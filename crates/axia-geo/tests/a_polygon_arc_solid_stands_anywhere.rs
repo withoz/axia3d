@@ -191,14 +191,14 @@ fn each_cap_of_a_polygonal_cone_looks_away_from_the_solid() {
     }
 }
 
-/// Left as it is, and pinned so it is not a surprise: an apex cone's fan triangles
-/// have three corners each, so every one of them still carries the WHOLE cone
-/// (`a_cone_fan_triangle_still_counts_the_whole_cone` in this crate), and a flux
-/// read sixteen times over does not stay put when the solid moves. Measured
-/// 2026-09-23: +300 standing at z = 100 reads 1.3125 of its z = 0 reading, where
-/// it read 1.3542 before the caps were turned outward.
+/// The apex cone holds still too, since 2026-09-27: its fan triangles used to
+/// share one full-turn Cone surface, so each counted the whole cone and the
+/// reading scaled with the height — 1.3125 of its z = 0 value at z = 100, and
+/// 1.3542 before the caps were turned outward. Its builder now hands each
+/// triangle the sector its own corners span (`a_cone_fan_counts_its_own_sector`).
+/// What is left is the band's tessellation, the same ~1e-4 as the frustum's.
 #[test]
-fn an_apex_cone_still_moves_with_its_height() {
+fn an_apex_cone_holds_still_within_its_tessellation() {
     let mut at = |z: f64| {
         let mut m = Mesh::new();
         let f = arc_circle(&mut m, 16, z);
@@ -208,8 +208,8 @@ fn an_apex_cone_still_moves_with_its_height() {
     };
     let moved = at(100.0) / at(0.0);
     assert!(
-        moved > 1.2,
-        "an apex cone's fan still counts the whole cone sixteen times, so it still          moves with height; it read {moved:.4} — if this is near 1.0 the fan has learned          about triangles and this pin should become a guard"
+        (moved - 1.0).abs() < 5e-4,
+        "an apex cone should not change by standing elsewhere; it read {moved:.6} of its z = 0 reading"
     );
 }
 

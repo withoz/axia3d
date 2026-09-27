@@ -1273,11 +1273,49 @@ impl Mesh {
                 };
                 side_faces.push(self.add_face(&tri, material)?);
             }
-            let cone_surface = make_cone(0.0, base_v);
-            for &fid in &side_faces {
-                if self.faces.get(fid).map(|f| f.is_active()).unwrap_or(false) {
-                    self.faces[fid].set_surface(Some(cone_surface.clone()));
+            // Each triangle carries the sector its OWN two base corners span, as
+            // `create_cone` does for the primitive (primitives.rs: `u_range:
+            // (theta_start, theta_end)`). One shared full-turn surface cannot be
+            // narrowed by a reader here: a slice is taken from the face's corners,
+            // and the apex is a parametric degeneracy — its u is undefined, it
+            // inverts to u = 0, and a range taken from all three corners comes out
+            // twice the sector. Measured 2026-09-27 before this, on a 16-arc circle
+            // of r = 40 coned 300: each of the sixteen triangles answered for the
+            // whole cone, so the solid read 15.9946 × πr²h/3 and the renderer drew
+            // 6462 triangles where `create_cone` draws 526.
+            //
+            // The angles are read off the corners rather than synthesised from the
+            // index — the boundary loop starts wherever its start half-edge is,
+            // which is how the top-rim arcs came to sit one edge along.
+            let axis_n = axis_dir.normalize_or_zero();
+            let ref_n = basis_u.normalize_or_zero();
+            let sector_basis_v = axis_n.cross(ref_n);
+            for (i, &fid) in side_faces.iter().enumerate() {
+                if !self.faces.get(fid).map(|f| f.is_active()).unwrap_or(false) {
+                    continue;
                 }
+                let angle_at = |p: DVec3| {
+                    let local = p - apex_pt;
+                    local.dot(sector_basis_v).atan2(local.dot(ref_n))
+                };
+                let a0 = angle_at(bot_pos[i]);
+                let a1 = angle_at(bot_pos[(i + 1) % n]);
+                let mut d = a1 - a0;
+                while d > std::f64::consts::PI {
+                    d -= std::f64::consts::TAU;
+                }
+                while d < -std::f64::consts::PI {
+                    d += std::f64::consts::TAU;
+                }
+                let mut sector = make_cone(0.0, base_v);
+                // Two corners at the same angle say nothing about a sector, and an
+                // empty patch would be worse than a wide one: leave the full turn.
+                if d.abs() > 1e-12 {
+                    if let AnalyticSurface::Cone { u_range, .. } = &mut sector {
+                        *u_range = if d > 0.0 { (a0, a0 + d) } else { (a0 + d, a0) };
+                    }
+                }
+                self.faces[fid].set_surface(Some(sector));
             }
             let owner_id = self.next_surface_owner_id();
             for &fid in &side_faces {
