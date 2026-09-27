@@ -14008,7 +14008,15 @@ impl Mesh {
         let material = self.faces[host].material();
         let parent_surface = self.faces[host].surface().cloned();
         let parent_owner = self.face_surface_owner_id(host);
-        self.faces.remove(host);
+        // `remove_face`, not `faces.remove` — it clears each loop half-edge's
+        // face first. A raw storage removal leaves them pointing at a FaceId that
+        // is gone: `face().is_null()` is false, so `find_halfedge` Pass 1 will not
+        // reuse them and Pass 2 allocates a second pair, and anything that indexes
+        // `faces[he.face()]` finds nothing there. Measured 2026-09-28 on a clean
+        // box: one punch left 4 dangling half-edges and 4 spare, a through-drill
+        // 8 and 24. (Ids are never recycled, so a dangling one stays dangling
+        // rather than coming to mean some other face.)
+        self.remove_face(host)?;
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&circle_verts);
         for h in &existing_holes {
@@ -14330,7 +14338,15 @@ impl Mesh {
         let material = self.faces[host].material();
         let parent_surface = self.faces[host].surface().cloned();
         let parent_owner = self.face_surface_owner_id(host);
-        self.faces.remove(host);
+        // `remove_face`, not `faces.remove` — it clears each loop half-edge's
+        // face first. A raw storage removal leaves them pointing at a FaceId that
+        // is gone: `face().is_null()` is false, so `find_halfedge` Pass 1 will not
+        // reuse them and Pass 2 allocates a second pair, and anything that indexes
+        // `faces[he.face()]` finds nothing there. Measured 2026-09-28 on a clean
+        // box: one punch left 4 dangling half-edges and 4 spare, a through-drill
+        // 8 and 24. (Ids are never recycled, so a dangling one stays dangling
+        // rather than coming to mean some other face.)
+        self.remove_face(host)?;
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&rect_verts);
         for h in &existing_holes {
@@ -14576,7 +14592,15 @@ impl Mesh {
         let material = self.faces[host].material();
         let parent_surface = self.faces[host].surface().cloned();
         let parent_owner = self.face_surface_owner_id(host);
-        self.faces.remove(host);
+        // `remove_face`, not `faces.remove` — it clears each loop half-edge's
+        // face first. A raw storage removal leaves them pointing at a FaceId that
+        // is gone: `face().is_null()` is false, so `find_halfedge` Pass 1 will not
+        // reuse them and Pass 2 allocates a second pair, and anything that indexes
+        // `faces[he.face()]` finds nothing there. Measured 2026-09-28 on a clean
+        // box: one punch left 4 dangling half-edges and 4 spare, a through-drill
+        // 8 and 24. (Ids are never recycled, so a dangling one stays dangling
+        // rather than coming to mean some other face.)
+        self.remove_face(host)?;
         let mut hole_slices: Vec<&[VertId]> = Vec::with_capacity(1 + existing_holes.len());
         hole_slices.push(&loop_verts);
         for h in &existing_holes {
