@@ -317,17 +317,26 @@ impl Mesh {
         let cone_axis_dir = -up;
         let v_base = height; // (base - apex)·(-up) = height since apex = base + up*height
 
-        // Side triangles — N faces, each sharing apex_v + two adjacent
-        // base ring verts. Winding: [apex, base[i+1], base[i]] gives outward
-        // normal (perpendicular to axis, radially outward).
+        // Side triangles — N faces, each sharing apex_v + two adjacent base ring
+        // verts. The order is [apex, base[i], base[i+1]], which winds OUTWARD.
+        //
+        // It used to be [apex, base[i+1], base[i]], with a comment saying that was
+        // the outward one. Measured 2026-09-27 on r = 40, h = 300, segments = 16:
+        // the cross product of the first triangle came to (−4593, −912, −612) —
+        // into the cone and down — and `verify_outward_normals` reported
+        // `inward_count = 16` for every cone this builder made. Nothing failed on
+        // it because no reader followed a cone's winding: the flux fell back to a
+        // tessellation of the SURFACE, which is oriented outward on its own, and
+        // the renderer takes its triangles from the surface too. Giving the cone
+        // band a closed-form flux made the winding matter, and it was wrong.
         let two_pi = 2.0 * std::f64::consts::PI;
         let mut side_faces_for_soften: Vec<FaceId> = Vec::with_capacity(segments as usize);
         for i in 0..segments {
             let next = (i + 1) % segments;
             let tri = vec![
                 apex_v,
-                base_verts[next as usize],
                 base_verts[i as usize],
+                base_verts[next as usize],
             ];
             let side_face = self.add_face(&tri, material)?;
             side_faces_for_soften.push(side_face);

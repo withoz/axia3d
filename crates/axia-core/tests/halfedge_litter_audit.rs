@@ -10,22 +10,33 @@
 //!
 //!   extrude rect / hexagon / circle   8 / 12 / 46   (= 2 × boundary edges)
 //!   extrude tapered, bidirectional    8
-//!   CONE PRIMITIVE                   48            (= 2 × 24 base segments)
+//!   CONE PRIMITIVE                   48 → 0        (fixed 2026-09-27, see below)
 //!   through-drill                    24            (0 → 24 on a clean box)
 //!
-//! Clean: box, cylinder, sphere primitives, and the kernel-native cone/frustum
-//! extrude — which is the interesting one, because it takes the same shape
-//! through a different route and leaves nothing behind.
+//! Clean: box, cylinder, sphere primitives, the cone primitive since 2026-09-27,
+//! and the kernel-native cone/frustum extrude — which is the interesting one,
+//! because it takes the same shape through a different route and leaves nothing
+//! behind.
 //!
 //! It does NOT accumulate: pushing the top face again leaves the count where it
 //! was. So this is waste and a behaviour hazard (the loop walk treats a leftover
 //! as a way on — see `overlap_walk_sim`), not a leak.
 //!
-//! HYPOTHESIS, not yet measured: `find_halfedge` Pass 1 only reuses a free
-//! half-edge pointing the way the new loop needs. If the wall ends up traversing
-//! the shared edge the same way the cap does — which an outward cap flip
-//! (ADR-183) would produce after the fact — Pass 1 misses and Pass 2 allocates a
-//! second pair, stranding the first.
+//! The HYPOTHESIS below is no longer a hypothesis for the cone: `find_halfedge`
+//! Pass 1 only reuses a free half-edge pointing the way the new loop needs, so if
+//! a wall traverses the shared edge the SAME way the cap does, Pass 1 misses and
+//! Pass 2 allocates a second pair, stranding the first.
+//!
+//! `create_cone` wound its side triangles INWARD — `verify_outward_normals` said
+//! `inward_count = 16` and nothing asserted it — which made every side walk its
+//! base edge the same way the base cap did. Winding them outward (2026-09-27,
+//! primitives.rs) took this row from 48 to 0 and cost nothing else. That is the
+//! mechanism, measured.
+//!
+//! It does NOT explain the rows that remain: those walls are wound correctly and
+//! still strand two per boundary edge, so something else in their route does it.
+//! ADR-183's cap flip happens after the walls are built, which is the next thing
+//! to measure.
 use axia_core::{Command, Scene, FORM_MATERIAL};
 use axia_geo::CreateSolidMode;
 use glam::DVec3;
@@ -102,8 +113,8 @@ fn leftover_half_edges_per_build_path() {
 
     let mut s = prod();
     s.mesh.create_cone(DVec3::ZERO,50.0,100.0,24,FORM_MATERIAL).unwrap();
-    assert_eq!(spare(&s), 48,
-        "the cone primitive strands 2 half-edges per base segment. If this is          now lower, that build path was fixed — say so and lower the number");
+    assert_eq!(spare(&s), 0,
+        "the cone primitive is clean since its sides were wound outward (2026-09-27, was 48) — keep it that way");
 
     for (k, expect, what) in [(0u8, 8usize, "rect"), (2, 12, "hexagon"), (1, 46, "circle")] {
         let mut s = prod();

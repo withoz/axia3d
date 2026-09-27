@@ -47,11 +47,10 @@ const N: usize = 16;
 const PI: f64 = std::f64::consts::PI;
 const TAU: f64 = std::f64::consts::TAU;
 
-/// A cone band has no closed-form flux — `analytic_face_flux` has arms for Plane,
-/// Sphere and Cylinder only — so it is read from its tessellation, whose chords
-/// lie inside the surface. `create_cone`, which has always been narrowed per
-/// sector, reads 0.9997 of its truth for the same reason.
-const TESSELLATION_SLACK: f64 = 1e-3;
+/// A cone band had no closed-form flux until 2026-09-27, so it was read from its
+/// tessellation and everything here carried 1e-3 of slack. It has one now
+/// (`a_cone_band_has_a_closed_form`), and these read exactly.
+const EXACT: f64 = 1e-9;
 
 fn mat() -> MaterialId {
     MaterialId::new(0)
@@ -108,7 +107,7 @@ fn an_apex_cone_measures_its_cone() {
         let (m, _, _) = apex_cone(0.0, dist);
         let v = m.mesh_volume();
         assert!(
-            (v / truth - 1.0).abs() < TESSELLATION_SLACK,
+            (v / truth - 1.0).abs() < EXACT,
             "{dist:+}: πr²h/3 = {truth:.1}, it read {v:.1} ({:.4} of it) — it used to \
              read about sixteen times it",
             v / truth
@@ -130,13 +129,13 @@ fn the_fan_divides_one_cone_between_its_triangles() {
     for (i, &s) in sides.iter().enumerate() {
         let flux = m.face_outward_flux(s).expect("flux");
         assert!(
-            (flux / each - 1.0).abs() < TESSELLATION_SLACK,
+            (flux / each - 1.0).abs() < EXACT,
             "triangle {i} covers one sixteenth, which is {each:.1}; it read {flux:.1}"
         );
     }
     let sum: f64 = sides.iter().filter_map(|&s| m.face_outward_flux(s)).sum();
     assert!(
-        (sum / lateral - 1.0).abs() < TESSELLATION_SLACK,
+        (sum / lateral - 1.0).abs() < EXACT,
         "the lateral surface is {lateral:.1}; the fan summed to {sum:.1}"
     );
 }
@@ -188,22 +187,19 @@ fn each_triangle_carries_the_sector_its_corners_span() {
     }
 }
 
-/// A solid barely changes by standing somewhere else. It used to change a great
+/// A solid does not change by standing somewhere else. It used to change a great
 /// deal: the whole-cone reading scaled with the placement, so this same cone read
-/// 1.3125 of its z = 0 value at z = 100 even after its caps were turned outward.
-///
-/// Measured 2026-09-27 it is 0.999894 — and not 1.000000, for the reason the
-/// frustum is not exact either: the caps are exact and the band is read from its
-/// tessellation, so the part that does not cancel moves with the height. The
-/// is-signal for that cause lives in `a_polygon_arc_solid_stands_anywhere`.
+/// 1.3125 of its z = 0 value at z = 100 even after its caps were turned outward,
+/// and 0.999894 once each triangle carried its own sector — the band was still
+/// being sampled. Since the band has a closed form it holds still exactly.
 #[test]
-fn an_apex_cone_measures_almost_the_same_wherever_it_stands() {
+fn an_apex_cone_measures_the_same_wherever_it_stands() {
     let mut wrong = Vec::new();
     for dist in [H, -H] {
         let base = apex_cone(0.0, dist).0.mesh_volume();
         for z in [100.0, -150.0] {
             let v = apex_cone(z, dist).0.mesh_volume();
-            if (v / base - 1.0).abs() > 5e-4 {
+            if (v / base - 1.0).abs() > EXACT {
                 wrong.push(format!("{dist:+}, base z = {z}: {:.6} of its z = 0 reading", v / base));
             }
         }
@@ -239,7 +235,7 @@ fn the_primitives_and_the_frustum_are_unchanged() {
     m.create_cone(DVec3::ZERO, R, H, N as u32, mat()).expect("primitive cone");
     let v = m.mesh_volume();
     assert!(
-        (v / cone_truth - 1.0).abs() < TESSELLATION_SLACK,
+        (v / cone_truth - 1.0).abs() < EXACT,
         "`create_cone` reads its own cone; it read {:.4} of it",
         v / cone_truth
     );
@@ -264,7 +260,7 @@ fn the_primitives_and_the_frustum_are_unchanged() {
         .expect("frustum");
     let v = m.mesh_volume();
     assert!(
-        (v / frustum_truth - 1.0).abs() < TESSELLATION_SLACK,
+        (v / frustum_truth - 1.0).abs() < EXACT,
         "the frustum read {:.6} of its truth",
         v / frustum_truth
     );
