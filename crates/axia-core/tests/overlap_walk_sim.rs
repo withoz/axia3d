@@ -1,9 +1,29 @@
 //! SIMULATION — is the spare half-edge really what decides it?
 //!
-//! Measured: a box built by extruding a drawn profile carries 4 half-edges on
-//! each ground edge (2 with faces, 2 spare); `create_box` carries 2 and no
-//! spare. The region-closing walk collects only face-less half-edges, and only
-//! the extruded box lets an overlapping ground draw close the outer region.
+//! Measured when this was written: a box built by extruding a drawn profile
+//! carried 4 half-edges on each ground edge (2 with faces, 2 spare) while
+//! `create_box` carried 2 and no spare. The region-closing walk collects only
+//! face-less half-edges, and only the extruded box let an overlapping ground
+//! draw close the outer region.
+//!
+//! ⚠ **Both halves of that fixture have since changed, and the conclusion has
+//! not.** The walk learned to step past a dead end, so all three cases close the
+//! region (see the note at the end of `causation_by_removal`); and on 2026-09-28
+//! the extrude stopped allocating the spares at all — ADR-183's cap flip moved
+//! to before the walls, so `find_halfedge` Pass 1 reuses the cap's free
+//! half-edges instead of Pass 2 allocating a second pair. An extruded box is now
+//! byte-for-byte the shape `create_box` makes: 24 half-edges, 12 edges, no spare.
+//! Measured across that change, with the overlapping draw applied:
+//!
+//! ```text
+//!                      before            after
+//!   A extruded box     spare 8, 그라운드 3   spare 0, 그라운드 3
+//!   C create_box       spare 0, 그라운드 3   spare 0, 그라운드 3
+//! ```
+//!
+//! So `strip_spares` below is a no-op on today's mesh, and case B measures the
+//! same thing as A. The arms are kept because the reasoning they hold — the gate,
+//! and why deleting it changes nothing — is still the live answer.
 //!
 //! Two earlier attempts got this wrong and are worth recording. The first
 //! hand-built the wire inside axia-geo and never reproduced the failure, so its
@@ -51,6 +71,10 @@ fn prod() -> Scene {
     s.face_rederive_on_draw = true;
     s.freeform_overlap_on_draw = true;
     s
+}
+
+fn s_count(s: &Scene) -> usize {
+    s.mesh.hes.iter().filter(|(_, h)| h.is_active()).count()
 }
 
 fn faces(s: &Scene) -> usize {
@@ -214,7 +238,7 @@ fn causation_by_removal() {
     let mut s = prod();
     extruded_box(&mut s);
     let (b, sp) = (faces(&s), spare_total(&s));
-    assert!(sp > 0, "an extruded box is supposed to carry spares");
+    assert_eq!(sp, 0, "the extrude stopped allocating spares on 2026-09-28 — see the note above");
     draw_overlap(&mut s);
     row("A 돌출 박스 (그대로)", &s, b, sp);
     let a_ground = ground_faces(&s).len();
@@ -329,7 +353,19 @@ fn the_spare_is_leftover_and_the_tool_no_longer_leans_on_it() {
         scene.mesh.collect_non_manifold_edges().len(),
     );
     let stripped = strip_spares(&mut scene);
-    assert!(stripped > 0, "the extruded box is supposed to carry spares");
+    // The follow-up this test invited has landed (2026-09-28): the extrude stops
+    // allocating the pair, so there is nothing left to strip and the two kinds of
+    // box are one. The check below still says what it said — removing what is
+    // there must not change the solid — it is simply removing nothing now.
+    assert_eq!(stripped, 0, "the extrude no longer allocates a spare pair — see the note at the top");
+    assert_eq!(
+        (
+            s_count(&scene),
+            scene.mesh.edges.iter().filter(|(_, e)| e.is_active()).count(),
+        ),
+        (24, 12),
+        "an extruded box is the shape `create_box` makes: 24 half-edges over 12 edges"
+    );
     assert_eq!(
         (
             faces(&scene),
