@@ -10057,6 +10057,62 @@ impl Mesh {
             return Ok(None);
         }
 
+        // 2b. Who else stands on this rim?
+        //
+        // A circle drawn inside another face becomes that face's HOLE, and the
+        // two of them share the rim: the self-loop edge carries one half-edge
+        // for the disk and its twin for the container's inner loop. Measured on
+        // fuzz session 43, where a rectangle crosses such a circle at op 41:
+        //
+        // ```text
+        //   EdgeId(227) self-loop
+        //     HeId(504) -> FaceId(137)   the disk being trimmed
+        //     HeId(505) -> FaceId(59)    the container, as its inner[0]
+        // ```
+        //
+        // Step 3 removes that edge. Without this the container is left naming a
+        // half-edge that is gone — "face FaceId(59): inner[0] cannot collect:
+        // HalfEdge HeId(505) not found", and the hole can never be walked again.
+        //
+        // The hole does not disappear when the rim is trimmed; it is simply
+        // bounded by N arcs instead of one loop. So remember it here and re-home
+        // it onto the new rim in 4b.
+        let mut hole_to_rehome: Option<(FaceId, usize)> = None;
+        {
+            let mut users: Vec<(FaceId, Option<usize>)> = Vec::new();
+            for (fid, f) in self.faces.iter() {
+                if !f.is_active() || fid == face_id {
+                    continue;
+                }
+                let on_rim = |h: HeId, me: &Self| -> bool {
+                    !h.is_null() && me.hes.contains(h) && me.hes[h].edge() == self_loop_edge_id
+                };
+                if on_rim(f.outer().start, self) {
+                    users.push((fid, None));
+                }
+                for (i, l) in f.inners().iter().enumerate() {
+                    if on_rim(l.start, self) {
+                        users.push((fid, Some(i)));
+                    }
+                }
+            }
+            match users.as_slice() {
+                // Exactly one hole on this rim: move it in 4b.
+                [(fid, Some(i))] => hole_to_rehome = Some((*fid, *i)),
+                // Anything else is left as it was.
+                //
+                // ⚠ The one other shape that occurs is a face whose OUTER loop
+                // stands on this rim — a cone's side standing on its base rim
+                // reads `[(FaceId(0), None)]`, measured. Declining the trim for
+                // it broke six curved-seam tests, and re-homing an outer loop is
+                // not the same surgery as re-homing a hole: an outer loop is the
+                // face itself, not a window in it. Whether those faces come
+                // through the trim sound is a separate question from this one,
+                // and this change does not answer it.
+                _ => {}
+            }
+        }
+
         // 3. Remove old face + self-loop edge + anchor (mirror polygonize cleanup).
         self.remove_face(face_id)?;
         if self.edges.contains(self_loop_edge_id) && self.edges[self_loop_edge_id].is_active() {
@@ -10072,6 +10128,48 @@ impl Mesh {
 
         // 4. New arc-bounded face (same material / surface).
         let new_fid = self.add_face_with_holes(&seg_verts, &[], material)?;
+
+        // 4b. Re-home the container's hole onto the new rim (see 2b).
+        //
+        // The new face's boundary half-edges each have a free twin — measured:
+        // four boundary half-edges, four twins, every one with a null face and a
+        // null `next`. So the twins exist but are not a loop yet; walking the
+        // boundary forwards and linking the twins backwards makes one, which is
+        // the winding a hole wants anyway.
+        if let Some((container, inner_idx)) = hole_to_rehome {
+            let mut boundary: Vec<HeId> = Vec::new();
+            let start = self.faces[new_fid].outer().start;
+            let mut h = start;
+            for _ in 0..seg_verts.len().saturating_add(2) {
+                boundary.push(h);
+                h = self.hes[h].next();
+                if h == start {
+                    break;
+                }
+            }
+            let twins: Vec<HeId> = boundary
+                .iter()
+                .map(|&b| self.hes[b].next_rad())
+                .filter(|t| !t.is_null() && self.hes.contains(*t))
+                .collect();
+            if twins.len() == boundary.len() && !twins.is_empty() {
+                let n = twins.len();
+                for i in 0..n {
+                    // Reverse of the boundary's order: the hole winds the other way.
+                    let prev = twins[(i + 1) % n];
+                    let next = twins[(i + n - 1) % n];
+                    self.hes[twins[i]].set_next(next);
+                    self.hes[twins[i]].set_prev(prev);
+                    self.hes[twins[i]].set_face(container);
+                }
+                if let Some(f) = self.faces.get_mut(container) {
+                    if inner_idx < f.inners().len() {
+                        f.inners_mut()[inner_idx].start = twins[0];
+                        f.bump_boundary_version_after_inners_mut();
+                    }
+                }
+            }
+        }
         if let (Some(surface), Some(face_mut)) = (surface_clone, self.faces.get_mut(new_fid)) {
             face_mut.set_surface(Some(surface));
         }
