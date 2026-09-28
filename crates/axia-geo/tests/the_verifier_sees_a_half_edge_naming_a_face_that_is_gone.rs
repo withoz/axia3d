@@ -27,6 +27,15 @@
 //! name can only ever mean "gone", never "some other face now". It is a panic
 //! waiting on an unguarded index, not silent corruption.
 
+//! ⚠ `phase3_gate_sim`'s fifty operations reported none of this, which is why
+//! the punches looked like the only source until the whole workspace was run
+//! with I7 in. So the claim that the two ways in are the only ones was re-asked
+//! of something much wider: the fuzz at 100 sessions x 50 operations, release,
+//! 67s. It reports **zero** — beside 48 broken sessions of the inventory the
+//! wide run already carries (106 stacked pairs, 22 non-finite normals, 2 loops
+//! that will not collect). A sweep that finds nothing is only as wide as its
+//! inputs, so this is the width the claim rests on.
+
 use axia_geo::mesh::Mesh;
 use axia_geo::MaterialId;
 use glam::DVec3;
