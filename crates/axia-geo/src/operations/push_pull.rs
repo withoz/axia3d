@@ -319,7 +319,70 @@ pub fn move_only_max_inward(mesh: &Mesh, face_id: FaceId) -> Option<f64> {
     }
 
     if min_thickness.is_finite() {
-        Some(min_thickness)
+        return Some(min_thickness);
+    }
+
+    // No wall runs along the normal — which is every CURVED solid.
+    //
+    // A cylinder side face's neighbours run along the axis and around the rim,
+    // and not one of them is parallel to the radial normal, so the loop above
+    // finds nothing and used to answer `None`, meaning "no limit". Measured on
+    // fuzz session 12, where operation 3 pushes a face of a radius-30 cylinder
+    // inward by 100:
+    //
+    // ```text
+    //   the face spans u = -31.3° .. -15.7° at radius 30
+    //   after the push its corners sit at radius 70.4, at u = 153.2° and 159.8°
+    // ```
+    //
+    // 180° round and out the other side. The base disk's boundary then runs
+    // 0°, 153°, 160°, -47°, -63° ... — a ring with two points flung across the
+    // axis, which crosses itself. Nothing reports it: `verify_face_invariants`
+    // is valid and ADR-273 finds 0, because a face's own boundary crossing
+    // itself is neither a topology fault nor a face-against-face one. What it
+    // does is stack: twelve operations later the same plane carries two faces
+    // covering the same ground.
+    //
+    // So fall back to how deep the solid IS in that direction — project this
+    // face's own connected component onto the normal and stop at its far side.
+    // For a box top that is exactly the wall measure above (height), so this
+    // only ever answers where the walls could not.
+    let all: Vec<FaceId> = mesh
+        .faces
+        .iter()
+        .filter(|(_, f)| f.is_active())
+        .map(|(id, _)| id)
+        .collect();
+    let component = mesh
+        .face_connected_components(&all)
+        .into_iter()
+        .find(|c| c.contains(&face_id))?;
+
+    let mut far = f64::INFINITY;
+    for &fid in &component {
+        let start = mesh.faces.get(fid).map(|f| f.outer().start)?;
+        if start.is_null() {
+            continue;
+        }
+        let Ok(vs) = mesh.collect_loop_verts(start) else { continue };
+        for &v in &vs {
+            if let Ok(p) = mesh.vertex_pos(v) {
+                far = far.min(p.dot(face_normal));
+            }
+        }
+    }
+    let mut here = f64::INFINITY;
+    for &v in &boundary {
+        if let Ok(p) = mesh.vertex_pos(v) {
+            here = here.min(p.dot(face_normal));
+        }
+    }
+    if !far.is_finite() || !here.is_finite() {
+        return None;
+    }
+    let depth = here - far;
+    if depth > 1e-10 {
+        Some(depth)
     } else {
         None
     }

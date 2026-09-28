@@ -93,6 +93,20 @@
 //! file's other pinned test already says the gate seeds run into past
 //! operation 20.
 //!
+//! ⚠ That family is not one cause. Following the EARLIEST of them (session 12,
+//! operation 15) upstream found a push that had no limit on a round solid
+//! (`an_inward_push_stops_inside_the_solid`): a radius-30 cylinder's side face
+//! pushed 100 inward landed at radius 70.4 on the far side, leaving a base disk
+//! whose boundary crossed itself — which nothing reports, and which stacked
+//! twelve operations later. Bounding it read:
+//!
+//! ```text
+//!   broken 32 -> 30, earliest break op 15 -> 18
+//! ```
+//!
+//! So the stacking is a SYMPTOM several different things arrive at, and each
+//! one has to be followed back from where it is first visible.
+//!
 //! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
 //! violations the wide run reports now are a fresh inventory to work through —
 //! they are deep-session pile-ups, all well past the 20-operation gate, not
