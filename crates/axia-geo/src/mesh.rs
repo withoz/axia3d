@@ -10845,23 +10845,8 @@ impl Mesh {
         // Detach half-edges from this face and break loop pointers
         let outer_start = self.faces[face_id].outer().start;
         if !outer_start.is_null() {
-            if let Ok(hes) = self.collect_loop_hes(outer_start) {
-                for he_id in hes {
-                    if let Some(he) = self.hes.get_mut(he_id) {
-                        he.set_face(FaceId::NULL);
-                        he.set_next(HeId::NULL);
-                        he.set_prev(HeId::NULL);
-                    }
-                }
-            }
-            // Even if loop traversal fails, still remove the face
-        }
-
-        // Also handle inner loops (holes) if any
-        let inners: Vec<_> = self.faces[face_id].inners().to_vec();
-        for inner_ref in inners {
-            if !inner_ref.start.is_null() {
-                if let Ok(hes) = self.collect_loop_hes(inner_ref.start) {
+            match self.collect_loop_hes(outer_start) {
+                Ok(hes) => {
                     for he_id in hes {
                         if let Some(he) = self.hes.get_mut(he_id) {
                             he.set_face(FaceId::NULL);
@@ -10869,6 +10854,52 @@ impl Mesh {
                             he.set_prev(HeId::NULL);
                         }
                     }
+                }
+                // Even if loop traversal fails, still remove the face — but
+                // remember, because its half-edges are then unreachable this way.
+                Err(_) => {}
+            }
+        }
+
+        // Also handle inner loops (holes) if any
+        let inners: Vec<_> = self.faces[face_id].inners().to_vec();
+        for inner_ref in inners {
+            if !inner_ref.start.is_null() {
+                match self.collect_loop_hes(inner_ref.start) {
+                    Ok(hes) => {
+                        for he_id in hes {
+                            if let Some(he) = self.hes.get_mut(he_id) {
+                                he.set_face(FaceId::NULL);
+                                he.set_next(HeId::NULL);
+                                he.set_prev(HeId::NULL);
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        // A loop that could not be walked leaves half-edges still naming this
+        // face, and once it is out of storage they name something that is not
+        // there: not free, so `find_halfedge` Pass 1 will not reuse them, and not
+        // valid, so `faces[he.face()]` finds nothing (I7 in `mesh_invariants.rs`).
+        // It happens whenever the loop was already broken on the way in — a merge
+        // takes the shared edge out before removing the two faces, so the walk
+        // has nothing to follow. Sweep for them, and only then: the scan is over
+        // every half-edge, and the walk succeeds in the ordinary case.
+        {
+            let orphaned: Vec<HeId> = self
+                .hes
+                .iter()
+                .filter(|(_, he)| he.face() == face_id)
+                .map(|(h, _)| h)
+                .collect();
+            for he_id in orphaned {
+                if let Some(he) = self.hes.get_mut(he_id) {
+                    he.set_face(FaceId::NULL);
+                    he.set_next(HeId::NULL);
+                    he.set_prev(HeId::NULL);
                 }
             }
         }
@@ -13533,8 +13564,12 @@ impl Mesh {
 
         // 7. Destructive phase — all pre-validation done above.
         self.remove_edge_and_halfedges(edge_id)?;
-        self.faces.remove(f1);
-        self.faces.remove(f2);
+        // `remove_face`, not `faces.remove` — see I7 in `mesh_invariants.rs`. A
+        // raw removal leaves the loops' half-edges naming a face that is gone:
+        // not free, so the rebuild below cannot take them back, and not valid
+        // either.
+        self.remove_face(f1)?;
+        self.remove_face(f2)?;
 
         // 9. Create new merged face with preserved holes (F3)
         let hole_slices: Vec<&[VertId]> = inner_loops.iter().map(|v| v.as_slice()).collect();
@@ -13701,8 +13736,9 @@ impl Mesh {
         let material = self.faces[outer_face].material();
 
         // 8. 두 face 제거 (엣지는 add_face_with_holes가 dedup하므로 살아남음)
-        self.faces.remove(outer_face);
-        self.faces.remove(inner_face);
+        // `remove_face`, not `faces.remove` — see I7 in `mesh_invariants.rs`.
+        self.remove_face(outer_face)?;
+        self.remove_face(inner_face)?;
 
         // 9. 재생성 — outer_verts + [inner_verts] + 기존 holes + inner의 holes
         let mut hole_slices: Vec<&[VertId]> = Vec::new();

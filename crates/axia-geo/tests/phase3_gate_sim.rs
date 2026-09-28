@@ -23,6 +23,9 @@ struct Metrics {
     non_manifold: usize,
     self_intersections: usize,
     invariants_valid: bool,
+    /// Active half-edges naming a face that is no longer in storage — see
+    /// `a_punched_face_leaves_no_half_edge_pointing_at_it`.
+    dangling: usize,
 }
 
 fn measure(mesh: &Mesh) -> Metrics {
@@ -41,6 +44,11 @@ fn measure(mesh: &Mesh) -> Metrics {
         non_manifold: info.non_manifold_edge_count,
         self_intersections: si.count(),
         invariants_valid: inv.is_valid(),
+        dangling: mesh
+            .hes
+            .iter()
+            .filter(|(_, h)| h.is_active() && !h.face().is_null() && !mesh.faces.contains(h.face()))
+            .count(),
     }
 }
 
@@ -88,11 +96,12 @@ fn print_row(name: &str, ok: bool, rejected: bool, b: &Metrics, a: &Metrics) {
         "Err"
     };
     println!(
-        "[{name:<28}] result={ok_str:<3}  closed: {}→{}  bE: {}→{}  nm: {}→{}  SI: {}→{}  invariants: {}→{}   **{verdict}**",
+        "[{name:<28}] result={ok_str:<3}  closed: {}→{}  bE: {}→{}  nm: {}→{}  SI: {}→{}  dangling: {}→{}  invariants: {}→{}   **{verdict}**",
         tf(b.closed), tf(a.closed),
         b.boundary_edges, a.boundary_edges,
         b.non_manifold, a.non_manifold,
         b.self_intersections, a.self_intersections,
+        b.dangling, a.dangling,
         vi(b.invariants_valid), vi(a.invariants_valid),
     );
 }
@@ -117,6 +126,11 @@ fn measure_subset(mesh: &Mesh, orig: &[FaceId]) -> Metrics {
         non_manifold: info.non_manifold_edge_count,
         self_intersections: si.count(),
         invariants_valid: inv.is_valid(),
+        dangling: mesh
+            .hes
+            .iter()
+            .filter(|(_, h)| h.is_active() && !h.face().is_null() && !mesh.faces.contains(h.face()))
+            .count(),
     }
 }
 

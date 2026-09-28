@@ -452,6 +452,34 @@ impl Mesh {
             }
         }
 
+        // I7: a half-edge names a face that is still there.
+        //
+        // A face dropped without freeing its loops leaves every half-edge of them
+        // naming it, and once the Face is out of storage that name means nothing.
+        // Such a half-edge is in a third state nothing expects: not free, so
+        // `find_halfedge` Pass 1 will not reuse it and Pass 2 doubles the pair;
+        // and not valid, so anything that indexes `faces[he.face()]` finds
+        // nothing there. The three punches did it with `faces.remove`, and
+        // `remove_face` itself did it whenever a loop no longer walked to
+        // everything that named the face — both closed 2026-09-28, and this is
+        // the check that says so. See
+        // `the_verifier_sees_a_half_edge_naming_a_face_that_is_gone`.
+        //
+        // Ids are never recycled (`SlotStorage::insert` only counts up), so this
+        // can only ever mean "gone", never "some other face now".
+        for (hid, he) in self.hes.iter() {
+            if !he.is_active() || he.face().is_null() {
+                continue;
+            }
+            if !self.faces.contains(he.face()) {
+                violations.push(format!(
+                    "half-edge {:?}: names face {:?}, which is not in storage",
+                    hid,
+                    he.face(),
+                ));
+            }
+        }
+
         InvariantReport {
             checked_faces,
             violations,
