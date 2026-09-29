@@ -63,7 +63,20 @@ pub fn derivative(
     if dctrl.is_empty() {
         return Ok(DVec3::ZERO);
     }
-    evaluate(&dctrl, &dknots, degree - 1, t)
+    // Read the derivative spline directly rather than through `evaluate`, which
+    // would validate it first: for p = 1 the derivative is degree 0, and
+    // `validate` refuses degree 0 by design — a step function is not a curve this
+    // module evaluates (`validate_rejects_degree_zero`). So the derivative of the
+    // straightest possible spline used to come back an error, and every extrusion
+    // sweep, being degree 1 along v, lost its v-tangent and its normal with it.
+    //
+    // `de_boor` handles degree 0 on its own: the refinement loop is empty, so it
+    // returns the control point of the span t falls in, which is exactly what a
+    // piecewise-constant derivative is. `nurbs::derivative` has always read it
+    // this way.
+    let dp = degree - 1;
+    let span = find_knot_span(&dknots, dp, dctrl.len(), t);
+    Ok(de_boor(&dctrl, &dknots, dp, span, t))
 }
 
 /// Tessellate the curve into a polyline with chord error ≤ `chord_tol`.
