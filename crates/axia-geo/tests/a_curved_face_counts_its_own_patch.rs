@@ -237,22 +237,42 @@ fn a_slice_per_quad_and_a_one_vertex_rim_are_unchanged() {
     );
 }
 
-/// Left as it is, and pinned so it is not a surprise: a slice wants four corners.
-/// A polygonal cone's apex fan has three, and its apex inverts to u = 0 whatever
-/// wedge the triangle covers, so a slice read off those corners would be wrong
-/// rather than narrow. Measured 2026-09-23: each of the 16 fan triangles reads the
-/// whole cone, so the solid measures about 16× its volume.
+/// A slice still wants four corners, and that is the right place to stop: a
+/// polygonal cone's apex fan has three, and the apex inverts to u = 0 whatever
+/// sector the triangle covers, so a range read off those corners comes out twice
+/// as wide rather than narrow. Nothing needs the reader to try: every 3-vertex
+/// curved face that exists carries its own range from its BUILDER —
+/// `create_cone`'s 16 fan triangles, `create_sphere`'s 32 polar triangles, and
+/// since 2026-09-27 `extrude_planar_cone`'s fan too, which used to share one
+/// full-turn surface and read 15.9946x its volume. Full treatment in
+/// `a_cone_fan_counts_its_own_sector`.
 #[test]
-fn a_cone_fan_triangle_still_counts_the_whole_cone() {
+fn a_cone_fan_triangle_is_narrowed_by_its_builder() {
     let mut m = Mesh::new();
     let f = arc_circle(&mut m, 16, 0.0);
-    m.create_solid(f, CreateSolidMode::ExtrudeCone { distance: H, top_scale: 0.0 }, mat())
+    let r = m
+        .create_solid(f, CreateSolidMode::ExtrudeCone { distance: H, top_scale: 0.0 }, mat())
         .expect("cone");
+
+    // Narrow at the source, so no reader has to narrow it.
+    let sector = std::f64::consts::TAU / 16.0;
+    for (i, &s) in r.side_faces.iter().enumerate() {
+        let Some(AnalyticSurface::Cone { u_range, .. }) = m.face_surface(s) else {
+            panic!("fan triangle {i} carries no Cone surface");
+        };
+        assert!(
+            ((u_range.1 - u_range.0) / sector - 1.0).abs() < 1e-9,
+            "fan triangle {i} should carry one sixteenth of the turn ({sector:.4}); it carries {:.4}",
+            u_range.1 - u_range.0
+        );
+    }
+
+    // A cone band has no closed-form flux, so it is read from its tessellation —
+    // the same 1e-3 the primitive cone reads at.
     let truth = PI * R * R * H / 3.0;
     let ratio = m.mesh_volume() / truth;
     assert!(
-        ratio > 15.0,
-        "the apex fan is still read whole (~16×); it read {ratio:.4} — if this is now \
-         near 1.0 the slice has learned about triangles and this pin should become a guard"
+        (ratio - 1.0).abs() < 1e-3,
+        "the apex cone reads its own volume; it read {ratio:.4} of it (it used to read ~16x)"
     );
 }
