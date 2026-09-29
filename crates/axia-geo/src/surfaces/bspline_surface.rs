@@ -118,7 +118,7 @@ pub fn derivative_v(
     // Step 1: derivative in v-direction in each row.
     let mut dv_row_pts: Vec<DVec3> = Vec::with_capacity(ctrl_grid.len());
     for row in ctrl_grid {
-        dv_row_pts.push(bspline::derivative(row, knots_v, deg_v, v).unwrap_or(DVec3::ZERO));
+        dv_row_pts.push(bspline::derivative(row, knots_v, deg_v, v)?);
     }
     // Step 2: collapse u-direction.
     let n_u = dv_row_pts.len();
