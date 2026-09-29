@@ -2335,8 +2335,9 @@ impl Scene {
     /// an undo right after a material pick went back past it. Measured in the
     /// app: pick 콘크리트 on an extruded box, undo once, and the extrude was
     /// gone (faces 6 → 1), the material with it. The app's pick comes through
-    /// here instead; the command itself is unchanged, since it is also a
-    /// low-level step inside larger operations that record their own.
+    /// here instead. The command itself is unchanged: this runs it inside
+    /// its own transaction, and the plain WASM `assign_material` that calls it
+    /// directly is kept (tests use it).
     ///
     /// `Err` when the library does not hold `material` — nothing changes and
     /// nothing is recorded then.

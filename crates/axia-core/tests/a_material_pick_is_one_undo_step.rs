@@ -11,9 +11,9 @@
 //! ```
 //!
 //! The app's pick now comes through `assign_material_to_faces` /
-//! `remove_material_from_faces`, which record one transaction each. The
-//! command is left as it was: it is also a step inside larger operations that
-//! record their own.
+//! `remove_material_from_faces`, which record one transaction each and run the
+//! command inside it. The command is left as it was; the plain WASM exports
+//! that call it directly are kept (tests use them).
 //!
 //! ⚠ Mutation-checked: drop the transaction from `assign_material_to_faces`
 //! and "one undo takes back the pick" fails with the extrude gone; drop it

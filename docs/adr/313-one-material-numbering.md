@@ -157,8 +157,10 @@ before demoting, which is why they passed.
 
 `promoteShapeToXia` on the same Shape, twice: XIA 2, then XIA 3, over the same
 faces. The Shape stays on after promotion (ADR-050 P-2-c) and nothing checks
-for its link. The IFC export still wrote one element (measured) — it skips a
-linked Shape — so it does not show there.
+for its link. The IFC export still wrote one element (measured): it gives each
+face to the first owner that lists it — XIAs before Shapes, in id order — and
+skips an owner left with no face (`export_ifc_model`, `claimed`). So neither
+the preserved Shape nor a second XIA shows there.
 
 ## 3. Decision
 
@@ -196,8 +198,8 @@ precise:
 
 - The app's pick and removal go through `Scene::assign_material_to_faces` /
   `remove_material_from_faces`, which record **one** transaction each, owner
-  moves included. `Command::AssignMaterial` / `RemoveMaterial` are unchanged —
-  they are also steps inside larger operations that record their own.
+  moves included, and run `Command::AssignMaterial` / `RemoveMaterial` inside
+  it. The commands are unchanged.
 - Inside that step, an owner of a picked face follows the pick only when the
   pick leaves no doubt about the owner as a whole:
 
@@ -230,8 +232,10 @@ precise:
   decision this ADR does not make.
 - **The plain commands** (`assign_material` / `remove_material`, and
   `Command::AssignMaterial` / `RemoveMaterial` beneath them) still record
-  nothing. The app no longer uses them for a pick; tests and larger operations
-  do, and a larger operation records its own step.
+  nothing. The app reaches the plain exports only through the bridge's
+  fallback for an engine built before the new entries; the new entries run
+  the commands inside their own transaction, and a few Rust tests call the
+  plain exports directly.
 - **Quick Colour and the texture dialog** move owners by the same rule (they
   go through the same pick) but do not show a refusal — the promise of
   promotion is the Inspector's, so the Inspector is where it is explained.
