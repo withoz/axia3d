@@ -32,7 +32,10 @@ use crate::boundary_kernel::bentley_ottmann::bentley_ottmann_resolve;
 use crate::boundary_kernel::geom2::Vec2;
 use crate::boundary_kernel::planar::{Lineage, PlanarGraph};
 use crate::boundary_kernel::region::extract_regions;
+use crate::operations::face_split::split_face_by_chain;
+use crate::mesh::Mesh;
 use crate::surfaces::{cone, cylinder, AnalyticSurface};
+use crate::{FaceId, MaterialId, VertId};
 use glam::DVec3;
 
 /// Where a region sits relative to the two loops it came from.
@@ -507,3 +510,186 @@ pub fn crossing_on_developable(
 // is handing over a different face, and shipping a half-applied arrangement
 // would be worse than the overlap it replaces — so this waits for that to be
 // measured rather than guessed.
+
+/// What resolving a drawn circle against a cap already on the host left behind.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedOverlap {
+    /// The piece of the circle being drawn that the old cap does not cover.
+    pub b_only: FaceId,
+    /// The host, after losing that piece. Named by the loop it kept: of the two
+    /// pieces a chain split leaves, the host is the one still carrying the
+    /// face's original OUTER boundary.
+    pub host: FaceId,
+    /// The two pieces the old cap became — the lens, and what is left of the
+    /// cap around it.
+    ///
+    /// ⚠ Not told apart here. Both are bounded by the same arc of B and by an
+    /// arc of A's rim, and saying which is which needs a containment test on
+    /// the host's chart. Nothing that calls this needs to know, so it is not
+    /// claimed.
+    pub cap_pieces: [FaceId; 2],
+}
+
+/// Divide a circle being drawn against a cap that is already on this host.
+///
+/// Two ordinary chain splits, once the pieces exist to make them with:
+///
+/// ```text
+///   host   split by B's arc OUTSIDE A   ->  host' + B-only
+///   cap A  split by B's arc INSIDE A    ->  the lens + what is left of A
+/// ```
+///
+/// Both are possible because **a cap's rim IS its host's hole** — the same
+/// vertices, wired through twin half-edges — so splitting a rim edge at a
+/// crossing gives the vertex to the cap and to the host at once.
+///
+/// ⚠ Split the segment the crossing REPORTS, not the nearest edge to the
+/// point. `Crossing::seg` says which one; searching for the closest leaves a
+/// loose vertex beside the rim instead of on it.
+///
+/// ⚠ Read every face id back after each mutation. Splitting the rim replaces
+/// faces, and a caller holding an id from before is holding a stale one —
+/// `which_face_the_chain_split_is_given` is the measurement that says so.
+///
+/// Returns `None` **without touching the mesh** when the two do not cross or
+/// the host is not developable (a sphere and a torus cannot be flattened
+/// without stretching — `chart_for`). A failure AFTER that leaves the mesh
+/// part-built, which is what the caller's transaction is for.
+pub fn resolve_drawn_circle_against_cap(
+    mesh: &mut Mesh,
+    host: FaceId,
+    cap_a: FaceId,
+    loop_b: &[DVec3],
+    material: MaterialId,
+) -> Option<ResolvedOverlap> {
+    let surface = mesh.face_surface(host)?.clone();
+    let rim = {
+        let face = mesh.faces.get(cap_a).filter(|x| x.is_active())?;
+        mesh.collect_loop_verts(face.outer().start).ok()?
+    };
+    let rim_pts: Vec<DVec3> = rim.iter().filter_map(|&v| mesh.vertex_pos(v).ok()).collect();
+    if rim_pts.len() != rim.len() {
+        return None;
+    }
+    let x = crossing_on_developable(&surface, &rim_pts, loop_b)?;
+
+    // The host's own outer boundary, so its piece can be named afterwards.
+    let host_outer: Vec<VertId> = {
+        let face = mesh.faces.get(host).filter(|f| f.is_active())?;
+        mesh.collect_loop_verts(face.outer().start).ok()?
+    };
+
+    // From here the mesh changes.
+    let m = rim.len();
+    let mut cut_rim = |mesh: &mut Mesh, k: usize| -> Option<VertId> {
+        let (va, vb) = (rim[x.seg[k] % m], rim[(x.seg[k] + 1) % m]);
+        let e = mesh.find_edge(va, vb)?;
+        mesh.split_edge(e, x.points[k]).ok().map(|r| r.0)
+    };
+    let p0 = cut_rim(mesh, 0)?;
+    let p1 = cut_rim(mesh, 1)?;
+
+    let mut chain_of = |mesh: &mut Mesh, pts: &[DVec3]| -> Vec<VertId> {
+        let mut vs = vec![p0];
+        for &p in pts.iter().take(pts.len().saturating_sub(1)).skip(1) {
+            vs.push(mesh.add_vertex(p));
+        }
+        vs.push(p1);
+        vs.dedup();
+        for w in vs.windows(2) {
+            if w[0] != w[1] {
+                mesh.add_edge(w[0], w[1]);
+            }
+        }
+        vs
+    };
+    let outside = chain_of(mesh, &x.outside);
+    let inside = chain_of(mesh, &x.inside);
+    if outside.len() < 2 || inside.len() < 2 {
+        return None;
+    }
+
+    let cut_host = split_face_by_chain(mesh, host, &outside, material).ok()?;
+    let host_pieces = surviving(mesh, host, &cut_host.new_faces);
+    if host_pieces.len() != 2 {
+        return None;
+    }
+    // The host is whichever piece kept its old outer boundary.
+    let kept = |mesh: &Mesh, f: FaceId| -> bool {
+        mesh.faces
+            .get(f)
+            .and_then(|x| mesh.collect_loop_verts(x.outer().start).ok())
+            .is_some_and(|vs| host_outer.iter().all(|v| vs.contains(v)))
+    };
+    let (host_after, b_only) = if kept(mesh, host_pieces[0]) {
+        (host_pieces[0], host_pieces[1])
+    } else if kept(mesh, host_pieces[1]) {
+        (host_pieces[1], host_pieces[0])
+    } else {
+        return None;
+    };
+
+    let cut_cap = split_face_by_chain(mesh, cap_a, &inside, material).ok()?;
+    let cap_pieces = surviving(mesh, cap_a, &cut_cap.new_faces);
+    if cap_pieces.len() != 2 {
+        return None;
+    }
+
+    Some(ResolvedOverlap {
+        b_only,
+        host: host_after,
+        cap_pieces: [cap_pieces[0], cap_pieces[1]],
+    })
+}
+
+/// The faces a split left standing: whatever it reports as new, plus the one it
+/// was given if that survived.
+fn surviving(mesh: &Mesh, was: FaceId, made: &[FaceId]) -> Vec<FaceId> {
+    let mut out: Vec<FaceId> = Vec::new();
+    for &f in made.iter().chain(std::iter::once(&was)) {
+        if mesh.faces.get(f).is_some_and(|x| x.is_active()) && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Every cap sitting in one of this face's holes — a cap's rim IS the hole, so
+/// the face across each inner loop's twin half-edge is the cap that fills it.
+pub fn caps_in_holes(mesh: &Mesh, host: FaceId) -> Vec<FaceId> {
+    let Some(face) = mesh.faces.get(host).filter(|f| f.is_active()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for l in face.inners() {
+        if l.start.is_null() {
+            continue;
+        }
+        let twin = mesh.hes.get(l.start).map(|h| h.next_rad()).unwrap_or_default();
+        if twin.is_null() || twin == l.start {
+            continue;
+        }
+        if let Some(f) = mesh.hes.get(twin).map(|h| h.face()) {
+            if f != host && mesh.faces.get(f).is_some_and(|x| x.is_active()) && !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+/// The first cap in this host's holes that the loop being drawn crosses.
+///
+/// Read-only on purpose: `resolve_drawn_circle_against_cap` changes the mesh
+/// before it can fail, so the caller picks the cap FIRST and resolves once,
+/// rather than trying each in turn and leaving a part-built mesh behind the
+/// ones that did not cross.
+pub fn cap_crossed_by(mesh: &Mesh, host: FaceId, loop_b: &[DVec3]) -> Option<FaceId> {
+    let surface = mesh.face_surface(host)?.clone();
+    caps_in_holes(mesh, host).into_iter().find(|&cap| {
+        let Some(face) = mesh.faces.get(cap).filter(|x| x.is_active()) else { return false };
+        let Ok(rim) = mesh.collect_loop_verts(face.outer().start) else { return false };
+        let pts: Vec<DVec3> = rim.iter().filter_map(|&v| mesh.vertex_pos(v).ok()).collect();
+        pts.len() == rim.len() && crossing_on_developable(&surface, &pts, loop_b).is_some()
+    })
+}
