@@ -12416,7 +12416,7 @@ impl AxiaEngine {
     ///
     /// 반환 = 인스턴스 id, 실패는 0. 자기 원점 배치는 원본과 겹치므로 거절된다
     /// (`array_linear_faces` 가 offset 0 을 거부하는 것과 같은 이유).
-    #[wasm_bindgen(js_name = placeComponent)]
+    #[wasm_bindgen(js_name = "placeComponent")]
     pub fn place_component(&mut self, def_id: u32, x: f64, y: f64, z: f64) -> f64 {
         match self.scene.execute(Command::PlaceComponent {
             def_id,
