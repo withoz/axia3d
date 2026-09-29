@@ -101,7 +101,7 @@ test.describe('ADR-100 R-ζ — Material Removal Recovery contract 검증', () =
     expect(result.recoverKind).toBe('NoOp');
   });
 
-  test('Scenario 4: R-D safety — System tier removal rejected (id 0)', async ({ page }) => {
+  test('Scenario 4: R-D safety — System tier removal rejected (Concrete)', async ({ page }) => {
     await page.goto('/');
     await waitForBridgeReady(page);
 
@@ -110,11 +110,13 @@ test.describe('ADR-100 R-ζ — Material Removal Recovery contract 검증', () =
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const bridge = w.__axia!.get<any>('bridge');
 
-      // Try removing System tier material id 0 (Concrete) — must reject.
-      const removeOut = bridge.removeProjectMaterial(0);
+      // Try removing a System tier material (Concrete) — must reject. Concrete
+      // is 1 since ADR-313; 0 is "no material" and not a material at all, so
+      // it would be refused for the wrong reason.
+      const removeOut = bridge.removeProjectMaterial(1);
       // System tier still has 12 built-ins.
       const systemCount = bridge.listMaterialsByTier('System').length;
-      const concreteStillExists = bridge.getMaterialTier(0) === 'System';
+      const concreteStillExists = bridge.getMaterialTier(1) === 'System';
 
       return { removeOut, systemCount, concreteStillExists };
     });
