@@ -9156,6 +9156,46 @@ impl Mesh {
                 let sign = self.curved_flux_winding_sign(face_id);
                 Some(sign * radius * (o_term + r_term))
             }
+            S::Cone { apex, axis_dir, half_angle, ref_dir, u_range, v_range } => {
+                // With P(u,v) = apex + axis·v + radial(u)·v·tanα and
+                // n̂(u) = radial(u)·cosα − axis·sinα (cone.rs), the v terms of P·n̂
+                // cancel and what is left does not depend on v at all:
+                //
+                //   P·n̂ = apex·n̂(u),   dA = v·tanα·secα du dv
+                //
+                // so the integral separates into a ring term in u and (v₁²−v₀²)/2.
+                // On a whole cone standing on z = 0 it comes to πr²h, which is 3V
+                // there — the base cap contributes nothing, so that identity checks
+                // the form rather than the code. `a_cone_band_has_a_closed_form`
+                // checks it again by integrating the same patch numerically.
+                let axis = axis_dir.normalize_or_zero();
+                if !axis.is_finite() || axis.length_squared() < 0.5 {
+                    return None;
+                }
+                let e1 = crate::surfaces::orthonormal_ref(axis, ref_dir);
+                let e2 = axis.cross(e1).normalize_or_zero();
+                if !e1.is_finite() || !e2.is_finite() {
+                    return None;
+                }
+                let (sin_a, cos_a) = half_angle.sin_cos();
+                if !cos_a.is_finite() || cos_a.abs() < 1e-12 {
+                    return None; // a half-turn cone is a plane through its apex
+                }
+                let (u0, u1) = u_range;
+                let (v0, v1) = v_range;
+                // v is the axial distance from the apex. A patch that crosses it
+                // onto the other nappe would need |v| in the area element; our
+                // builders never make one, and guessing is worse than sampling.
+                if v0 < -1e-12 || v1 < -1e-12 {
+                    return None;
+                }
+                let s_u = u1.sin() - u0.sin(); // ∫cos u
+                let c_u = u0.cos() - u1.cos(); // ∫sin u
+                let ring = cos_a * (apex.dot(e1) * s_u + apex.dot(e2) * c_u)
+                    - sin_a * apex.dot(axis) * (u1 - u0);
+                let sign = self.curved_flux_winding_sign(face_id);
+                Some(sign * (sin_a / cos_a) / cos_a * (v1 * v1 - v0 * v0) / 2.0 * ring)
+            }
             _ => None,
         }
     }

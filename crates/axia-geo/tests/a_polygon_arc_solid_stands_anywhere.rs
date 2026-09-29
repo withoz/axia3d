@@ -195,10 +195,10 @@ fn each_cap_of_a_polygonal_cone_looks_away_from_the_solid() {
 /// share one full-turn Cone surface, so each counted the whole cone and the
 /// reading scaled with the height — 1.3125 of its z = 0 value at z = 100, and
 /// 1.3542 before the caps were turned outward. Its builder now hands each
-/// triangle the sector its own corners span (`a_cone_fan_counts_its_own_sector`).
-/// What is left is the band's tessellation, the same ~1e-4 as the frustum's.
+/// triangle the sector its own corners span (`a_cone_fan_counts_its_own_sector`),
+/// and since the band has a closed form too it holds still exactly.
 #[test]
-fn an_apex_cone_holds_still_within_its_tessellation() {
+fn an_apex_cone_holds_still() {
     let mut at = |z: f64| {
         let mut m = Mesh::new();
         let f = arc_circle(&mut m, 16, z);
@@ -208,7 +208,7 @@ fn an_apex_cone_holds_still_within_its_tessellation() {
     };
     let moved = at(100.0) / at(0.0);
     assert!(
-        (moved - 1.0).abs() < 5e-4,
+        (moved - 1.0).abs() < 1e-9,
         "an apex cone should not change by standing elsewhere; it read {moved:.6} of its z = 0 reading"
     );
 }
@@ -218,11 +218,13 @@ fn an_apex_cone_holds_still_within_its_tessellation() {
 /// measures πh(R² + Rr + r²)/3 with r = R·s to within 0.03% wherever it stands —
 /// where it was 0.39% out and moved 0.31% between z = 0 and z = 100.
 ///
-/// What is left is one cause with two symptoms: `analytic_face_flux` has closed
-/// forms for Plane, Sphere and Cylinder and NO Cone arm, so the cone band falls
-/// back to its tessellation, whose chords lie inside the surface. Measured
-/// 2026-09-23 the band reads 0.99968 of πh(R² + Rr), and since the caps are exact
-/// and the band is not, the ratio also drifts by about 1e-4 across these heights.
+/// It read 0.99973 for a while longer, with one cause and two symptoms:
+/// `analytic_face_flux` had closed forms for Plane, Sphere and Cylinder and NO
+/// Cone arm, so the cone band fell back to its tessellation, whose chords lie
+/// inside the surface — 0.99968 of πh(R² + Rr) — and since the caps were exact
+/// and the band was not, the ratio drifted ~1e-4 across these heights. The band
+/// has a closed form since 2026-09-27 (`a_cone_band_has_a_closed_form`), so
+/// everything below is exact.
 #[test]
 fn a_polygonal_frustum_measures_its_frustum_wherever_it_stands() {
     const S: f64 = 0.5;
@@ -252,20 +254,21 @@ fn a_polygonal_frustum_measures_its_frustum_wherever_it_stands() {
     }
     for (where_, ratio) in &readings {
         assert!(
-            (ratio - 1.0).abs() < 5e-4,
+            (ratio - 1.0).abs() < 1e-9,
             "πh(R² + Rr + r²)/3 = {truth:.1}; {where_} read {ratio:.6} of it"
         );
     }
     let lo = readings.iter().map(|r| r.1).fold(f64::MAX, f64::min);
     let hi = readings.iter().map(|r| r.1).fold(f64::MIN, f64::max);
     assert!(
-        hi - lo < 2e-4,
+        hi - lo < 1e-9,
         "a frustum should read the same wherever it stands; these spread {:.6}          ({lo:.6}..{hi:.6})",
         hi - lo
     );
 
-    // The is-signal for the cause above: the band under-reads because the cone has
-    // no closed-form flux. When it gets one, this fires and the bounds tighten.
+    // The band itself, which used to under-read because the cone had no
+    // closed-form flux. It has one since 2026-09-27, so this is the truth and not
+    // a tolerance: pi h (R^2 + Rr).
     let mut m = Mesh::new();
     let f = arc_circle(&mut m, 16, 0.0);
     let r = m
@@ -274,7 +277,7 @@ fn a_polygonal_frustum_measures_its_frustum_wherever_it_stands() {
     let band: f64 = r.side_faces.iter().filter_map(|&q| m.face_outward_flux(q)).sum();
     let band_ratio = band / (PI * H * (R * R + R * r_top));
     assert!(
-        band_ratio < 1.0 - 1e-6,
-        "the cone band read {band_ratio:.6} of πh(R² + Rr) — if this is exact,          `analytic_face_flux` has grown a Cone arm and the bounds above should come down"
+        (band_ratio - 1.0).abs() < 1e-9,
+        "the cone band is pi h (R^2 + Rr); it read {band_ratio:.9} of it (it read 0.99968          while it was being sampled)"
     );
 }

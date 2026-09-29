@@ -267,12 +267,12 @@ fn a_cone_fan_triangle_is_narrowed_by_its_builder() {
         );
     }
 
-    // A cone band has no closed-form flux, so it is read from its tessellation —
-    // the same 1e-3 the primitive cone reads at.
+    // And it reads its own volume exactly, since the band got a closed form too
+    // (`a_cone_band_has_a_closed_form`); it read 0.9997 of it before that.
     let truth = PI * R * R * H / 3.0;
     let ratio = m.mesh_volume() / truth;
     assert!(
-        (ratio - 1.0).abs() < 1e-3,
+        (ratio - 1.0).abs() < 1e-9,
         "the apex cone reads its own volume; it read {ratio:.4} of it (it used to read ~16x)"
     );
 }
