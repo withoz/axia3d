@@ -8539,6 +8539,16 @@ impl Scene {
                         }
                     }
                 }
+                // A cycle can be topologically valid and still bound nothing:
+                // three or more free-edge vertices that all lie on one line. The
+                // face it would make has a Newell sum of exactly zero, so it
+                // takes a NaN normal (ADR-304) and the verifier reports it from
+                // then on. The line is drawn either way; only the empty face is
+                // declined. Two sibling helpers in the same post-process decline
+                // it too — `dissolve_and_fan_split` and `split_face_by_chain`.
+                if self.mesh.loop_bounds_nothing(&loop_verts) {
+                    continue;
+                }
                 match self.mesh.add_face(&loop_verts, FORM_MATERIAL) {
                     Ok(fid) => {
                         // ADR-007 Invariant 2 (Winding): face's normal MUST

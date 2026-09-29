@@ -49,6 +49,23 @@
 //! engine has moved a great deal since August besides. The pair was measured
 //! together on purpose: it says the stack is not what moved it.
 //!
+//! ⚠ And 48 is stale in its turn. Declining loops that bound nothing, at the
+//! three creators that make them, read on the same 100 x 50 run:
+//!
+//! ```text
+//!                                              broken   faces with no normal
+//!   the I7 stack                                 48             22
+//!   + split_face_by_chain                        45             16
+//!   + dissolve_and_fan_split                     38              2
+//!   + exec_draw_line's closed free-edge loop     37              0
+//! ```
+//!
+//! ⚠ Read the middle column with the warning below in mind: each guard also
+//! shifts the operation stream, so a drop in BROKEN sessions is not by itself
+//! evidence. The right-hand column is, because the last guard's one firing in
+//! the whole run IS the last non-finite normal in it — cause, not coincidence,
+//! and pinned in `session_forty_one_closes_a_cycle_that_bounds_nothing`.
+//!
 //! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
 //! violations the wide run reports now are a fresh inventory to work through —
 //! they are deep-session pile-ups, all well past the 20-operation gate, not
@@ -509,4 +526,61 @@ fn the_gate_seeds_do_not_stay_clean_past_twenty_operations() {
             );
         }
     }
+}
+
+/// Session 41 closes a free-edge cycle whose three points are on one line.
+///
+/// A cycle can be topologically perfect and still bound nothing. `exec_draw_line`
+/// takes whatever `detect_free_edge_loop_excluding` hands it — the walk follows
+/// real free half-edges, so the cycle closes — and at operation 29 the cycle it
+/// closed was, measured by printing from the site:
+///
+/// ```text
+///   (104.74, 50, 0)   (250, 50, 0)   (0, 50, 0)
+/// ```
+///
+/// all on y = 50, z = 0. Its Newell sum is exactly zero, so the face made from
+/// it takes a NaN normal (`NORMAL_EPSILON` is 0.0, so `compute_normal`'s
+/// degenerate bail cannot fire — ADR-304), and the verifier says so at once:
+///
+/// ```text
+///   세션 41  op 29 에서 위반 — "face FaceId(85): normal is not finite
+///                              (DVec3(NaN, NaN, NaN)) — degenerate geometry"
+/// ```
+///
+/// With the empty cycle declined the session runs all 50 operations clean.
+///
+/// ⚠ This is the ONLY place in 100 sessions × 50 operations that reaches the
+/// closed-loop creator with a cycle that bounds nothing — one firing, and that
+/// one firing is the NaN, so it is cause and not a shifted operation stream.
+/// Nine hand-built collinear draws (out-and-back, overlapping segments, a
+/// triangle with a chord on its hypotenuse, a rectangle with lines along its
+/// foot) reach it none, which is why this is pinned by a replay: there is no
+/// small repro to write.
+///
+/// ⚠ It must be read AT operation 30, not at the end. Run the same session to
+/// 50 and the count comes back 0 either way — the post-pipeline degenerate
+/// sweep (ADR-007) removes the face some operations later, after it has already
+/// been counted, rendered and walked. Reading only the end state is how this
+/// test first passed against a build that had the defect.
+#[test]
+fn session_forty_one_closes_a_cycle_that_bounds_nothing() {
+    let mut r = Lcg(0x5EED_0000_u64 + 41);
+    let mut s = prod();
+    for _ in 0..30 {
+        step(&mut s, &mut r);
+    }
+    let inv = s.mesh.verify_face_invariants();
+    let not_finite: Vec<&String> =
+        inv.violations.iter().filter(|v| v.contains("not finite")).collect();
+    println!(
+        "  session 41, 30 ops: {} faces, {} violations, {} of them a normal that is not one",
+        active_faces(&s).len(),
+        inv.violations.len(),
+        not_finite.len()
+    );
+    assert!(
+        not_finite.is_empty(),
+        "the cycle on y = 50 bounds nothing, so no face should have been made from it: {not_finite:?}"
+    );
 }

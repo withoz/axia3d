@@ -7010,6 +7010,58 @@ impl Mesh {
     /// 생성 (V를 중심으로 한 fan).
     ///
     /// 반환: 분할 시 생성된 새 face ids; 분할 불필요 시 빈 Vec.
+    /// A loop whose corners all lie on one line bounds nothing.
+    ///
+    /// Such a face has a Newell sum of exactly zero, so `compute_normal` gives it
+    /// a NaN normal — `NORMAL_EPSILON` is 0.0, so that function's own degenerate
+    /// bail cannot fire (ADR-304) — and the verifier reports it from then on.
+    /// Two places in the draw post-process can form one: this fan, and
+    /// `split_face_by_chain` when the chain runs along the boundary.
+    ///
+    /// The test is RELATIVE, so only an exactly straight run is caught. A thin
+    /// sliver is a piece and must not be taken for one of these.
+    ///
+    /// Public because the third place that can form one is in axia-core: the
+    /// closed free-edge loop that `exec_draw_line` turns into a face.
+    /// Do these points close a loop with no area — all of them on one line?
+    ///
+    /// A creator asks before making a face, because a collinear loop is
+    /// topologically perfect and geometrically empty: its Newell sum is exactly
+    /// zero, so the face takes a NaN normal (`NORMAL_EPSILON` is 0.0, so
+    /// `compute_normal`'s degenerate bail cannot fire — ADR-304) and the
+    /// verifier reports it from then on. Three creators call it, and each is
+    /// pinned: `split_face_by_chain`, `dissolve_and_fan_split`, and
+    /// `exec_draw_line`'s closed free-edge loop over in axia-core.
+    ///
+    /// ⚠ This is a question, not a refusal. ADR-304's policy — decided
+    /// 2026-07-29 — is that creation stays generous and the verifier detects,
+    /// because import is built to accept-then-repair. `add_face` must keep
+    /// taking a degenerate loop; only a creator that knows the piece covers
+    /// nothing declines to hand it one.
+    ///
+    /// The bound is RELATIVE: twice the largest triangle area the points span,
+    /// against the square of their own extent. An absolute one would mean a
+    /// different strictness at every scale — the first form of this compared an
+    /// area to a length, which at 100 mm asks for 1e-11 of the loop's own size
+    /// and at a kilometre for 1e-15 of it. Both forms answer identically on the
+    /// two shapes that provoked this (both are collinear to the last bit), and
+    /// the whole workspace and the 100 x 50 fuzz read the same under either;
+    /// this one is chosen because it says the same thing at every scale.
+    pub fn loop_bounds_nothing(&self, verts: &[VertId]) -> bool {
+        let ps: Vec<DVec3> = verts.iter().filter_map(|&v| self.vertex_pos(v).ok()).collect();
+        if ps.len() < 3 || ps.len() != verts.len() {
+            return false;
+        }
+        let extent = ps
+            .iter()
+            .flat_map(|a| ps.iter().map(move |b| (*a - *b).length()))
+            .fold(0.0f64, f64::max);
+        let worst = (2..ps.len())
+            .map(|i| (ps[1] - ps[0]).cross(ps[i] - ps[0]).length())
+            .fold(0.0f64, f64::max);
+        worst <= extent * extent * 1e-12
+    }
+
     pub fn dissolve_and_fan_split(&mut self, face_id: FaceId) -> Vec<FaceId> {
         if !self.faces.contains(face_id) { return Vec::new(); }
         let face = &self.faces[face_id];
@@ -7152,6 +7204,13 @@ impl Mesh {
         // Create sub-faces
         let mut created: Vec<FaceId> = Vec::new();
         for verts in &sub_faces_verts {
+            // A fan piece with no area covers nothing, so skipping it loses
+            // nothing — and adding it would leave a face with a NaN normal that
+            // the verifier reports from then on. The fuzz reaches this through
+            // both `exec_draw_rect` and `exec_draw_line`.
+            if self.loop_bounds_nothing(verts) {
+                continue;
+            }
             match self.add_face(verts, material) {
                 Ok(fid) => created.push(fid),
                 Err(_) => continue,

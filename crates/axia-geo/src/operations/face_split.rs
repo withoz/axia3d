@@ -908,6 +908,35 @@ fn split_face_by_chain_inner(
         }
     }
 
+    // A piece whose corners all lie on one line bounds nothing, and it is the
+    // chain running ALONG the boundary rather than across the face that makes
+    // one. The older guard above refuses an intermediate chain vertex that is ON
+    // the chosen loop; this is the same shape with a vertex that is not — the
+    // fuzz's session 3 walks a wall's foot through (-122.99, -100, 0), which no
+    // loop owns, and the piece it forms is that chain and nothing else.
+    //
+    // Such a face has a Newell sum of exactly zero, so `compute_normal` hands it
+    // a NaN normal (`NORMAL_EPSILON` is 0.0, so its degenerate bail cannot fire
+    // — ADR-304) and the verifier reports it from then on.
+    //
+    // ⚠ This creator accounts for 6 of the 22 such faces the wide fuzz reports,
+    // not all of them. That number was first written as "every one" off the two
+    // that had been backtraced, and measuring the rest said 6 / 14 / 2 across
+    // three creators — the sibling two are `Mesh::dissolve_and_fan_split` and
+    // `exec_draw_line`'s closed free-edge loop. A count taken from the samples
+    // in hand is a guess wearing a decimal point.
+    //
+    // Refusing is not refusing a draw: the line is drawn either way, and the
+    // caller treats a split it cannot make as one it skips. The check is here,
+    // before `soft_remove_face`, so a refusal leaves the mesh exactly as it was.
+    if mesh.loop_bounds_nothing(&face_a_verts) || mesh.loop_bounds_nothing(&face_b_verts) {
+        bail!(
+            "split_face_by_chain: the chain runs along the boundary, so one piece              would have no area (a={} verts, b={} verts); nothing to split",
+            face_a_verts.len(),
+            face_b_verts.len(),
+        );
+    }
+
     // Soft-remove the old face. Preserves HE next/prev so add_face_with_holes
     //   can rediscover the free HEs. Temporarily clears inners so the
     //   soft_remove doesn't touch hole HEs (we'll reattach to whichever
