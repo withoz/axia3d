@@ -1,7 +1,7 @@
 //! ADR-060 Phase O Step 6 — WASM additive-only API regression tests.
 //!
 //! ADR-060 §3 + Step 6 sign-off mitigation matrix. The six below are the
-//! original set; the file has grown to 80 tests since.
+//! original set; the file has grown to 82 tests since.
 //!
 //!   1. wasm_export_baseline_unchanged                     (R1, R2)
 //!   2. get_edge_curve_json_emits_world_coords             (R7)
@@ -55,6 +55,12 @@
 // Order does not matter (this test reads it into a HashSet), so regenerating is
 // safe. Every one of the previous 227 survives the regeneration — checked with
 // `comm -23` before replacing the file.
+//
+// ⚠ 2026-09-30: "all 343" was all QUOTED names. 72 exports had no js_name and
+// `placeComponent` was written `js_name = placeComponent`, so neither the grep
+// nor this test could see them, and `vertexAt` (#278) was quoted but never
+// added. Every export now carries a quoted js_name (417 names); the two tests
+// after this one keep it that way.
 fn wasm_export_baseline_unchanged() {
     let baseline = include_str!("export_baseline.txt");
     let baseline_names: std::collections::HashSet<&str> = baseline
@@ -96,6 +102,207 @@ fn wasm_export_baseline_unchanged() {
         assert!(current_names.contains(must_have),
             "Step 6 endpoint '{}' missing from lib.rs", must_have);
     }
+}
+
+// ── Every export is in the baseline, spelled the way it reads ─────────
+//
+// The test above guards only what its scanner reads, `js_name = "…"`, and only
+// names that were in the file when it was last regenerated. On 2026-09-30 both
+// holes were real — 72 exports with no js_name, one unquoted, and `vertexAt`
+// quoted but never added — and each could be deleted with every test in this
+// crate green. The two tests below close them.
+
+/// One function wasm-bindgen exports from lib.rs.
+struct WasmExport {
+    /// 1-based line of the `pub fn`.
+    line: usize,
+    /// `AxiaEngine`, `DeltaBuffers`, … or `<module>` for a free function.
+    owner: String,
+    rust_name: String,
+    /// The quoted `js_name`, if it has one.
+    js_name: Option<String>,
+    constructor: bool,
+}
+
+/// The function name declared by `rest`, the text after `pub `, if any. Skips
+/// the qualifiers Rust allows before `fn`, so an `async` export cannot slip past.
+fn pub_fn_name(rest: &str) -> Option<&str> {
+    let mut s = rest;
+    loop {
+        if let Some(t) = s
+            .strip_prefix("async ")
+            .or_else(|| s.strip_prefix("unsafe "))
+            .or_else(|| s.strip_prefix("const "))
+        {
+            s = t;
+        } else if let Some(t) = s.strip_prefix("extern ") {
+            s = t.trim_start();
+            if let Some(abi) = s.strip_prefix('"') {
+                s = abi.split_once('"')?.1.trim_start();
+            }
+        } else {
+            break;
+        }
+    }
+    let s = s.strip_prefix("fn ")?;
+    let end = s
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(s.len());
+    (end > 0).then(|| &s[..end])
+}
+
+/// Every function wasm-bindgen exports from lib.rs: each `pub fn` of a
+/// `#[wasm_bindgen] impl`, and each `#[wasm_bindgen] pub fn` at the top level.
+///
+/// Reads rustfmt's layout — blocks open and close at column 0 and their items
+/// sit at four spaces. A four-space `pub fn` while no block is open means the
+/// reader has lost its place, and it panics rather than skip the line: a reader
+/// that silently skips would shrink the check it exists to widen.
+fn wasm_exports() -> Vec<WasmExport> {
+    let lines: Vec<&str> = lib_src().lines().collect();
+    // The attributes that apply to line `i`. Walks up over attributes, comments
+    // and blank lines — an attribute applies across all three — but returns only
+    // the attributes, so a comment that mentions `js_name = "…"` is never read
+    // as one, and a blank line never hides an exported impl.
+    let attrs_above = |i: usize| -> Vec<&str> {
+        lines[..i]
+            .iter()
+            .rev()
+            .map(|l| l.trim_start())
+            .take_while(|l| l.is_empty() || l.starts_with("#[") || l.starts_with("//"))
+            .filter(|l| l.starts_with("#["))
+            .collect()
+    };
+    let is_wasm_bindgen = |attrs: &[&str]| attrs.iter().any(|a| a.starts_with("#[wasm_bindgen"));
+    let export = |i: usize, owner: &str, name: &str, attrs: &[&str]| WasmExport {
+        line: i + 1,
+        owner: owner.to_string(),
+        rust_name: name.to_string(),
+        js_name: attrs.iter().find_map(|a| {
+            let after = &a[a.find("js_name = \"")? + 11..];
+            Some(after[..after.find('"')?].to_string())
+        }),
+        constructor: attrs.iter().any(|a| a.starts_with("#[wasm_bindgen(constructor)]")),
+    };
+
+    // None: between blocks. Some(Some(owner)): inside an exported impl.
+    // Some(None): inside any other block.
+    let mut block: Option<Option<&str>> = None;
+    let mut out = Vec::new();
+    for (i, &line) in lines.iter().enumerate() {
+        if line.starts_with('}') {
+            block = None;
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("pub ").and_then(pub_fn_name) {
+            let attrs = attrs_above(i);
+            if is_wasm_bindgen(&attrs) {
+                out.push(export(i, "<module>", name, &attrs));
+            }
+        }
+        if let Some(rest) = line.strip_prefix("    pub ") {
+            if let Some(name) = pub_fn_name(rest) {
+                match block {
+                    Some(Some(owner)) => out.push(export(i, owner, name, &attrs_above(i))),
+                    Some(None) => {}
+                    None => panic!(
+                        "lib.rs:{}: `pub fn {name}` at four spaces with no block open — \
+                         the reader lost its place. Fix the reader; skipping the line \
+                         would let an export out of the check",
+                        i + 1
+                    ),
+                }
+            }
+            continue;
+        }
+        let opens_block = !line.starts_with(' ')
+            && !line.starts_with('#')
+            && !line.starts_with("//")
+            && line.trim_end().ends_with('{');
+        if opens_block {
+            let exported_impl = line
+                .strip_prefix("impl ")
+                .filter(|_| is_wasm_bindgen(&attrs_above(i)))
+                .and_then(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next());
+            block = Some(exported_impl);
+        }
+    }
+    out
+}
+
+/// Every export must carry a quoted js_name — the only spelling the baseline
+/// can see. For a snake_case export that name is its Rust name, so writing it
+/// out changes nothing for JS: measured 2026-09-30, the generated .d.ts and .js
+/// were byte-identical before and after the 72 were named.
+#[test]
+fn every_export_is_named_the_way_the_baseline_reads() {
+    let exports = wasm_exports();
+
+    // A reader that finds nothing must fail, not pass.
+    assert!(
+        exports.len() >= 400,
+        "found only {} exports — the reader is not reading lib.rs",
+        exports.len()
+    );
+    for (owner, rust_name) in [
+        ("AxiaEngine", "undo"),
+        ("AxiaEngine", "vertex_at"),
+        ("AxiaEngine", "place_component"),
+        ("AxiaEngine", "get_cache_version"),
+        ("DeltaBuffers", "get_cache_version"),
+        ("<module>", "schema_version"),
+    ] {
+        assert!(
+            exports.iter().any(|e| e.owner == owner && e.rust_name == rust_name),
+            "witness {owner}::{rust_name} not found — the reader missed a block"
+        );
+    }
+
+    let constructors = exports.iter().filter(|e| e.constructor).count();
+    assert_eq!(
+        constructors, 1,
+        "exactly one export is exempt, the constructor (it has no name to give)"
+    );
+
+    let unnamed: Vec<String> = exports
+        .iter()
+        .filter(|e| e.js_name.is_none() && !e.constructor)
+        .map(|e| format!("lib.rs:{} {}::{}", e.line, e.owner, e.rust_name))
+        .collect();
+    assert!(
+        unnamed.is_empty(),
+        "exports the baseline cannot see — give each one \
+         #[wasm_bindgen(js_name = \"…\")] with the name JS uses (for a snake_case \
+         export, its Rust name): {unnamed:?}"
+    );
+}
+
+/// Every export's name must be in export_baseline.txt. The guard above only
+/// protects names the file already holds, so an export added without
+/// regenerating it is unguarded — `vertexAt` sat that way from #278 until
+/// 2026-09-30. Adding an export now fails here until the file is regenerated.
+#[test]
+fn every_export_is_in_the_baseline() {
+    let baseline: std::collections::HashSet<&str> = include_str!("export_baseline.txt")
+        .lines()
+        .filter_map(|l| l.split('"').nth(1))
+        .collect();
+    assert!(baseline.len() >= 400, "baseline read as only {} names", baseline.len());
+
+    let mut missing: Vec<String> = wasm_exports()
+        .into_iter()
+        .filter_map(|e| e.js_name)
+        .filter(|n| !baseline.contains(n.as_str()))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "exports missing from export_baseline.txt: {missing:?}\n\
+         regenerate it (read as a set, so order does not matter):\n    \
+         grep -o 'js_name = \"[^\"]*\"' crates/axia-wasm/src/lib.rs | sort -u \
+         > crates/axia-wasm/tests/export_baseline.txt"
+    );
 }
 
 // ── Tests 2-6: shape/schema contract via lib.rs source-level scan ────
