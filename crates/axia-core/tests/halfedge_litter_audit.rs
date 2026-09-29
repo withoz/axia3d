@@ -12,7 +12,7 @@
 //!   extrude tapered, bidirectional    8 → 0        (fixed 2026-09-28)
 //!   extrude circle                    46           (measured, NOT taken — below)
 //!   CONE PRIMITIVE                   48 → 0        (fixed 2026-09-27)
-//!   through-drill                    24            (0 → 24 on a clean box)
+//!   through-drill                    24 → 16       (half fixed 2026-09-28)
 //!
 //! Clean: box, cylinder, sphere primitives, the cone primitive since 2026-09-27,
 //! and the kernel-native cone/frustum extrude — which is the interesting one,
@@ -33,6 +33,31 @@
 //! base edge the same way the base cap did. Winding them outward (2026-09-27,
 //! primitives.rs) took this row from 48 to 0 and cost nothing else. That is the
 //! mechanism, measured.
+//!
+//! ## 2026-09-28 — the drill's half, and it was not Pass 1 at all
+//!
+//! The three punches (circle, rect, polygon) re-derive their host face with the
+//! hole in it, and dropped the old one with `self.faces.remove(host)` — a raw
+//! storage removal that leaves every half-edge of its loops still NAMING it.
+//! Such a half-edge is in a third state: not free, so Pass 1 will not reuse it
+//! and Pass 2 doubles the pair; and not valid, since `faces.contains(he.face())`
+//! is false. `remove_face` is the same drop plus one step — it nulls each loop
+//! half-edge's face first — and using it took a clean box from
+//!
+//! ```text
+//!                  dangling   spare
+//!   one punch       4 → 0     8 → 4     (the 4 are the open rim, not litter)
+//!   through-drill   8 → 0    24 → 16
+//! ```
+//!
+//! Ids are never recycled, so a dangling one stays dangling rather than coming
+//! to mean another face — a panic waiting on an unguarded index, not silent
+//! corruption. Guarded by `a_punched_face_leaves_no_half_edge_pointing_at_it`.
+//!
+//! ⚠ The 16 that remain are 2 on each of the 8 bore-rim edges and come from
+//! `bridge_through_loops`: the tube wall asks for a rim half-edge in a direction
+//! the free one does not point. Its winding is chosen at run time (ADR-268), so
+//! this is not the same reorder as below and is left measured, not changed.
 //!
 //! ## 2026-09-28 — it was ADR-183's cap flip, and it only half-lands
 //!
