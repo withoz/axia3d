@@ -215,6 +215,19 @@ fn wasm_exports() -> Vec<WasmExport> {
             }
             continue;
         }
+        // An exported impl must open on its own line, or its methods would be
+        // read as belonging to some other block and silently skipped.
+        if line.starts_with("impl ")
+            && !line.trim_end().ends_with('{')
+            && is_wasm_bindgen(&attrs_above(i))
+        {
+            panic!(
+                "lib.rs:{}: `{line}` is a #[wasm_bindgen] impl whose `{{` is not on \
+                 the same line — the reader cannot follow it. Put the brace on the \
+                 impl line (rustfmt's layout)",
+                i + 1
+            );
+        }
         let opens_block = !line.starts_with(' ')
             && !line.starts_with('#')
             && !line.starts_with("//")
