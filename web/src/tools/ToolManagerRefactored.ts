@@ -1845,11 +1845,18 @@ export class ToolManager {
       input.addEventListener('cancel', cleanup);
       input.click();
     } else if (action === 'chamfer-edge') {
-      // Chamfer is a degenerate Fillet with only one strip segment — so
-      // instead of an arc between the rolled-back points, a single flat
-      // quad connects them. Same DCEL surgery, same parameter, different
-      // sampling. Delegating to filletEdge(edge, distance, 1) keeps the
-      // code path unified.
+      // ⚠ This delegated to `filletEdge(edge, distance, 1)` until 2026-09-29,
+      // reasoning that a chamfer is a fillet with one segment. The geometry is
+      // right and the call was not: `fillet_edge` opens with
+      // `ensure!(segments >= 2)`, so the menu item failed on every click.
+      // Nothing between here and the engine clamps it — the bridge's
+      // `segments = 8` is a default, and this passed 1 explicitly.
+      //
+      // `chamferEdge` is the operation it wanted, exported all along and
+      // already used by the MCP server; only the browser reached past it. It
+      // also carries a guard the fillet path does not: a `dist` longer than an
+      // incident edge folds the facet through a neighbour, which is manifold
+      // and self-intersecting at once and no downstream check catches it.
       const edges = this.selection.getSelectedEdges();
       if (edges.length !== 1) {
         Toast.warning(t('챔퍼할 엣지 1개를 먼저 선택하세요'), 2500);
@@ -1864,7 +1871,7 @@ export class ToolManager {
         return;
       }
       try { localStorage.setItem('axia:chamfer:distance', String(distance)); } catch { /* ignore */ }
-      const n = this.bridge.filletEdge(edges[0], distance, 1);
+      const n = this.bridge.chamferEdge(edges[0], distance);
       if (n >= 0) {
         this.syncMesh();
         this.selection.clearSelection();
@@ -2572,7 +2579,7 @@ export class ToolManager {
         const edges = this.selection.getSelectedEdges();
         if (edges.length !== 1) { Toast.warning(t('1개 엣지 선택 필요'), 2500); return false; }
         try { localStorage.setItem('axia:chamfer:distance', String(d)); } catch { /* ignore */ }
-        const n = this.bridge.filletEdge(edges[0], d, 1);
+        const n = this.bridge.chamferEdge(edges[0], d);
         if (n >= 0) {
           this.syncMesh();
           this.selection.clearSelection();

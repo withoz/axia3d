@@ -230,6 +230,9 @@ export const EN: Record<string, string> = {
   // ── Groups ──
   '그룹 (Group)': 'Group',
   '그룹 만들기': 'Make group',
+  '그룹 이름:': 'Group name:',
+  '이름을 {name} 으로 바꿨습니다': 'Renamed to {name}',
+  '이름 변경에 실패했습니다': 'Rename failed',
   '그룹 해제': 'Ungroup',
   '컴포넌트 배치 — 원본 옆에 사본을 놓습니다': 'Place component — puts a copy beside the original',
   '이 그룹은 컴포넌트가 아닙니다': 'This group is not a component',

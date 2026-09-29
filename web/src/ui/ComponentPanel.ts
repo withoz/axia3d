@@ -12,7 +12,8 @@
 
 import { WasmBridge, GroupInfo } from '../bridge/WasmBridge';
 import { SelectionManager } from '../tools/SelectionManager';
-import { Toast } from './Toast';
+import { Toast } from './Toast';
+
 import { t } from '../i18n';
 
 export interface ComponentPanelCallbacks {
@@ -196,6 +197,7 @@ export class ComponentPanel {
         ${group.isComponent && group.componentDefId != null
           ? `<button class="cp-btn-place cp-toggle" data-action="place" title="${t('컴포넌트 배치 — 원본 옆에 사본을 놓습니다')}">⊕</button>`
           : ''}
+        <button class="cp-btn-rename cp-toggle" data-action="rename" title="${t('이름 변경')}">✎</button>
         <button class="cp-btn-delete cp-toggle" data-action="delete" title="${t('그룹 해제')}">✕</button>
       </div>
     `;
@@ -272,6 +274,27 @@ export class ComponentPanel {
           Toast.success(t('컴포넌트를 배치했습니다 — 이동 도구로 옮기세요'));
         } else {
           Toast.error(this.bridge.lastError?.() || t('컴포넌트 배치에 실패했습니다'));
+        }
+        this.refresh();
+        break;
+      }
+      case 'rename': {
+        // The panel's own header has listed "이름 편집" since it was written,
+        // and until 2026-09-29 nothing in the file did it. `rename_group` was
+        // in the engine, exported, and wrapped in the bridge as `renameGroup`
+        // — the UI was the only missing hop. Row dblclick could not carry it:
+        // that already means "enter group edit", so this follows the same
+        // `data-action` button pattern as delete and place.
+        const info = this.bridge.getGroupInfo(groupId);
+        const current = info?.name ?? '';
+        const next = window.prompt(t('그룹 이름:'), current);
+        if (next == null) break;
+        const trimmed = next.trim();
+        if (trimmed === '' || trimmed === current) break;
+        if (this.bridge.renameGroup(groupId, trimmed)) {
+          Toast.info(t('이름을 {name} 으로 바꿨습니다', { name: trimmed }));
+        } else {
+          Toast.error(this.bridge.lastError?.() || t('이름 변경에 실패했습니다'));
         }
         this.refresh();
         break;
@@ -379,6 +402,17 @@ export class ComponentPanel {
       }
       .cp-row:hover .cp-btn-delete { opacity: 0.6; }
       .cp-btn-delete:hover { opacity: 1 !important; }
+      .cp-btn-rename {
+        background: none;
+        border: none;
+        color: #9e9e9e;
+        cursor: pointer;
+        font-size: 11px;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      .cp-row:hover .cp-btn-rename { opacity: 0.6; }
+      .cp-btn-rename:hover { opacity: 1 !important; }
     `;
     document.head.appendChild(style);
   }
