@@ -2047,13 +2047,16 @@ impl Mesh {
         // Outer loop: face 참조만 해제 (next/prev 보존)
         let outer_start = self.faces[face_id].outer().start;
         if !outer_start.is_null() {
-            if let Ok(hes) = self.collect_loop_hes(outer_start) {
-                for he_id in hes {
-                    if let Some(he) = self.hes.get_mut(he_id) {
-                        he.set_face(FaceId::NULL);
-                        // next/prev는 보존! (인접 face에서 edge를 통해 참조할 수 있음)
+            match self.collect_loop_hes(outer_start) {
+                Ok(hes) => {
+                    for he_id in hes {
+                        if let Some(he) = self.hes.get_mut(he_id) {
+                            he.set_face(FaceId::NULL);
+                            // next/prev는 보존! (인접 face에서 edge를 통해 참조할 수 있음)
+                        }
                     }
                 }
+                Err(_) => {}
             }
         }
 
@@ -2061,12 +2064,34 @@ impl Mesh {
         let inners: Vec<_> = self.faces[face_id].inners().to_vec();
         for inner_ref in inners {
             if !inner_ref.start.is_null() {
-                if let Ok(hes) = self.collect_loop_hes(inner_ref.start) {
-                    for he_id in hes {
-                        if let Some(he) = self.hes.get_mut(he_id) {
-                            he.set_face(FaceId::NULL);
+                match self.collect_loop_hes(inner_ref.start) {
+                    Ok(hes) => {
+                        for he_id in hes {
+                            if let Some(he) = self.hes.get_mut(he_id) {
+                                he.set_face(FaceId::NULL);
+                            }
                         }
                     }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        // A loop that could not be walked leaves half-edges still naming this
+        // face, and once it is out of storage they name something that is not
+        // there — I7 in `mesh_invariants.rs`, and the same fallback
+        // `Mesh::remove_face` carries. Only when the walk failed: the scan is
+        // over every half-edge. next/prev stay, as they do above.
+        {
+            let orphaned: Vec<crate::HeId> = self
+                .hes
+                .iter()
+                .filter(|(_, he)| he.face() == face_id)
+                .map(|(h, _)| h)
+                .collect();
+            for he_id in orphaned {
+                if let Some(he) = self.hes.get_mut(he_id) {
+                    he.set_face(FaceId::NULL);
                 }
             }
         }

@@ -36,6 +36,19 @@
 //! three readings — 49, 45, 40. Twenty-two sessions in, the earliest is 24. A
 //! number taken from the top of a list is a guess wearing a decimal point.
 //!
+//! ⚠ And 24 is stale too. Re-run 2026-09-28 over all 100 sessions, release,
+//! about a minute each:
+//!
+//! ```text
+//!                      main      with the I7 stack on top
+//!   broken sessions    49/100    48/100
+//!   earliest break     op 8      op 15
+//! ```
+//!
+//! So the earliest is 8, not 24 — the same trap one step further out, and the
+//! engine has moved a great deal since August besides. The pair was measured
+//! together on purpose: it says the stack is not what moved it.
+//!
 //! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
 //! violations the wide run reports now are a fresh inventory to work through —
 //! they are deep-session pile-ups, all well past the 20-operation gate, not
