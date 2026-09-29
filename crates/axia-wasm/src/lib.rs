@@ -15831,6 +15831,76 @@ impl AxiaEngine {
 }
 
 /// ADR-311 β-2 — the material an imported member carries.
+/// ADR-313 — the engine's Concrete used to share id 0 with `FORM_MATERIAL`.
+///
+/// Measured in a real browser before the change: a concrete member imported
+/// from IFC came back with no material (`find_by_name` found 0, which the
+/// engine reads as "no material", and promotion refused it), and a box the
+/// user painted 콘크리트 in the Inspector exported as `IFCMATERIAL('강철')`.
+/// These hold both ends at the IFC boundary, where the numbers finally meet a
+/// name. ⚠ Mutation-checked: start the built-ins at 0 again and both fail.
+#[cfg(test)]
+mod adr313_one_material_numbering_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn ifc_of(name: &str, material: &str) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: Some(material.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+            line: None,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn an_imported_concrete_member_keeps_its_material() {
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_of("Slab", "콘크리트")).contains("\"ok\":true"));
+        let concrete = engine
+            .scene
+            .material_library
+            .find_by_name("콘크리트")
+            .expect("콘크리트 is a built-in");
+        assert_ne!(concrete, axia_core::FORM_MATERIAL, "concrete must not be 'no material'");
+        for (fid, f) in engine.scene.mesh.faces.iter().filter(|(_, f)| f.is_active()) {
+            assert_eq!(f.material(), concrete, "face {fid:?} lost the member's concrete");
+        }
+        assert_eq!(engine.scene.xias.len(), 1, "a closed concrete box is a member (XIA)");
+    }
+
+    #[test]
+    fn the_apps_concrete_exports_as_concrete() {
+        // The app's table sends 1 for 콘크리트 (web/src/materials/MaterialLibrary.ts).
+        let mut e = AxiaEngine::new();
+        let wall = e
+            .scene
+            .mesh
+            .create_box(DVec3::new(0.0, 0.0, 1000.0), 2000.0, 2000.0, 2000.0, MaterialId::new(0))
+            .unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), DVec3::ZERO, wall.clone());
+        e.scene.execute(axia_core::Command::AssignMaterial {
+            face_ids: wall,
+            material_id: MaterialId::new(1),
+        });
+        let ifc = e.export_ifc_model("W".into());
+        // 콘크리트 = U+CF58 U+D06C U+B9AC U+D2B8, which STEP writes in \X2\ hex.
+        assert!(
+            ifc.contains("IFCMATERIAL('\\X2\\CF58D06CB9ACD2B8\\X0\\'"),
+            "the app's 콘크리트 must export as 콘크리트; materials in the file: {:?}",
+            ifc.lines().filter(|l| l.contains("IFCMATERIAL(")).collect::<Vec<_>>()
+        );
+    }
+}
+
 #[cfg(test)]
 mod adr311_material_tests {
     use super::*;
@@ -15853,8 +15923,17 @@ mod adr311_material_tests {
 
     #[test]
     fn adr311_beta2_a_library_material_comes_back_as_itself() {
-        // 벽돌 is built-in id 4. Matching by name is what returns the SAME
-        // material — appearance included, with no style parsing (L-311-3).
+        // 벽돌 is a built-in (id 5 since ADR-313; 4 before). Matching by name
+        // is what returns the SAME material — appearance included, with no
+        // style parsing (L-311-3). The id is looked up rather than written
+        // down: what this test is about is "the same material", and a number
+        // here is what went stale when the numbering moved.
+        let brick = AxiaEngine::new()
+            .scene
+            .material_library
+            .find_by_name("벽돌")
+            .map(|m| m.raw())
+            .expect("벽돌 is a built-in");
         let before = {
             let e = AxiaEngine::new();
             e.scene.material_library.count()
@@ -15875,7 +15954,7 @@ mod adr311_material_tests {
         };
         assert!(!shape_or_xia_faces.is_empty(), "faces exist");
         for (fid, mid) in &shape_or_xia_faces {
-            assert_eq!(mid.raw(), 4, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
+            assert_eq!(mid.raw(), brick, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
         }
         assert_eq!(
             engine.scene.material_library.count(),
@@ -15984,17 +16063,26 @@ mod adr311_style_tests {
 
     #[test]
     fn adr311_beta3_a_known_name_is_not_repainted_by_the_file() {
-        // The control, and the point of L-311-3. 벽돌 is built-in id 4 and red;
+        // The control, and the point of L-311-3. 벽돌 is a built-in and red;
         // a file claiming it is pure green must not change the library.
+        //
+        // ⚠ This read material 4 until ADR-313 moved the built-ins up by one,
+        // and went on passing afterwards — checking the colour of 유리, which
+        // the import never touches. Looked up by name so it follows 벽돌.
+        let brick = AxiaEngine::new()
+            .scene
+            .material_library
+            .find_by_name("벽돌")
+            .expect("벽돌 is a built-in");
         let before = {
             let e = AxiaEngine::new();
-            e.scene.material_library.get(MaterialId::new(4)).unwrap().visual.color
+            e.scene.material_library.get(brick).unwrap().visual.color
         };
         let ifc = styled_ifc("벽돌", (0.0, 1.0, 0.0), 0.01, 1.0);
         let mut engine = AxiaEngine::new();
         assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
 
-        let m = engine.scene.material_library.get(MaterialId::new(4)).unwrap();
+        let m = engine.scene.material_library.get(brick).unwrap();
         assert_eq!(m.visual.color, before, "the library material keeps its own colour");
         assert_ne!(m.visual.color, 0x00ff00, "and is emphatically not the file's green");
     }

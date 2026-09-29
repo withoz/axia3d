@@ -1046,6 +1046,10 @@ impl Scene {
         //    backward-compat). Legacy snapshots truncate before section 9
         //    → restore keeps default-constructed library from Scene::new.
         let mut material_library_section_present = false;
+        // ADR-313 D2 — a library saved when the built-ins started at 0 is
+        // renumbered here; which face and XIA ids follow is settled at the end,
+        // once the owner indexes exist to say who wrote each id.
+        let mut material_renumbering: Option<crate::material::MaterialRenumbering> = None;
         if offset + 8 <= data.len() {
             let mlen = read_len(data, &mut offset);
             if mlen > 0 && offset + mlen <= data.len() {
@@ -1059,6 +1063,10 @@ impl Scene {
                 ) {
                     Ok(restored) => {
                         self.material_library = restored;
+                        // ADR-313 — BEFORE the tier heuristic below, which
+                        // reads the current numbering's ranges.
+                        material_renumbering =
+                            self.material_library.renumber_from_zero_layout();
                         // Auto-migrate legacy materials (idempotent if already
                         // tagged). ADR-098 S-D — id-range heuristic classifies
                         // any material missing tier_index.
@@ -1225,6 +1233,76 @@ impl Scene {
         // purge them after a restore (the pin set is mesh-transient).
         for &vid in self.shape_to_standalone_vertex.values() {
             self.mesh.pin_vertex(vid);
+        }
+        // ADR-313 D2 — needs `face_to_xia`, rebuilt just above.
+        if let Some(renumbering) = material_renumbering {
+            self.apply_material_renumbering(&renumbering);
+        }
+    }
+
+    /// ADR-313 D2 — carry a file saved under the old material numbering over
+    /// to the new one.
+    ///
+    /// Such a file holds material ids in TWO numberings, because two writers
+    /// numbered differently:
+    ///
+    /// * the app sent its own numbers (1 = 콘크리트 … 12 = 타일) through
+    ///   `AssignMaterial` — which is exactly the numbering the engine uses now,
+    ///   so those ids already mean what the user picked and must NOT move;
+    /// * the engine's own paths — promotion, by the IFC importer or MCP
+    ///   `create_xia` — wrote the engine's old numbers (4 = 벽돌) and must.
+    ///
+    /// Nothing in a face says which writer it had, so this goes by what each
+    /// writer can have touched. Only promotion ever wrote an XIA's primary —
+    /// the app never promoted (measured, ADR-313 §2.5) — so a primary follows
+    /// the renumbering. The IFC importer set a member's faces to the id it then
+    /// promoted with, so a face of an XIA carrying that XIA's old primary
+    /// follows too. Every other face keeps its id. `FORM_MATERIAL` (0, "no
+    /// material") never moves.
+    ///
+    /// ⚠ Stated, not solved (ADR-313 §5): an IFC-imported member that failed
+    /// promotion stayed a Shape, so its faces look like the app's and keep
+    /// their ids — they now read as the next material.
+    fn apply_material_renumbering(&mut self, r: &crate::material::MaterialRenumbering) {
+        let follow = |m: u32| -> Option<u32> {
+            match r.displaced {
+                Some((old, new)) if m == old => Some(new),
+                _ => r.builtins.get(&m).copied(),
+            }
+        };
+        let old_primary: HashMap<XiaId, u32> =
+            self.xias.iter().map(|(k, x)| (*k, x.material.raw())).collect();
+        let form = FORM_MATERIAL.raw();
+
+        let faces: Vec<FaceId> = self.mesh.faces.iter().map(|(fid, _)| fid).collect();
+        for fid in faces {
+            let Some(m) = self.mesh.faces.get(fid).map(|f| f.material().raw()) else {
+                continue;
+            };
+            if m == form {
+                continue;
+            }
+            let displaced = matches!(r.displaced, Some((old, _)) if old == m);
+            let written_by_promotion = self
+                .face_to_xia
+                .get(&fid)
+                .and_then(|x| old_primary.get(x))
+                .is_some_and(|&p| p == m);
+            if !(displaced || written_by_promotion) {
+                continue;
+            }
+            if let (Some(new), Some(face)) = (follow(m), self.mesh.faces.get_mut(fid)) {
+                face.set_material(axia_geo::MaterialId::new(new));
+            }
+        }
+        for xia in self.xias.values_mut() {
+            let m = xia.material.raw();
+            if m == form {
+                continue;
+            }
+            if let Some(new) = follow(m) {
+                xia.material = axia_geo::MaterialId::new(new);
+            }
         }
     }
 
@@ -24644,9 +24722,13 @@ mod tests {
         assert!(restored.material_library.get(user_id).is_some());
         assert_eq!(restored.material_library.tier_of(user_id),
                    Some(MaterialTier::User));
-        // System tier built-ins still classified.
-        assert_eq!(restored.material_library.tier_of(MaterialId::new(0)),
-                   Some(MaterialTier::System));
+        // System tier built-ins still classified. ADR-313 — they start at 1;
+        // 0 is FORM_MATERIAL and has no tier because it is no material.
+        assert_eq!(
+            restored.material_library.tier_of(MaterialId::new(crate::material::BUILTIN_MATERIAL_ID_MIN)),
+            Some(MaterialTier::System)
+        );
+        assert_eq!(restored.material_library.tier_of(MaterialId::new(0)), None);
     }
 
     #[test]
@@ -24670,7 +24752,7 @@ mod tests {
         let mut restored = Scene::new();
         restored.import_versioned_snapshot(&legacy).expect("import legacy");
         // Default library still has all 12 built-ins.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert!(restored.material_library.get(MaterialId::new(raw)).is_some());
         }
         // Other state preserved (Shape).
@@ -24704,7 +24786,7 @@ mod tests {
         restored.import_versioned_snapshot(&bytes).expect("import");
         // After restore, tier_index is populated (either via fresh
         // serialization or via auto-migration). Built-ins always System tier.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert_eq!(
                 restored.material_library.tier_of(MaterialId::new(raw)),
                 Some(crate::material::MaterialTier::System),
@@ -24836,11 +24918,13 @@ mod tests {
     #[test]
     fn adr100_remove_system_tier_rejected() {
         let mut scene = Scene::new();
-        // System tier id 0 (Concrete) — must reject.
-        let result = scene.remove_project_material_with_recovery(MaterialId::new(0));
+        // System tier Concrete — must reject. ADR-313: Concrete is at 1 (0 is
+        // FORM_MATERIAL, which is no material at all).
+        let concrete = MaterialId::new(crate::material::BUILTIN_MATERIAL_ID_MIN);
+        let result = scene.remove_project_material_with_recovery(concrete);
         assert!(result.is_err());
         // Material library unchanged.
-        assert!(scene.material_library.get(MaterialId::new(0)).is_some());
+        assert!(scene.material_library.get(concrete).is_some());
     }
 
     #[test]
@@ -24967,7 +25051,7 @@ mod tests {
         assert!(normal.label.is_none());
 
         // LOCKED #26 guard: built-ins still have layered = None.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert!(restored.material_library.get(MaterialId::new(raw))
                 .unwrap().visual.layered.is_none(),
                 "built-in id {} must retain layered=None across snapshot", raw);

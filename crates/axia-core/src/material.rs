@@ -336,27 +336,50 @@ pub struct MaterialLibrary {
     next_id: u32,
     /// ADR-098 S-β — parallel tier index. Legacy snapshots without this
     /// field deserialize to empty; `migrate_legacy_materials` reconstructs
-    /// from id ranges (built-in 0..=11 → System, ≥100 → Project).
+    /// from id ranges (built-in 1..=12 → System, ≥100 → Project — ADR-313).
     /// `#[serde(default)]` ensures bincode compat (ADR-091 §E L1 답습 —
     /// parallel Map, struct 자체 변경은 add field with default 만).
     #[serde(default)]
     tier_index: BTreeMap<u32, MaterialTier>,
 }
 
-/// ADR-098 S-D — Built-in material id sentinel range. Migration helper
-/// classifies 0..=BUILTIN_MAX as System tier.
-pub const BUILTIN_MATERIAL_ID_MAX: u32 = 11;
+/// ADR-313 — the first built-in's id. Not 0: `FORM_MATERIAL` is 0 and means
+/// "no material", so a material stored there could never be exported,
+/// promoted or told apart from nothing. Until 2026-09-29 the built-ins DID
+/// start at 0 and Concrete was that material; the app, which has always
+/// numbered them from 1, then disagreed with the engine about every one of the
+/// twelve (measured: the Inspector's 콘크리트 was recorded as 강철).
+pub const BUILTIN_MATERIAL_ID_MIN: u32 = 1;
+
+/// ADR-098 S-D / ADR-313 — the last built-in's id. Migration helper
+/// classifies BUILTIN_MIN..=BUILTIN_MAX as System tier.
+pub const BUILTIN_MATERIAL_ID_MAX: u32 = 12;
+
+/// ADR-313 — where the built-ins ended when they were numbered from 0. Only
+/// the migration of files saved under that numbering reads this.
+const LEGACY_BUILTIN_ID_MAX: u32 = 11;
 
 /// ADR-098 S-D — Custom user/project starting offset. Materials added
 /// to project before tier was tracked use this lower bound.
 pub const CUSTOM_MATERIAL_ID_MIN: u32 = 100;
+
+/// ADR-313 D2 — what `renumber_from_zero_layout` moved in a library saved
+/// when the built-ins were numbered from 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterialRenumbering {
+    /// The twelve built-ins, `old → old + 1`.
+    pub builtins: BTreeMap<u32, u32>,
+    /// A material that sat where the last built-in now goes, and where it went.
+    pub displaced: Option<(u32, u32)>,
+}
 
 impl MaterialLibrary {
     /// Create a new library with built-in materials
     pub fn new() -> Self {
         let mut lib = Self {
             materials: BTreeMap::new(),
-            next_id: 0,
+            // ADR-313 — 1, not 0: 0 is FORM_MATERIAL ("no material").
+            next_id: BUILTIN_MATERIAL_ID_MIN,
             tier_index: BTreeMap::new(),
         };
         lib.init_builtins();
@@ -367,7 +390,7 @@ impl MaterialLibrary {
     fn init_builtins(&mut self) {
         // Concrete
         self.add_material(Material {
-            id: MaterialId::new(0),
+            id: MaterialId::new(1),
             name: "콘크리트".to_string(),
             name_en: "Concrete".to_string(),
             category: MaterialCategory::Concrete,
@@ -389,7 +412,7 @@ impl MaterialLibrary {
 
         // Steel
         self.add_material(Material {
-            id: MaterialId::new(1),
+            id: MaterialId::new(2),
             name: "강철".to_string(),
             name_en: "Steel".to_string(),
             category: MaterialCategory::Steel,
@@ -411,7 +434,7 @@ impl MaterialLibrary {
 
         // Wood
         self.add_material(Material {
-            id: MaterialId::new(2),
+            id: MaterialId::new(3),
             name: "목재".to_string(),
             name_en: "Wood".to_string(),
             category: MaterialCategory::Wood,
@@ -433,7 +456,7 @@ impl MaterialLibrary {
 
         // Glass
         self.add_material(Material {
-            id: MaterialId::new(3),
+            id: MaterialId::new(4),
             name: "유리".to_string(),
             name_en: "Glass".to_string(),
             category: MaterialCategory::Glass,
@@ -455,7 +478,7 @@ impl MaterialLibrary {
 
         // Brick
         self.add_material(Material {
-            id: MaterialId::new(4),
+            id: MaterialId::new(5),
             name: "벽돌".to_string(),
             name_en: "Brick".to_string(),
             category: MaterialCategory::Brick,
@@ -477,7 +500,7 @@ impl MaterialLibrary {
 
         // Aluminum
         self.add_material(Material {
-            id: MaterialId::new(5),
+            id: MaterialId::new(6),
             name: "알루미늄".to_string(),
             name_en: "Aluminum".to_string(),
             category: MaterialCategory::Aluminum,
@@ -499,7 +522,7 @@ impl MaterialLibrary {
 
         // Stone
         self.add_material(Material {
-            id: MaterialId::new(6),
+            id: MaterialId::new(7),
             name: "석재".to_string(),
             name_en: "Stone".to_string(),
             category: MaterialCategory::Stone,
@@ -521,7 +544,7 @@ impl MaterialLibrary {
 
         // Gypsum
         self.add_material(Material {
-            id: MaterialId::new(7),
+            id: MaterialId::new(8),
             name: "석고".to_string(),
             name_en: "Gypsum".to_string(),
             category: MaterialCategory::Gypsum,
@@ -543,7 +566,7 @@ impl MaterialLibrary {
 
         // Insulation
         self.add_material(Material {
-            id: MaterialId::new(8),
+            id: MaterialId::new(9),
             name: "단열재".to_string(),
             name_en: "Insulation".to_string(),
             category: MaterialCategory::Insulation,
@@ -565,7 +588,7 @@ impl MaterialLibrary {
 
         // Water
         self.add_material(Material {
-            id: MaterialId::new(9),
+            id: MaterialId::new(10),
             name: "물".to_string(),
             name_en: "Water".to_string(),
             category: MaterialCategory::Water,
@@ -587,7 +610,7 @@ impl MaterialLibrary {
 
         // Soil
         self.add_material(Material {
-            id: MaterialId::new(10),
+            id: MaterialId::new(11),
             name: "흙".to_string(),
             name_en: "Soil".to_string(),
             category: MaterialCategory::Soil,
@@ -609,7 +632,7 @@ impl MaterialLibrary {
 
         // Tile
         self.add_material(Material {
-            id: MaterialId::new(11),
+            id: MaterialId::new(12),
             name: "타일".to_string(),
             name_en: "Tile".to_string(),
             category: MaterialCategory::Tile,
@@ -634,6 +657,18 @@ impl MaterialLibrary {
     /// ADR-098 S-D — `init_builtins` 만 호출. Legacy custom path 는
     /// `create_material` (Project tier default) 사용.
     fn add_material(&mut self, mut material: Material) {
+        // The literal id written in `init_builtins` is overwritten here, so it
+        // could drift from the real one without anyone noticing — it did, once:
+        // the literals said 0..=11 for as long as the ids were 0..=11, and
+        // would have gone on saying so after ADR-313. Hold them together.
+        debug_assert_eq!(
+            material.id.raw(),
+            self.next_id,
+            "built-in '{}' is written as id {} but is stored at {}",
+            material.name_en,
+            material.id.raw(),
+            self.next_id
+        );
         material.id = MaterialId::new(self.next_id);
         self.materials.insert(self.next_id, material);
         self.tier_index.insert(self.next_id, MaterialTier::System);
@@ -746,9 +781,12 @@ impl MaterialLibrary {
 
     /// ADR-098 S-D — Migration helper. Reconstructs `tier_index` from
     /// id range heuristics for legacy snapshots:
-    ///   * id 0..=BUILTIN_MATERIAL_ID_MAX (11) → System
+    ///   * id BUILTIN_MATERIAL_ID_MIN..=BUILTIN_MATERIAL_ID_MAX (1..=12) → System
     ///   * id ≥ CUSTOM_MATERIAL_ID_MIN (100) → Project
-    ///   * id 12..=99 → Project (legacy custom in tight range)
+    ///   * id 13..=99 → Project (legacy custom in tight range)
+    ///
+    /// Run it AFTER `renumber_from_zero_layout` — on a library still numbered
+    /// from 0 these ranges name the wrong materials (ADR-313).
     ///
     /// Idempotent: re-running on a populated `tier_index` only fills
     /// gaps. Returns the count of newly classified materials.
@@ -757,7 +795,7 @@ impl MaterialLibrary {
         let ids: Vec<u32> = self.materials.keys().copied().collect();
         for id in ids {
             if !self.tier_index.contains_key(&id) {
-                let tier = if id <= BUILTIN_MATERIAL_ID_MAX {
+                let tier = if (BUILTIN_MATERIAL_ID_MIN..=BUILTIN_MATERIAL_ID_MAX).contains(&id) {
                     MaterialTier::System
                 } else {
                     MaterialTier::Project
@@ -767,6 +805,65 @@ impl MaterialLibrary {
             }
         }
         count
+    }
+
+    /// ADR-313 D2 — renumber a library saved when the built-ins started at 0.
+    ///
+    /// Such a library is recognised by itself: it holds a material at id 0,
+    /// which a library made since ADR-313 never does (0 is `FORM_MATERIAL`).
+    /// The twelve built-ins at 0..=11 move to 1..=12 — the `Material` values
+    /// move, so a channel a user uploaded onto a built-in (ADR-099) goes with
+    /// it — and anything else sitting at 12, which the move would overwrite,
+    /// moves to a fresh id above every other.
+    ///
+    /// Returns what moved, or `None` when the library was already in the
+    /// current numbering. Idempotent by construction: after one run there is no
+    /// material at 0, so a second run returns `None`.
+    ///
+    /// This only renumbers the LIBRARY. Which face and XIA ids follow it is a
+    /// question about who wrote each id, and only the Scene can answer it —
+    /// see `Scene::apply_material_renumbering`.
+    pub fn renumber_from_zero_layout(&mut self) -> Option<MaterialRenumbering> {
+        if !self.materials.contains_key(&0) {
+            return None;
+        }
+        let mut builtins = BTreeMap::new();
+        for old in 0..=LEGACY_BUILTIN_ID_MAX {
+            if self.materials.contains_key(&old) {
+                builtins.insert(old, old + 1);
+            }
+        }
+        // Anything already at 12 that is NOT one of the twelve (which all sat
+        // at 0..=11) would be overwritten by Tile. ADR-098 S-D started customs
+        // at 100, so this is a pre-S-D leftover if it exists at all.
+        let collide = LEGACY_BUILTIN_ID_MAX + 1;
+        let displaced = self.materials.contains_key(&collide).then(|| {
+            let top = self.materials.keys().copied().max().unwrap_or(0);
+            (collide, top.max(self.next_id).max(CUSTOM_MATERIAL_ID_MIN - 1) + 1)
+        });
+        let mut moved = builtins.clone();
+        if let Some((old, new)) = displaced {
+            moved.insert(old, new);
+        }
+
+        let mut materials = BTreeMap::new();
+        let mut tiers = BTreeMap::new();
+        for (id, mut m) in std::mem::take(&mut self.materials) {
+            let new_id = moved.get(&id).copied().unwrap_or(id);
+            m.id = MaterialId::new(new_id);
+            let tier = if id <= LEGACY_BUILTIN_ID_MAX {
+                MaterialTier::System
+            } else {
+                self.tier_index.get(&id).copied().unwrap_or(MaterialTier::Project)
+            };
+            materials.insert(new_id, m);
+            tiers.insert(new_id, tier);
+        }
+        self.materials = materials;
+        self.tier_index = tiers;
+        let top = self.materials.keys().copied().max().unwrap_or(0);
+        self.next_id = self.next_id.max(top + 1).max(BUILTIN_MATERIAL_ID_MAX + 1);
+        Some(MaterialRenumbering { builtins, displaced })
     }
 
     /// ADR-099 L-D — Migrate legacy single-texture VisualProperties to
@@ -872,7 +969,12 @@ mod tests {
     fn test_material_library_creation() {
         let lib = MaterialLibrary::new();
         assert!(lib.count() > 0, "should have built-in materials");
-        assert!(lib.get(MaterialId::new(0)).is_some(), "should have default concrete");
+        // ADR-313 — Concrete is the first built-in, at 1; 0 is FORM_MATERIAL.
+        assert_eq!(
+            lib.get(MaterialId::new(BUILTIN_MATERIAL_ID_MIN)).map(|m| m.name_en.as_str()),
+            Some("Concrete"),
+            "should have concrete as the first built-in"
+        );
     }
 
     #[test]
@@ -956,7 +1058,7 @@ mod tests {
     #[test]
     fn builtins_are_classified_as_system_tier() {
         let lib = MaterialLibrary::new();
-        for raw in 0..=BUILTIN_MATERIAL_ID_MAX {
+        for raw in BUILTIN_MATERIAL_ID_MIN..=BUILTIN_MATERIAL_ID_MAX {
             let id = MaterialId::new(raw);
             assert!(
                 lib.get(id).is_some(),
@@ -1010,7 +1112,7 @@ mod tests {
         );
 
         let system = lib.materials_by_tier(MaterialTier::System);
-        assert_eq!(system.len(), (BUILTIN_MATERIAL_ID_MAX as usize) + 1);
+        assert_eq!(system.len(), (BUILTIN_MATERIAL_ID_MAX - BUILTIN_MATERIAL_ID_MIN + 1) as usize);
 
         let project = lib.materials_by_tier(MaterialTier::Project);
         assert_eq!(project.len(), 1);
@@ -1040,10 +1142,10 @@ mod tests {
         lib.tier_index.clear();
 
         let count = lib.migrate_legacy_materials();
-        assert_eq!(count, (BUILTIN_MATERIAL_ID_MAX as usize) + 1 + 1,
+        assert_eq!(count, (BUILTIN_MATERIAL_ID_MAX - BUILTIN_MATERIAL_ID_MIN + 1) as usize + 1,
             "should classify all 12 builtins + 1 legacy custom");
 
-        for raw in 0..=BUILTIN_MATERIAL_ID_MAX {
+        for raw in BUILTIN_MATERIAL_ID_MIN..=BUILTIN_MATERIAL_ID_MAX {
             assert_eq!(
                 lib.tier_of(MaterialId::new(raw)),
                 Some(MaterialTier::System),
@@ -1067,9 +1169,10 @@ mod tests {
     #[test]
     fn remove_material_rejects_system_tier() {
         let mut lib = MaterialLibrary::new();
-        let result = lib.remove_material(MaterialId::new(0));
+        let concrete = MaterialId::new(BUILTIN_MATERIAL_ID_MIN);
+        let result = lib.remove_material(concrete);
         assert!(result.is_err());
-        assert!(lib.get(MaterialId::new(0)).is_some(),
+        assert!(lib.get(concrete).is_some(),
             "System-tier material must remain after rejected removal");
     }
 
@@ -1118,23 +1221,31 @@ mod tests {
         lib.tier_index.clear(); // simulate legacy snapshot
 
         let migrated = lib.migrate_legacy_materials();
-        assert_eq!(migrated, (BUILTIN_MATERIAL_ID_MAX as usize) + 1);
-        assert_eq!(lib.tier_of(MaterialId::new(0)), Some(MaterialTier::System));
-        assert_eq!(lib.tier_of(MaterialId::new(11)), Some(MaterialTier::System));
+        assert_eq!(migrated, (BUILTIN_MATERIAL_ID_MAX - BUILTIN_MATERIAL_ID_MIN + 1) as usize);
+        assert_eq!(lib.tier_of(MaterialId::new(BUILTIN_MATERIAL_ID_MIN)), Some(MaterialTier::System));
+        assert_eq!(lib.tier_of(MaterialId::new(BUILTIN_MATERIAL_ID_MAX)), Some(MaterialTier::System));
+        // ADR-313 — 0 is FORM_MATERIAL, never a material, so it has no tier.
+        assert_eq!(lib.tier_of(MaterialId::new(0)), None);
     }
 
     #[test]
     fn form_layer_unaffected_by_tier_changes_locked_26_invariant() {
         // LOCKED #26: Form citizen은 영원히 material 무관. Tier 변경이
-        // FORM_MATERIAL sentinel (id 0 in legacy MaterialId namespace —
-        // *separate* from MaterialLibrary id 0 의 built-in concrete) 의
+        // FORM_MATERIAL sentinel (MaterialId::new(0), ADR-050 P-5e-β) 의
         // 의미에 영향이 없음을 명시.
+        //
+        // Phase 5-A kept a collision here on purpose and said a future ADR
+        // could separate it: the built-in Concrete sat at id 0 too. ADR-313 is
+        // that ADR — the collision made Concrete unrepresentable (the export
+        // skips 0, promotion refuses it) and put the app, which numbers from 1,
+        // one material off the engine for all twelve. So now 0 names nothing.
         let lib = MaterialLibrary::new();
-        // Built-in id 0 = Concrete (System tier). FORM_MATERIAL sentinel
-        // = MaterialId::new(0) per ADR-050 P-5e-β. Same raw u32 — Phase
-        // 5-A 는 sentinel collision 을 의도적으로 보존 (future ADR 가
-        // 분리 가능).
-        assert_eq!(lib.tier_of(MaterialId::new(0)), Some(MaterialTier::System));
+        assert_eq!(lib.tier_of(MaterialId::new(0)), None);
+        assert!(lib.get(MaterialId::new(0)).is_none());
+        assert_eq!(
+            lib.get(MaterialId::new(BUILTIN_MATERIAL_ID_MIN)).map(|m| m.name_en.as_str()),
+            Some("Concrete"),
+        );
         // Form layer (Shape) 는 material 자체를 안 갖음 — 본 test 는
         // tier 변경 surface 의 invariant 만 확인.
     }
@@ -1336,7 +1447,7 @@ mod tests {
         // 없음을 명시 — material 만 mutate.
         let lib = MaterialLibrary::new();
         // System tier built-ins all have layered = None by default.
-        for raw in 0..=BUILTIN_MATERIAL_ID_MAX {
+        for raw in BUILTIN_MATERIAL_ID_MIN..=BUILTIN_MATERIAL_ID_MAX {
             let m = lib.get(MaterialId::new(raw)).unwrap();
             assert!(m.visual.layered.is_none(),
                 "built-in {} must have layered=None (Form-agnostic anchor)", raw);
