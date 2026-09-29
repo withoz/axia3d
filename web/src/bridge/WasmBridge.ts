@@ -361,6 +361,7 @@ type AxiaEngineExtended = AxiaEngine & {
   isLiveNurbsEditActive?(): boolean;
   subdivideCatmullClark?(): number;
   filletEdge?(edgeId: number, radius: number, segments: number): number;
+  chamferEdge?(edgeId: number, dist: number): number;
   chamferVertex3way?(vertId: number, radius: number): number;
   extendEdge?(target: number, boundary: number): number;
   filletCorner2d?(vertId: number, radius: number): number;
@@ -5784,6 +5785,28 @@ export class WasmBridge {
       return this.engine.filletEdge(edgeId, radius, segments);
     } catch (e) {
       this.recordBridgeError('filletEdge', e);
+      return -1;
+    }
+  }
+
+  /**
+   * 엣지를 평평한 면 하나로 깎아냄 (Chamfer) — `filletEdge` 의 평면 형제.
+   * `dist` 만큼 양쪽 인접 엣지를 따라 물러난다. 반환: 1, 실패 시 -1.
+   *
+   * ⚠ `filletEdge(edge, dist, 1)` 로 대신할 수 없다. `fillet_edge` 는
+   * `segments >= 2` 를 요구해서 1을 주면 무조건 거절한다 — 2026-09-29 까지
+   * 메뉴의 "엣지 챔퍼" 가 그 호출을 해서 매번 실패했다. 게다가 chamfer 쪽에만
+   * 있는 가드가 있다: `dist` 가 인접 엣지보다 길면 면이 이웃을 뚫고 나가
+   * manifold 이면서 자기교차인 결과가 되는데, 아래쪽 어떤 검사도 그것을
+   * 잡지 못한다. 회귀는 `the_chamfer_the_menu_offers_is_the_chamfer_op`.
+   */
+  chamferEdge(edgeId: number, dist: number): number {
+    if (!this.engine?.chamferEdge) return -1;
+    this.markDirty();
+    try {
+      return this.engine.chamferEdge(edgeId, dist);
+    } catch (e) {
+      this.recordBridgeError('chamferEdge', e);
       return -1;
     }
   }

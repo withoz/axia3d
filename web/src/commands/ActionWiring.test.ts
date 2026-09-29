@@ -61,6 +61,18 @@
  * test: ToolManager → bridge (C→D) and every call inside a tool. A rename
  * there fails the build, so a guard would only repeat the compiler.
  *
+ * ⚠ WHAT NO LINK CHECKS: the ARGUMENTS. Every guard here asks whether a call
+ * reaches the engine, never whether the engine accepts what it is handed. The
+ * `엣지 챔퍼` menu item passed all of them for as long as it existed and did
+ * nothing on every click: its handler called `filletEdge(edge, distance, 1)`
+ * and `fillet_edge` opens with `ensure!(segments >= 2)`. The op it wanted,
+ * `chamferEdge`, was exported all along and called by the MCP server; only the
+ * browser reached past it (2026-09-29). Swept the other engine guards of that
+ * shape — `revolve: segments >= 3`, `array_*: count >= 1`, `loft: k >= 3` —
+ * and found no sibling: none of them takes its value from a literal at a TS
+ * call site. There is no general guard for this; it is measured per op, and
+ * the two that hold the chamfer are named in `theChamferMenuItemChamfers`.
+ *
  * ⚠ HOW LINK D FAILED (2026-09-29): the bridge names an engine method three
  * ways — `this.engine.X(…)`, `this.engine?.X`, and `(this.engine as …).X` —
  * and this file read only the first. It held 257 of 338 names; the other 81
