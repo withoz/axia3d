@@ -2126,6 +2126,8 @@ export const EN: Record<string, string> = {
   'Boundary 도구: 영역 내부 클릭': 'Boundary tool: click inside an area',
   'Boundary: 유효한 평면 위 위치를 클릭하세요': 'Boundary: click somewhere on a valid plane',
   'Boundary: 입력 위치가 너무 작은 영역': 'Boundary: that area is too small',
+  'Boundary: 꼭짓점을 클릭했습니다 — 영역 안쪽을 클릭하세요':
+    'Boundary: that is a corner — click inside an area',
   'Boundary 면이 생성되었습니다': 'Boundary face created',
   'Boundary 생성 실패: {userMsg}': 'Could not create the boundary: {userMsg}',
   '재질 손상 없음': 'No material problems',

@@ -49,6 +49,42 @@ describe('BoundaryTool (ADR-148 β-4)', () => {
     tool = new BoundaryTool(ctx);
   });
 
+  describe('a click on a corner (ADR-170 step 3, wired 2026-09-29)', () => {
+    // `boundary_from_point` answers NoEnclosingCycle for a point exactly ON a
+    // vertex — measured in `a_boundary_click_on_a_corner_has_no_region` — and
+    // from here that is indistinguishable from "there is nothing there". Step 3
+    // knows which it was, so the tool says so instead of asking and repeating
+    // the generic refusal.
+    it('is refused by name, and the engine is never asked', async () => {
+      const { Toast } = await import('../ui/Toast');
+      const c = mockCtx();
+      (c as any).normalizeDrawInput = vi.fn(() => ({
+        point: new THREE.Vector3(100, 0, 0),
+        vertId: 7,
+      }));
+      const t = new BoundaryTool(c);
+      t.onMouseDown({} as MouseEvent, new THREE.Vector3(100, 0, 0));
+
+      expect(Toast.warning).toHaveBeenCalledWith(
+        'Boundary: 꼭짓점을 클릭했습니다 — 영역 안쪽을 클릭하세요',
+      );
+      expect(c.bridge.boundaryFromPoint).not.toHaveBeenCalled();
+    });
+
+    it('and a free point still goes through', async () => {
+      const { Toast } = await import('../ui/Toast');
+      const c = mockCtx();
+      (c as any).normalizeDrawInput = vi.fn(() => ({
+        point: new THREE.Vector3(50, 50, 0),
+      }));
+      const t = new BoundaryTool(c);
+      t.onMouseDown({} as MouseEvent, new THREE.Vector3(50, 50, 0));
+
+      expect(c.bridge.boundaryFromPoint).toHaveBeenCalled();
+      expect(Toast.warning).not.toHaveBeenCalled();
+    });
+  });
+
   describe('click dispatch', () => {
     it('click at valid point dispatches to bridge.boundaryFromPoint with Z=0 plane', async () => {
       const { Toast } = await import('../ui/Toast');

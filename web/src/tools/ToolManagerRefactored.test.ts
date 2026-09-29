@@ -2420,21 +2420,28 @@ describe('ToolManager', () => {
       });
     });
 
-    describe('Step 3: Vertex_at silent dedup (LOCKED #5 1.5μm)', () => {
-      it('returns vertId when bridge.vertex_at matches existing vertex', () => {
-        (bridge as any).vertex_at = vi.fn().mockReturnValue(42);
+    // ⚠ These called `vertex_at`, snake_case, and assigned it onto the mock
+    // bridge first. The real bridge had no such method and neither did the WASM
+    // build, so they proved the plumbing AROUND the call while the step itself
+    // never ran (`vertexAtIsWiredAndRead`). The name is `vertexAt` now, the
+    // bridge declares it, and the mock uses the same name the production code
+    // does — which is the point of the rename.
+    describe('Step 3: vertexAt silent dedup (LOCKED #5, 0.15μm)', () => {
+      it('returns vertId when the bridge finds a vertex standing there', () => {
+        (bridge as any).vertexAt = vi.fn().mockReturnValue(42);
         const result = tm.normalizeDrawInput(new THREE.Vector3(1, 2, 0));
         expect(result.vertId).toBe(42);
+        expect((bridge as any).vertexAt).toHaveBeenCalledWith(1, 2, 0);
       });
 
-      it('graceful when bridge.vertex_at missing (returns undefined)', () => {
-        delete (bridge as any).vertex_at;
+      it('graceful on a build whose bridge has no vertexAt', () => {
+        delete (bridge as any).vertexAt;
         const result = tm.normalizeDrawInput(new THREE.Vector3(1, 2, 0));
         expect(result.vertId).toBeUndefined();
       });
 
-      it('graceful when vertex_at returns -1 (no match)', () => {
-        (bridge as any).vertex_at = vi.fn().mockReturnValue(-1);
+      it('and a free point (the bridge answers null) reports nothing', () => {
+        (bridge as any).vertexAt = vi.fn().mockReturnValue(null);
         const result = tm.normalizeDrawInput(new THREE.Vector3(1, 2, 0));
         expect(result.vertId).toBeUndefined();
       });

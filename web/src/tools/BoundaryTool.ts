@@ -117,6 +117,18 @@ export class BoundaryTool implements ITool {
       return;
     }
 
+    // A click that lands exactly ON a vertex has no region around it.
+    //
+    // Measured: `boundary_from_point` answers `NoEnclosingCycle` for a corner —
+    // inside a region and on an edge both work, a vertex does not — and the
+    // caller cannot tell that apart from "there is nothing here". Step 3 above
+    // knows, because the engine's dedup distance (LOCKED #5, 0.15μm) is exactly
+    // the distance at which a draw would reuse that vertex, so say which it was.
+    if (normalized.vertId !== undefined) {
+      Toast.warning(t('Boundary: 꼭짓점을 클릭했습니다 — 영역 안쪽을 클릭하세요'));
+      return;
+    }
+
     // ADR-175/178 parity — BoundaryTool is face-aware like the other draw
     // tools: synthesize on the hovered face's plane, falling back to the Z=0
     // ground plane (LOCKED #63) in empty space. `getDrawPlane` already resolves

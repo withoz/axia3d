@@ -5495,6 +5495,25 @@ impl AxiaEngine {
         }
     }
 
+    /// The vertex already standing at this point, if there is one.
+    ///
+    /// Returns its raw id, or **-1** when the point is free. The match is the
+    /// engine's own spatial-hash dedup distance (LOCKED #5, 0.15μm) — the same
+    /// one `add_vertex` uses, so "this returns a vertex" and "drawing here would
+    /// reuse that vertex" are the same question.
+    ///
+    /// Step 3 of `normalizeDrawInput` (ADR-170, LOCKED #71 L-71-2) is written
+    /// around this call and had nothing to call until 2026-09-29: the engine had
+    /// `Mesh::find_existing_vertex` and no export reached it, so the step was
+    /// inert and its tests passed by mocking the method in.
+    #[wasm_bindgen(js_name = "vertexAt")]
+    pub fn vertex_at(&self, x: f64, y: f64, z: f64) -> i32 {
+        match self.scene.mesh.find_existing_vertex(DVec3::new(x, y, z)) {
+            Some(v) => v.raw() as i32,
+            None => -1,
+        }
+    }
+
     // ========================================================================
     // Undo/Redo
     // ========================================================================
