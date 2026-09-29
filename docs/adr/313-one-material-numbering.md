@@ -318,6 +318,11 @@ where it changed), not carried over.
 | `b97473d` | D5 — a pick is one undo step (§2.6) | cargo ×3 (no transaction in assign → the extrude goes; in remove → the undo lands on the pick) · e2e ×2 through the Inspector (same two) |
 | `cb90a44` | D5 — the owner follows a pick that leaves no doubt (§2.7, §2.8) | cargo ×11 (no promotion → 9 fail; the XIA's material kept → the removal leaves it; no already-promoted skip → 2 XIAs) · cargo reason codes (renamed → fails) · e2e ×4 (badge from the app's state → sheet and one-face fail; no report → no reason, no 되돌리기) |
 
-Suites at the last code commit: cargo `--workspace` 3998 passed / 0 failed / 30
-ignored (the same 30 as before this ADR) · tsc 0 · vitest 3185 passed / 1
-skipped · the material E2E specs 29 passed.
+Suites at the final code (after the last comment-only commits, measured then):
+cargo `--workspace --no-fail-fast` **3998 passed / 0 failed / 30 ignored** (the
+same 30 as before this ADR) · tsc 0 · vitest **3185 passed / 1 skipped** ·
+Playwright, the whole suite, **312 passed / 1 skipped / 0 failed** (17.8 min).
+
+One observation, not a defect: the first vitest run after a container restart
+timed out once in `StepIgesImporter` (5.5 s against 5 s); it passed alone twice
+and in the next full run. It does not touch materials.

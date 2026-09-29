@@ -8070,8 +8070,8 @@ production ON — 플래그는 그대로, 판정만 추가) · #88 (doc-lag 이 
 #### 회귀 자산 (실측)
 
 cargo `--workspace` **3998 통과 / 0 실패 / 30 무시**(이 ADR 이전과 같은 30) · tsc 0 ·
-vitest **3185 통과 / 1 건너뜀** · 재질 E2E 29 통과. 가드 전부 변이검증 —
-commit 별 변이와 결과는 ADR-313 §9.
+vitest **3185 통과 / 1 건너뜀** · Playwright 전체 **312 통과 / 1 건너뜀 / 0 실패**.
+가드 전부 변이검증 — commit 별 변이와 결과는 ADR-313 §9.
 
 #### Cross-link
 
