@@ -317,11 +317,16 @@ where it changed), not carried over.
 | `ebd6af6` | D3 — the app reads materials back from the engine | cargo (the `format!` list → "the list must be JSON") · vitest ×5 · e2e ×4 read the renderer's colour attribute (the call removed from `syncMesh` → all 4 fail; no late Inspector option → `""` for `engine-100`) |
 | `b97473d` | D5 — a pick is one undo step (§2.6) | cargo ×3 (no transaction in assign → the extrude goes; in remove → the undo lands on the pick) · e2e ×2 through the Inspector (same two) |
 | `cb90a44` | D5 — the owner follows a pick that leaves no doubt (§2.7, §2.8) | cargo ×11 (no promotion → 9 fail; the XIA's material kept → the removal leaves it; no already-promoted skip → 2 XIAs) · cargo reason codes (renamed → fails) · e2e ×4 (badge from the app's state → sheet and one-face fail; no report → no reason, no 되돌리기) |
+| `4aad8d3` | a fourth fixture that named a material by the old number — the external IFC validation's `bim.ifc` promoted with 1 and expected 강철 | web-ifc 0.0.77: material 1 → `IFCMATERIAL('콘크리트')`, fail (what CI reported); 2 → 강철, all external-parser checks pass |
 
 Suites at the final code (after the last comment-only commits, measured then):
 cargo `--workspace --no-fail-fast` **3998 passed / 0 failed / 30 ignored** (the
 same 30 as before this ADR) · tsc 0 · vitest **3185 passed / 1 skipped** ·
 Playwright, the whole suite, **312 passed / 1 skipped / 0 failed** (17.8 min).
+
+The external IFC validation (`npm run validate:ifc`) is not in that list: I did
+not run it before opening the PR, and CI's run of it found the fourth fixture
+above. After `4aad8d3` it passes locally with the Node WASM build.
 
 One observation, not a defect: the first vitest run after a container restart
 timed out once in `StepIgesImporter` (5.5 s against 5 s); it passed alone twice
