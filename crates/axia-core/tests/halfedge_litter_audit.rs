@@ -8,9 +8,10 @@
 //! of the profile or base, wherever a face is attached to an edge that already
 //! had one:
 //!
-//!   extrude rect / hexagon / circle   8 / 12 / 46   (= 2 × boundary edges)
-//!   extrude tapered, bidirectional    8
-//!   CONE PRIMITIVE                   48 → 0        (fixed 2026-09-27, see below)
+//!   extrude rect / hexagon            8 / 12 → 0   (fixed 2026-09-28)
+//!   extrude tapered, bidirectional    8 → 0        (fixed 2026-09-28)
+//!   extrude circle                    46           (measured, NOT taken — below)
+//!   CONE PRIMITIVE                   48 → 0        (fixed 2026-09-27)
 //!   through-drill                    24            (0 → 24 on a clean box)
 //!
 //! Clean: box, cylinder, sphere primitives, the cone primitive since 2026-09-27,
@@ -33,10 +34,31 @@
 //! primitives.rs) took this row from 48 to 0 and cost nothing else. That is the
 //! mechanism, measured.
 //!
-//! It does NOT explain the rows that remain: those walls are wound correctly and
-//! still strand two per boundary edge, so something else in their route does it.
-//! ADR-183's cap flip happens after the walls are built, which is the next thing
-//! to measure.
+//! ## 2026-09-28 — it was ADR-183's cap flip, and it only half-lands
+//!
+//! The rows that remained were wound correctly, so the question was what ELSE
+//! made a wall traverse a shared edge the way the cap already did. It was the
+//! ORDER: ADR-183 flips the bottom cap AFTER the walls are built, so while a wall
+//! is asking for its base half-edge the cap's loop still runs the same way, Pass 1
+//! misses, and Pass 2 allocates. Flipping first — only the winding; the Plane is
+//! still re-synthesized afterwards, since the top face's surface is attached in
+//! between and would overwrite it — makes Pass 1 take the free one.
+//!
+//! In `extrude_planar_box` and `..._tapered` that is the whole story, and an
+//! extruded box is now the shape `create_box` makes: 24 half-edges over 12 edges,
+//! nothing spare. Measured with the overlapping ground draw applied, nothing a
+//! user sees moves (그라운드 3 / faces 8, before and after).
+//!
+//! ⚠ **The same move in `extrude_planar_cylinder` is measured and NOT taken.** It
+//! works — the circle row goes 46 → 0 — but it is a fifth lever on the plane
+//! `what_overlapping_draws_leave_on_the_ground` keeps a ledger of, and it fails
+//! the way the fourth did: `a_vertex_whose_outgoing_half_edge_is_gone` gains a
+//! face built from three COLLINEAR points at op 18 (a `DrawLine` at y = −100,
+//! z = 100, so a NaN normal), and `the_fifty_operation_inventory`'s MoveOnly push
+//! gains a stacked pair, 0 → 1. Attributed both ways: with only the box + tapered
+//! moves both pass; with only the cylinder move all three fail. Traded, not
+//! fixed — so the circle keeps its 46 until the walk's own weakness is the thing
+//! being fixed.
 use axia_core::{Command, Scene, FORM_MATERIAL};
 use axia_geo::CreateSolidMode;
 use glam::DVec3;
@@ -116,13 +138,17 @@ fn leftover_half_edges_per_build_path() {
     assert_eq!(spare(&s), 0,
         "the cone primitive is clean since its sides were wound outward (2026-09-27, was 48) — keep it that way");
 
-    for (k, expect, what) in [(0u8, 8usize, "rect"), (2, 12, "hexagon"), (1, 46, "circle")] {
+    // rect and hexagon go through `extrude_planar_box`, whose ADR-183 cap flip
+    // moved to before the walls on 2026-09-28; the circle goes through
+    // `extrude_planar_cylinder`, where the same move is measured and NOT taken —
+    // see the note at the top of this file.
+    for (k, expect, what) in [(0u8, 0usize, "rect"), (2, 0, "hexagon"), (1, 46, "circle")] {
         let mut s = prod();
         drawn_profile(&mut s, k);
         let f = first_face(&s);
         s.execute(Command::CreateSolid { face_id: f, mode: CreateSolidMode::Extrude { distance: 100.0 } });
         assert_eq!(spare(&s), expect,
-            "extruding a {what} strands 2 half-edges per boundary edge. Lower              means the extrude stopped allocating a second pair — the change              `overlap_walk_sim` is waiting for");
+            "extruding a {what}: if this is LOWER, another build path stopped              allocating a second pair — say so and lower the number");
     }
 
     // The same shape through the kernel-native route leaves nothing behind,

@@ -675,6 +675,29 @@ impl Mesh {
         // winding is the same — analytic transform preserves it.
         let top_face = self.add_face(&top_verts, material)?;
 
+        // ADR-183's flip happens HERE, before the walls, and not after them.
+        //
+        // A wall asks `add_face` for a half-edge along its base edge in the
+        // direction its own winding needs, and `find_halfedge` Pass 1 only reuses
+        // a FREE half-edge pointing that way. The bottom cap's loop runs the same
+        // way the walls do until it is flipped, so its free half-edge pointed the
+        // other way, Pass 1 missed, and Pass 2 allocated a second pair — leaving
+        // the first stranded. Measured 2026-09-28: a rect extrude carried 32
+        // half-edges where the box primitive needs 24, the extra 8 being exactly
+        // two per profile boundary edge; hexagon 12, a 24-segment circle 46.
+        //
+        // Flipping first makes the cap's free half-edge point the way the wall
+        // wants, so Pass 1 takes it. ADR-264's fuse path already relied on this:
+        // it removes the profile before the walls for the same reason, and says so.
+        //
+        // Only the winding moves here — the cap's Plane surface is still
+        // re-synthesized after the walls, because the top face's own surface is
+        // attached in between and would overwrite it.
+        if !fuse_embedded {
+            let bottom_cap = if dist > 0.0 { profile_face } else { top_face };
+            self.flip_face(bottom_cap)?;
+        }
+
         // Side faces — one quad per profile edge.
         // Quad winding: outward normal = side_normal (perpendicular to
         // profile_normal, pointing away from box interior).
@@ -765,7 +788,7 @@ impl Mesh {
         // pocket simulation). Skip the ADR-183 flip entirely when fusing.
         if !fuse_embedded {
             let bottom_cap = if dist > 0.0 { profile_face } else { top_face };
-            self.flip_face(bottom_cap)?;
+            // The flip itself is above, before the walls — see the note there.
             {
                 let bstart = self.faces[bottom_cap].outer().start;
                 if !bstart.is_null() {
@@ -929,6 +952,27 @@ impl Mesh {
 
         let top_face = self.add_face(&top_verts, material)?;
 
+        // ADR-183's flip happens HERE, before the walls, and not after them.
+        //
+        // A wall asks `add_face` for a half-edge along its base edge in the
+        // direction its own winding needs, and `find_halfedge` Pass 1 only reuses
+        // a FREE half-edge pointing that way. The bottom cap's loop runs the same
+        // way the walls do until it is flipped, so its free half-edge pointed the
+        // other way, Pass 1 missed, and Pass 2 allocated a second pair — leaving
+        // the first stranded. Measured 2026-09-28: a rect extrude carried 32
+        // half-edges where the box primitive needs 24, the extra 8 being exactly
+        // two per profile boundary edge; hexagon 12, a 24-segment circle 46.
+        //
+        // Flipping first makes the cap's free half-edge point the way the wall
+        // wants, so Pass 1 takes it. ADR-264's fuse path already relied on this:
+        // it removes the profile before the walls for the same reason, and says so.
+        //
+        // Only the winding moves here — the cap's Plane surface is still
+        // re-synthesized after the walls, because the top face's own surface is
+        // attached in between and would overwrite it.
+        let bottom_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.flip_face(bottom_cap)?;
+
         // Side trapezoids — one per profile edge (winding policy = box).
         let mut side_faces = Vec::with_capacity(n);
         for i in 0..n {
@@ -986,7 +1030,7 @@ impl Mesh {
 
         // ADR-183 outward base cap (same as extrude_planar_box).
         let bottom_cap = if dist > 0.0 { profile_face } else { top_face };
-        self.flip_face(bottom_cap)?;
+        // The flip itself is above, before the walls — see the note there.
         {
             let bstart = self.faces[bottom_cap].outer().start;
             if !bstart.is_null() {
@@ -1053,6 +1097,18 @@ impl Mesh {
     /// z = 100, 67% at z = −150, and a third of itself when extruded downward.
     fn turn_cap_outward(&mut self, cap: FaceId) -> Result<()> {
         self.flip_face(cap)?;
+        self.resynthesize_cap_plane(cap)
+    }
+
+    /// The second half of `turn_cap_outward`, on its own.
+    ///
+    /// A builder that flips its cap BEFORE the walls (so `find_halfedge` Pass 1
+    /// can reuse the cap's free half-edges — see `extrude_planar_box`) must still
+    /// re-synthesize the Plane AFTER, because the top face's own surface is
+    /// attached in between and would overwrite it. Measured 2026-09-28: doing both
+    /// halves early left a `-300` extrude whose cap looked (0, 0, −1) while its
+    /// Plane said (0, 0, +1).
+    fn resynthesize_cap_plane(&mut self, cap: FaceId) -> Result<()> {
         let start = self.faces[cap].outer().start;
         if !start.is_null() {
             let verts = self.collect_loop_verts(start)?;
@@ -1861,6 +1917,14 @@ impl Mesh {
         // Top cap face (translated profile).
         let top_face = self.add_face(&top_verts, material)?;
 
+        // ADR-183's flip happens before the walls — see the note in
+        // `extrude_planar_box`. A wall asks for a half-edge along its base edge
+        // in the direction its own winding needs, and `find_halfedge` Pass 1
+        // only reuses a FREE one pointing that way; flipping the cap after the
+        // walls left it pointing the other way, so Pass 2 allocated a second
+        // pair and stranded the first. Measured 2026-09-28: a 24-segment circle
+        // extrude carried 46 stranded half-edges, two per boundary edge of its
+        // 23-gon substitute. Only the winding moves here — the Plane is
         // Side faces — one quad per profile edge.
         let n = boundary_verts.len();
         let mut side_faces = Vec::with_capacity(n);
@@ -1994,6 +2058,7 @@ impl Mesh {
         for &side_fid in &side_faces {
             self.set_face_surface_owner_id(side_fid, Some(owner_id));
         }
+
 
         // ADR-183 — the cap on the back of the extrusion looks out.
         let back_cap = if dist > 0.0 { profile_face } else { top_face };

@@ -223,6 +223,36 @@
 //! runs on what the user drew, the arrangement runs on what is left, and neither
 //! is given the other's result. A fifth pass would be a fifth guess.
 
+//! ### The fifth, 2026-09-28 — and it makes the pipeline do LESS
+//!
+//! Not a pass at all: `halfedge_litter_audit` traced the leftover half-edges to
+//! ADR-183's cap flip running AFTER the walls, so `find_halfedge` Pass 1 misses
+//! and Pass 2 allocates a second pair. Flipping before the walls removes them.
+//!
+//! In `extrude_planar_box` and `..._tapered` it is clean and it LANDED: rect 8,
+//! hexagon 12, tapered 8, bidirectional 8, all → 0, and an extruded box becomes
+//! the shape `create_box` makes. Nothing on this plane moves (그라운드 3 /
+//! faces 8 before and after, with the overlapping draw applied).
+//!
+//! ⚠ The same move in `extrude_planar_cylinder` is measured and NOT taken. The
+//! circle row goes 46 → 0, and then:
+//!
+//! ```text
+//!   a_vertex_whose_outgoing_half_edge_is_gone   NaN face at op 18 — a DrawLine
+//!                                               closes three COLLINEAR points
+//!   the_fifty_operation_inventory (MoveOnly)    stacked pairs 0 → 1
+//! ```
+//!
+//! The same two scenes the fourth lever broke, in the same class. Attributed both
+//! ways: with only the box + tapered moves both pass; with only the cylinder move
+//! all three fail.
+//!
+//! So the pattern is not "more work damages this plane" — this one does LESS and
+//! damages it just the same. What the five have in common is that they change
+//! what this plane's topology looks like to a walk that was tuned against the old
+//! one. The box builder gets away with it because its scenes are simple enough
+//! that the walk's answer does not change; the cylinder's are not.
+
 use axia_core::{Command, CommandResult, Scene};
 use glam::DVec3;
 
