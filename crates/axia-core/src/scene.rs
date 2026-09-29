@@ -4108,6 +4108,77 @@ impl Scene {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
         }
+        // A circle drawn ACROSS one already on this wall DIVIDES against it.
+        //
+        // Without this the second circle does not notice the first: both caps
+        // are drawn whole, the ground under the lens belongs to two faces, and
+        // nothing catches it — they share no edge and pierce nothing, so the
+        // invariant checker is valid and the self-intersection scan reads 0
+        // (`two_circles_on_a_curved_host_share_ground`).
+        //
+        // The geometry and the surgery were both already here and only tests
+        // called them: `crossing_on_developable` unrolls the wall — developable,
+        // so the unrolling is a local isometry and the arrangement on the chart
+        // IS the arrangement on the wall — and two ordinary chain splits do the
+        // rest, because a cap's rim is its host's hole.
+        let resolve_from = axia_geo::operations::curved_arrange::cap_crossed_by(
+            &self.mesh,
+            host_face,
+            &samples,
+        )
+        .map(|cap| (cap, self.scene_snapshot()));
+        if let Some((cap, before_resolve)) = resolve_from {
+            match axia_geo::operations::curved_arrange::resolve_drawn_circle_against_cap(
+                &mut self.mesh,
+                host_face,
+                cap,
+                &samples,
+                FORM_MATERIAL,
+            ) {
+                Some(r) => {
+                    // Every piece that came out joins whichever layer owned the
+                    // host — the cap's own pieces included, since the cap was
+                    // registered under that owner already and its id may not
+                    // have survived the split.
+                    let fresh = [r.b_only, r.cap_pieces[0], r.cap_pieces[1]];
+                    if let Some(sid) = owning_shape {
+                        for f in fresh {
+                            if let Some(shape) = self.shapes.get_mut(&sid) {
+                                if !shape.face_ids.contains(&f) {
+                                    shape.face_ids.push(f);
+                                }
+                            }
+                            self.face_to_shape.insert(f, sid);
+                        }
+                    } else if let Some(xid) = owning_xia {
+                        self.register_faces_to_xia(xid, &fresh);
+                        if let Some(xia) = self.xias.get_mut(&xid) {
+                            for f in fresh {
+                                if !xia.face_ids.contains(&f) {
+                                    xia.face_ids.push(f);
+                                }
+                            }
+                        }
+                    }
+                    if own {
+                        self.transactions.set_after_snapshot(self.scene_snapshot());
+                        self.transactions.commit();
+                    }
+                    return Some((r.b_only, r.host));
+                }
+                None => {
+                    // It looked like a crossing and could not be put back
+                    // together. The mesh is part-built by now, so put it back
+                    // where it was and draw the ordinary way.
+                    //
+                    // ⚠ Not a refusal. Sketching the SAME circle twice reads as
+                    // a crossing — two coincident loops meet everywhere — and
+                    // refusing that broke `adr-267-curved-sketch-gate`, where a
+                    // repeat sketch damages nothing and so must go through.
+                    self.restore_scene_snapshot(&before_resolve);
+                }
+            }
+        }
         match self.mesh.split_cylinder_face_by_circle(host_face, &samples) {
             Some((cap, remainder)) => {
                 // Dual-path owner reconcile — the cap (brand-new face) joins
@@ -4593,6 +4664,77 @@ impl Scene {
         if own {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        // A circle drawn ACROSS one already on this cone DIVIDES against it.
+        //
+        // Without this the second circle does not notice the first: both caps
+        // are drawn whole, the ground under the lens belongs to two faces, and
+        // nothing catches it — they share no edge and pierce nothing, so the
+        // invariant checker is valid and the self-intersection scan reads 0
+        // (`two_circles_on_a_curved_host_share_ground`).
+        //
+        // The geometry and the surgery were both already here and only tests
+        // called them: `crossing_on_developable` unrolls the cone — developable,
+        // so the unrolling is a local isometry and the arrangement on the chart
+        // IS the arrangement on the cone — and two ordinary chain splits do the
+        // rest, because a cap's rim is its host's hole.
+        let resolve_from = axia_geo::operations::curved_arrange::cap_crossed_by(
+            &self.mesh,
+            host_face,
+            &samples,
+        )
+        .map(|cap| (cap, self.scene_snapshot()));
+        if let Some((cap, before_resolve)) = resolve_from {
+            match axia_geo::operations::curved_arrange::resolve_drawn_circle_against_cap(
+                &mut self.mesh,
+                host_face,
+                cap,
+                &samples,
+                FORM_MATERIAL,
+            ) {
+                Some(r) => {
+                    // Every piece that came out joins whichever layer owned the
+                    // host — the cap's own pieces included, since the cap was
+                    // registered under that owner already and its id may not
+                    // have survived the split.
+                    let fresh = [r.b_only, r.cap_pieces[0], r.cap_pieces[1]];
+                    if let Some(sid) = owning_shape {
+                        for f in fresh {
+                            if let Some(shape) = self.shapes.get_mut(&sid) {
+                                if !shape.face_ids.contains(&f) {
+                                    shape.face_ids.push(f);
+                                }
+                            }
+                            self.face_to_shape.insert(f, sid);
+                        }
+                    } else if let Some(xid) = owning_xia {
+                        self.register_faces_to_xia(xid, &fresh);
+                        if let Some(xia) = self.xias.get_mut(&xid) {
+                            for f in fresh {
+                                if !xia.face_ids.contains(&f) {
+                                    xia.face_ids.push(f);
+                                }
+                            }
+                        }
+                    }
+                    if own {
+                        self.transactions.set_after_snapshot(self.scene_snapshot());
+                        self.transactions.commit();
+                    }
+                    return Some((r.b_only, r.host));
+                }
+                None => {
+                    // It looked like a crossing and could not be put back
+                    // together. The mesh is part-built by now, so put it back
+                    // where it was and draw the ordinary way.
+                    //
+                    // ⚠ Not a refusal. Sketching the SAME circle twice reads as
+                    // a crossing — two coincident loops meet everywhere — and
+                    // refusing that broke `adr-267-curved-sketch-gate`, where a
+                    // repeat sketch damages nothing and so must go through.
+                    self.restore_scene_snapshot(&before_resolve);
+                }
+            }
         }
         match self.mesh.split_cone_face_by_circle(host_face, &samples) {
             Some((cap, remainder)) => {

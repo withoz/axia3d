@@ -93,10 +93,22 @@ fn drawn_area(s: &mut Scene) -> f64 {
 /// both cannot be asked this question — which is exactly the D2 lesson, one
 /// layer further in.
 ///
-/// So the overlap is judged where C-0 judged it: topologically. If the pair
-/// were resolved, cap A would have lost the lens.
+/// So the overlap is judged where C-0 judged it: topologically. If the pair is
+/// resolved, cap A has lost the lens — and now it has.
+///
+/// ⚠ This test used to PIN the opposite ("TODAY the first cap is untouched"),
+/// and said so as its own retire signal. `draw_circle_on_cylinder` now resolves
+/// the pair before splitting, so it is rewritten to say what works rather than
+/// deleted.
+///
+/// ⚠ Area still cannot judge it, and neither can the self-intersection scan.
+/// Drawing a circle on a wall DIVIDES the wall, it does not add surface — the
+/// export reads 1882.5 before and 1883.6 after, a 0.06% tessellation
+/// difference — and the scan reads 0 either way, because two faces lying on one
+/// another share no edge and pierce nothing. Topology is the only reader that
+/// can tell these apart.
 #[test]
-fn two_overlapping_circles_are_not_resolved() {
+fn two_overlapping_circles_are_resolved() {
     let (mut s, side) = cylinder_scene();
     let du = 0.3;
     let (u0, vm) = (std::f64::consts::PI, H * 0.5);
@@ -128,19 +140,24 @@ fn two_overlapping_circles_are_not_resolved() {
         s.mesh.faces.get(rem).map(|f| f.inners().len()).unwrap_or(0)
     );
 
-    // PIN. Two circles crossing on a plane become three regions; here the first
-    // cap is untouched and the ground under the lens belongs to two faces.
-    assert_eq!(
-        after.as_deref(),
-        Some(before.as_slice()),
-        "TODAY the first cap is untouched by a circle drawn across it"
+    // Cap A is divided: it is either gone, replaced by its two pieces, or left
+    // with a different boundary. Either way it is not what it was.
+    assert!(
+        after.as_deref() != Some(before.as_slice()),
+        "the first cap must lose its lens when a circle is drawn across it"
     );
-    // And every gate still passes, which is why nothing else catches it.
+    // Three pieces where there was one cap and one host: the host keeps its id,
+    // B-only comes off it, and cap A becomes two.
+    assert_eq!(
+        s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count(),
+        6,
+        "a crossing pair leaves the two end discs, the wall, and three pieces"
+    );
     assert!(s.mesh.verify_face_invariants().is_valid(), "invariants hold");
     assert_eq!(
         s.mesh.detect_self_intersections().count(),
         0,
-        "and the scan is blind to two faces sharing ground on one surface"
+        "and the result pierces nothing"
     );
 }
 

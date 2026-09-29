@@ -561,20 +561,21 @@ fn c0_the_viewport_draws_slabs_through_the_solid_after_a_curved_split() {
 /// ROW 1 — 원×원 겹침, judged topologically because no area reader can.
 ///
 /// On a PLANE this is what the whole of 트랙 A is about: the pair becomes three
-/// regions (A-only, lens, B-only). The measurement below shows the curved host
-/// does something else — it adds exactly ONE face, the same as containment
-/// does, which is the shape of "the second circle did not notice the first".
+/// regions (A-only, lens, B-only). This used to measure the curved host doing
+/// something else — adding exactly ONE face, the shape of "the second circle
+/// did not notice the first" — and pinned it with its own retire signal:
+/// *"When C-2 teaches the curved host to divide, cap A's boundary changes (or
+/// cap A is replaced) and this fails."*
 ///
-/// The judgement cannot be area (trap #7 breaks the reader, and the render's
-/// own buffers are inflated by slabs) and cannot be `point_in_face` (it tests
-/// the face PLANE first, so every point on a curved face reads outside). What
-/// is left is topology: **if the two regions were resolved, the first cap must
-/// have lost its lens** — its boundary would have changed. It does not.
+/// It does now. `draw_circle_on_cylinder` resolves the pair first, so this says
+/// what works instead.
 ///
-/// Not called a defect here. It is what C-2 is for, and C-0's job was to find
-/// out whether there is anything to do.
+/// The judgement still cannot be area (trap #7 breaks the reader, and drawing
+/// on a wall divides it rather than adding to it) and cannot be
+/// `point_in_face` (it tests the face PLANE first, so every point on a curved
+/// face reads outside). Topology remains the only reader.
 #[test]
-fn c0_row1_the_second_circle_does_not_notice_the_first() {
+fn c0_row1_the_second_circle_divides_against_the_first() {
     // The geometry really does overlap, by construction: equal geodesic radii
     // r, centres 1.2 r apart, so 1.2 r < 2 r.
     assert!(1.2 < 2.0, "the two discs share ground");
@@ -614,23 +615,17 @@ fn c0_row1_the_second_circle_does_not_notice_the_first() {
         s.mesh.faces.iter().filter(|(_, f)| f.is_active()).count()
     );
 
-    // PIN. Two overlapping circles resolve into three regions on a plane; here
-    // the first cap is untouched, so the ground under the lens belongs to two
-    // faces at once. When C-2 teaches the curved host to divide, cap A's
-    // boundary changes (or cap A is replaced) and this fails — the retire
-    // signal.
-    assert_eq!(
-        after.as_deref(),
-        Some(before.as_slice()),
-        "TODAY the first cap is untouched by a circle drawn across it"
+    // Cap A is divided — gone, or left with a boundary that is not the one it
+    // had. Either way the ground under the lens belongs to one face now.
+    assert!(
+        after.as_deref() != Some(before.as_slice()),
+        "the first cap must lose its lens when a circle is drawn across it"
     );
-    // …and the mesh is sound, which is why nothing else catches it.
     assert!(s.mesh.verify_face_invariants().is_valid(), "invariants hold");
     assert_eq!(
         s.mesh.detect_self_intersections().count(),
         0,
-        "and the scan is blind to two faces sharing ground on one surface — \
-         the same blindness D5 measured on a plane"
+        "and the result pierces nothing"
     );
 }
 
