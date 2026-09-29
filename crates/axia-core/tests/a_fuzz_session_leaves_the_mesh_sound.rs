@@ -78,9 +78,20 @@
 //!      1  face inner[0] cannot collect: HalfEdge not found   (session 43)
 //! ```
 //!
-//! So the remainder is almost entirely ONE family — two faces covering the same
-//! ground — and it is the family this file's other pinned test already says the
-//! gate seeds run into past operation 20.
+//! Session 43's was a circle that was somebody's hole being trimmed out from
+//! under them (`a_trimmed_circle_takes_its_hole_with_it`): **32** broken, and
+//! nothing but the stacking left.
+//!
+//! ```text
+//!   32 sessions
+//!     24  edge shared by 3 active faces (stacked)
+//!      9  edge shared by 4 active faces
+//! ```
+//!
+//! (The two add to 33 because a session can report both.) So what remains is
+//! ONE family — two faces covering the same ground — and it is the family this
+//! file's other pinned test already says the gate seeds run into past
+//! operation 20.
 //!
 //! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
 //! violations the wide run reports now are a fresh inventory to work through —
