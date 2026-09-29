@@ -3095,17 +3095,18 @@ export class ToolManager {
     // Step 3: Vertex_at silent dedup (LOCKED #5 1.5μm spatial-hash)
     // bridge.vertex_at 가 있으면 query, 없으면 undefined.
     // ─────────────────────────────────────────────────────────────
+    // ⚠ A typed call, not a cast. This read `(this.bridge as unknown as
+    // { vertex_at?… }).vertex_at` until 2026-09-29, and `vertex_at` existed in
+    // no layer — not the bridge, not the WASM export — so the step never ran
+    // and its tests passed by assigning the method in. A cast around a name
+    // nothing declares is also invisible to `ActionWiring`'s link-D guard,
+    // which reads WasmBridge. Written this way, tsc holds the link.
     let vertId: number | undefined;
     try {
-      const va = (this.bridge as unknown as {
-        vertex_at?: (x: number, y: number, z: number) => number;
-      }).vertex_at;
-      if (typeof va === 'function') {
-        const result = va.call(this.bridge, point.x, point.y, point.z);
-        if (Number.isInteger(result) && result >= 0) vertId = result;
-      }
+      const hit = this.bridge.vertexAt?.(point.x, point.y, point.z);
+      if (typeof hit === 'number' && hit >= 0) vertId = hit;
     } catch {
-      /* graceful: vertex_at not yet exposed, undefined fallthrough */
+      /* graceful: a legacy build without the export — undefined fallthrough */
     }
 
     // ─────────────────────────────────────────────────────────────

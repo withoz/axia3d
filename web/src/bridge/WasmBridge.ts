@@ -910,6 +910,7 @@ type AxiaEngineExtended = AxiaEngine & {
   setTorusMajorRadius?(faceId: number, major: number): boolean;
   setTorusMinorRadius?(faceId: number, minor: number): boolean;
   pointInFace?(faceId: number, x: number, y: number, z: number): boolean;
+  vertexAt?(x: number, y: number, z: number): number;
   // Smooth Group Push-Pull
   push_pull_smooth_group_seamless?(faceIds: Uint32Array, distance: number): boolean;
   // Primitive shapes
@@ -3529,6 +3530,19 @@ export class WasmBridge {
   pointInFace(faceId: number, point: [number, number, number]): boolean {
     if (!this.engine?.pointInFace) return false;
     return this.engine.pointInFace(faceId, point[0], point[1], point[2]);
+  }
+
+  /**
+   * The vertex already standing at this point, or `null` when it is free.
+   *
+   * The engine matches at its own dedup distance (LOCKED #5, 0.15μm), so a hit
+   * here means a draw at this point would REUSE that vertex rather than make a
+   * new one — which is what step 3 of `normalizeDrawInput` asks.
+   */
+  vertexAt(x: number, y: number, z: number): number | null {
+    if (!this.engine?.vertexAt) return null;
+    const v = this.engine.vertexAt(x, y, z);
+    return Number.isInteger(v) && v >= 0 ? v : null;
   }
 
   // ADR-087 K-ζ — `pushPull` legacy bridge wrapper 폐기.
