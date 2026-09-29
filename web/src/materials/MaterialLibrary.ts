@@ -87,7 +87,12 @@ export interface PhysicalProperties {
   restitution: number;         // 0.0 ~ 1.0 — 탄성계수 (복원력)
   specificGravity: number;     // 비중 (밀도 / 물의 밀도)
   thermalConductivity: number; // W/(m·K) — 열전도율
-  fireRating: FireRating;      // 화재 등급
+  /**
+   * 화재 등급. Absent on a material the engine made (ADR-313 D4): the engine's
+   * rating for a new material is None, which these three cannot say, so the
+   * app shows no rating rather than inventing one.
+   */
+  fireRating?: FireRating;
   elasticModulus?: number;    // GPa — 탄성률 (향후 확장)
   compressiveStrength?: number; // MPa — 압축강도 (향후 확장)
 }
@@ -332,6 +337,33 @@ export class MaterialLibrary {
     this.materials.set(mat.id, mat);
     this.notifyListeners();
     return mat;
+  }
+
+  /**
+   * ADR-313 D4 — a custom material the ENGINE holds too.
+   *
+   * `addCustom` alone makes a material only this table knows. The engine then
+   * refuses to record it on a face (`AssignMaterial` rejects an id its library
+   * does not hold), so it was never saved, never exported, and the next time
+   * anything read the faces back from the engine it was gone — measured for
+   * Quick Colour: an unrelated draw and undo turned a red face grey. Quick
+   * Colour had invented ids ≥ 10001 on the belief that the engine stored ids as
+   * opaque numbers; the texture dialog sent 0, which is FORM_MATERIAL — "no
+   * material" — and which the engine refuses since ADR-313.
+   *
+   * The engine creates it in the Project tier (so it is saved with the file)
+   * and the id it returns is the one this table uses. `null` when the engine
+   * cannot create it — nothing is added then, so nothing is assigned that the
+   * engine would not keep.
+   */
+  addEngineMaterial(material: Omit<Material, 'builtIn' | 'rustId'>): Material | null {
+    const rustId: number | null | undefined = this.bridge?.addProjectMaterial?.(
+      material.name,
+      material.nameEn,
+      material.visual.color,
+    );
+    if (typeof rustId !== 'number' || rustId <= 0) return null;
+    return this.addCustom({ ...material, rustId });
   }
 
   removeCustom(id: string): boolean {
