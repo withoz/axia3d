@@ -56,11 +56,21 @@ fn a_sphere_has_the_volume_its_radius_says() {
 
 /// Exact, and the case that proves the parameters beat the tessellation: its
 /// caps are `Plane` faces whose u×v box is much larger than the disk they bound.
+///
+/// Stood OFF the origin as well. A cap on z = 0 carries no flux whichever way it
+/// looks, so a base at z = 0 cannot tell an inward bottom from an outward one —
+/// and the bottom was inward. Measured 2026-09-15, this cylinder with its base at
+/// z = 100: 1308996.9 against 785398.2, +66.667%.
 #[test]
 fn a_cylinder_has_the_volume_its_radius_and_height_say() {
-    let mut s = pathb();
-    let f = s.mesh.create_cylinder(DVec3::ZERO, 50.0, 100.0, 24, FORM_MATERIAL).unwrap();
-    check("cylinder", f, s, PI * 50f64.powi(2) * 100.0, 0.001);
+    for z in [0.0, 100.0, -150.0] {
+        let mut s = pathb();
+        let f = s
+            .mesh
+            .create_cylinder(DVec3::new(0.0, 0.0, z), 50.0, 100.0, 24, FORM_MATERIAL)
+            .unwrap();
+        check(&format!("cylinder, base z = {z}"), f, s, PI * 50f64.powi(2) * 100.0, 0.001);
+    }
 }
 
 /// No closed form here yet, so this one goes through the tessellated fall-back.
