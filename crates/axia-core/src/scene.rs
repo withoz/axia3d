@@ -105,8 +105,9 @@ pub struct SnapshotInfo {
 ///
 /// A `Xia.material` whose `MaterialId` is no longer present in
 /// `Scene.material_library` (e.g. after a `removeUserMaterial` call).
-/// FORM_MATERIAL sentinel (id 0 = Concrete) is always valid and never
-/// reported.
+/// `FORM_MATERIAL` (0, "no material") is never reported: having no material
+/// is not an orphan. (This said "id 0 = Concrete", true only until ADR-313
+/// moved Concrete to 1.)
 #[derive(Clone, Debug, Default)]
 pub struct OrphanMaterialReport {
     pub affected_xias: Vec<OrphanMaterialEntry>,
@@ -1341,7 +1342,9 @@ impl Scene {
     // 3-tier recovery cascade (R-B):
     //   Pass 1: auto-demote — Xia.material = FORM_MATERIAL → demote
     //           via ADR-091 D-β (4-condition gate)
-    //   Pass 2: fallback — reassign to Concrete (MaterialId::new(0))
+    //   Pass 2: fallback — reassign to FORM_MATERIAL (no material). This read
+    //           "Concrete (MaterialId::new(0))" while Concrete sat at 0;
+    //           ADR-313 moved it to 1 — the code never changed (LOCKED #38).
     //   Pass 3: escalate — return PartialFailure for dialog
     //
     // ADR-091 §E L1 canonical 답습 — `affected_xias` 는 read-only
@@ -1352,15 +1355,14 @@ impl Scene {
     ///
     /// Scans `self.xias` for entries whose `material` is no longer
     /// present in `self.material_library` (e.g. after a `removeUserMaterial`
-    /// call). FORM_MATERIAL sentinel (id 0 = Concrete) is *always* valid
-    /// and never reported (System tier built-in).
+    /// call). `FORM_MATERIAL` (0) is "no material", never an orphan, and is
+    /// never reported — not a library entry since ADR-313.
     ///
     /// **Read-only**: Scene state 변경 0.
     pub fn detect_orphan_material_assignments(&self) -> OrphanMaterialReport {
         let mut affected_xias = Vec::new();
         for (xid, xia) in &self.xias {
-            // FORM_MATERIAL is always valid (Phase 1 sentinel + System
-            // built-in id 0 = Concrete). Skip.
+            // FORM_MATERIAL is "no material" — never an orphan. Skip.
             if xia.material == FORM_MATERIAL {
                 continue;
             }
@@ -1417,9 +1419,10 @@ impl Scene {
             }
 
             // Pass 2 — demote failed (e.g. promote condition drift).
-            // The Xia.material is already FORM_MATERIAL (Pass 1) which
-            // resolves to System-tier Concrete in the library. No further
-            // mutation needed; assignment is now valid.
+            // The Xia.material is already FORM_MATERIAL (Pass 1): no
+            // material, which is never an orphan, so nothing more to do.
+            // (This said it resolved to Concrete — true only while Concrete
+            // sat at 0; ADR-313 §6.)
             //
             // However, if the user later wants the Xia removed, they
             // must do so explicitly. We count this as a recovered face

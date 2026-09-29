@@ -1,11 +1,11 @@
 # ADR-313 — One material numbering: the material the user picks is the material the engine records
 
-**Status**: Draft
+**Status**: Accepted (2026-09-29 — D1~D5 landed, each with a mutation-checked guard; §9)
 **Date**: 2026-09-29
 **Category**: 시민권 / 배선
 **Scope**: renumbers the engine's built-in materials, migrates files saved under
-the old numbering, and wires the four places where the app and the engine held
-two different answers about a face's material. Touches the meaning (not the
+the old numbering, and wires the places where the app and the engine held two
+different answers about a face's material — and about who owns the face. Touches the meaning (not the
 value) of `FORM_MATERIAL` (LOCKED #26), the built-in id range (ADR-098,
 LOCKED #37) and the words of ADR-100's fallback (LOCKED #38) — see §6.
 
@@ -120,6 +120,46 @@ and the IFC importer call it, the browser never does. So ADR-091's demotion
 (재질 제거 → 형태로 강등) and ADR-100's recovery have never run on anything a
 person drew: there was never an XIA to demote.
 
+### 2.6 A material pick is not an undo step
+
+Found while wiring D5, through the Inspector:
+
+```
+an extruded box               6 faces
+pick 콘크리트                   6 faces, engine material 1
+undo once                     1 face,  engine material 0
+```
+
+`Command::AssignMaterial` sets face materials and records nothing, so the undo
+right after a pick went back to the step before it and took the extrude — with
+the material. Removing a material was the same. It matters to D5 directly:
+ADR-091's "되돌리기" is one undo, and it can only give back what was recorded.
+
+### 2.7 Removing a XIA's material never demoted it
+
+A XIA made by hand (`promoteShapeToXia`, since the app made none), then "없음"
+in the Inspector:
+
+```
+face material     0
+getXiaForFace     2 — the XIA stayed
+toast             "재질 제거 시 1건 강등 실패 (나머지는 적용됨)"
+badge             "형태 (Shape)" — reading the app's state, so wrong again
+```
+
+ADR-091's trigger is the XIA's own material (L1: `xia.material ==
+FORM_MATERIAL`). Removing a material cleared only the faces, and
+`attemptMaterialRemovalDemote` then asked the engine for a demotion it refuses
+by design. Nothing wrote the XIA's material; engine tests set the field by hand
+before demoting, which is why they passed.
+
+### 2.8 Promoting the same Shape twice makes two XIAs
+
+`promoteShapeToXia` on the same Shape, twice: XIA 2, then XIA 3, over the same
+faces. The Shape stays on after promotion (ADR-050 P-2-c) and nothing checks
+for its link. The IFC export still wrote one element (measured) — it skips a
+linked Shape — so it does not show there.
+
 ## 3. Decision
 
 **D1 — one numbering.** The engine's built-ins are **1..=12** in the same order
@@ -149,10 +189,33 @@ Library) so they can be drawn.
 **D4 — Quick Colour is an engine material.** It is created in the engine (Project
 tier, so it is saved with the file) and the app uses the id the engine returns.
 
-**D5 — assigning a material promotes the owning Shape** when the four conditions
-hold (ADR-050), and the badge reads the engine's answer, not the app's local
-state. A refused promotion says why (PromoteError text) and the face keeps its
-face-level material on a Shape.
+**D5 — a material pick is one undo step, and moves its owner when it leaves no
+doubt.** As drafted, D5 read "assigning a material promotes the owning Shape when
+the four conditions hold". Implementing it found §2.6–§2.8, and the rule became
+precise:
+
+- The app's pick and removal go through `Scene::assign_material_to_faces` /
+  `remove_material_from_faces`, which record **one** transaction each, owner
+  moves included. `Command::AssignMaterial` / `RemoveMaterial` are unchanged —
+  they are also steps inside larger operations that record their own.
+- Inside that step, an owner of a picked face follows the pick only when the
+  pick leaves no doubt about the owner as a whole:
+
+  | after the pick | the owner |
+  |---|---|
+  | every live face of a **Shape** on the picked material | promoted with it as primary — ADR-050's four conditions decide; a refusal comes back with a reason code and the faces keep the material |
+  | every live face of a **XIA** on the picked material | it is the XIA's primary |
+  | every live face of a **XIA** on no material (a removal) | the XIA's material goes with them and it is demoted (ADR-091) |
+  | anything less | face-level; no owner moves |
+
+  "Anything less" includes a box whose faces carry two materials: which one is
+  the box's is not the engine's to guess (메타-원칙 #16). Selecting the box and
+  picking one material makes it whole.
+- A Shape already promoted is skipped (§2.8), so a second pick never makes a
+  second XIA.
+- The badge asks the engine who owns the faces. A refused promotion is shown
+  with its reason; a demotion with ADR-091's 5-second 되돌리기, which — being one
+  step — gives back both the material and the XIA.
 
 ## 4. What is not changed, and why
 
@@ -165,6 +228,13 @@ face-level material on a Shape.
 - **The Asset Library's materials do not appear in the Inspector's dropdown**
   unless D3 mirrors them in; whether the panel should also assign is a UI
   decision this ADR does not make.
+- **The plain commands** (`assign_material` / `remove_material`, and
+  `Command::AssignMaterial` / `RemoveMaterial` beneath them) still record
+  nothing. The app no longer uses them for a pick; tests and larger operations
+  do, and a larger operation records its own step.
+- **Quick Colour and the texture dialog** move owners by the same rule (they
+  go through the same pick) but do not show a refusal — the promise of
+  promotion is the Inspector's, so the Inspector is where it is explained.
 
 ## 5. Residuals (stated, not fixed)
 
@@ -177,6 +247,20 @@ face-level material on a Shape.
 - A **concrete member imported from IFC before this change** comes back without
   a material — the import had already dropped it (§2.3). Importing the IFC file
   again now keeps it.
+- **The raw `promoteShapeToXia` still promotes a promoted Shape again** (§2.8).
+  The app's pick skips it; MCP `create_xia` can still make a second XIA over the
+  same faces. Whether a second promote should refuse, or return the first XIA,
+  is a decision for the MCP surface.
+- **The Inspector's hint** still reads *"재질을 부여하면 이 객체는 XIA (특성)로
+  승격됩니다"* without a condition. A sheet is refused and the refusal says why;
+  rewording the hint touches its split-text-node translation test and is left
+  to its own change.
+- **Creating a material is not an undo step.** Undoing past a Quick Colour
+  takes the colour off the face but leaves the Project material in the library,
+  unused.
+- **`export_baseline.txt` lacks `vertexAt`**, which #278 added. The baseline is
+  a subset guard, so `vertexAt` could be deleted with it green. Found here, left
+  for its own change.
 
 ## 6. LOCKED policies touched
 
@@ -185,6 +269,8 @@ face-level material on a Shape.
 | LOCKED #26 `FORM_MATERIAL = MaterialId::new(0)` | value 0; also Concrete | value 0; **only** "no material" |
 | LOCKED #37 ADR-098 built-in range | `0..=11` (`BUILTIN_MATERIAL_ID_MAX = 11`) | `1..=12` |
 | LOCKED #38 ADR-100 Pass 2 "fallback Concrete (id 0)" | "reassign to Concrete" | "reassign to `FORM_MATERIAL`" — the code already did exactly this; the words said Concrete because 0 was Concrete |
+| LOCKED #26 Phase 2 — ADR-091 D-δ | the Inspector attempted the demotion after the removal (`citizenship/MaterialRemovalDemote.ts`); refused every time (§2.7) | the engine demotes inside the removal's own step; the module is deleted. ADR-091's trigger (L1), toast (L5) and two entry points (L6) are unchanged |
+| LOCKED #26 Phase 1 — ADR-050 P-6 badge | read the app's material state | reads the engine's owner of the faces |
 
 ## 7. Lock-ins
 
@@ -197,6 +283,13 @@ face-level material on a Shape.
   every undo/redo — the app never keeps a material the engine does not hold.
 - **L-313-5** The Inspector's badge reads the engine's owner of the face.
 - **L-313-6** Every guard is mutation-checked; absolutely no `#[ignore]`.
+- **L-313-7** A material pick and a material removal are each one undo step,
+  and an owner's move is inside that step.
+- **L-313-8** An owner moves only when every live face is on the picked
+  material (or, for a removal, on none). A mixed owner is face-level.
+- **L-313-9** A pick never promotes a Shape that is already promoted.
+- **L-313-10** A refused promotion crosses to the app as a stable reason code
+  (`promote_reason_code`); the words are the app's.
 
 ## 8. Related
 
@@ -205,3 +298,22 @@ FORM_MATERIAL, P-6 badge) · ADR-091 (demotion) · ADR-098 (tiers, section 9) ·
 ADR-099 (layered channels) · ADR-100 (recovery) · ADR-311 (IFC member import) ·
 the wiring audit #277 / #278 / #279 · LOCKED #26 #37 #38 #44 · 메타-원칙 #4
 #6 #13.
+
+## 9. Acceptance log
+
+Every number below was measured at that commit's own state (the engine rebuilt
+where it changed), not carried over.
+
+| commit | what | guard → the mutation it catches |
+|---|---|---|
+| `14630d4` | this ADR, measured (§1–§2.5) | — |
+| `0318cdb` | D1 + D2 — built-ins 1..=12, 0 = no material; old files migrated on load | `the_app_and_the_engine_number_materials_alike` (the real library vs the app's table) · `a_file_saved_before_the_renumbering` (a snapshot the old engine wrote) · `adr313_*` — each failed on the code before it. cargo 3982 / 0 |
+| `517c38d` | three E2E checks that named concrete by 0 | adr-098 S4 and adr-100 S4 failed; **adr-098 S5 passed with both System-tier guards switched off** (it asked to remove 0, refused as not found) — with 1 it fails (`removeOkSystem: true`) |
+| `c4488e0` | D4 — Quick Colour and the texture dialog make materials the engine holds | vitest ×4 (fall back to an invented id → "adds nothing" fails; a call site back on `addCustom` → its check fails) · e2e ×2 (the invented id → engine 0; no reuse → 2 Project materials) |
+| `ebd6af6` | D3 — the app reads materials back from the engine | cargo (the `format!` list → "the list must be JSON") · vitest ×5 · e2e ×4 read the renderer's colour attribute (the call removed from `syncMesh` → all 4 fail; no late Inspector option → `""` for `engine-100`) |
+| `b97473d` | D5 — a pick is one undo step (§2.6) | cargo ×3 (no transaction in assign → the extrude goes; in remove → the undo lands on the pick) · e2e ×2 through the Inspector (same two) |
+| `cb90a44` | D5 — the owner follows a pick that leaves no doubt (§2.7, §2.8) | cargo ×11 (no promotion → 9 fail; the XIA's material kept → the removal leaves it; no already-promoted skip → 2 XIAs) · cargo reason codes (renamed → fails) · e2e ×4 (badge from the app's state → sheet and one-face fail; no report → no reason, no 되돌리기) |
+
+Suites at the last code commit: cargo `--workspace` 3998 passed / 0 failed / 30
+ignored (the same 30 as before this ADR) · tsc 0 · vitest 3185 passed / 1
+skipped · the material E2E specs 29 passed.
