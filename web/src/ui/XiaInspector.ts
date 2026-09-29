@@ -12,7 +12,7 @@ import { ToolManager } from '../tools/ToolManagerRefactored';
 import { debugLog } from '../utils/debug';
 import { Toast } from './Toast';
 import { t } from '../i18n';
-import { attemptMaterialRemovalDemote } from '../citizenship/MaterialRemovalDemote';
+import type { MaterialPick } from '../bridge/WasmBridge';
 import { isTypingInInput } from '../utils/isTypingInInput';
 
 export interface XiaInspectorDeps {
@@ -120,6 +120,25 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
   // 초기 상태: 아무 선택 없으니 전체 비활성화 (Point 강제 표시 제거)
   updateStateSteps('');
 
+  // ADR-313 D5 — the badge says what the ENGINE holds: a XIA owns these faces,
+  // or it does not. It read the app's material state, so any face with a
+  // material said "XIA (특성)" — measured: all six faces of a box painted, no
+  // XIA anywhere. A face can carry a material and still belong to a Shape (a
+  // sheet encloses nothing, so it is not promoted), and says so now.
+  const showOwner = (badgeEl: HTMLElement | null) => {
+    if (!badgeEl) return;
+    const xia = currentFaceIds.length > 0 && currentFaceIds.every((f) => bridge.getXiaForFace(f) >= 0);
+    if (xia) {
+      badgeEl.textContent = t('XIA (특성)');
+      badgeEl.style.background = 'rgba(76, 175, 80, 0.15)';
+      badgeEl.style.color = '#81c784';
+    } else {
+      badgeEl.textContent = t('형태 (Shape)');
+      badgeEl.style.background = 'rgba(156, 39, 176, 0.15)';
+      badgeEl.style.color = '#ce93d8';
+    }
+  };
+
   // ── 물리 속성 패널 업데이트 ──
   const updatePhysicalPanel = (materialId: string | null) => {
     const hintEl = document.getElementById('xi-material-hint');
@@ -145,7 +164,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
       // (ADR-049 §4 Q3 — 사용자 facing 에서 재질 없는 단계엔 'XIA' 안 노출)
       if (hintEl) hintEl.style.display = '';
       if (propsEl) propsEl.style.display = 'none';
-      if (badgeEl) { badgeEl.textContent = t('형태 (Shape)'); badgeEl.style.background = 'rgba(156, 39, 176, 0.15)'; badgeEl.style.color = '#ce93d8'; }
+      showOwner(badgeEl);
       assignBtn?.classList.remove('assigned');
       return;
     }
@@ -160,7 +179,7 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     // (ADR-049 §4 Q3 — 부재 정체성, primary material + face-level override)
     if (hintEl) hintEl.style.display = 'none';
     if (propsEl) propsEl.style.display = '';
-    if (badgeEl) { badgeEl.textContent = t('XIA (특성)'); badgeEl.style.background = 'rgba(76, 175, 80, 0.15)'; badgeEl.style.color = '#81c784'; }
+    showOwner(badgeEl);
     assignBtn?.classList.add('assigned');
 
     // 물리 속성 채우기
@@ -311,36 +330,46 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
   };
   matLib.onChange(ensureMaterialOptions);
 
-  // ADR-091 D-δ — Material Removal → Shape 가역 강등 trigger.
-  // Called from both entry points (dropdown "없음" + 재질 해제 버튼,
-  // Lock-in D-F=c). Attempts to demote each owning Xia, then surfaces
-  // a 5-second "되돌리기" Toast so the user can one-click undo per
-  // Lock-in D-E=a.
-  const triggerMaterialRemovalDemote = (faceIds: number[]) => {
-    if (faceIds.length === 0) return;
-    const result = attemptMaterialRemovalDemote(bridge, faceIds);
-    if (result.demoted.length > 0) {
-      const n = result.demoted.length;
-      const msg = n === 1
-        ? t('재질 제거됨 — 형태로 강등')
-        : t('{n}개 객체 재질 제거됨 — 형태로 강등', { n });
-      Toast.infoWithAction(msg, {
-        label: t('되돌리기'),
-        onClick: () => {
-          bridge.undo();
-          // The undo put the material back in the engine; the app's table was
-          // cleared when the material was removed, so read it back (ADR-313 D3).
-          matLib.syncFromEngine();
-          updateInspector(currentFaceIds);
-        },
-      }, 5000);
-    }
-    // Partial failures are surfaced separately — the demoted Xias are
-    // still gone, but eligible-but-rejected ones (rare with current
-    // gating) deserve a warning so the user understands the state.
-    if (result.errors.length > 0) {
-      Toast.warning(t('재질 제거 시 {n}건 강등 실패 (나머지는 적용됨)', { n: result.errors.length }));
-    }
+  // ADR-091 D-δ — Material Removal → Shape 가역 강등, from both entry points
+  // (dropdown "없음" + 재질 해제 버튼, Lock-in D-F=c), with a 5-second
+  // "되돌리기" (D-E=a).
+  //
+  // ADR-313 D5 — the engine demotes in the same step as the removal now, so
+  // this only reports it. The demotion used to be attempted here, after the
+  // removal, and the engine refused it every time: its trigger is the XIA's
+  // own material, and the removal cleared only the faces (measured — "재질
+  // 제거 시 1건 강등 실패", the XIA stayed). Being one step, one undo also
+  // gives back both the material and the XIA.
+  const reportRemoval = (out: MaterialPick | null) => {
+    const n = out?.demoted?.length ?? 0;
+    if (n === 0) return;
+    const msg = n === 1
+      ? t('재질 제거됨 — 형태로 강등')
+      : t('{n}개 객체 재질 제거됨 — 형태로 강등', { n });
+    Toast.infoWithAction(msg, {
+      label: t('되돌리기'),
+      onClick: () => {
+        bridge.undo();
+        // The undo put the material back in the engine; the app's table was
+        // cleared when the material was removed, so read it back (ADR-313 D3).
+        matLib.syncFromEngine();
+        updateInspector(currentFaceIds);
+      },
+    }, 5000);
+  };
+
+  // ADR-313 D5 — a pick that covered a whole Shape which the engine would not
+  // promote says why; the faces keep the material. Keyed on the engine's
+  // `promote_reason_code` (crates/axia-wasm/src/lib.rs).
+  const REFUSED: Record<string, string> = {
+    not_watertight: '닫힌 입체가 아니라 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다',
+    zero_volume: '부피가 없어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다',
+    not_manifold: '모델에 위상 오류가 있어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다',
+  };
+  const reportPick = (out: MaterialPick | null) => {
+    const refused = out?.refused?.[0];
+    if (!refused) return;
+    Toast.info(t(REFUSED[refused.reason] ?? 'XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다'), 4000);
   };
 
   // ── 재질 변경 이벤트 ──
@@ -349,14 +378,17 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
     const selectedNow = toolManager.selection.getSelectedFaces();
     const targetFaces = selectedNow.length > 0 ? selectedNow : currentFaceIds;
     debugLog('[Material] assign to faces:', targetFaces, 'material:', materialId);
+    let pick: MaterialPick | null = null;
+    let removal: MaterialPick | null = null;
     if (targetFaces.length > 0 && materialId) {
-      matLib.assignToFaces(targetFaces, materialId);
+      pick = matLib.pickMaterial(targetFaces, materialId);
     } else if (targetFaces.length > 0 && !materialId) {
-      matLib.unassignFromFaces(targetFaces);
-      // ADR-091 D-δ — material → "없음" 트리거 (D-F=c entry #1).
-      triggerMaterialRemovalDemote(targetFaces);
+      // ADR-091 D-δ — material → "없음" (D-F=c entry #1).
+      removal = matLib.removeMaterialFrom(targetFaces);
     }
     currentFaceIds = targetFaces;
+    reportPick(pick);
+    reportRemoval(removal);
     updatePhysicalPanel(materialId || null);
     updateInspector(currentFaceIds);
   });
@@ -365,13 +397,13 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
   document.getElementById('xi-assign-btn')?.addEventListener('click', () => {
     if (!matSelect || currentFaceIds.length === 0) return;
     if (matLib.hasMaterial(currentFaceIds)) {
-      matLib.unassignFromFaces(currentFaceIds);
+      // ADR-091 D-δ — 재질 해제 버튼 (D-F=c entry #2).
+      const removal = matLib.removeMaterialFrom(currentFaceIds);
       matSelect.value = '';
       updatePhysicalPanel(null);
-      // ADR-091 D-δ — 재질 해제 버튼 트리거 (D-F=c entry #2).
-      triggerMaterialRemovalDemote(currentFaceIds);
+      reportRemoval(removal);
     } else if (matSelect.value) {
-      matLib.assignToFaces(currentFaceIds, matSelect.value);
+      reportPick(matLib.pickMaterial(currentFaceIds, matSelect.value));
       updatePhysicalPanel(matSelect.value);
     }
     updateInspector(currentFaceIds);

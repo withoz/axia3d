@@ -7294,7 +7294,11 @@ export class WasmBridge {
   //  Material 연산 (Disconnection ① 해결)
   // ═══════════════════════════════════════
 
-  /** 면에 재질 할당 → Rust scene.execute(AssignMaterial) → XIA 자동 승격 */
+  /**
+   * 면에 재질 할당 — the engine's plain command. It is not an undo step and it
+   * promotes nothing; the comment here said "XIA 자동 승격" and it never did.
+   * The app's pick is `assignMaterialToFaces` (ADR-313 D5).
+   */
   assignMaterial(faceIds: Uint32Array, materialIdRaw: number): boolean {
     if (!this.engine?.assign_material) return false;
     this.markDirty();
@@ -7306,7 +7310,10 @@ export class WasmBridge {
     }
   }
 
-  /** 면에서 재질 제거 → Rust scene.execute(RemoveMaterial) → XIA 자동 강등 */
+  /**
+   * 면에서 재질 제거 — the plain command: not an undo step, demotes nothing.
+   * The app's removal is `removeMaterialFromFaces` (ADR-313 D5).
+   */
   removeMaterial(faceIds: Uint32Array): boolean {
     if (!this.engine?.remove_material) return false;
     this.markDirty();
@@ -8090,10 +8097,21 @@ export interface XiaInfo {
   volume?: number;      // mm³
 }
 
-/** ADR-313 D5 — what one material pick did (engine `MaterialPick`). */
+/**
+ * ADR-313 D5 — what one material pick did (engine `MaterialPick`). The owner
+ * fields are absent when the engine predates them (the plain-command fallback).
+ */
 export interface MaterialPick {
   /** Faces the pick was given. */
   faces: number;
+  /** Shapes whose every face now carries the pick, promoted to XIAs. */
+  promoted?: Array<{ shape: number; xia: number }>;
+  /** Such Shapes the engine refused to promote; `reason` is a stable code. */
+  refused?: Array<{ shape: number; reason: string; detail: string }>;
+  /** XIAs whose every face now carries the pick — it is their primary. */
+  primary?: number[];
+  /** XIAs a removal left with no material, demoted back to Shapes (ADR-091). */
+  demoted?: Array<{ xia: number; shape: number }>;
 }
 
 export interface GroupInfo {

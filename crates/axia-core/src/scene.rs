@@ -2350,6 +2350,7 @@ impl Scene {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
         }
+        let picked: Vec<FaceId> = face_ids.clone();
         let faces = match self.execute(Command::AssignMaterial { face_ids, material_id: material }) {
             CommandResult::MaterialAssigned { face_count } => face_count,
             other => {
@@ -2359,11 +2360,63 @@ impl Scene {
                 return Err(format!("AssignMaterial: {:?}", other));
             }
         };
+        let mut pick = crate::promote::MaterialPick { faces, ..Default::default() };
+        self.owners_follow_a_pick(&picked, material, &mut pick);
         if own_transaction {
             self.transactions.set_after_snapshot(self.scene_snapshot());
             self.transactions.commit();
         }
-        Ok(crate::promote::MaterialPick { faces })
+        Ok(pick)
+    }
+
+    /// ADR-313 D5 — after a pick of `material`, each owner of a picked face
+    /// whose EVERY face now carries it follows the pick: a Shape is promoted
+    /// with it as primary (the four ADR-050 conditions decide; a refusal is
+    /// recorded with its reason), a XIA takes it as its primary. An owner with
+    /// faces on other materials, or on none, is left as it is — which of its
+    /// materials would be "the" material is not something to guess (메타-원칙
+    /// #16); the faces carry theirs.
+    fn owners_follow_a_pick(
+        &mut self,
+        picked: &[FaceId],
+        material: axia_geo::MaterialId,
+        pick: &mut crate::promote::MaterialPick,
+    ) {
+        use std::collections::BTreeSet;
+        let all_on = |scene: &Scene, faces: &[FaceId]| {
+            scene.every_live_face(faces, |m| m == material)
+        };
+
+        let xias: BTreeSet<XiaId> =
+            picked.iter().filter_map(|f| self.face_to_xia.get(f).copied()).collect();
+        for x in xias {
+            let whole = self.xias.get(&x).map_or(false, |xia| all_on(self, &xia.face_ids));
+            if whole {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.material = material;
+                }
+                pick.primary.push(x);
+            }
+        }
+
+        let shapes: BTreeSet<crate::ShapeId> =
+            picked.iter().filter_map(|f| self.face_to_shape.get(f).copied()).collect();
+        for sid in shapes {
+            // A Shape stays on after its promotion (ADR-050 P-2-c); its XIA is
+            // the owner now and was handled above. Promoting it again would make
+            // a second XIA over the same faces.
+            if self.shape_to_xia.get(&sid).map_or(false, |x| self.xias.contains_key(x)) {
+                continue;
+            }
+            let whole = self.shapes.get(&sid).map_or(false, |sh| all_on(self, &sh.face_ids));
+            if !whole {
+                continue;
+            }
+            match self.promote_shape_to_xia(sid, material) {
+                Ok(ok) => pick.promoted.push((sid, ok.xia_id)),
+                Err(e) => pick.refused.push((sid, e)),
+            }
+        }
     }
 
     /// ADR-313 D5 — the user takes the material off faces, as ONE undo step.
@@ -2377,15 +2430,72 @@ impl Scene {
             self.transactions.begin();
             self.transactions.set_before_snapshot(self.scene_snapshot());
         }
+        let picked: Vec<FaceId> = face_ids.clone();
         let faces = match self.execute(Command::RemoveMaterial { face_ids }) {
             CommandResult::MaterialRemoved { face_count } => face_count,
             _ => 0,
         };
+        let mut pick = crate::promote::MaterialPick { faces, ..Default::default() };
+
+        // ADR-091 — a XIA whose every face is now without a material has no
+        // material, so it goes back to being a Shape. ADR-091's trigger is the
+        // XIA's own material (L1: `xia.material == FORM_MATERIAL`), and
+        // removing a material only ever cleared the FACES, so demotion was
+        // refused every time — measured in the app: "재질 제거 시 1건 강등
+        // 실패", and the XIA stayed. The XIA's material goes with its faces
+        // here, in the same step, so one undo gives both back.
+        use std::collections::BTreeSet;
+        let xias: BTreeSet<XiaId> =
+            picked.iter().filter_map(|f| self.face_to_xia.get(f).copied()).collect();
+        for x in xias {
+            let bare = self
+                .xias
+                .get(&x)
+                .map_or(false, |xia| self.every_live_face(&xia.face_ids, |m| m == FORM_MATERIAL));
+            if !bare {
+                continue;
+            }
+            let before = self.xias.get(&x).map(|xia| xia.material);
+            if let Some(xia) = self.xias.get_mut(&x) {
+                xia.material = FORM_MATERIAL;
+            }
+            match self.demote_xia_to_shape(x) {
+                Ok(ok) => pick.demoted.push((x, ok.shape_id)),
+                Err(_) => {
+                    // Leave the XIA as it was rather than holding "no
+                    // material" under a name that says it has one.
+                    if let (Some(xia), Some(m)) = (self.xias.get_mut(&x), before) {
+                        xia.material = m;
+                    }
+                }
+            }
+        }
+
         if own_transaction {
             self.transactions.set_after_snapshot(self.scene_snapshot());
             self.transactions.commit();
         }
-        crate::promote::MaterialPick { faces }
+        pick
+    }
+
+    /// ADR-313 D5 — does every live face of an owner satisfy `test` on its
+    /// material? An owner's list can still name a face that is gone; such a
+    /// face is not part of the owner and is not counted. An owner with no live
+    /// face at all is never "whole".
+    fn every_live_face(&self, faces: &[FaceId], test: impl Fn(axia_geo::MaterialId) -> bool) -> bool {
+        let mut live = 0usize;
+        for &f in faces {
+            match self.mesh.faces.get(f) {
+                Some(face) if face.is_active() => {
+                    if !test(face.material()) {
+                        return false;
+                    }
+                    live += 1;
+                }
+                _ => {}
+            }
+        }
+        live > 0
     }
 
     /// Register face→XIA mapping in the reverse index

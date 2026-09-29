@@ -12492,8 +12492,9 @@ impl AxiaEngine {
     ///
     /// `assign_material` (above) runs the plain command, which records
     /// nothing, so an undo right after a pick took back the step before it —
-    /// measured: an extruded box lost its extrude. This records the pick.
-    /// Returns JSON `{"faces":N}`; throws when the library does not hold the
+    /// measured: an extruded box lost its extrude. This records the pick —
+    /// and, in the same step, what it did to the owners of those faces (D5,
+    /// see `material_pick_json`). Throws when the library does not hold the
     /// material, and then nothing changed.
     #[wasm_bindgen(js_name = "assignMaterialToFaces")]
     pub fn assign_material_to_faces(
@@ -12508,20 +12509,20 @@ impl AxiaEngine {
         {
             Ok(pick) => {
                 self.cache_dirty = true;
-                Ok(serde_json::json!({ "faces": pick.faces }).to_string())
+                Ok(material_pick_json(&pick))
             }
             Err(e) => Err(JsValue::from_str(&format!("assignMaterialToFaces: {}", e))),
         }
     }
 
-    /// ADR-313 D5 — the app takes a material off faces, as ONE undo step.
-    /// JSON `{"faces":N}`.
+    /// ADR-313 D5 — the app takes a material off faces, as ONE undo step,
+    /// demoting a XIA left with no material (ADR-091). JSON as for a pick.
     #[wasm_bindgen(js_name = "removeMaterialFromFaces")]
     pub fn remove_material_from_faces(&mut self, face_ids: Vec<u32>) -> String {
         let faces = face_ids.into_iter().map(FaceId::new).collect();
         let pick = self.scene.remove_material_from_faces(faces);
         self.cache_dirty = true;
-        serde_json::json!({ "faces": pick.faces }).to_string()
+        material_pick_json(&pick)
     }
 
     /// 면의 재질 ID 조회 (없으면 0 반환, 0 = 기본 재질)
@@ -14327,6 +14328,55 @@ fn curve_anchor(curve: &axia_geo::AnalyticCurve) -> glam::DVec3 {
     }
 }
 
+/// ADR-313 D5 — a material pick's outcome, for the app:
+///
+/// ```text
+/// {"faces":6,
+///  "promoted":[{"shape":1,"xia":2}],
+///  "refused":[{"shape":1,"reason":"not_watertight","detail":"…"}],
+///  "primary":[2],
+///  "demoted":[{"xia":2,"shape":1}]}
+/// ```
+///
+/// `reason` is a code the app turns into words (`promote_reason_code`);
+/// `detail` is the engine's own sentence, for a log.
+fn material_pick_json(pick: &axia_core::MaterialPick) -> String {
+    serde_json::json!({
+        "faces": pick.faces,
+        "promoted": pick.promoted.iter()
+            .map(|(shape, xia)| serde_json::json!({ "shape": shape.raw(), "xia": xia }))
+            .collect::<Vec<_>>(),
+        "refused": pick.refused.iter()
+            .map(|(shape, e)| serde_json::json!({
+                "shape": shape.raw(),
+                "reason": promote_reason_code(e),
+                "detail": e.to_string(),
+            }))
+            .collect::<Vec<_>>(),
+        "primary": pick.primary,
+        "demoted": pick.demoted.iter()
+            .map(|(xia, shape)| serde_json::json!({ "xia": xia, "shape": shape.raw() }))
+            .collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+/// ADR-313 D5 — why a promotion was refused, as a stable code. The app keys
+/// its messages on these (web/src/ui/XiaInspector.ts); change one there too.
+fn promote_reason_code(e: &axia_core::PromoteError) -> &'static str {
+    use axia_core::PromoteError::*;
+    match e {
+        XiaNotFound => "xia_not_found",
+        ShapeNotFound => "shape_not_found",
+        NoGeometry => "no_geometry",
+        InvalidMaterial => "invalid_material",
+        ZeroVolume => "zero_volume",
+        ZeroDimension => "zero_dimension",
+        NotWatertight { .. } => "not_watertight",
+        NotManifold { .. } => "not_manifold",
+    }
+}
+
 #[cfg(test)]
 mod adr149_tests {
     use super::*;
@@ -16002,6 +16052,56 @@ mod adr313_one_material_numbering_tests {
             "the app's 콘크리트 must export as 콘크리트; materials in the file: {:?}",
             ifc.lines().filter(|l| l.contains("IFCMATERIAL(")).collect::<Vec<_>>()
         );
+    }
+
+    /// A pick's outcome, as the app reads it: a whole box promoted, a sheet
+    /// refused with the code the Inspector's message is keyed on, and a removal
+    /// that demotes.
+    #[test]
+    fn a_pick_tells_the_app_what_became_of_the_owner() {
+        // Set up through the scene — the exported wrappers around drawing reach
+        // for JS, which a native test does not have.
+        let rect = |e: &mut AxiaEngine, x: f64| -> u32 {
+            match e.scene.execute(axia_core::Command::DrawRectAsShape {
+                center: DVec3::new(x, 0.0, 0.0),
+                normal: DVec3::Z,
+                up: DVec3::Y,
+                width: 1000.0,
+                height: 1000.0,
+            }) {
+                axia_core::CommandResult::ShapeCreated(id) => id,
+                other => panic!("a rect: {:?}", other),
+            }
+        };
+        let faces_of = |e: &AxiaEngine, shape: u32| -> Vec<u32> {
+            e.scene
+                .get_shape(axia_core::ShapeId::new(shape))
+                .map(|s| s.face_ids.iter().map(|f| f.raw()).collect())
+                .unwrap_or_default()
+        };
+        let parse = |s: &str| -> serde_json::Value { serde_json::from_str(s).expect("JSON") };
+
+        let mut e = AxiaEngine::new();
+        let bx = rect(&mut e, 0.0);
+        e.scene.execute(axia_core::Command::CreateSolid {
+            face_id: FaceId::new(faces_of(&e, bx)[0]),
+            mode: axia_geo::CreateSolidMode::Extrude { distance: 500.0 },
+        });
+        let box_faces = faces_of(&e, bx);
+        assert_eq!(box_faces.len(), 6, "a box");
+        let sheet = rect(&mut e, 5000.0);
+        let sheet_faces = faces_of(&e, sheet);
+
+        let promoted = parse(&e.assign_material_to_faces(box_faces.clone(), 1).expect("concrete"));
+        assert_eq!(promoted["promoted"][0]["shape"], bx, "{promoted}");
+        let xia = promoted["promoted"][0]["xia"].clone();
+
+        let refused = parse(&e.assign_material_to_faces(sheet_faces, 1).expect("concrete"));
+        assert_eq!(refused["refused"][0]["reason"], "not_watertight", "{refused}");
+
+        let demoted = parse(&e.remove_material_from_faces(box_faces));
+        assert_eq!(demoted["demoted"][0]["xia"], xia, "{demoted}");
+        assert_eq!(demoted["demoted"][0]["shape"], bx);
     }
 }
 

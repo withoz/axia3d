@@ -996,8 +996,14 @@ export const EN: Record<string, string> = {
   '재질 제거됨 — 형태로 강등': 'Material removed — demoted to a Shape',
   '{n}개 객체 재질 제거됨 — 형태로 강등':
     'Material removed from {n} objects — demoted to Shapes',
-  '재질 제거 시 {n}건 강등 실패 (나머지는 적용됨)':
-    '{n} could not be demoted when the material was removed (the rest were)',
+  '닫힌 입체가 아니라 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'Not a closed solid, so not promoted to a XIA — the faces keep the material',
+  '부피가 없어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'It encloses no volume, so not promoted to a XIA — the faces keep the material',
+  '모델에 위상 오류가 있어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'The model has topology errors, so not promoted to a XIA — the faces keep the material',
+  'XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'Not promoted to a XIA — the faces keep the material',
   '되돌리기': 'Undo',
   '{n}개 선분': '{n} segments',
   '□ 선': '□ Line',

@@ -8,6 +8,8 @@
  * Material이 없으면 Volume은 Appearance(기하)로만 존재합니다.
  */
 
+import type { MaterialPick } from '../bridge/WasmBridge';
+
 // ═══════════════════════════════════════
 //  기하 계층 상태 (Geometry Layer)
 // ═══════════════════════════════════════
@@ -427,16 +429,29 @@ export class MaterialLibrary {
 
   // --- 재질 할당 (Face → Material) ---
 
-  /** 면에 재질 부여 → Volume이 XIA로 전환되는 트리거 */
+  /** 면에 재질 부여. `true` when the engine took it — see `pickMaterial`. */
   assignToFaces(faceIds: number[], materialId: string): boolean {
-    const mat = this.materials.get(materialId);
-    if (!mat) return false;
+    return this.pickMaterial(faceIds, materialId) !== null;
+  }
 
-    // ADR-313 D5 — the engine records the pick as one undo step, so it goes
-    // first and the table follows only what it accepted. (`assignMaterial` is
-    // for a bridge without the entry — test fakes.)
+  /**
+   * ADR-313 D5 — give faces a material, and say what became of their owners.
+   *
+   * The engine records the pick as one undo step, and in the same step an
+   * owner whose every face now carries the material follows it: a Shape is
+   * promoted to a XIA (the four ADR-050 conditions decide — `refused` says
+   * why not), a XIA takes it as its primary. The engine goes first and the
+   * table follows only what it accepted; `null` when it refused.
+   * (`assignMaterial` is for a bridge without the entry — test fakes.)
+   */
+  pickMaterial(faceIds: number[], materialId: string): MaterialPick | null {
+    const mat = this.materials.get(materialId);
+    if (!mat) return null;
+
+    let out: MaterialPick | null = { faces: faceIds.length };
     if (this.bridge?.assignMaterialToFaces) {
-      if (!this.bridge.assignMaterialToFaces(faceIds, mat.rustId)) return false;
+      out = this.bridge.assignMaterialToFaces(faceIds, mat.rustId);
+      if (!out) return null;
     } else if (this.bridge?.assignMaterial) {
       this.bridge.assignMaterial(new Uint32Array(faceIds), mat.rustId);
     }
@@ -445,23 +460,33 @@ export class MaterialLibrary {
       this.assignments.set(fid, materialId);
     }
     this.notifyListeners();
-    return true;
+    return out;
   }
 
-  /** 면에서 재질 제거 → XIA가 Volume으로 복귀 */
+  /** 면에서 재질 제거 — see `removeMaterialFrom`. */
   unassignFromFaces(faceIds: number[]): void {
+    this.removeMaterialFrom(faceIds);
+  }
+
+  /**
+   * ADR-313 D5 — take the material off faces, as one undo step; a XIA left
+   * with no material on any face is demoted back to a Shape in that same step
+   * (ADR-091), and `demoted` lists it.
+   */
+  removeMaterialFrom(faceIds: number[]): MaterialPick | null {
     for (const fid of faceIds) {
       this.assignments.delete(fid);
     }
 
-    // ADR-313 D5 — one undo step, as for a pick.
+    let out: MaterialPick | null = { faces: faceIds.length };
     if (this.bridge?.removeMaterialFromFaces) {
-      this.bridge.removeMaterialFromFaces(faceIds);
+      out = this.bridge.removeMaterialFromFaces(faceIds);
     } else if (this.bridge?.removeMaterial) {
       this.bridge.removeMaterial(new Uint32Array(faceIds));
     }
 
     this.notifyListeners();
+    return out;
   }
 
   /** 면의 재질 조회 */
