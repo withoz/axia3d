@@ -96,7 +96,9 @@ const corpus = [
       const shapeId = Array.from(e.getShapeIds())[0];
       const faceId = Array.from(e.getShapeFaceIds(shapeId))[0];
       e.create_solid_extrude(faceId, 2000);
-      e.promoteShapeToXia(shapeId, 1); // material 1 = 강철 / Steel
+      // material 2 = 강철 / Steel. The engine numbers its built-ins 1..12 like
+      // the app (ADR-313); before that it counted from 0 and 1 was Steel.
+      e.promoteShapeToXia(shapeId, 2);
     },
   },
   {
