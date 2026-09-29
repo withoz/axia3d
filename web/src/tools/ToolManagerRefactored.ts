@@ -809,14 +809,14 @@ export class ToolManager {
       debugLog('[Action] undo =>', result);
       if (result) {
         this.syncMesh();
-        getMaterialLibrary().syncFromRust();
+        getMaterialLibrary().syncFromEngine();
       }
     } else if (action === 'redo') {
       const result = this.bridge.redo();
       debugLog('[Action] redo =>', result);
       if (result) {
         this.syncMesh();
-        getMaterialLibrary().syncFromRust();
+        getMaterialLibrary().syncFromEngine();
       }
     } else if (action === 'toggle-selection-dims') {
       // 우클릭 메뉴 "치수 표시" 토글 (사용자 요청 2026-04-27)
@@ -2389,6 +2389,14 @@ export class ToolManager {
           }
         }
       }
+
+      // ADR-313 D3 — the viewport colours faces from the app's material
+      // table, so read the engine's assignments into it BEFORE the rebuild. A
+      // full rebuild is what every topology change comes through — a file
+      // opened, an IFC imported, a face split, an undo — and each of those can
+      // leave the engine holding materials the app did not draw (measured: a
+      // reopened brick box came back grey).
+      getMaterialLibrary().syncFromEngine();
 
       const tFull0 = performance.now();
       this.viewport.updateMesh(

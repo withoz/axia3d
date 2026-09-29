@@ -294,6 +294,23 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
   // MaterialLibrary 변경 이벤트 → Viewport 동기화
   matLib.onChange(refreshViewportColors);
 
+  // ADR-313 D3 — the dropdown was filled once, from the built-ins. A material
+  // the engine held that the app has only now learned of (an IFC import's, the
+  // Asset Library's, a Quick Colour) had no option, so a face carrying it read
+  // "없음" here even once its colour came back on screen. Add what is missing.
+  const ensureMaterialOptions = () => {
+    if (!matSelect) return;
+    const have = new Set(Array.from(matSelect.options).map((o) => o.value));
+    for (const mat of matLib.getAll()) {
+      if (have.has(mat.id)) continue;
+      const opt = document.createElement('option');
+      opt.value = mat.id;
+      opt.textContent = `${mat.name} (${mat.nameEn})`;
+      matSelect.appendChild(opt);
+    }
+  };
+  matLib.onChange(ensureMaterialOptions);
+
   // ADR-091 D-δ — Material Removal → Shape 가역 강등 trigger.
   // Called from both entry points (dropdown "없음" + 재질 해제 버튼,
   // Lock-in D-F=c). Attempts to demote each owning Xia, then surfaces
@@ -311,6 +328,9 @@ export async function initXiaInspector(deps: XiaInspectorDeps): Promise<XiaInspe
         label: t('되돌리기'),
         onClick: () => {
           bridge.undo();
+          // The undo put the material back in the engine; the app's table was
+          // cleared when the material was removed, so read it back (ADR-313 D3).
+          matLib.syncFromEngine();
           updateInspector(currentFaceIds);
         },
       }, 5000);

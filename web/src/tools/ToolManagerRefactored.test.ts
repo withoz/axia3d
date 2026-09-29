@@ -22,7 +22,7 @@ vi.mock('../ui/Toast', () => ({
 }));
 
 vi.mock('../materials/MaterialLibrary', () => ({
-  getMaterialLibrary: vi.fn(() => ({ syncFromRust: vi.fn() })),
+  getMaterialLibrary: vi.fn(() => ({ syncFromEngine: vi.fn() })),
 }));
 
 vi.mock('../ui/DimensionLabel', () => ({

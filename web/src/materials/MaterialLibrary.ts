@@ -88,9 +88,10 @@ export interface PhysicalProperties {
   specificGravity: number;     // 비중 (밀도 / 물의 밀도)
   thermalConductivity: number; // W/(m·K) — 열전도율
   /**
-   * 화재 등급. Absent on a material the engine made (ADR-313 D4): the engine's
-   * rating for a new material is None, which these three cannot say, so the
-   * app shows no rating rather than inventing one.
+   * 화재 등급. Absent on a material the engine made (ADR-313 D4) or mirrored
+   * from it (D3): the engine's rating is a different model (None / Minutes),
+   * and a new or imported material claims none, so the app shows no rating
+   * rather than inventing one.
    */
   fireRating?: FireRating;
   elasticModulus?: number;    // GPa — 탄성률 (향후 확장)
@@ -285,6 +286,52 @@ const BUILTIN_MATERIALS: Material[] = [
     builtIn: true,
   },
 ];
+
+/** One entry of the engine's `getAllMaterials()` list (ADR-313 D3). */
+interface EngineMaterial {
+  id: number;
+  name: string;
+  nameEn: string;
+  density: number;
+  color: string; // '#rrggbb'
+  friction?: number;
+  restitution?: number;
+  specificGravity?: number;
+  thermalConductivity?: number;
+  roughness?: number;
+  metalness?: number;
+  opacity?: number;
+}
+
+/**
+ * A material the engine holds and the app had no entry for, as the app's
+ * `Material`. Every number is the engine's; where the engine list carries no
+ * value the field keeps a neutral default, and the fire rating is left absent.
+ */
+function mirrorEngineMaterial(em: EngineMaterial): Material {
+  const color = parseInt(String(em.color ?? '#888888').replace('#', ''), 16);
+  return {
+    id: `engine-${em.id}`,
+    rustId: em.id,
+    name: em.name,
+    nameEn: em.nameEn,
+    category: 'custom',
+    physical: {
+      density: em.density,
+      friction: em.friction ?? 0.5,
+      restitution: em.restitution ?? 0.5,
+      specificGravity: em.specificGravity ?? em.density / 1000,
+      thermalConductivity: em.thermalConductivity ?? 0,
+    },
+    visual: {
+      color: Number.isFinite(color) ? color : 0x888888,
+      roughness: em.roughness ?? 0.5,
+      metalness: em.metalness ?? 0,
+      opacity: em.opacity ?? 1,
+    },
+    builtIn: false,
+  };
+}
 
 // ═══════════════════════════════════════
 //  MaterialLibrary 클래스
@@ -503,51 +550,69 @@ export class MaterialLibrary {
     for (const l of this.listeners) l();
   }
 
-  // --- Rust 상태 동기화 (undo/redo 후) ---
+  // --- 엔진에서 되읽기 (ADR-313 D3) ---
 
   /**
-   * Rust 엔진의 material 할당 상태를 TS로 동기화합니다.
-   * undo/redo 후 호출하여 TS ↔ Rust 상태를 일치시킵니다.
-   */
-  /**
-   * Rust 엔진의 face별 material 할당 상태를 TS로 동기화합니다.
-   * undo/redo 후 호출하여 TS ↔ Rust 상태를 일치시킵니다.
+   * Make the app's assignments exactly what the engine holds.
    *
-   * bridge.getFaceMaterial(faceId)를 사용하여 개별 face의 material을 읽습니다.
+   * The engine is the truth for which face carries which material; this table
+   * is how the app draws it (메타-원칙 #13). Until ADR-313 nothing read it back:
+   * the viewport colours faces from `assignments`, and after a file was opened,
+   * an IFC imported or a face split, the engine held materials this table did
+   * not (measured: a reopened brick box came back grey while the engine still
+   * read 벽돌; an imported brick member never showed at all). The method this
+   * replaces, `syncFromRust`, only re-read faces the app already knew.
+   *
+   * Every face is read in one call. A material the engine holds and the app has
+   * no entry for — one an IFC import or the Asset Library created — is mirrored
+   * in from the engine's own numbers, so it can be drawn and named; nothing is
+   * invented for it except the absence of a fire rating (see PhysicalProperties).
+   *
+   * No-op when the engine cannot answer, which is not the same as the engine
+   * saying "nothing has a material". Notifies only when something changed.
    */
-  syncFromRust(): void {
-    if (!this.bridge?.getFaceMaterial) return;
+  syncFromEngine(): void {
+    const faces: Map<number, number> | null = this.bridge?.getFaceMaterials?.() ?? null;
+    if (!faces) return;
 
-    // rustId → TS material id 역매핑
-    const rustIdToTsId = new Map<number, string>();
-    for (const mat of this.materials.values()) {
-      if (mat.rustId) rustIdToTsId.set(mat.rustId, mat.id);
+    const byRustId = new Map<number, string>();
+    for (const mat of this.materials.values()) byRustId.set(mat.rustId, mat.id);
+
+    let engineList: EngineMaterial[] | null = null;
+    for (const rustId of new Set(faces.values())) {
+      if (byRustId.has(rustId)) continue;
+      engineList ??= this.readEngineMaterials();
+      const em = engineList.find((m) => m.id === rustId);
+      if (!em) continue;
+      const mirrored = mirrorEngineMaterial(em);
+      this.materials.set(mirrored.id, mirrored);
+      byRustId.set(rustId, mirrored.id);
     }
 
-    // 현재 할당된 faceId 목록을 기준으로 Rust 상태 확인
-    let changed = false;
-    const newAssignments = new Map<number, string>();
+    const next = new Map<number, string>();
+    for (const [faceId, rustId] of faces) {
+      const id = byRustId.get(rustId);
+      if (id) next.set(faceId, id);
+    }
 
-    // 기존 assignments의 face들 + 지금 알려진 face들을 확인
-    for (const [fid] of this.assignments) {
-      const rustMatId: number = this.bridge.getFaceMaterial(fid);
-      if (rustMatId > 0) {
-        const tsId = rustIdToTsId.get(rustMatId);
-        if (tsId) {
-          newAssignments.set(fid, tsId);
-          if (this.assignments.get(fid) !== tsId) changed = true;
-        } else {
-          changed = true; // 기존에 할당되어 있었는데 Rust에서 없어짐
-        }
-      } else {
-        // Rust에서 material 0(기본) → TS에서 해제
-        changed = true;
+    let changed = next.size !== this.assignments.size;
+    if (!changed) {
+      for (const [faceId, id] of next) {
+        if (this.assignments.get(faceId) !== id) { changed = true; break; }
       }
     }
-
-    if (changed) {
-      this.assignments = newAssignments;
+    if (changed || (engineList !== null)) {
+      this.assignments = next;
       this.notifyListeners();
+    }
+  }
+
+  private readEngineMaterials(): EngineMaterial[] {
+    try {
+      const json = this.bridge?.getAllMaterials?.();
+      return json ? (JSON.parse(json) as EngineMaterial[]) : [];
+    } catch {
+      return [];
     }
   }
 

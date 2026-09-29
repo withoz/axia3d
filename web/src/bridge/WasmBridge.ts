@@ -882,6 +882,8 @@ type AxiaEngineExtended = AxiaEngine & {
   remove_material?(faceIds: Uint32Array): boolean;
   get_face_material?(faceIdRaw: number): number;
   get_all_materials?(): string;
+  /** ADR-313 D3 — flat `[face, material, …]` for every face that has one. */
+  getFaceMaterials?(): Uint32Array;
   // Face Split — draw line on face to subdivide
   splitFaceByLine?(faceId: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): string;
   // ADR-202 β-3 — draw a closed circle on a Sphere face (곡면 위 직접 그리기 S9).
@@ -7323,7 +7325,28 @@ export class WasmBridge {
     }
   }
 
-  /** 전체 재질 할당 상태 조회 (JSON) */
+  /**
+   * ADR-313 D3 — every face that carries a material, read from the engine in
+   * one call: `face id → engine material id`. A face with no material is
+   * absent.
+   *
+   * `null` when the engine cannot answer (a build without the export), which
+   * the caller must not read as "no materials": an empty map means that.
+   */
+  getFaceMaterials(): Map<number, number> | null {
+    if (!this.engine?.getFaceMaterials) return null;
+    try {
+      const flat = this.engine.getFaceMaterials();
+      const out = new Map<number, number>();
+      for (let i = 0; i + 1 < flat.length; i += 2) out.set(flat[i], flat[i + 1]);
+      return out;
+    } catch (e) {
+      this.reportOnce('getFaceMaterials', e);
+      return null;
+    }
+  }
+
+  /** 전체 재질 목록 (JSON) — id·이름·물성·색. */
   getAllMaterials(): string | null {
     if (!this.engine?.get_all_materials) return null;
     try {

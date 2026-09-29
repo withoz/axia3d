@@ -12497,22 +12497,62 @@ impl AxiaEngine {
         0
     }
 
-    /// 전체 재질 목록 JSON 반환 (format! 기반, serde_json 불필요)
-    pub fn get_all_materials(&self) -> String {
-        let mats = self.scene.material_library.all();
-        if mats.is_empty() {
-            return "[]".to_string();
+    /// ADR-313 D3 — every face that carries a material, as flat
+    /// `[face, material, face, material, …]` pairs, in one call.
+    ///
+    /// The app colours faces from its own table of assignments and, until
+    /// this existed, never asked the engine for them: after a file was opened,
+    /// an IFC imported or a face split, the engine held materials the app did
+    /// not draw (measured: a reopened brick box came back grey with the engine
+    /// still reading 벽돌). Faces on `FORM_MATERIAL` carry nothing and are left
+    /// out, so an empty result means "no materials", not "unknown".
+    #[wasm_bindgen(js_name = "getFaceMaterials")]
+    pub fn get_face_materials(&self) -> Vec<u32> {
+        let form = axia_core::FORM_MATERIAL;
+        let mut out = Vec::new();
+        for (fid, face) in self.scene.mesh.faces.iter() {
+            if face.is_active() && face.material() != form {
+                out.push(fid.raw());
+                out.push(face.material().raw());
+            }
         }
-        let entries: Vec<String> = mats.iter()
+        out
+    }
+
+    /// 전체 재질 목록 JSON 반환.
+    ///
+    /// ADR-313 D3 — the app mirrors from this any material it has no entry for
+    /// (an IFC import's, the Asset Library's), so it carries every number the
+    /// engine really holds rather than leaving the app to invent the rest. The
+    /// original five keys (`id name nameEn density color`) are unchanged.
+    ///
+    /// Built with serde_json now, not `format!`: an IFC-imported name is
+    /// arbitrary text, and a quote in one (`Concrete "C30/37"`) made the old
+    /// hand-built string unparseable — the whole list, not just that entry.
+    pub fn get_all_materials(&self) -> String {
+        let entries: Vec<serde_json::Value> = self
+            .scene
+            .material_library
+            .all()
+            .iter()
             .map(|m| {
-                let hex = format!("{:06x}", m.visual.color);
-                format!(
-                    r##"{{"id":{},"name":"{}","nameEn":"{}","density":{},"color":"#{}"}}"##,
-                    m.id.raw(), m.name, m.name_en, m.physical.density, hex
-                )
+                serde_json::json!({
+                    "id": m.id.raw(),
+                    "name": m.name,
+                    "nameEn": m.name_en,
+                    "density": m.physical.density,
+                    "color": format!("#{:06x}", m.visual.color),
+                    "friction": m.physical.friction,
+                    "restitution": m.physical.restitution,
+                    "specificGravity": m.physical.specific_gravity,
+                    "thermalConductivity": m.physical.thermal_conductivity,
+                    "roughness": m.visual.roughness,
+                    "metalness": m.visual.metalness,
+                    "opacity": m.visual.opacity,
+                })
             })
             .collect();
-        format!("[{}]", entries.join(","))
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -15875,6 +15915,34 @@ mod adr313_one_material_numbering_tests {
             assert_eq!(f.material(), concrete, "face {fid:?} lost the member's concrete");
         }
         assert_eq!(engine.scene.xias.len(), 1, "a closed concrete box is a member (XIA)");
+    }
+
+    #[test]
+    fn the_material_list_parses_whatever_a_name_holds() {
+        // The app parses this list to mirror materials it does not know. An IFC
+        // name is arbitrary text; the hand-built string this replaced broke the
+        // WHOLE list on one quote.
+        let mut e = AxiaEngine::new();
+        let odd = e.add_project_material(
+            "Concrete \"C30/37\" \\ 7".into(),
+            "Concrete \"C30/37\"".into(),
+            0x808080,
+        );
+        let list: Vec<serde_json::Value> =
+            serde_json::from_str(&e.get_all_materials()).expect("the list must be JSON");
+        let entry = list
+            .iter()
+            .find(|m| m["id"] == odd)
+            .expect("the new material is listed");
+        assert_eq!(entry["name"], "Concrete \"C30/37\" \\ 7");
+        // What the app needs to mirror it without inventing numbers.
+        for key in ["density", "thermalConductivity", "roughness", "metalness", "opacity"] {
+            assert!(entry[key].is_number(), "'{key}' missing from {entry}");
+        }
+        assert!(
+            list.iter().all(|m| m["id"] != 0),
+            "no material is listed at FORM_MATERIAL's id"
+        );
     }
 
     #[test]
