@@ -2326,6 +2326,68 @@ impl Scene {
         Ok(DemoteOk { shape_id, original_id_restored })
     }
 
+    /// ADR-313 D5 — the user gives faces a material, as ONE undo step.
+    ///
+    /// `Command::AssignMaterial` sets face materials and records nothing, so
+    /// an undo right after a material pick went back past it. Measured in the
+    /// app: pick 콘크리트 on an extruded box, undo once, and the extrude was
+    /// gone (faces 6 → 1), the material with it. The app's pick comes through
+    /// here instead; the command itself is unchanged, since it is also a
+    /// low-level step inside larger operations that record their own.
+    ///
+    /// `Err` when the library does not hold `material` — nothing changes and
+    /// nothing is recorded then.
+    pub fn assign_material_to_faces(
+        &mut self,
+        face_ids: Vec<FaceId>,
+        material: axia_geo::MaterialId,
+    ) -> Result<crate::promote::MaterialPick, String> {
+        if self.material_library.get(material).is_none() {
+            return Err(format!("Material {} not found", material.raw()));
+        }
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let faces = match self.execute(Command::AssignMaterial { face_ids, material_id: material }) {
+            CommandResult::MaterialAssigned { face_count } => face_count,
+            other => {
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                return Err(format!("AssignMaterial: {:?}", other));
+            }
+        };
+        if own_transaction {
+            self.transactions.set_after_snapshot(self.scene_snapshot());
+            self.transactions.commit();
+        }
+        Ok(crate::promote::MaterialPick { faces })
+    }
+
+    /// ADR-313 D5 — the user takes the material off faces, as ONE undo step.
+    /// The counterpart of `assign_material_to_faces`; see there.
+    pub fn remove_material_from_faces(
+        &mut self,
+        face_ids: Vec<FaceId>,
+    ) -> crate::promote::MaterialPick {
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let faces = match self.execute(Command::RemoveMaterial { face_ids }) {
+            CommandResult::MaterialRemoved { face_count } => face_count,
+            _ => 0,
+        };
+        if own_transaction {
+            self.transactions.set_after_snapshot(self.scene_snapshot());
+            self.transactions.commit();
+        }
+        crate::promote::MaterialPick { faces }
+    }
+
     /// Register face→XIA mapping in the reverse index
     fn register_faces_to_xia(&mut self, xia_id: XiaId, face_ids: &[FaceId]) {
         for &fid in face_ids {

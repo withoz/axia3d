@@ -432,17 +432,18 @@ export class MaterialLibrary {
     const mat = this.materials.get(materialId);
     if (!mat) return false;
 
-    // TS 로컬 상태 업데이트
+    // ADR-313 D5 — the engine records the pick as one undo step, so it goes
+    // first and the table follows only what it accepted. (`assignMaterial` is
+    // for a bridge without the entry — test fakes.)
+    if (this.bridge?.assignMaterialToFaces) {
+      if (!this.bridge.assignMaterialToFaces(faceIds, mat.rustId)) return false;
+    } else if (this.bridge?.assignMaterial) {
+      this.bridge.assignMaterial(new Uint32Array(faceIds), mat.rustId);
+    }
+
     for (const fid of faceIds) {
       this.assignments.set(fid, materialId);
     }
-
-    // Rust 엔진 동기화 (WASM → scene.execute(AssignMaterial) → XIA 자동 승격)
-    if (this.bridge?.assignMaterial) {
-      const ids = new Uint32Array(faceIds);
-      this.bridge.assignMaterial(ids, mat.rustId);
-    }
-
     this.notifyListeners();
     return true;
   }
@@ -453,10 +454,11 @@ export class MaterialLibrary {
       this.assignments.delete(fid);
     }
 
-    // Rust 엔진 동기화 (WASM → scene.execute(RemoveMaterial) → XIA 자동 강등)
-    if (this.bridge?.removeMaterial) {
-      const ids = new Uint32Array(faceIds);
-      this.bridge.removeMaterial(ids);
+    // ADR-313 D5 — one undo step, as for a pick.
+    if (this.bridge?.removeMaterialFromFaces) {
+      this.bridge.removeMaterialFromFaces(faceIds);
+    } else if (this.bridge?.removeMaterial) {
+      this.bridge.removeMaterial(new Uint32Array(faceIds));
     }
 
     this.notifyListeners();

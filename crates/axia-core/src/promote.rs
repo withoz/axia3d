@@ -140,6 +140,15 @@ pub struct DemoteOk {
     pub original_id_restored: bool,
 }
 
+/// ADR-313 D5 — what one material pick did to the scene, returned by
+/// `Scene::assign_material_to_faces` / `Scene::remove_material_from_faces`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialPick {
+    /// Faces the pick was given, as `Command::AssignMaterial` /
+    /// `Command::RemoveMaterial` count them.
+    pub faces: usize,
+}
+
 /// Successful promotion outcome. The XIA's stored material has been
 /// updated and (if Phase 1.B has landed) `promoted` flag set.
 #[derive(Clone, Copy, Debug, PartialEq)]

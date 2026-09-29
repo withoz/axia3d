@@ -12488,6 +12488,42 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-313 D5 — the app's material pick, as ONE undo step.
+    ///
+    /// `assign_material` (above) runs the plain command, which records
+    /// nothing, so an undo right after a pick took back the step before it —
+    /// measured: an extruded box lost its extrude. This records the pick.
+    /// Returns JSON `{"faces":N}`; throws when the library does not hold the
+    /// material, and then nothing changed.
+    #[wasm_bindgen(js_name = "assignMaterialToFaces")]
+    pub fn assign_material_to_faces(
+        &mut self,
+        face_ids: Vec<u32>,
+        material_id: u32,
+    ) -> Result<String, JsValue> {
+        let faces = face_ids.into_iter().map(FaceId::new).collect();
+        match self
+            .scene
+            .assign_material_to_faces(faces, axia_geo::MaterialId::new(material_id))
+        {
+            Ok(pick) => {
+                self.cache_dirty = true;
+                Ok(serde_json::json!({ "faces": pick.faces }).to_string())
+            }
+            Err(e) => Err(JsValue::from_str(&format!("assignMaterialToFaces: {}", e))),
+        }
+    }
+
+    /// ADR-313 D5 — the app takes a material off faces, as ONE undo step.
+    /// JSON `{"faces":N}`.
+    #[wasm_bindgen(js_name = "removeMaterialFromFaces")]
+    pub fn remove_material_from_faces(&mut self, face_ids: Vec<u32>) -> String {
+        let faces = face_ids.into_iter().map(FaceId::new).collect();
+        let pick = self.scene.remove_material_from_faces(faces);
+        self.cache_dirty = true;
+        serde_json::json!({ "faces": pick.faces }).to_string()
+    }
+
     /// 면의 재질 ID 조회 (없으면 0 반환, 0 = 기본 재질)
     pub fn get_face_material(&self, face_id_raw: u32) -> u32 {
         let fid = FaceId::new(face_id_raw);

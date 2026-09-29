@@ -884,6 +884,9 @@ type AxiaEngineExtended = AxiaEngine & {
   get_all_materials?(): string;
   /** ADR-313 D3 — flat `[face, material, …]` for every face that has one. */
   getFaceMaterials?(): Uint32Array;
+  /** ADR-313 D5 — a material pick / removal as one undo step; JSON result. */
+  assignMaterialToFaces?(faceIds: Uint32Array, materialId: number): string;
+  removeMaterialFromFaces?(faceIds: Uint32Array): string;
   // Face Split — draw line on face to subdivide
   splitFaceByLine?(faceId: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): string;
   // ADR-202 β-3 — draw a closed circle on a Sphere face (곡면 위 직접 그리기 S9).
@@ -7315,6 +7318,43 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * ADR-313 D5 — the app's material pick, recorded by the engine as ONE undo
+   * step. `assignMaterial` above runs the plain command, which records
+   * nothing: an undo right after a pick took back the step before it
+   * (measured — an extruded box lost its extrude).
+   *
+   * `null` when the engine refuses (its library does not hold the material)
+   * — nothing changed then. An engine built before this entry gets the plain
+   * command instead, which works but is not an undo step.
+   */
+  assignMaterialToFaces(faceIds: number[], materialId: number): MaterialPick | null {
+    if (!this.engine?.assignMaterialToFaces) {
+      return this.assignMaterial(Uint32Array.from(faceIds), materialId) ? { faces: faceIds.length } : null;
+    }
+    this.markDirty();
+    try {
+      return JSON.parse(this.engine.assignMaterialToFaces(Uint32Array.from(faceIds), materialId)) as MaterialPick;
+    } catch (e) {
+      this.reportOnce('assignMaterialToFaces', e);
+      return null;
+    }
+  }
+
+  /** ADR-313 D5 — take the material off faces, as ONE undo step; fallback as above. */
+  removeMaterialFromFaces(faceIds: number[]): MaterialPick | null {
+    if (!this.engine?.removeMaterialFromFaces) {
+      return this.removeMaterial(Uint32Array.from(faceIds)) ? { faces: faceIds.length } : null;
+    }
+    this.markDirty();
+    try {
+      return JSON.parse(this.engine.removeMaterialFromFaces(Uint32Array.from(faceIds))) as MaterialPick;
+    } catch (e) {
+      this.reportOnce('removeMaterialFromFaces', e);
+      return null;
+    }
+  }
+
   /** 면의 재질 ID 조회 (0 = 기본/미할당) */
   getFaceMaterial(faceId: number): number {
     if (!this.engine?.get_face_material) return 0;
@@ -8048,6 +8088,12 @@ export interface XiaInfo {
   height?: number;  // mm
   surfaceArea?: number; // mm²
   volume?: number;      // mm³
+}
+
+/** ADR-313 D5 — what one material pick did (engine `MaterialPick`). */
+export interface MaterialPick {
+  /** Faces the pick was given. */
+  faces: number;
 }
 
 export interface GroupInfo {
