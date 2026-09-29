@@ -1042,6 +1042,30 @@ impl Mesh {
     /// FAIL-CLOSED (D5): caller (dispatch arm) rejects degenerate distance /
     /// `top_scale ≥ 1` / `< 0` / solid face. Any error here → Scene rollback
     /// (byte-identical, `fallback_dist = None`).
+    /// ADR-183 — turn the cap on the back of an extrusion outward.
+    ///
+    /// `extrude_planar_box`, `..._tapered` and `..._mixed` each do this inline.
+    /// The arc-circle paths below never did, so their back cap looked INTO the
+    /// solid. Volume is flux over three and a cap's flux is `(centroid·n)·A`, so
+    /// a cap that looks in reads `+z·A` where it should read `−z·A` and the solid
+    /// measures `2·A·z / 3` too much — nothing at all on z = 0, and measured
+    /// 2026-09-23 on a 300-tall cylinder of r = 40: 122% of itself standing at
+    /// z = 100, 67% at z = −150, and a third of itself when extruded downward.
+    fn turn_cap_outward(&mut self, cap: FaceId) -> Result<()> {
+        self.flip_face(cap)?;
+        let start = self.faces[cap].outer().start;
+        if !start.is_null() {
+            let verts = self.collect_loop_verts(start)?;
+            let pos: Vec<DVec3> =
+                verts.iter().filter_map(|v| self.vertex_pos(*v).ok()).collect();
+            if pos.len() >= 3 {
+                let outward = synthesize_plane_surface(&pos);
+                self.faces[cap].set_surface(Some(outward));
+            }
+        }
+        Ok(())
+    }
+
     fn extrude_planar_cone(
         &mut self,
         profile_face: FaceId,
@@ -1294,6 +1318,11 @@ impl Mesh {
             for &fid in &side_faces {
                 self.set_face_surface_owner_id(fid, Some(owner_id));
             }
+            // ADR-183 — an apex cone has no top cap, so its base is the back
+            // cap only when the apex stands above it.
+            if dist > 0.0 {
+                self.turn_cap_outward(profile_face)?;
+            }
             let mut all_solid_faces = Vec::with_capacity(1 + side_faces.len());
             all_solid_faces.push(profile_face);
             all_solid_faces.extend(side_faces.iter().copied());
@@ -1337,6 +1366,52 @@ impl Mesh {
                 tf.set_surface(Some(synthesize_plane_surface(&top_positions)));
             }
         }
+        // The scaled top rim carries the base rim's arcs, scaled toward the centre
+        // and translated with it — the same as the cylinder's top rim, which takes
+        // its arcs translated. Without them the cap is read as a 16-gon while the
+        // band beside it is read as a cone, and the two disagree: measured
+        // 2026-09-23, a half-scale frustum read 0.9961 of πh(R² + Rr + r²)/3 and
+        // moved ±0.15% with the height it stood at. One shared owner per rim, so a
+        // click on any segment selects the whole circle (ADR-088 P22.5).
+        {
+            let top_rim_owner = self.next_curve_owner_id();
+            for i in 0..n {
+                let next = (i + 1) % n;
+                let below = self
+                    .find_edge(boundary_verts[i], boundary_verts[next])
+                    .and_then(|e| self.edge_curve(e).cloned());
+                let scaled = match below {
+                    Some(AnalyticCurve::Arc {
+                        center: c, radius: rr, normal: nn, basis_u: bu,
+                        start_angle, end_angle,
+                    }) => Some(AnalyticCurve::Arc {
+                        center: center + (c - center) * top_scale + normal * dist,
+                        radius: rr * top_scale,
+                        normal: nn,
+                        basis_u: bu,
+                        start_angle,
+                        end_angle,
+                    }),
+                    Some(AnalyticCurve::Circle { center: c, radius: rr, normal: nn, basis_u: bu }) => {
+                        Some(AnalyticCurve::Circle {
+                            center: center + (c - center) * top_scale + normal * dist,
+                            radius: rr * top_scale,
+                            normal: nn,
+                            basis_u: bu,
+                        })
+                    }
+                    _ => None,
+                };
+                let Some(curve) = scaled else { continue };
+                if let Some(eid) = self.find_edge(top_verts[i], top_verts[next]) {
+                    if let Some(edge_mut) = self.edges.get_mut(eid) {
+                        edge_mut.set_curve(Some(curve));
+                    }
+                    self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
+                }
+            }
+        }
+
         let cone_surface = make_cone(top_v, base_v);
         for &fid in &side_faces {
             if self.faces.get(fid).map(|f| f.is_active()).unwrap_or(false) {
@@ -1347,6 +1422,10 @@ impl Mesh {
         for &fid in &side_faces {
             self.set_face_surface_owner_id(fid, Some(owner_id));
         }
+        // ADR-183 — the cap on the back of the extrusion looks out.
+        let back_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.turn_cap_outward(back_cap)?;
+
         let mut all_solid_faces = Vec::with_capacity(2 + side_faces.len());
         all_solid_faces.push(profile_face);
         all_solid_faces.push(top_face);
@@ -1783,28 +1862,52 @@ impl Mesh {
             top_face_mut.set_surface(Some(top_surface));
         }
 
-        // ADR-088 P22.5 — top rim arc curves + shared owner for single-click selection.
-        // All N top-rim arc segments share one owner so clicking any one segment
-        // selects the entire top-cap circle rim (same pattern as step 6/8 in
+        // ADR-088 P22.5 — top rim curves + shared owner for single-click selection.
+        // All N top-rim segments share one owner so clicking any one of them
+        // selects the whole rim (same pattern as step 6/8 in
         // extrude_closed_curve_face_via_tessellation).
+        //
+        // Each top edge takes the curve of the edge BELOW it, translated. The
+        // angles used to be synthesised from the index (`i·2π/n .. (i+1)·2π/n`),
+        // which is the right arc only if `boundary_verts[0]` sits at angle 0 — and
+        // it sits wherever the loop's start half-edge is. Measured 2026-09-23 on a
+        // 16-arc circle whose loop began at (37.0, 15.3), one step along: every arc
+        // landed on the next edge, so each bulge fell on the wrong side of its own
+        // chord and the area reader DEDUCTED it — the top cap read 4770.1 mm²
+        // where its circle is 5026.5 and even its 16-gon is 4898.3, and the solid
+        // lost that much volume with it. `extrude_planar_mixed` has always copied
+        // the edge's own curve; this is the same.
         {
             let top_rim_owner = self.next_curve_owner_id();
-            let top_center = circle_center + translation;
-            let two_pi = std::f64::consts::TAU;
             for i in 0..n {
-                let theta_start = (i as f64) * two_pi / (n as f64);
-                let theta_end = ((i + 1) as f64) * two_pi / (n as f64);
-                let arc = AnalyticCurve::Arc {
-                    center: top_center,
-                    radius: circle_radius,
-                    normal: profile_normal,
-                    basis_u: circle_basis_u,
-                    start_angle: theta_start,
-                    end_angle: theta_end,
+                let below = self
+                    .find_edge(boundary_verts[i], boundary_verts[(i + 1) % n])
+                    .and_then(|e| self.edge_curve(e).cloned());
+                let translated = match below {
+                    Some(AnalyticCurve::Arc {
+                        center, radius, normal, basis_u, start_angle, end_angle,
+                    }) => Some(AnalyticCurve::Arc {
+                        center: center + translation,
+                        radius,
+                        normal,
+                        basis_u,
+                        start_angle,
+                        end_angle,
+                    }),
+                    Some(AnalyticCurve::Circle { center, radius, normal, basis_u }) => {
+                        Some(AnalyticCurve::Circle {
+                            center: center + translation,
+                            radius,
+                            normal,
+                            basis_u,
+                        })
+                    }
+                    _ => None,
                 };
+                let Some(curve) = translated else { continue };
                 if let Some(eid) = self.find_edge(top_verts[i], top_verts[(i + 1) % n]) {
                     if let Some(edge_mut) = self.edges.get_mut(eid) {
-                        edge_mut.set_curve(Some(arc));
+                        edge_mut.set_curve(Some(curve));
                     }
                     self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
                 }
@@ -1853,6 +1956,10 @@ impl Mesh {
         for &side_fid in &side_faces {
             self.set_face_surface_owner_id(side_fid, Some(owner_id));
         }
+
+        // ADR-183 — the cap on the back of the extrusion looks out.
+        let back_cap = if dist > 0.0 { profile_face } else { top_face };
+        self.turn_cap_outward(back_cap)?;
 
         let adjacent_splits = 0;
 
@@ -2016,55 +2123,16 @@ impl Mesh {
             substituted, dist, material, profile_surface,
         )?;
 
-        // 8. ADR-092 C-β — attach Arc curves to TOP face's N edges
-        //    (mirror step 6 for bottom). Translated center =
-        //    profile_normal · dist + original center. DCEL topology
-        //    unchanged (manifold-safe per L1/L5). Render fast-path
-        //    (A-κ Arc tessellation) samples the analytic curves and
-        //    emits a smooth ring polyline — fixes "원에 대한 완벽한
-        //    처리가 안되고 있습니다" (2026-05-09 사용자 시연 결함 1).
-        let profile_normal = match profile_surface {
-            AnalyticSurface::Plane { normal, .. } => normal.normalize_or_zero(),
-            _ => DVec3::ZERO, // unreachable — extrude_planar_cylinder enforces Plane
-        };
-        if profile_normal.length_squared() > 0.5 {
-            let translation = profile_normal * dist;
-            let top_center = center + translation;
-            // Top face edges in face_outer_edges() loop order — same N
-            // chord positions as bottom (just translated). Index i
-            // corresponds to angular sector [i, i+1)/N · 2π.
-            //
-            // Note on winding: top face may have reversed loop order
-            // vs bottom (CCW from above vs CCW from below). The Arc
-            // curve is direction-agnostic — the same Arc(theta_a,
-            // theta_b) and Arc(theta_b, theta_a) sample the same point
-            // set. Visual ring is identical regardless of loop order.
-            if let Ok(top_edges) = self.face_outer_edges(result.top_face) {
-                let n_seg_top = top_edges.len();
-                if n_seg_top == n_seg {
-                    // ADR-088 P22.5 — all N top-rim arc segments share one owner
-                    // (different from bottom_rim_owner) so a click selects the whole top circle.
-                    let top_rim_owner = self.next_curve_owner_id();
-                    for (i, &eid) in top_edges.iter().enumerate() {
-                        let theta_start = (i as f64) * two_pi / (n_seg_top as f64);
-                        let theta_end =
-                            ((i + 1) as f64) * two_pi / (n_seg_top as f64);
-                        let arc = AnalyticCurve::Arc {
-                            center: top_center,
-                            radius,
-                            normal,
-                            basis_u,
-                            start_angle: theta_start,
-                            end_angle: theta_end,
-                        };
-                        if let Some(edge_mut) = self.edges.get_mut(eid) {
-                            edge_mut.set_curve(Some(arc));
-                        }
-                        self.set_edge_curve_owner_id(eid, Some(top_rim_owner));
-                    }
-                }
-            }
-        }
+        // 8. ADR-092 C-β used to attach the top rim's arcs here, synthesised
+        //    from each edge's INDEX. Its note said the arc is direction-agnostic,
+        //    which holds for drawing the ring and not for measuring the cap it
+        //    bounds: the top loop runs the other way round, so every arc landed on
+        //    the next edge and its bulge fell on the wrong side of a different
+        //    chord. Measured 2026-09-23 on a 23-segment Path A cylinder: the base
+        //    cap read πr² = 5026.5 mm² and the top read 4902.0, the 23-gon's 4964.3
+        //    with every bulge deducted. The recursion in step 7 now hands each top
+        //    edge the curve of the edge below it, translated, and the shared rim
+        //    owner with it — so there is nothing left to do here.
 
         Ok(result)
     }

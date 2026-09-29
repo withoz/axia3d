@@ -1781,7 +1781,30 @@ impl Mesh {
     ) -> Option<crate::surfaces::SurfaceTessellation> {
         use crate::surfaces::SurfaceOps;
         let face = self.faces.get(face_id)?;
-        face.surface().map(|s| s.tessellate(chord_tol))
+        let patch = self.face_patch(face_id);
+        let surface = patch.as_ref().or(face.surface())?;
+        Some(surface.tessellate(chord_tol))
+    }
+
+    /// The patch this face actually stands on.
+    ///
+    /// A face can carry a surface bigger than itself: a builder hands every quad of
+    /// a band the WHOLE band (`extrude_planar_cylinder`'s ≥ 3-vertex path,
+    /// `extrude_planar_mixed`'s arc walls, the polygonal cone paths), and a split
+    /// keeps its parent's full range on purpose (ADR-089 A-χ) — the slice is left
+    /// to whoever reads it. The renderer has read it that way since A-ρ/A-φ; area,
+    /// volume and extent did not, so each quad counted a whole band. Measured
+    /// 2026-09-23 on one quad of a 16-gon band (r = 40, h = 300, its own share a
+    /// sixteenth): area 75398.2 against 4712.4, flux 3015928.9 against 188495.6.
+    ///
+    /// `None` where the boundary cannot say, and then the stored surface stands: a
+    /// one-vertex rim (a Path B band, whose surface IS its own patch), anything
+    /// that is not a four-corner quad, or a slice that comes out degenerate — the
+    /// equator ring that tells you nothing, pinned in
+    /// `an_inward_curved_face_keeps_its_sign`.
+    fn face_patch(&self, face_id: FaceId) -> Option<crate::surfaces::AnalyticSurface> {
+        let face = self.faces.get(face_id)?;
+        compute_uv_slice_for_quad_face(self, face, face.surface()?)
     }
 
     /// ADR-197 γ-2b-2 — tessellate an ARC-BOUNDED curved patch (a Boolean corner
@@ -8937,24 +8960,35 @@ impl Mesh {
                     // of 7,280,000, the excess 240,000.0 matching the two caps'
                     // 2·(|p·n|·hole area)/3 = 240,000.0 to the last digit.
                     //
+                    // An ARC is material, and this fan walked CHORDS — so a cap
+                    // bounded by arcs handed over the flux of the polygon its
+                    // vertices trace, while `face_area` had counted the bulges
+                    // since 2026-08-13. The two readers read the same face and
+                    // disagreed. Measured 2026-09-23 on a circle cut by a line
+                    // with one half pushed (r = 300, h = 120): its top cap's
+                    // 141,371.7 mm² of area entered the volume as the 90,000 mm²
+                    // of its chord triangle, and the solid read 0.8789 of πr²h/2.
+                    //
                     // On a plane `p·n` is constant, so the fan is that times the
-                    // area the boundary encloses, and taking the holes out is
-                    // just a ratio of areas. Read through `face_area` rather
-                    // than by fanning the inner loops directly: that reader
-                    // already knows which inner loops are holes at all — on a
-                    // Path B cylinder the two "inner" loops are the tube's RIMS
-                    // (ADR-094) and deducting them took 2πrh down to 2πrh − πr².
-                    // Curved faces never reach this branch, but agreeing with
-                    // the one hole-aware reader in the engine costs nothing and
-                    // keeps them from drifting apart.
-                    if face.inners().is_empty() {
-                        return Some(fan);
+                    // area those chords enclose, and both corrections are one
+                    // ratio: the area this face HAS over the area the fan read.
+                    // Read through `face_area` rather than by fanning the inner
+                    // loops directly: that reader already knows which inner loops
+                    // are holes at all — on a Path B cylinder the two "inner"
+                    // loops are the tube's RIMS (ADR-094) and deducting them took
+                    // 2πrh down to 2πrh − πr². Curved faces never reach this
+                    // branch, but agreeing with the one hole-aware reader in the
+                    // engine costs nothing and keeps them from drifting apart.
+                    //
+                    // Where every edge is straight and nothing is cut out the two
+                    // areas are the same expression, so the ratio is exactly 1.0
+                    // and a box's flux is untouched bit for bit.
+                    let chord_area = self.newell_raw(&verts).map_or(0.0, |n| n.length() * 0.5);
+                    let area = self.face_area(fid);
+                    if chord_area > 0.0 && area > 0.0 {
+                        return Some(fan * (area / chord_area));
                     }
-                    let outer_area = self.face_outer_area(fid);
-                    if !(outer_area > 0.0) {
-                        return Some(fan);
-                    }
-                    return Some(fan * (self.face_area(fid) / outer_area));
+                    return Some(fan);
                 }
             }
         }
@@ -9059,7 +9093,12 @@ impl Mesh {
 
     pub fn analytic_face_flux(&self, face_id: FaceId) -> Option<f64> {
         use crate::surfaces::AnalyticSurface as S;
-        let surface = self.faces.get(face_id)?.surface()?.clone();
+        // Over the patch this face stands on, not its whole surface — see
+        // `face_patch`: one quad of a band was counting the entire band.
+        let surface = match self.face_patch(face_id) {
+            Some(patch) => patch,
+            None => self.faces.get(face_id)?.surface()?.clone(),
+        };
         match surface {
             S::Plane { origin, normal, .. } => {
                 let n = normal.normalize_or_zero();
@@ -14853,7 +14892,10 @@ impl Mesh {
                 // every point is genuinely ON the surface and the box it builds
                 // is always contained by the true one. The walk tightens it or
                 // does nothing; it cannot overshoot.
-                if let Some(surface) = face.surface() {
+                // The same patch the tessellation above came from, so the walk
+                // cannot step outside this face onto the rest of its surface.
+                let patch = self.face_patch(face_id);
+                if let Some(surface) = patch.as_ref().or(face.surface()) {
                     pts.extend(Self::extreme_surface_points(surface, &tess));
                 }
             }
@@ -15100,7 +15142,10 @@ impl Mesh {
         use crate::surfaces::AnalyticSurface as Surf;
         if let Some(surface) = f.surface() {
             if !matches!(surface, Surf::Plane { .. }) {
-                return Self::analytic_face_area(surface);
+                // The patch this face stands on, where its boundary says so
+                // (`face_patch`) — a band's quad used to report the whole band.
+                let patch = self.face_patch(face_id);
+                return Self::analytic_face_area(patch.as_ref().unwrap_or(surface));
             }
         }
 
