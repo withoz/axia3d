@@ -66,6 +66,22 @@
 //! the whole run IS the last non-finite normal in it — cause, not coincidence,
 //! and pinned in `session_forty_one_closes_a_cycle_that_bounds_nothing`.
 //!
+//! Then a smooth-group offset started re-reading the normals of the faces it
+//! turned (`a_scaled_group_re_reads_the_faces_it_turned`): **33** broken, and
+//! the four "cached normal opposite to winding" sessions gone. What is left,
+//! counted from the same run:
+//!
+//! ```text
+//!   33 sessions, by what they report
+//!     24  edge shared by 3 active faces (stacked)
+//!      9  edge shared by 4 active faces
+//!      1  face inner[0] cannot collect: HalfEdge not found   (session 43)
+//! ```
+//!
+//! So the remainder is almost entirely ONE family — two faces covering the same
+//! ground — and it is the family this file's other pinned test already says the
+//! gate seeds run into past operation 20.
+//!
 //! The panic is fixed and pinned in `an_arc_that_runs_clockwise.rs`. The
 //! violations the wide run reports now are a fresh inventory to work through —
 //! they are deep-session pile-ups, all well past the 20-operation gate, not

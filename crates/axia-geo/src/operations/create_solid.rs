@@ -3459,6 +3459,66 @@ impl Mesh {
         })
     }
 
+    /// Moving a vertex turns every face standing on it, so re-read their
+    /// cached normals from the winding they now have.
+    ///
+    /// ADR-007 Invariant 2 asks the cached normal to agree with the loop, and
+    /// an operation that moves geometry has to keep that true — `add_face`
+    /// caches the Newell normal at creation and nothing re-reads it later. The
+    /// sibling `Mesh::push_pull_move_only` has done exactly this for its own
+    /// moved vertices since 2026-04; the four smooth-group offsets below move
+    /// vertices the same way and did not.
+    ///
+    /// ⚠ Measured on fuzz session 30, which offsets a cylinder smooth group by
+    /// 50: the group's twelve faces come out standing at FOUR radii — 55, 120,
+    /// 139 and 205 — because they carried a `Cylinder { radius: 70 }` they were
+    /// already not all on, and the scaling turns them. Seven of them then
+    /// disagreed with their cached normal by up to 62°:
+    ///
+    /// ```text
+    ///   face FaceId(49): cached normal opposite to winding (dot=0.463)
+    ///     cached  radial at u = 133.05°, the surface's answer at the old radius
+    ///     newell  the plane the four corners actually span now
+    /// ```
+    ///
+    /// This refreshes the normal, which is what the invariant asks. It does NOT
+    /// make the surface true — a face with corners at two radii is on no
+    /// cylinder, and what such a face should carry is a separate question from
+    /// whether its cached normal describes it.
+    ///
+    /// Neighbours count, not just the group: a face with one vertex in the
+    /// group and three outside turns too, and it is the one most likely to.
+    fn refresh_normals_around(
+        &mut self,
+        moved: &std::collections::HashSet<crate::entities::VertId>,
+    ) -> usize {
+        let touched: Vec<FaceId> = self
+            .faces
+            .iter()
+            .filter(|(_, f)| f.is_active() && !f.outer().start.is_null())
+            .map(|(id, _)| id)
+            .filter(|&id| {
+                self.collect_loop_verts(self.faces[id].outer().start)
+                    .map(|vs| vs.iter().any(|v| moved.contains(v)))
+                    .unwrap_or(false)
+            })
+            .collect();
+        let mut changed = 0;
+        for fid in touched {
+            let start = self.faces[fid].outer().start;
+            let Ok(vs) = self.collect_loop_verts(start) else { continue };
+            let Ok(n) = self.compute_normal(&vs) else { continue };
+            if n.length_squared() < 1e-20 || !n.is_finite() {
+                continue;
+            }
+            if self.faces[fid].normal().normalize_or_zero().dot(n.normalize_or_zero()) < 0.999 {
+                self.faces[fid].set_normal(n);
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     /// ADR-079 W-2-γ-i — Cylinder smooth-group radius offset.
     ///
     /// Profile face has `AnalyticSurface::Cylinder`. Detects the smooth
@@ -3592,6 +3652,10 @@ impl Mesh {
             let new_pos = axis_origin + axial + radial * scale;
             self.move_vertex(v, new_pos)?;
         }
+
+        // The vertices moved, so the faces around them turned (ADR-007
+        // Invariant 2). Read their normals again before anything else.
+        self.refresh_normals_around(&group_verts);
 
         // Update each group face's Cylinder surface with new radius.
         let new_surface = AnalyticSurface::Cylinder {
@@ -3822,6 +3886,10 @@ impl Mesh {
             let new_pos = center + from_c * scale;
             self.move_vertex(v, new_pos)?;
         }
+
+        // The vertices moved, so the faces around them turned (ADR-007
+        // Invariant 2). Read their normals again before anything else.
+        self.refresh_normals_around(&group_verts);
 
         // Update each group face's Sphere surface with new radius.
         let new_surface = AnalyticSurface::Sphere {
@@ -4080,6 +4148,10 @@ impl Mesh {
             let new_pos = pos + dist * normal;
             self.move_vertex(v, new_pos)?;
         }
+
+        // The vertices moved, so the faces around them turned (ADR-007
+        // Invariant 2). Read their normals again before anything else.
+        self.refresh_normals_around(&group_verts);
 
         // Update each group face's Cone surface with new apex + v_range.
         let new_surface = AnalyticSurface::Cone {
@@ -4375,6 +4447,10 @@ impl Mesh {
             let new_pos = pos + dist * normal;
             self.move_vertex(v, new_pos)?;
         }
+
+        // The vertices moved, so the faces around them turned (ADR-007
+        // Invariant 2). Read their normals again before anything else.
+        self.refresh_normals_around(&group_verts);
 
         // Update each group face's Torus surface with new minor_radius.
         let new_surface = AnalyticSurface::Torus {
