@@ -50,6 +50,7 @@
  *   B  container → owner  THIS FILE (`CONTAINERS` below names the owner)
  *   C  id → tool          THIS FILE ('every registered tool is reachable')
  *   D  bridge → export    THIS FILE ('every engine call the bridge makes exists')
+ *                         — all THREE naming conventions, see the test
  *   E  export → engine    wasm-pack; a missing fn does not compile
  *
  *   Other consumers of the same engine, deliberately NOT in this file:
@@ -59,6 +60,14 @@
  * Two links are unguarded ANYWHERE, and both are held by tsc rather than by a
  * test: ToolManager → bridge (C→D) and every call inside a tool. A rename
  * there fails the build, so a guard would only repeat the compiler.
+ *
+ * ⚠ HOW LINK D FAILED (2026-09-29): the bridge names an engine method three
+ * ways — `this.engine.X(…)`, `this.engine?.X`, and `(this.engine as …).X` —
+ * and this file read only the first. It held 257 of 338 names; the other 81
+ * were unguarded, including live ones. Nothing was missing when it was found,
+ * so the gap cost nothing this time. The check now walks all three and carries
+ * a witness for each, so a convention that stops matching fails instead of
+ * quietly shrinking the check.
  *
  * ⚠ HOW THIS MAP FAILED ONCE (2026-08-10): link A was checked for three
  * containers and the toolbar was not one of them, because the toolbar has its
@@ -245,14 +254,44 @@ describe('action wiring — every data-action reaches a handler', () => {
       expect(exported, `.d.ts parser must find ${known}`).toContain(known);
     }
     const bridge = read('src/bridge/WasmBridge.ts');
-    const called = new Set(
-      [...bridge.matchAll(/this\.engine\.(\w+)\s*[?!]?\.?\s*\(/g)].map((m) => m[1]),
-    );
-    expect(called.size).toBeGreaterThan(200);
+
+    // THREE ways the bridge names an engine method, not one.
+    //
+    // ⚠ This check read only the first of them until 2026-09-29, and so held
+    // 257 of the 338 names the bridge uses. The other 81 — `drawOpenSeamOnCurved`,
+    // `setAutoIntersectOnDraw`, `beginLiveNurbsEdit`, all four
+    // `drawPolylineOn*` among them — sat outside every guard in the repo,
+    // which is exactly the silent no-op this test exists to stop. None was
+    // missing when the gap was found; the point is that nothing would have
+    // said so.
+    const conventions: [string, RegExp, string][] = [
+      // `this.engine.X(...)` — the call itself.
+      ['direct', /this\.engine\.(\w+)\s*[?!]?\.?\s*\(/g, 'drawPointAsShape'],
+      // `this.engine?.X` — the presence guard in front of a wrapper. A missing
+      // export makes this fall to the wrapper's fallback instead of throwing,
+      // which is the same silence by another route.
+      ['optional', /this\.engine\s*\?\.\s*(\w+)/g, 'scaleVerts'],
+      // `(this.engine as any).X` and `(this.engine as unknown as {…}).X` — the
+      // cast, used wherever the interface above the class does not declare the
+      // method at all.
+      ['cast', /\(\s*this\.engine\s+as\s+[\s\S]*?\)\s*\.\s*(\w+)/g, 'beginLiveExtrude'],
+    ];
+
+    const called = new Set<string>();
+    for (const [name, re, witness] of conventions) {
+      const found = new Set([...bridge.matchAll(re)].map((m) => m[1]));
+      // PREMISE, one per convention: a pattern that stops matching makes its
+      // share of the check vacuous WITHOUT failing anything, which is how the
+      // 4-space indentation above broke the .d.ts parser once.
+      expect(found, `the ${name} pattern must still find ${witness}`).toContain(witness);
+      for (const f of found) called.add(f);
+    }
+    expect(called.size, 'all three conventions together').toBeGreaterThan(300);
+
     const missing = [...called].filter((m) => !exported.has(m));
     expect(
       missing,
-      'Bridge methods calling an engine function that is not exported — the ' +
+      'Bridge methods naming an engine function that is not exported — the ' +
         'optional-call syntax makes these silent no-ops at runtime. Either ' +
         'export them from crates/axia-wasm or delete the wrapper.',
     ).toEqual([]);
