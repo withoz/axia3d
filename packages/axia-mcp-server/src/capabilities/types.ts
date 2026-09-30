@@ -69,11 +69,17 @@ export interface EngineInstance {
    * The tessellated scene, the same three arrays the browser viewport reads
    * through `WasmBridge.getMeshBuffers`. Used by export_obj / export_stl /
    * export_step so a file and the screen come from one tessellation.
-   * (WASM js_names "getPositions" / "getNormals" / "getIndices".)
+   * (WASM js_names "get_positions" / "get_normals" / "get_indices".)
+   *
+   * ⚠ NOT `getPositions` / `getNormals` / `getIndices` — those camelCase names
+   * belong to the engine's `DeltaBuffers` class, and `AxiaEngine` does not have
+   * them. They were declared here from #234 until 2026-09-30, and all three
+   * exports threw `engine.getPositions is not a function` on every call; see
+   * test/mesh_export_real_engine.test.ts.
    */
-  getPositions(): Float32Array;
-  getNormals(): Float32Array;
-  getIndices(): Uint32Array;
+  get_positions(): Float32Array;
+  get_normals(): Float32Array;
+  get_indices(): Uint32Array;
 
   // Tier 3 — destructive. Names verified against the generated
   // web/src/wasm/axia_wasm.d.ts, which is the only place the real JS names
