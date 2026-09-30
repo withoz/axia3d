@@ -52,6 +52,8 @@
  *   D  bridge → export    THIS FILE ('every engine call the bridge makes exists')
  *                         — all THREE naming conventions, see the test, and
  *                         against AxiaEngine's members only (not DeltaBuffers')
+ *                         THIS FILE ('every engine call made outside the bridge
+ *                         exists') — `bridge.engine?.X` / aliases elsewhere
  *   E  export → engine    wasm-pack; a missing fn does not compile
  *
  *   Other consumers of the same engine, deliberately NOT in this file:
@@ -92,10 +94,29 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import ts from 'typescript';
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+
+/**
+ * Members of `class AxiaEngine` in the generated .d.ts — the engine's JS
+ * surface. Only that class: the .d.ts also declares `DeltaBuffers`, whose
+ * `getPositions` / `getNormals` / `getIndices` look exactly like engine reads
+ * (see link D below). Empty if the class is not found, which fails the
+ * witnesses that use it.
+ */
+function axiaEngineMembers(): Set<string> {
+  const dts = read('src/wasm/axia_wasm.d.ts');
+  const start = dts.indexOf('export class AxiaEngine {');
+  if (start < 0) return new Set();
+  const block = dts.slice(start, dts.indexOf('\n}', start));
+  return new Set([
+    ...[...block.matchAll(/^ +(\w+)\s*\(/gm)].map((m) => m[1]),
+    ...[...block.matchAll(/^ +readonly\s+(\w+)/gm)].map((m) => m[1]),
+  ]);
+}
 
 /** `case 'x':` / `case 'x': case 'y':` in a dispatcher switch. */
 function switchCases(file: string): Set<string> {
@@ -267,16 +288,9 @@ describe('action wiring — every data-action reaches a handler', () => {
     // every call for a month. Measured here by mutation before the fix: a cast
     // call to the DeltaBuffers-only `getModifiedFaceIds` passed tsc and this
     // test both.
-    const dts = read('src/wasm/axia_wasm.d.ts');
-    const classStart = dts.indexOf('export class AxiaEngine {');
-    const engineBlock = dts.slice(classStart, dts.indexOf('\n}', classStart));
-    const exported = new Set([
-      ...[...engineBlock.matchAll(/^ +(\w+)\s*\(/gm)].map((m) => m[1]),
-      ...[...engineBlock.matchAll(/^ +readonly\s+(\w+)/gm)].map((m) => m[1]),
-    ]);
+    const exported = axiaEngineMembers();
     // PREMISE: the .d.ts was parsed. Indentation is 4 spaces, not 2 — a `\s{2}`
     // pattern found nothing here and made the whole check vacuous once.
-    expect(classStart, 'class AxiaEngine must be found in the .d.ts').toBeGreaterThanOrEqual(0);
     for (const known of ['create_box', 'get_stats', 'drawEllipseAsCurve']) {
       expect(exported, `.d.ts parser must find ${known}`).toContain(known);
     }
@@ -324,6 +338,87 @@ describe('action wiring — every data-action reaches a handler', () => {
       'Bridge methods naming an engine function that is not exported — the ' +
         'optional-call syntax makes these silent no-ops at runtime. Either ' +
         'export them from crates/axia-wasm or delete the wrapper.',
+    ).toEqual([]);
+  });
+
+  it('every engine call made outside the bridge exists on AxiaEngine', () => {
+    // Link D above reads WasmBridge.ts. The engine is also called directly
+    // from other files — SliceTool, CommandRegistry, PushPullTool,
+    // OffsetSessionManager, main.ts — as `bridge.engine?.X(…)` or through an
+    // alias (`const eng = bridge.engine as …; eng.X?.(…)`). None of those were
+    // under any guard.
+    //
+    // Measured by mutation (2026-09-30): with `sliceVolumeByPlane` removed
+    // from the .d.ts, tsc reported 0 errors and this file passed 11/11. The
+    // export baseline in crates/axia-wasm catches a Rust-side deletion — but
+    // not one made on purpose with the baseline updated, which is exactly
+    // when someone asks "is anything still calling this?" and gets "no" from
+    // WasmBridge.ts.
+    //
+    // Parsed as TypeScript rather than by regex, so a comment that names a
+    // member which does not exist (core/memory.ts records the old
+    // `bridge.engine.memory` read) is not taken for a call.
+    const engine = axiaEngineMembers();
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e);
+        if (statSync(p).isDirectory()) {
+          if (e !== 'wasm' && e !== '__mocks__') walk(p);
+        } else if (p.endsWith('.ts') && !p.endsWith('.test.ts') && !p.endsWith(join('bridge', 'WasmBridge.ts'))) {
+          files.push(p);
+        }
+      }
+    };
+    walk(resolve(process.cwd(), 'src'));
+
+    const unwrap = (e: ts.Expression): ts.Expression => {
+      while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+      return e;
+    };
+    const isEngineAccess = (e: ts.Expression) => ts.isPropertyAccessExpression(e) && e.name.text === 'engine';
+    const called = new Map<string, string[]>(); // name -> files
+    const via = { direct: new Set<string>(), alias: new Set<string>() };
+    for (const f of files) {
+      const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, true);
+      // `const x = <…>.engine [as T]` — x names the engine in this file.
+      const aliases = new Set<string>();
+      const findAliases = (n: ts.Node) => {
+        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && isEngineAccess(unwrap(n.initializer))) {
+          aliases.add(n.name.text);
+        }
+        ts.forEachChild(n, findAliases);
+      };
+      findAliases(sf);
+      const visit = (n: ts.Node) => {
+        if (ts.isPropertyAccessExpression(n)) {
+          const recv = unwrap(n.expression);
+          const kind = isEngineAccess(recv) ? 'direct' : ts.isIdentifier(recv) && aliases.has(recv.text) ? 'alias' : null;
+          if (kind) {
+            via[kind].add(n.name.text);
+            if (!called.has(n.name.text)) called.set(n.name.text, []);
+            called.get(n.name.text)!.push(f.slice(f.indexOf('src')));
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+    }
+
+    // PREMISES — one witness per form, so a form that stops matching fails
+    // instead of quietly shrinking the check.
+    expect(files.length, 'app files were walked').toBeGreaterThan(100);
+    expect(via.direct, '`bridge.engine?.X` form must still find it').toContain('sliceVolumeByPlane');
+    expect(via.alias, 'alias form (main.ts `const eng = bridge.engine as …`)').toContain('getEdgeCurveJson');
+    expect(via.alias, 'alias form (CommandRegistry `const engine = bridge.engine as any`)').toContain('verifyVolumeIntegrity');
+
+    const missing = [...called].filter(([n]) => !engine.has(n)).map(([n, where]) => `${n} ← ${where.join(', ')}`);
+    expect(
+      missing,
+      'Engine members called outside WasmBridge.ts that AxiaEngine does not have. ' +
+        'These calls are optional or cast, so at runtime they are silent no-ops or ' +
+        'TypeErrors. Use the js_name from web/src/wasm/axia_wasm.d.ts (class ' +
+        'AxiaEngine), or route the call through a WasmBridge method.',
     ).toEqual([]);
   });
 
