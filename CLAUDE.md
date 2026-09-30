@@ -8054,9 +8054,10 @@ production ON — 플래그는 그대로, 판정만 추가) · #88 (doc-lag 이 
 
 원시 `promoteShapeToXia`(MCP `create_xia`)는 여전히 같은 Shape 를 두 번 승격해 XIA
 둘을 만든다(측정: 2, 3) · 인스펙터 힌트는 무조건 "승격됩니다" (시트는 거부 사유가
-뜬다) · 재질 **생성**은 실행취소 단계가 아니다 · `export_baseline.txt` 에 `vertexAt`
-(#278) 이 빠져 있어 그 삭제를 가드가 못 잡는다 · 일반 `AssignMaterial` 명령은 여전히
-기록하지 않는다(앱은 더 이상 안 씀).
+뜬다) · 재질 **생성**은 실행취소 단계가 아니다 · ~~`export_baseline.txt` 에 `vertexAt`
+(#278) 이 빠져 있어 그 삭제를 가드가 못 잡는다~~ (#281 이 해소 — 이 브랜치에 main 을
+병합하며 들어옴; 이름을 바꾸면 `wasm_export_baseline_unchanged` 가 실패, 실측) · 일반
+`AssignMaterial` 명령은 여전히 기록하지 않는다(앱은 더 이상 안 씀).
 
 #### ⚠ 이 세션이 스스로에게 당한 것
 

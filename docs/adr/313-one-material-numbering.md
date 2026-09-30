@@ -262,9 +262,12 @@ precise:
 - **Creating a material is not an undo step.** Undoing past a Quick Colour
   takes the colour off the face but leaves the Project material in the library,
   unused.
-- **`export_baseline.txt` lacks `vertexAt`**, which #278 added. The baseline is
+- ~~**`export_baseline.txt` lacks `vertexAt`**, which #278 added. The baseline is
   a subset guard, so `vertexAt` could be deleted with it green. Found here, left
-  for its own change.
+  for its own change.~~ → **resolved by #281**, which reached this branch when
+  main was merged in (`b217629`). Measured there: the baseline lists
+  `vertexAt`, and renaming the export fails `wasm_export_baseline_unchanged`
+  ("exports removed: [\"vertexAt\"]").
 
 ## 6. LOCKED policies touched
 
