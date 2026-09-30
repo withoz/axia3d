@@ -50,7 +50,8 @@
  *   B  container → owner  THIS FILE (`CONTAINERS` below names the owner)
  *   C  id → tool          THIS FILE ('every registered tool is reachable')
  *   D  bridge → export    THIS FILE ('every engine call the bridge makes exists')
- *                         — all THREE naming conventions, see the test
+ *                         — all THREE naming conventions, see the test, and
+ *                         against AxiaEngine's members only (not DeltaBuffers')
  *   E  export → engine    wasm-pack; a missing fn does not compile
  *
  *   Other consumers of the same engine, deliberately NOT in this file:
@@ -255,16 +256,33 @@ describe('action wiring — every data-action reaches a handler', () => {
     // cannot see it, because the interface above the class declares X optional
     // too. Measured by hand on 2026-08-10 (253 calls, 0 missing); this keeps it
     // measured.
+    // `this.engine` is an AxiaEngine, so only AxiaEngine's members count.
+    //
+    // ⚠ Until 2026-09-30 this set was every name in the .d.ts, from every
+    // class. The .d.ts also declares `DeltaBuffers`, whose `getPositions` /
+    // `getNormals` / `getIndices` look exactly like engine reads — and a call
+    // like `(this.engine as any).getPositions()` passed this check and threw
+    // at runtime. That is not hypothetical: the MCP server shipped exactly that
+    // call (packages/axia-mcp-server, #234) and its three mesh exports failed on
+    // every call for a month. Measured here by mutation before the fix: a cast
+    // call to the DeltaBuffers-only `getModifiedFaceIds` passed tsc and this
+    // test both.
     const dts = read('src/wasm/axia_wasm.d.ts');
+    const classStart = dts.indexOf('export class AxiaEngine {');
+    const engineBlock = dts.slice(classStart, dts.indexOf('\n}', classStart));
     const exported = new Set([
-      ...[...dts.matchAll(/^ +(\w+)\s*\(/gm)].map((m) => m[1]),
-      ...[...dts.matchAll(/^ +readonly\s+(\w+)/gm)].map((m) => m[1]),
+      ...[...engineBlock.matchAll(/^ +(\w+)\s*\(/gm)].map((m) => m[1]),
+      ...[...engineBlock.matchAll(/^ +readonly\s+(\w+)/gm)].map((m) => m[1]),
     ]);
     // PREMISE: the .d.ts was parsed. Indentation is 4 spaces, not 2 — a `\s{2}`
     // pattern found nothing here and made the whole check vacuous once.
+    expect(classStart, 'class AxiaEngine must be found in the .d.ts').toBeGreaterThanOrEqual(0);
     for (const known of ['create_box', 'get_stats', 'drawEllipseAsCurve']) {
       expect(exported, `.d.ts parser must find ${known}`).toContain(known);
     }
+    // ...and ONLY AxiaEngine: a DeltaBuffers name leaking in would reopen the
+    // hole above.
+    expect(exported, 'the set must be AxiaEngine alone').not.toContain('getModifiedFaceIds');
     const bridge = read('src/bridge/WasmBridge.ts');
 
     // THREE ways the bridge names an engine method, not one.
