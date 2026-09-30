@@ -263,6 +263,44 @@ describe('ADR-063 Step 4 — Tier 0 form + Tier 1/2 launcher', () => {
     try { localStorage.removeItem('axia.capabilityExplorer.showAdvanced'); } catch {}
   });
 
+  it('a stub says nothing runs it, instead of sending the user to MCP', () => {
+    // bool-dispatch and the five attach-surface-*-validated are stubs: a WASM
+    // endpoint and no surface (2026-09-30 wiring audit). The generic note
+    // advised "코드 / MCP 호출 권장", and the MCP server serves none of them.
+    // Cleanup in `finally`: a failure here must not leave a Korean-rendered
+    // panel in document.body for the English-locale test below to find.
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const panel = new CapabilityExplorerPanel(container, { onActionInvoke: () => ({ ok: true }) });
+    try {
+      panel.show();
+
+      const row = container.querySelector('.cep-action-row[data-action-id="attach-surface-plane-validated"]') as HTMLElement;
+      expect(row, 'the stub row renders').toBeTruthy();
+      expect(row.dataset.status, 'the row is marked stub').toBe('stub');
+      (row.querySelector('.cep-action-head') as HTMLElement).click();
+
+      const note = container.querySelector(
+        '.cep-action-row[data-action-id="attach-surface-plane-validated"] .cep-form-note',
+      ) as HTMLElement;
+      expect(note, 'the note renders after expand').toBeTruthy();
+      expect(note.textContent).toContain('stub');
+      expect(note.textContent).not.toContain('MCP');
+
+      // Control: a non-stub without a bridge alias still gets the generic note,
+      // so the branch above is what changed, not the note in general.
+      const other = container.querySelector('.cep-action-row[data-action-id="edge"]') as HTMLElement;
+      expect(other, 'the control row renders').toBeTruthy();
+      (other.querySelector('.cep-action-head') as HTMLElement).click();
+      const n2 = container.querySelector('.cep-action-row[data-action-id="edge"] .cep-form-note') as HTMLElement;
+      expect(n2, 'the control has a note').toBeTruthy();
+      expect(n2.textContent).not.toContain('stub');
+    } finally {
+      panel.dispose();
+      container.remove();
+    }
+  });
+
   it('capability_explorer_tier2_requires_confirm', () => {
     // Tier 2 (migrate-curve-surface) — confirm() must be called before invoke.
     const container = document.createElement('div');

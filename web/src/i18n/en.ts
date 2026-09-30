@@ -1016,6 +1016,8 @@ export const EN: Record<string, string> = {
   '검색 (id / label / description)': 'Search (id / label / description)',
   '검색 결과가 없습니다.': 'No matches.',
   '기존 UI 도구로 실행 (Launch 버튼 사용).': 'Run it with the existing UI tool (use the Launch button).',
+  '아직 어떤 화면도 이 명령을 실행하지 않습니다 — 엔진 함수만 있습니다 (stub).':
+    'Nothing runs this command yet — only the engine function exists (stub).',
   '복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)':
     'This needs composite arguments — call it from code or over MCP. (Outside the Capability Explorer pilot.)',
   ' (변경)': ' (modifies)',

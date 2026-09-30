@@ -396,10 +396,14 @@ export class CapabilityExplorerPanel {
       // Complex multi-arg endpoint (Tier 1 attach-surface-*-validated).
       const note = document.createElement('div');
       note.className = 'cep-form-note';
+      // A stub has no surface at all — the generic note below would send the
+      // user to MCP, which does not serve it either (2026-09-30 wiring audit).
       note.textContent =
-        action.tier >= 1 && action.aliases.bridge
-          ? t('기존 UI 도구로 실행 (Launch 버튼 사용).')
-          : t('복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)');
+        action.status === 'stub'
+          ? t('아직 어떤 화면도 이 명령을 실행하지 않습니다 — 엔진 함수만 있습니다 (stub).')
+          : action.tier >= 1 && action.aliases.bridge
+            ? t('기존 UI 도구로 실행 (Launch 버튼 사용).')
+            : t('복합 인자가 필요합니다. 코드 / MCP 호출 권장. (Capability Explorer pilot 외)');
       form.appendChild(note);
     }
 
