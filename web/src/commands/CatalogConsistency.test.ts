@@ -12,7 +12,10 @@
  *
  * **Direction note**: AC ⊇ CC (ActionCatalog superset). 13 AC-only entries
  * (`attach-surface-*-validated`, `bool-dispatch`, `cache-stats`, etc.) are
- * MCP/diagnostic-only — not registered in CommandCatalog. This is OK.
+ * Capability-Explorer / diagnostic entries — not registered in CommandCatalog.
+ * This is OK. (They were described as "MCP/diagnostic-only" until 2026-09-30;
+ * the MCP server serves none of them — see the surface-claim checks at the
+ * bottom of this file.)
  *
  * **What this catches**:
  *   1. New CommandCatalog entry added without ActionCatalog counterpart →
@@ -34,11 +37,11 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { getCommandCatalog, __resetCommandCatalog, type CommandDef } from './CommandCatalog';
 import { registerAxiaCommands } from './AxiaCommands';
-import { getActionById, lookup, type ActionDef } from '@axia/action-catalog';
+import { ALL_ACTIONS, getActionById, lookup, type ActionDef } from '@axia/action-catalog';
 
 describe('ADR-133 — Dual catalog unification invariant', () => {
   beforeEach(() => {
@@ -179,5 +182,91 @@ describe('ADR-133 — Dual catalog unification invariant', () => {
     // ADR-133 entries without removing the matching CommandCatalog entries).
     const { CATALOG_SIZE } = require('@axia/action-catalog');
     expect(CATALOG_SIZE).toBeGreaterThanOrEqual(161);
+  });
+});
+
+/**
+ * The catalog says, per action, which surfaces expose it. Nothing checked that
+ * against the surfaces themselves. Measured by the 2026-09-30 wiring audit:
+ *
+ *   - 13 actions claimed the 'mcp' surface (the ADR-063 Step 1 set: the
+ *     diagnostic reads, bool-dispatch, fillet-dispatch, the five
+ *     attach-surface-*-validated). The MCP server serves none of them — no
+ *     handler, not even a tiers.ts declaration.
+ *   - 6 of those also claimed 'palette' with status 'ok', and the Capability
+ *     Explorer cannot launch them: they are not in its direct-dispatch map, not
+ *     menu items, not dispatchAction ids, so launching one answers
+ *     "알 수 없는 명령입니다". The Explorer even advised "MCP 호출 권장" for them.
+ *
+ * The package's own test (packages/axia-action-catalog/test/catalog.test.ts)
+ * asserted exactly those claims — and no CI workflow runs that package's tests.
+ * These checks live here because this file does run in CI.
+ */
+describe('ActionCatalog surface claims are backed by what they name', () => {
+  const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+
+  it("every action that claims the 'mcp' surface is a capability the MCP server serves", () => {
+    // Served = has a handler. tiers.ts declares names that may have no handler
+    // yet (it says so itself), and tools/list shows only handled ones.
+    const capDir = resolve(process.cwd(), '../packages/axia-mcp-server/src/capabilities');
+    const served = new Set<string>();
+    for (const f of readdirSync(capDir)) {
+      if (!f.endsWith('.ts')) continue;
+      const src = readFileSync(join(capDir, f), 'utf8');
+      for (const m of src.matchAll(/^\s+name:\s*'([a-z][a-z0-9_]*)'/gm)) served.add(m[1]);
+    }
+    // PREMISE: the handlers were read.
+    expect(served.size, 'MCP capability handlers were read').toBeGreaterThan(20);
+    expect(served).toContain('draw_rect');
+
+    const unserved = ALL_ACTIONS.filter((a) => a.surfaces.includes('mcp'))
+      .filter((a) => !(a.aliases.mcp && served.has(a.aliases.mcp)))
+      .map((a) => `${a.id} (mcp: ${a.aliases.mcp ?? 'none'})`);
+    expect(
+      unserved,
+      "Actions that claim the 'mcp' surface but name no capability the MCP server " +
+        'serves. Implement the capability (packages/axia-mcp-server/src/capabilities) ' +
+        "or drop 'mcp' from the action's surfaces.",
+    ).toEqual([]);
+  });
+
+  it("every 'ok' action that claims the 'palette' surface launches from the Capability Explorer", () => {
+    // The Explorer's launch path (main.ts, onActionInvoke), in order: its
+    // direct-dispatch map → dispatchMenuAction (#menubar / #statusbar items,
+    // plus CONTEXT_SELECTION_ACTIONS) → executeAction (dispatchAction ids).
+    // Anything else is answered "알 수 없는 명령입니다".
+    const main = read('src/main.ts');
+    const ddStart = main.indexOf('const directDispatch');
+    const dd = main.slice(ddStart, main.indexOf('const direct = directDispatch', ddStart));
+    const direct = [...dd.matchAll(/'([a-z0-9-]+)':\s*\(\)\s*=>/g)].map((m) => m[1]);
+    const doc = new DOMParser().parseFromString(read('index.html'), 'text/html');
+    const itemsIn = (id: string) =>
+      [...(doc.getElementById(id)?.querySelectorAll('[data-action]') ?? [])].map((e) => e.getAttribute('data-action')!);
+    const allow = /CONTEXT_SELECTION_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(read('src/ui/dispatchMenuAction.ts'));
+    const dispatchIds = [...read('src/tools/ToolManagerRefactored.ts').matchAll(/action\s*===\s*'([^']+)'/g)].map((m) => m[1]);
+
+    // PREMISES — one per hop, so a hop that stops parsing fails here instead of
+    // shrinking the launchable set without a word.
+    expect(direct, 'main.ts direct-dispatch map').toContain('edge-curve-info');
+    expect(itemsIn('menubar').length, '#menubar items').toBeGreaterThan(100);
+    expect(allow, 'CONTEXT_SELECTION_ACTIONS').toBeTruthy();
+    expect(dispatchIds.length, 'dispatchAction ids').toBeGreaterThan(50);
+
+    const launchable = new Set([
+      ...direct,
+      ...itemsIn('menubar'),
+      ...itemsIn('statusbar'),
+      ...[...allow![1].matchAll(/'([^']+)'/g)].map((m) => m[1]),
+      ...dispatchIds,
+    ]);
+    const dead = ALL_ACTIONS.filter((a) => a.surfaces.includes('palette') && (a.status ?? 'ok') === 'ok')
+      .filter((a) => !launchable.has(a.id))
+      .map((a) => a.id);
+    expect(
+      dead,
+      "Actions marked 'ok' on the 'palette' surface that the Capability Explorer cannot " +
+        "launch. Wire the id (main.ts directDispatch, a menu item, or dispatchAction), or " +
+        "mark it status: 'stub'.",
+    ).toEqual([]);
   });
 });

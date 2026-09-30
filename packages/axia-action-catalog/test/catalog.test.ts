@@ -248,20 +248,30 @@ describe('Catalog metadata sanity', () => {
 });
 
 describe('Audit Finding 3 follow-through — no stale stubs', () => {
-  it('catalog carries no stub-status entries (all formerly-stubbed tools implemented)', () => {
+  it('the only stub-status entries are the six nothing surfaces yet', () => {
     // History: tool-point (ADR-219), tool-text3d (ADR-228 render-only) and
     // tool-trim / tool-extend (ADR-211 impl, ADR-229 status truth-up) were all
-    // once status:'stub'. All are now implemented + registered, so the catalog
-    // should carry NO 'stub' entries. A future genuinely-unimplemented tool
-    // would deliberately re-introduce a stub + update this assertion (its click
-    // is handled by the "준비 중" integrity guard at MenuBar.setActiveTool).
-    const stubs = ALL_ACTIONS.filter((a) => a.status === 'stub').map((a) => a.id);
-    expect(stubs, `unexpected stub-status entries: ${stubs.join(', ')}`).toEqual([]);
+    // once status:'stub'. All are now implemented + registered. A genuinely
+    // unimplemented action re-introduces a stub deliberately and is listed
+    // here.
+    //
+    // 2026-09-30 (wiring audit): these six were 'ok' with no consumer. Each has
+    // a WASM endpoint; none has an MCP capability or a Capability Explorer
+    // launch — launching one there answered "알 수 없는 명령입니다".
+    const stubs = ALL_ACTIONS.filter((a) => a.status === 'stub').map((a) => a.id).sort();
+    expect(stubs, `unexpected stub-status entries: ${stubs.join(', ')}`).toEqual([
+      'attach-surface-cone-validated',
+      'attach-surface-cylinder-validated',
+      'attach-surface-plane-validated',
+      'attach-surface-sphere-validated',
+      'attach-surface-torus-validated',
+      'bool-dispatch',
+    ]);
   });
 
   it('any stub (if present) has an honest description', () => {
     // Guard for future stubs: their description must say so (integrity /
-    // discoverability). Vacuously true while there are no stubs.
+    // discoverability).
     for (const def of ALL_ACTIONS.filter((a) => a.status === 'stub')) {
       expect(def.description).toMatch(/stub|not yet implemented/i);
     }
@@ -272,34 +282,43 @@ describe('ADR-063 Step 1 — Phase O+P+L₂ endpoints synchronized', () => {
   it('catalog_includes_phase_o_p_l2_endpoints', () => {
     // 13 endpoints registered per ADR-063 Step 1 §5 matrix.
     // Phase O Step 6 (5) + Phase P-narrow (3) + Phase L₂ Path Z (5) = 13.
-    const required: ReadonlyArray<{ id: string; tier: 0 | 1 | 2 | 3; wasm: string }> = [
+    // `status` is what the Capability Explorer can actually do with the id
+    // (2026-09-30 wiring audit): 'ok' = launched by its direct-dispatch map in
+    // web/src/main.ts; 'stub' = listed there, answers "알 수 없는 명령입니다".
+    const required: ReadonlyArray<{ id: string; tier: 0 | 1 | 2 | 3; wasm: string; status: 'ok' | 'stub' }> = [
       // Phase O Step 6
-      { id: 'edge-curve-info',                  tier: 0, wasm: 'getEdgeCurveJson' },
-      { id: 'face-surface-info',                tier: 0, wasm: 'getFaceSurfaceJson' },
-      { id: 'migrate-curve-surface',            tier: 2, wasm: 'migrateCurveSurfaceMandatory' },
-      { id: 'bool-dispatch',                    tier: 2, wasm: 'booleanDispatchJson' },
-      { id: 'fillet-dispatch',                  tier: 2, wasm: 'filletEdgeDispatchJson' },
+      { id: 'edge-curve-info',                  tier: 0, wasm: 'getEdgeCurveJson', status: 'ok' },
+      { id: 'face-surface-info',                tier: 0, wasm: 'getFaceSurfaceJson', status: 'ok' },
+      { id: 'migrate-curve-surface',            tier: 2, wasm: 'migrateCurveSurfaceMandatory', status: 'ok' },
+      { id: 'bool-dispatch',                    tier: 2, wasm: 'booleanDispatchJson', status: 'stub' },
+      { id: 'fillet-dispatch',                  tier: 2, wasm: 'filletEdgeDispatchJson', status: 'ok' },
       // Phase P-narrow
-      { id: 'face-normals-cached',              tier: 0, wasm: 'getFaceNormalsCached' },
-      { id: 'edge-polyline-cached',             tier: 0, wasm: 'getEdgePolylineCached' },
-      { id: 'cache-stats',                      tier: 0, wasm: 'getCacheStats' },
+      { id: 'face-normals-cached',              tier: 0, wasm: 'getFaceNormalsCached', status: 'ok' },
+      { id: 'edge-polyline-cached',             tier: 0, wasm: 'getEdgePolylineCached', status: 'ok' },
+      { id: 'cache-stats',                      tier: 0, wasm: 'getCacheStats', status: 'ok' },
       // Phase L₂ Path Z (W2 per-kind)
-      { id: 'attach-surface-plane-validated',   tier: 1, wasm: 'attachFaceSurfacePlaneValidated' },
-      { id: 'attach-surface-cylinder-validated', tier: 1, wasm: 'attachFaceSurfaceCylinderValidated' },
-      { id: 'attach-surface-sphere-validated',  tier: 1, wasm: 'attachFaceSurfaceSphereValidated' },
-      { id: 'attach-surface-cone-validated',    tier: 1, wasm: 'attachFaceSurfaceConeValidated' },
-      { id: 'attach-surface-torus-validated',   tier: 1, wasm: 'attachFaceSurfaceTorusValidated' },
+      { id: 'attach-surface-plane-validated',   tier: 1, wasm: 'attachFaceSurfacePlaneValidated', status: 'stub' },
+      { id: 'attach-surface-cylinder-validated', tier: 1, wasm: 'attachFaceSurfaceCylinderValidated', status: 'stub' },
+      { id: 'attach-surface-sphere-validated',  tier: 1, wasm: 'attachFaceSurfaceSphereValidated', status: 'stub' },
+      { id: 'attach-surface-cone-validated',    tier: 1, wasm: 'attachFaceSurfaceConeValidated', status: 'stub' },
+      { id: 'attach-surface-torus-validated',   tier: 1, wasm: 'attachFaceSurfaceTorusValidated', status: 'stub' },
     ];
     for (const r of required) {
       const def = getActionById(r.id);
       expect(def, `${r.id} missing from catalog`).toBeDefined();
       expect(def!.tier, `${r.id} tier mismatch`).toBe(r.tier);
       expect(def!.aliases.wasm, `${r.id} wasm alias mismatch`).toBe(r.wasm);
-      // §D-B: surfaces should include 'mcp' AND 'palette' (Capability Explorer).
-      expect(def!.surfaces).toContain('mcp');
+      // §D-B: surfaces include 'palette' (Capability Explorer).
+      //
+      // ⚠ §D-B also put 'mcp' on all 13, and this test asserted it until
+      // 2026-09-30. The MCP server serves none of them (no handler, no tiers.ts
+      // declaration), so the claim is gone. The cross-check against the real
+      // surfaces lives in web/src/commands/CatalogConsistency.test.ts, because
+      // no CI workflow runs this package's tests.
       expect(def!.surfaces).toContain('palette');
-      // §D-E: status='ok' (wasm endpoint operational).
-      expect(def!.status, `${r.id} status should be 'ok'`).toBe('ok');
+      expect(def!.surfaces, `${r.id} is not served by the MCP server`).not.toContain('mcp');
+      // §D-E: status — see the table above.
+      expect(def!.status, `${r.id} status`).toBe(r.status);
       // §D-F: bridge alias intentionally absent (direct wasm call).
       expect(def!.aliases.bridge, `${r.id} should NOT have bridge alias`).toBeUndefined();
       // §D-G: mcp alias is snake_case auto-derived from id.
