@@ -12556,6 +12556,43 @@ impl AxiaEngine {
         }
     }
 
+    /// ADR-313 D5 — the app's material pick, as ONE undo step.
+    ///
+    /// `assign_material` (above) runs the plain command, which records
+    /// nothing, so an undo right after a pick took back the step before it —
+    /// measured: an extruded box lost its extrude. This records the pick —
+    /// and, in the same step, what it did to the owners of those faces (D5,
+    /// see `material_pick_json`). Throws when the library does not hold the
+    /// material, and then nothing changed.
+    #[wasm_bindgen(js_name = "assignMaterialToFaces")]
+    pub fn assign_material_to_faces(
+        &mut self,
+        face_ids: Vec<u32>,
+        material_id: u32,
+    ) -> Result<String, JsValue> {
+        let faces = face_ids.into_iter().map(FaceId::new).collect();
+        match self
+            .scene
+            .assign_material_to_faces(faces, axia_geo::MaterialId::new(material_id))
+        {
+            Ok(pick) => {
+                self.cache_dirty = true;
+                Ok(material_pick_json(&pick))
+            }
+            Err(e) => Err(JsValue::from_str(&format!("assignMaterialToFaces: {}", e))),
+        }
+    }
+
+    /// ADR-313 D5 — the app takes a material off faces, as ONE undo step,
+    /// demoting a XIA left with no material (ADR-091). JSON as for a pick.
+    #[wasm_bindgen(js_name = "removeMaterialFromFaces")]
+    pub fn remove_material_from_faces(&mut self, face_ids: Vec<u32>) -> String {
+        let faces = face_ids.into_iter().map(FaceId::new).collect();
+        let pick = self.scene.remove_material_from_faces(faces);
+        self.cache_dirty = true;
+        material_pick_json(&pick)
+    }
+
     /// 면의 재질 ID 조회 (없으면 0 반환, 0 = 기본 재질)
     #[wasm_bindgen(js_name = "get_face_material")]
     pub fn get_face_material(&self, face_id_raw: u32) -> u32 {
@@ -12566,23 +12603,63 @@ impl AxiaEngine {
         0
     }
 
-    /// 전체 재질 목록 JSON 반환 (format! 기반, serde_json 불필요)
+    /// ADR-313 D3 — every face that carries a material, as flat
+    /// `[face, material, face, material, …]` pairs, in one call.
+    ///
+    /// The app colours faces from its own table of assignments and, until
+    /// this existed, never asked the engine for them: after a file was opened,
+    /// an IFC imported or a face split, the engine held materials the app did
+    /// not draw (measured: a reopened brick box came back grey with the engine
+    /// still reading 벽돌). Faces on `FORM_MATERIAL` carry nothing and are left
+    /// out, so an empty result means "no materials", not "unknown".
+    #[wasm_bindgen(js_name = "getFaceMaterials")]
+    pub fn get_face_materials(&self) -> Vec<u32> {
+        let form = axia_core::FORM_MATERIAL;
+        let mut out = Vec::new();
+        for (fid, face) in self.scene.mesh.faces.iter() {
+            if face.is_active() && face.material() != form {
+                out.push(fid.raw());
+                out.push(face.material().raw());
+            }
+        }
+        out
+    }
+
+    /// 전체 재질 목록 JSON 반환.
+    ///
+    /// ADR-313 D3 — the app mirrors from this any material it has no entry for
+    /// (an IFC import's, the Asset Library's), so it carries every number the
+    /// engine really holds rather than leaving the app to invent the rest. The
+    /// original five keys (`id name nameEn density color`) are unchanged.
+    ///
+    /// Built with serde_json now, not `format!`: an IFC-imported name is
+    /// arbitrary text, and a quote in one (`Concrete "C30/37"`) made the old
+    /// hand-built string unparseable — the whole list, not just that entry.
     #[wasm_bindgen(js_name = "get_all_materials")]
     pub fn get_all_materials(&self) -> String {
-        let mats = self.scene.material_library.all();
-        if mats.is_empty() {
-            return "[]".to_string();
-        }
-        let entries: Vec<String> = mats.iter()
+        let entries: Vec<serde_json::Value> = self
+            .scene
+            .material_library
+            .all()
+            .iter()
             .map(|m| {
-                let hex = format!("{:06x}", m.visual.color);
-                format!(
-                    r##"{{"id":{},"name":"{}","nameEn":"{}","density":{},"color":"#{}"}}"##,
-                    m.id.raw(), m.name, m.name_en, m.physical.density, hex
-                )
+                serde_json::json!({
+                    "id": m.id.raw(),
+                    "name": m.name,
+                    "nameEn": m.name_en,
+                    "density": m.physical.density,
+                    "color": format!("#{:06x}", m.visual.color),
+                    "friction": m.physical.friction,
+                    "restitution": m.physical.restitution,
+                    "specificGravity": m.physical.specific_gravity,
+                    "thermalConductivity": m.physical.thermal_conductivity,
+                    "roughness": m.visual.roughness,
+                    "metalness": m.visual.metalness,
+                    "opacity": m.visual.opacity,
+                })
             })
             .collect();
-        format!("[{}]", entries.join(","))
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -14321,6 +14398,55 @@ fn curve_anchor(curve: &axia_geo::AnalyticCurve) -> glam::DVec3 {
     }
 }
 
+/// ADR-313 D5 — a material pick's outcome, for the app:
+///
+/// ```text
+/// {"faces":6,
+///  "promoted":[{"shape":1,"xia":2}],
+///  "refused":[{"shape":1,"reason":"not_watertight","detail":"…"}],
+///  "primary":[2],
+///  "demoted":[{"xia":2,"shape":1}]}
+/// ```
+///
+/// `reason` is a code the app turns into words (`promote_reason_code`);
+/// `detail` is the engine's own sentence, for a log.
+fn material_pick_json(pick: &axia_core::MaterialPick) -> String {
+    serde_json::json!({
+        "faces": pick.faces,
+        "promoted": pick.promoted.iter()
+            .map(|(shape, xia)| serde_json::json!({ "shape": shape.raw(), "xia": xia }))
+            .collect::<Vec<_>>(),
+        "refused": pick.refused.iter()
+            .map(|(shape, e)| serde_json::json!({
+                "shape": shape.raw(),
+                "reason": promote_reason_code(e),
+                "detail": e.to_string(),
+            }))
+            .collect::<Vec<_>>(),
+        "primary": pick.primary,
+        "demoted": pick.demoted.iter()
+            .map(|(xia, shape)| serde_json::json!({ "xia": xia, "shape": shape.raw() }))
+            .collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+/// ADR-313 D5 — why a promotion was refused, as a stable code. The app keys
+/// its messages on these (web/src/ui/XiaInspector.ts); change one there too.
+fn promote_reason_code(e: &axia_core::PromoteError) -> &'static str {
+    use axia_core::PromoteError::*;
+    match e {
+        XiaNotFound => "xia_not_found",
+        ShapeNotFound => "shape_not_found",
+        NoGeometry => "no_geometry",
+        InvalidMaterial => "invalid_material",
+        ZeroVolume => "zero_volume",
+        ZeroDimension => "zero_dimension",
+        NotWatertight { .. } => "not_watertight",
+        NotManifold { .. } => "not_manifold",
+    }
+}
+
 #[cfg(test)]
 mod adr149_tests {
     use super::*;
@@ -15901,6 +16027,154 @@ impl AxiaEngine {
 }
 
 /// ADR-311 β-2 — the material an imported member carries.
+/// ADR-313 — the engine's Concrete used to share id 0 with `FORM_MATERIAL`.
+///
+/// Measured in a real browser before the change: a concrete member imported
+/// from IFC came back with no material (`find_by_name` found 0, which the
+/// engine reads as "no material", and promotion refused it), and a box the
+/// user painted 콘크리트 in the Inspector exported as `IFCMATERIAL('강철')`.
+/// These hold both ends at the IFC boundary, where the numbers finally meet a
+/// name. ⚠ Mutation-checked: start the built-ins at 0 again and both fail.
+#[cfg(test)]
+mod adr313_one_material_numbering_tests {
+    use super::*;
+    use axia_geo::{MaterialId, Mesh};
+    use glam::DVec3;
+
+    fn ifc_of(name: &str, material: &str) -> String {
+        let mut mesh = Mesh::new();
+        let faces = mesh
+            .create_box(DVec3::ZERO, 2000.0, 1000.0, 3000.0, MaterialId::new(0))
+            .unwrap();
+        let elements = vec![axia_ifc::IfcElement {
+            name: name.into(),
+            material_name: Some(material.to_string()),
+            material_style: None,
+            kind: axia_ifc::IfcElementKind::Wall,
+            face_ids: faces,
+            line: None,
+        }];
+        axia_ifc::emit_ifc_model(&mesh, &elements, 0.001, name).unwrap()
+    }
+
+    #[test]
+    fn an_imported_concrete_member_keeps_its_material() {
+        let mut engine = AxiaEngine::new();
+        assert!(engine.import_ifc(ifc_of("Slab", "콘크리트")).contains("\"ok\":true"));
+        let concrete = engine
+            .scene
+            .material_library
+            .find_by_name("콘크리트")
+            .expect("콘크리트 is a built-in");
+        assert_ne!(concrete, axia_core::FORM_MATERIAL, "concrete must not be 'no material'");
+        for (fid, f) in engine.scene.mesh.faces.iter().filter(|(_, f)| f.is_active()) {
+            assert_eq!(f.material(), concrete, "face {fid:?} lost the member's concrete");
+        }
+        assert_eq!(engine.scene.xias.len(), 1, "a closed concrete box is a member (XIA)");
+    }
+
+    #[test]
+    fn the_material_list_parses_whatever_a_name_holds() {
+        // The app parses this list to mirror materials it does not know. An IFC
+        // name is arbitrary text; the hand-built string this replaced broke the
+        // WHOLE list on one quote.
+        let mut e = AxiaEngine::new();
+        let odd = e.add_project_material(
+            "Concrete \"C30/37\" \\ 7".into(),
+            "Concrete \"C30/37\"".into(),
+            0x808080,
+        );
+        let list: Vec<serde_json::Value> =
+            serde_json::from_str(&e.get_all_materials()).expect("the list must be JSON");
+        let entry = list
+            .iter()
+            .find(|m| m["id"] == odd)
+            .expect("the new material is listed");
+        assert_eq!(entry["name"], "Concrete \"C30/37\" \\ 7");
+        // What the app needs to mirror it without inventing numbers.
+        for key in ["density", "thermalConductivity", "roughness", "metalness", "opacity"] {
+            assert!(entry[key].is_number(), "'{key}' missing from {entry}");
+        }
+        assert!(
+            list.iter().all(|m| m["id"] != 0),
+            "no material is listed at FORM_MATERIAL's id"
+        );
+    }
+
+    #[test]
+    fn the_apps_concrete_exports_as_concrete() {
+        // The app's table sends 1 for 콘크리트 (web/src/materials/MaterialLibrary.ts).
+        let mut e = AxiaEngine::new();
+        let wall = e
+            .scene
+            .mesh
+            .create_box(DVec3::new(0.0, 0.0, 1000.0), 2000.0, 2000.0, 2000.0, MaterialId::new(0))
+            .unwrap();
+        e.scene.create_xia_with_faces("Wall".to_string(), DVec3::ZERO, wall.clone());
+        e.scene.execute(axia_core::Command::AssignMaterial {
+            face_ids: wall,
+            material_id: MaterialId::new(1),
+        });
+        let ifc = e.export_ifc_model("W".into());
+        // 콘크리트 = U+CF58 U+D06C U+B9AC U+D2B8, which STEP writes in \X2\ hex.
+        assert!(
+            ifc.contains("IFCMATERIAL('\\X2\\CF58D06CB9ACD2B8\\X0\\'"),
+            "the app's 콘크리트 must export as 콘크리트; materials in the file: {:?}",
+            ifc.lines().filter(|l| l.contains("IFCMATERIAL(")).collect::<Vec<_>>()
+        );
+    }
+
+    /// A pick's outcome, as the app reads it: a whole box promoted, a sheet
+    /// refused with the code the Inspector's message is keyed on, and a removal
+    /// that demotes.
+    #[test]
+    fn a_pick_tells_the_app_what_became_of_the_owner() {
+        // Set up through the scene — the exported wrappers around drawing reach
+        // for JS, which a native test does not have.
+        let rect = |e: &mut AxiaEngine, x: f64| -> u32 {
+            match e.scene.execute(axia_core::Command::DrawRectAsShape {
+                center: DVec3::new(x, 0.0, 0.0),
+                normal: DVec3::Z,
+                up: DVec3::Y,
+                width: 1000.0,
+                height: 1000.0,
+            }) {
+                axia_core::CommandResult::ShapeCreated(id) => id,
+                other => panic!("a rect: {:?}", other),
+            }
+        };
+        let faces_of = |e: &AxiaEngine, shape: u32| -> Vec<u32> {
+            e.scene
+                .get_shape(axia_core::ShapeId::new(shape))
+                .map(|s| s.face_ids.iter().map(|f| f.raw()).collect())
+                .unwrap_or_default()
+        };
+        let parse = |s: &str| -> serde_json::Value { serde_json::from_str(s).expect("JSON") };
+
+        let mut e = AxiaEngine::new();
+        let bx = rect(&mut e, 0.0);
+        e.scene.execute(axia_core::Command::CreateSolid {
+            face_id: FaceId::new(faces_of(&e, bx)[0]),
+            mode: axia_geo::CreateSolidMode::Extrude { distance: 500.0 },
+        });
+        let box_faces = faces_of(&e, bx);
+        assert_eq!(box_faces.len(), 6, "a box");
+        let sheet = rect(&mut e, 5000.0);
+        let sheet_faces = faces_of(&e, sheet);
+
+        let promoted = parse(&e.assign_material_to_faces(box_faces.clone(), 1).expect("concrete"));
+        assert_eq!(promoted["promoted"][0]["shape"], bx, "{promoted}");
+        let xia = promoted["promoted"][0]["xia"].clone();
+
+        let refused = parse(&e.assign_material_to_faces(sheet_faces, 1).expect("concrete"));
+        assert_eq!(refused["refused"][0]["reason"], "not_watertight", "{refused}");
+
+        let demoted = parse(&e.remove_material_from_faces(box_faces));
+        assert_eq!(demoted["demoted"][0]["xia"], xia, "{demoted}");
+        assert_eq!(demoted["demoted"][0]["shape"], bx);
+    }
+}
+
 #[cfg(test)]
 mod adr311_material_tests {
     use super::*;
@@ -15923,8 +16197,17 @@ mod adr311_material_tests {
 
     #[test]
     fn adr311_beta2_a_library_material_comes_back_as_itself() {
-        // 벽돌 is built-in id 4. Matching by name is what returns the SAME
-        // material — appearance included, with no style parsing (L-311-3).
+        // 벽돌 is a built-in (id 5 since ADR-313; 4 before). Matching by name
+        // is what returns the SAME material — appearance included, with no
+        // style parsing (L-311-3). The id is looked up rather than written
+        // down: what this test is about is "the same material", and a number
+        // here is what went stale when the numbering moved.
+        let brick = AxiaEngine::new()
+            .scene
+            .material_library
+            .find_by_name("벽돌")
+            .map(|m| m.raw())
+            .expect("벽돌 is a built-in");
         let before = {
             let e = AxiaEngine::new();
             e.scene.material_library.count()
@@ -15945,7 +16228,7 @@ mod adr311_material_tests {
         };
         assert!(!shape_or_xia_faces.is_empty(), "faces exist");
         for (fid, mid) in &shape_or_xia_faces {
-            assert_eq!(mid.raw(), 4, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
+            assert_eq!(mid.raw(), brick, "face {fid:?} must carry the library 벽돌, not FORM_MATERIAL");
         }
         assert_eq!(
             engine.scene.material_library.count(),
@@ -16054,17 +16337,26 @@ mod adr311_style_tests {
 
     #[test]
     fn adr311_beta3_a_known_name_is_not_repainted_by_the_file() {
-        // The control, and the point of L-311-3. 벽돌 is built-in id 4 and red;
+        // The control, and the point of L-311-3. 벽돌 is a built-in and red;
         // a file claiming it is pure green must not change the library.
+        //
+        // ⚠ This read material 4 until ADR-313 moved the built-ins up by one,
+        // and went on passing afterwards — checking the colour of 유리, which
+        // the import never touches. Looked up by name so it follows 벽돌.
+        let brick = AxiaEngine::new()
+            .scene
+            .material_library
+            .find_by_name("벽돌")
+            .expect("벽돌 is a built-in");
         let before = {
             let e = AxiaEngine::new();
-            e.scene.material_library.get(MaterialId::new(4)).unwrap().visual.color
+            e.scene.material_library.get(brick).unwrap().visual.color
         };
         let ifc = styled_ifc("벽돌", (0.0, 1.0, 0.0), 0.01, 1.0);
         let mut engine = AxiaEngine::new();
         assert!(engine.import_ifc(ifc).contains("\"ok\":true"));
 
-        let m = engine.scene.material_library.get(MaterialId::new(4)).unwrap();
+        let m = engine.scene.material_library.get(brick).unwrap();
         assert_eq!(m.visual.color, before, "the library material keeps its own colour");
         assert_ne!(m.visual.color, 0x00ff00, "and is emphatically not the file's green");
     }

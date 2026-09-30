@@ -996,8 +996,14 @@ export const EN: Record<string, string> = {
   '재질 제거됨 — 형태로 강등': 'Material removed — demoted to a Shape',
   '{n}개 객체 재질 제거됨 — 형태로 강등':
     'Material removed from {n} objects — demoted to Shapes',
-  '재질 제거 시 {n}건 강등 실패 (나머지는 적용됨)':
-    '{n} could not be demoted when the material was removed (the rest were)',
+  '닫힌 입체가 아니라 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'Not a closed solid, so not promoted to a XIA — the faces keep the material',
+  '부피가 없어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'It encloses no volume, so not promoted to a XIA — the faces keep the material',
+  '모델에 위상 오류가 있어 XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'The model has topology errors, so not promoted to a XIA — the faces keep the material',
+  'XIA (특성)로 승격되지 않았습니다 — 재질은 면에 남습니다':
+    'Not promoted to a XIA — the faces keep the material',
   '되돌리기': 'Undo',
   '{n}개 선분': '{n} segments',
   '□ 선': '□ Line',
@@ -1421,6 +1427,7 @@ export const EN: Record<string, string> = {
   '원형 배열 실패': 'Radial array failed',
   '색상을 지정할 면을 먼저 선택하세요': 'Select a face to colour first',
   '색상 적용 실패': 'Could not apply the colour',
+  '재질을 만들 수 없습니다 — 엔진이 준비되지 않았습니다.': 'Could not create the material — the engine is not ready.',
   '챔퍼할 엣지 1개를 먼저 선택하세요': 'Select 1 edge to chamfer first',
   '챔퍼 거리 (mm):': 'Chamfer distance (mm):',
   '유효한 양수 거리를 입력하세요': 'Enter a valid positive distance',

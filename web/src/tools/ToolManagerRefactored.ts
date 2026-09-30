@@ -809,14 +809,14 @@ export class ToolManager {
       debugLog('[Action] undo =>', result);
       if (result) {
         this.syncMesh();
-        getMaterialLibrary().syncFromRust();
+        getMaterialLibrary().syncFromEngine();
       }
     } else if (action === 'redo') {
       const result = this.bridge.redo();
       debugLog('[Action] redo =>', result);
       if (result) {
         this.syncMesh();
-        getMaterialLibrary().syncFromRust();
+        getMaterialLibrary().syncFromEngine();
       }
     } else if (action === 'toggle-selection-dims') {
       // 우클릭 메뉴 "치수 표시" 토글 (사용자 요청 2026-04-27)
@@ -1790,11 +1790,8 @@ export class ToolManager {
         Toast.fromBridgeError(this.bridge, '원형 배열 실패');
       }
     } else if (action === 'assign-quick-color') {
-      // 선택된 face들에 즉석 색상을 부여. HTML color picker → MaterialLibrary에
-      // 일회용 custom material 등록 → assignToFaces. Rust 엔진은 rustId를
-      // opaque u32로 저장하므로 10000+ 범위는 안전하게 사용 가능 (BUILTIN 12개와 충돌 없음).
-      // Viewport의 vertex color 파이프라인은 TS-side getMaterialForFace만 참조하므로
-      // 즉시 색이 반영됨.
+      // 선택된 face들에 즉석 색상을 부여. HTML color picker → 엔진에 Project 재질
+      // 생성 (ADR-313 D4) → 그 id 로 assignToFaces.
       const selFaces = this.selection.getSelectedFaces();
       if (selFaces.length === 0) {
         Toast.warning(t('색상을 지정할 면을 먼저 선택하세요'), 2500);
@@ -1813,26 +1810,35 @@ export class ToolManager {
         try { localStorage.setItem('axia:quickcolor:last', hex); } catch { /* ignore */ }
         const colorInt = parseInt(hex.slice(1), 16);
         const lib = getMaterialLibrary();
-        // 10000+ 범위에서 고유 rustId 할당 (현재 최대값 + 1)
-        let maxRustId = 12;
-        for (const m of lib.getAll()) {
-          if (m.rustId > maxRustId) maxRustId = m.rustId;
+        // ADR-313 D4 — the colour is a material the ENGINE holds. This used to
+        // invent an id ≥ 10001 here, believing the engine stored ids as opaque
+        // numbers; it refuses any id its library does not hold, so the colour
+        // was never recorded and an unrelated undo turned the face grey
+        // (measured). The same colour twice reuses the first material rather
+        // than filling the file with copies.
+        const nameEn = `Color ${hex}`;
+        const mat =
+          lib.getCustom().find((m) => m.nameEn === nameEn && m.rustId > 0) ??
+          lib.addEngineMaterial({
+            id: `quick-${Date.now()}`,
+            name: t('색상 {hex}', { hex }),
+            nameEn,
+            category: 'custom',
+            // The engine's own values for a new Project material (addProjectMaterial),
+            // so what the app shows is what the engine holds. No fire rating: the
+            // engine's is None, which the app's three ratings cannot say.
+            physical: {
+              density: 1000, friction: 0.5, restitution: 0.5, specificGravity: 1.0,
+              thermalConductivity: 0.5,
+            },
+            visual: { color: colorInt, roughness: 0.5, metalness: 0.0, opacity: 1.0 },
+          });
+        if (!mat) {
+          Toast.error(t('색상 적용 실패'), 2500);
+          cleanup();
+          return;
         }
-        const rustId = Math.max(maxRustId + 1, 10001);
-        const id = `quick-${Date.now()}-${rustId}`;
-        lib.addCustom({
-          id,
-          rustId,
-          name: t('색상 {hex}', { hex }),
-          nameEn: `Color ${hex}`,
-          category: 'custom',
-          physical: {
-            density: 1000, friction: 0.5, restitution: 0.2, specificGravity: 1.0,
-            thermalConductivity: 0.5, fireRating: 'incombustible',
-          },
-          visual: { color: colorInt, roughness: 0.5, metalness: 0.0, opacity: 1.0 },
-        });
-        const ok = lib.assignToFaces(selFaces, id);
+        const ok = lib.assignToFaces(selFaces, mat.id);
         if (ok) {
           this.syncMesh();
           Toast.info(t('{n}개 면에 {hex} 색상 적용', { n: selFaces.length, hex }), 2000);
@@ -2383,6 +2389,14 @@ export class ToolManager {
           }
         }
       }
+
+      // ADR-313 D3 — the viewport colours faces from the app's material
+      // table, so read the engine's assignments into it BEFORE the rebuild. A
+      // full rebuild is what every topology change comes through — a file
+      // opened, an IFC imported, a face split, an undo — and each of those can
+      // leave the engine holding materials the app did not draw (measured: a
+      // reopened brick box came back grey).
+      getMaterialLibrary().syncFromEngine();
 
       const tFull0 = performance.now();
       this.viewport.updateMesh(

@@ -105,7 +105,8 @@ test.describe('ADR-098 S-ζ — Asset Library 3-Tier contract 검증', () => {
 
       const projTier = bridge.getMaterialTier(projId);
       const userTier = bridge.getMaterialTier(userId);
-      const sysTier = bridge.getMaterialTier(0); // built-in concrete
+      // Built-in concrete is 1 since ADR-313 — 0 is "no material", not a material.
+      const sysTier = bridge.getMaterialTier(1);
 
       return {
         systemCountBefore: systemBefore.length,
@@ -153,7 +154,11 @@ test.describe('ADR-098 S-ζ — Asset Library 3-Tier contract 검증', () => {
       const userAfter = bridge.listMaterialsByTier('User');
 
       // Try to remove a System tier material — must reject (S-G safety).
-      const removeOkSystem = bridge.removeUserMaterial(0);
+      // Concrete, which is 1 since ADR-313. This asked for 0, which is "no
+      // material" and not a material at all, so it was refused as not found
+      // and the test kept passing with both System-tier guards switched off
+      // (measured, ADR-313).
+      const removeOkSystem = bridge.removeUserMaterial(1);
 
       // System tier still has all 12 built-ins.
       const systemCount = bridge.listMaterialsByTier('System').length;

@@ -105,8 +105,9 @@ pub struct SnapshotInfo {
 ///
 /// A `Xia.material` whose `MaterialId` is no longer present in
 /// `Scene.material_library` (e.g. after a `removeUserMaterial` call).
-/// FORM_MATERIAL sentinel (id 0 = Concrete) is always valid and never
-/// reported.
+/// `FORM_MATERIAL` (0, "no material") is never reported: having no material
+/// is not an orphan. (This said "id 0 = Concrete", true only until ADR-313
+/// moved Concrete to 1.)
 #[derive(Clone, Debug, Default)]
 pub struct OrphanMaterialReport {
     pub affected_xias: Vec<OrphanMaterialEntry>,
@@ -1046,6 +1047,10 @@ impl Scene {
         //    backward-compat). Legacy snapshots truncate before section 9
         //    → restore keeps default-constructed library from Scene::new.
         let mut material_library_section_present = false;
+        // ADR-313 D2 — a library saved when the built-ins started at 0 is
+        // renumbered here; which face and XIA ids follow is settled at the end,
+        // once the owner indexes exist to say who wrote each id.
+        let mut material_renumbering: Option<crate::material::MaterialRenumbering> = None;
         if offset + 8 <= data.len() {
             let mlen = read_len(data, &mut offset);
             if mlen > 0 && offset + mlen <= data.len() {
@@ -1059,6 +1064,10 @@ impl Scene {
                 ) {
                     Ok(restored) => {
                         self.material_library = restored;
+                        // ADR-313 — BEFORE the tier heuristic below, which
+                        // reads the current numbering's ranges.
+                        material_renumbering =
+                            self.material_library.renumber_from_zero_layout();
                         // Auto-migrate legacy materials (idempotent if already
                         // tagged). ADR-098 S-D — id-range heuristic classifies
                         // any material missing tier_index.
@@ -1226,6 +1235,76 @@ impl Scene {
         for &vid in self.shape_to_standalone_vertex.values() {
             self.mesh.pin_vertex(vid);
         }
+        // ADR-313 D2 — needs `face_to_xia`, rebuilt just above.
+        if let Some(renumbering) = material_renumbering {
+            self.apply_material_renumbering(&renumbering);
+        }
+    }
+
+    /// ADR-313 D2 — carry a file saved under the old material numbering over
+    /// to the new one.
+    ///
+    /// Such a file holds material ids in TWO numberings, because two writers
+    /// numbered differently:
+    ///
+    /// * the app sent its own numbers (1 = 콘크리트 … 12 = 타일) through
+    ///   `AssignMaterial` — which is exactly the numbering the engine uses now,
+    ///   so those ids already mean what the user picked and must NOT move;
+    /// * the engine's own paths — promotion, by the IFC importer or MCP
+    ///   `create_xia` — wrote the engine's old numbers (4 = 벽돌) and must.
+    ///
+    /// Nothing in a face says which writer it had, so this goes by what each
+    /// writer can have touched. Only promotion ever wrote an XIA's primary —
+    /// the app never promoted (measured, ADR-313 §2.5) — so a primary follows
+    /// the renumbering. The IFC importer set a member's faces to the id it then
+    /// promoted with, so a face of an XIA carrying that XIA's old primary
+    /// follows too. Every other face keeps its id. `FORM_MATERIAL` (0, "no
+    /// material") never moves.
+    ///
+    /// ⚠ Stated, not solved (ADR-313 §5): an IFC-imported member that failed
+    /// promotion stayed a Shape, so its faces look like the app's and keep
+    /// their ids — they now read as the next material.
+    fn apply_material_renumbering(&mut self, r: &crate::material::MaterialRenumbering) {
+        let follow = |m: u32| -> Option<u32> {
+            match r.displaced {
+                Some((old, new)) if m == old => Some(new),
+                _ => r.builtins.get(&m).copied(),
+            }
+        };
+        let old_primary: HashMap<XiaId, u32> =
+            self.xias.iter().map(|(k, x)| (*k, x.material.raw())).collect();
+        let form = FORM_MATERIAL.raw();
+
+        let faces: Vec<FaceId> = self.mesh.faces.iter().map(|(fid, _)| fid).collect();
+        for fid in faces {
+            let Some(m) = self.mesh.faces.get(fid).map(|f| f.material().raw()) else {
+                continue;
+            };
+            if m == form {
+                continue;
+            }
+            let displaced = matches!(r.displaced, Some((old, _)) if old == m);
+            let written_by_promotion = self
+                .face_to_xia
+                .get(&fid)
+                .and_then(|x| old_primary.get(x))
+                .is_some_and(|&p| p == m);
+            if !(displaced || written_by_promotion) {
+                continue;
+            }
+            if let (Some(new), Some(face)) = (follow(m), self.mesh.faces.get_mut(fid)) {
+                face.set_material(axia_geo::MaterialId::new(new));
+            }
+        }
+        for xia in self.xias.values_mut() {
+            let m = xia.material.raw();
+            if m == form {
+                continue;
+            }
+            if let Some(new) = follow(m) {
+                xia.material = axia_geo::MaterialId::new(new);
+            }
+        }
     }
 
     /// ADR-097 T-γ — Scene-level topology damage detection wrapper.
@@ -1263,7 +1342,9 @@ impl Scene {
     // 3-tier recovery cascade (R-B):
     //   Pass 1: auto-demote — Xia.material = FORM_MATERIAL → demote
     //           via ADR-091 D-β (4-condition gate)
-    //   Pass 2: fallback — reassign to Concrete (MaterialId::new(0))
+    //   Pass 2: fallback — reassign to FORM_MATERIAL (no material). This read
+    //           "Concrete (MaterialId::new(0))" while Concrete sat at 0;
+    //           ADR-313 moved it to 1 — the code never changed (LOCKED #38).
     //   Pass 3: escalate — return PartialFailure for dialog
     //
     // ADR-091 §E L1 canonical 답습 — `affected_xias` 는 read-only
@@ -1274,15 +1355,14 @@ impl Scene {
     ///
     /// Scans `self.xias` for entries whose `material` is no longer
     /// present in `self.material_library` (e.g. after a `removeUserMaterial`
-    /// call). FORM_MATERIAL sentinel (id 0 = Concrete) is *always* valid
-    /// and never reported (System tier built-in).
+    /// call). `FORM_MATERIAL` (0) is "no material", never an orphan, and is
+    /// never reported — not a library entry since ADR-313.
     ///
     /// **Read-only**: Scene state 변경 0.
     pub fn detect_orphan_material_assignments(&self) -> OrphanMaterialReport {
         let mut affected_xias = Vec::new();
         for (xid, xia) in &self.xias {
-            // FORM_MATERIAL is always valid (Phase 1 sentinel + System
-            // built-in id 0 = Concrete). Skip.
+            // FORM_MATERIAL is "no material" — never an orphan. Skip.
             if xia.material == FORM_MATERIAL {
                 continue;
             }
@@ -1339,9 +1419,10 @@ impl Scene {
             }
 
             // Pass 2 — demote failed (e.g. promote condition drift).
-            // The Xia.material is already FORM_MATERIAL (Pass 1) which
-            // resolves to System-tier Concrete in the library. No further
-            // mutation needed; assignment is now valid.
+            // The Xia.material is already FORM_MATERIAL (Pass 1): no
+            // material, which is never an orphan, so nothing more to do.
+            // (This said it resolved to Concrete — true only while Concrete
+            // sat at 0; ADR-313 §6.)
             //
             // However, if the user later wants the Xia removed, they
             // must do so explicitly. We count this as a recovered face
@@ -2246,6 +2327,179 @@ impl Scene {
         }
 
         Ok(DemoteOk { shape_id, original_id_restored })
+    }
+
+    /// ADR-313 D5 — the user gives faces a material, as ONE undo step.
+    ///
+    /// `Command::AssignMaterial` sets face materials and records nothing, so
+    /// an undo right after a material pick went back past it. Measured in the
+    /// app: pick 콘크리트 on an extruded box, undo once, and the extrude was
+    /// gone (faces 6 → 1), the material with it. The app's pick comes through
+    /// here instead. The command itself is unchanged: this runs it inside
+    /// its own transaction, and the plain WASM `assign_material` that calls it
+    /// directly is kept (tests use it).
+    ///
+    /// `Err` when the library does not hold `material` — nothing changes and
+    /// nothing is recorded then.
+    pub fn assign_material_to_faces(
+        &mut self,
+        face_ids: Vec<FaceId>,
+        material: axia_geo::MaterialId,
+    ) -> Result<crate::promote::MaterialPick, String> {
+        if self.material_library.get(material).is_none() {
+            return Err(format!("Material {} not found", material.raw()));
+        }
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let picked: Vec<FaceId> = face_ids.clone();
+        let faces = match self.execute(Command::AssignMaterial { face_ids, material_id: material }) {
+            CommandResult::MaterialAssigned { face_count } => face_count,
+            other => {
+                if own_transaction {
+                    self.transactions.cancel();
+                }
+                return Err(format!("AssignMaterial: {:?}", other));
+            }
+        };
+        let mut pick = crate::promote::MaterialPick { faces, ..Default::default() };
+        self.owners_follow_a_pick(&picked, material, &mut pick);
+        if own_transaction {
+            self.transactions.set_after_snapshot(self.scene_snapshot());
+            self.transactions.commit();
+        }
+        Ok(pick)
+    }
+
+    /// ADR-313 D5 — after a pick of `material`, each owner of a picked face
+    /// whose EVERY face now carries it follows the pick: a Shape is promoted
+    /// with it as primary (the four ADR-050 conditions decide; a refusal is
+    /// recorded with its reason), a XIA takes it as its primary. An owner with
+    /// faces on other materials, or on none, is left as it is — which of its
+    /// materials would be "the" material is not something to guess (메타-원칙
+    /// #16); the faces carry theirs.
+    fn owners_follow_a_pick(
+        &mut self,
+        picked: &[FaceId],
+        material: axia_geo::MaterialId,
+        pick: &mut crate::promote::MaterialPick,
+    ) {
+        use std::collections::BTreeSet;
+        let all_on = |scene: &Scene, faces: &[FaceId]| {
+            scene.every_live_face(faces, |m| m == material)
+        };
+
+        let xias: BTreeSet<XiaId> =
+            picked.iter().filter_map(|f| self.face_to_xia.get(f).copied()).collect();
+        for x in xias {
+            let whole = self.xias.get(&x).map_or(false, |xia| all_on(self, &xia.face_ids));
+            if whole {
+                if let Some(xia) = self.xias.get_mut(&x) {
+                    xia.material = material;
+                }
+                pick.primary.push(x);
+            }
+        }
+
+        let shapes: BTreeSet<crate::ShapeId> =
+            picked.iter().filter_map(|f| self.face_to_shape.get(f).copied()).collect();
+        for sid in shapes {
+            // A Shape stays on after its promotion (ADR-050 P-2-c); its XIA is
+            // the owner now and was handled above. Promoting it again would make
+            // a second XIA over the same faces.
+            if self.shape_to_xia.get(&sid).map_or(false, |x| self.xias.contains_key(x)) {
+                continue;
+            }
+            let whole = self.shapes.get(&sid).map_or(false, |sh| all_on(self, &sh.face_ids));
+            if !whole {
+                continue;
+            }
+            match self.promote_shape_to_xia(sid, material) {
+                Ok(ok) => pick.promoted.push((sid, ok.xia_id)),
+                Err(e) => pick.refused.push((sid, e)),
+            }
+        }
+    }
+
+    /// ADR-313 D5 — the user takes the material off faces, as ONE undo step.
+    /// The counterpart of `assign_material_to_faces`; see there.
+    pub fn remove_material_from_faces(
+        &mut self,
+        face_ids: Vec<FaceId>,
+    ) -> crate::promote::MaterialPick {
+        let own_transaction = !self.transactions.is_recording();
+        if own_transaction {
+            self.transactions.begin();
+            self.transactions.set_before_snapshot(self.scene_snapshot());
+        }
+        let picked: Vec<FaceId> = face_ids.clone();
+        let faces = match self.execute(Command::RemoveMaterial { face_ids }) {
+            CommandResult::MaterialRemoved { face_count } => face_count,
+            _ => 0,
+        };
+        let mut pick = crate::promote::MaterialPick { faces, ..Default::default() };
+
+        // ADR-091 — a XIA whose every face is now without a material has no
+        // material, so it goes back to being a Shape. ADR-091's trigger is the
+        // XIA's own material (L1: `xia.material == FORM_MATERIAL`), and
+        // removing a material only ever cleared the FACES, so demotion was
+        // refused every time — measured in the app: "재질 제거 시 1건 강등
+        // 실패", and the XIA stayed. The XIA's material goes with its faces
+        // here, in the same step, so one undo gives both back.
+        use std::collections::BTreeSet;
+        let xias: BTreeSet<XiaId> =
+            picked.iter().filter_map(|f| self.face_to_xia.get(f).copied()).collect();
+        for x in xias {
+            let bare = self
+                .xias
+                .get(&x)
+                .map_or(false, |xia| self.every_live_face(&xia.face_ids, |m| m == FORM_MATERIAL));
+            if !bare {
+                continue;
+            }
+            let before = self.xias.get(&x).map(|xia| xia.material);
+            if let Some(xia) = self.xias.get_mut(&x) {
+                xia.material = FORM_MATERIAL;
+            }
+            match self.demote_xia_to_shape(x) {
+                Ok(ok) => pick.demoted.push((x, ok.shape_id)),
+                Err(_) => {
+                    // Leave the XIA as it was rather than holding "no
+                    // material" under a name that says it has one.
+                    if let (Some(xia), Some(m)) = (self.xias.get_mut(&x), before) {
+                        xia.material = m;
+                    }
+                }
+            }
+        }
+
+        if own_transaction {
+            self.transactions.set_after_snapshot(self.scene_snapshot());
+            self.transactions.commit();
+        }
+        pick
+    }
+
+    /// ADR-313 D5 — does every live face of an owner satisfy `test` on its
+    /// material? An owner's list can still name a face that is gone; such a
+    /// face is not part of the owner and is not counted. An owner with no live
+    /// face at all is never "whole".
+    fn every_live_face(&self, faces: &[FaceId], test: impl Fn(axia_geo::MaterialId) -> bool) -> bool {
+        let mut live = 0usize;
+        for &f in faces {
+            match self.mesh.faces.get(f) {
+                Some(face) if face.is_active() => {
+                    if !test(face.material()) {
+                        return false;
+                    }
+                    live += 1;
+                }
+                _ => {}
+            }
+        }
+        live > 0
     }
 
     /// Register face→XIA mapping in the reverse index
@@ -24644,9 +24898,13 @@ mod tests {
         assert!(restored.material_library.get(user_id).is_some());
         assert_eq!(restored.material_library.tier_of(user_id),
                    Some(MaterialTier::User));
-        // System tier built-ins still classified.
-        assert_eq!(restored.material_library.tier_of(MaterialId::new(0)),
-                   Some(MaterialTier::System));
+        // System tier built-ins still classified. ADR-313 — they start at 1;
+        // 0 is FORM_MATERIAL and has no tier because it is no material.
+        assert_eq!(
+            restored.material_library.tier_of(MaterialId::new(crate::material::BUILTIN_MATERIAL_ID_MIN)),
+            Some(MaterialTier::System)
+        );
+        assert_eq!(restored.material_library.tier_of(MaterialId::new(0)), None);
     }
 
     #[test]
@@ -24670,7 +24928,7 @@ mod tests {
         let mut restored = Scene::new();
         restored.import_versioned_snapshot(&legacy).expect("import legacy");
         // Default library still has all 12 built-ins.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert!(restored.material_library.get(MaterialId::new(raw)).is_some());
         }
         // Other state preserved (Shape).
@@ -24704,7 +24962,7 @@ mod tests {
         restored.import_versioned_snapshot(&bytes).expect("import");
         // After restore, tier_index is populated (either via fresh
         // serialization or via auto-migration). Built-ins always System tier.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert_eq!(
                 restored.material_library.tier_of(MaterialId::new(raw)),
                 Some(crate::material::MaterialTier::System),
@@ -24836,11 +25094,13 @@ mod tests {
     #[test]
     fn adr100_remove_system_tier_rejected() {
         let mut scene = Scene::new();
-        // System tier id 0 (Concrete) — must reject.
-        let result = scene.remove_project_material_with_recovery(MaterialId::new(0));
+        // System tier Concrete — must reject. ADR-313: Concrete is at 1 (0 is
+        // FORM_MATERIAL, which is no material at all).
+        let concrete = MaterialId::new(crate::material::BUILTIN_MATERIAL_ID_MIN);
+        let result = scene.remove_project_material_with_recovery(concrete);
         assert!(result.is_err());
         // Material library unchanged.
-        assert!(scene.material_library.get(MaterialId::new(0)).is_some());
+        assert!(scene.material_library.get(concrete).is_some());
     }
 
     #[test]
@@ -24967,7 +25227,7 @@ mod tests {
         assert!(normal.label.is_none());
 
         // LOCKED #26 guard: built-ins still have layered = None.
-        for raw in 0..=crate::material::BUILTIN_MATERIAL_ID_MAX {
+        for raw in crate::material::BUILTIN_MATERIAL_ID_MIN..=crate::material::BUILTIN_MATERIAL_ID_MAX {
             assert!(restored.material_library.get(MaterialId::new(raw))
                 .unwrap().visual.layered.is_none(),
                 "built-in id {} must retain layered=None across snapshot", raw);

@@ -140,6 +140,31 @@ pub struct DemoteOk {
     pub original_id_restored: bool,
 }
 
+/// ADR-313 D5 — what one material pick did to the scene, returned by
+/// `Scene::assign_material_to_faces` / `Scene::remove_material_from_faces`.
+///
+/// A pick is about faces; an owner follows only when the pick leaves no
+/// doubt about the owner as a whole — every one of its faces on the picked
+/// material, or (for a removal) on none. Anything less is face-level.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialPick {
+    /// Faces the pick was given, as `Command::AssignMaterial` /
+    /// `Command::RemoveMaterial` count them.
+    pub faces: usize,
+    /// Shapes whose every face now carries the picked material, promoted to
+    /// XIAs with it as primary (ADR-050): `(shape, new xia)`.
+    pub promoted: Vec<(crate::ShapeId, XiaId)>,
+    /// Shapes whose every face now carries the picked material but which the
+    /// engine refused to promote, and why. Their faces keep the material.
+    pub refused: Vec<(crate::ShapeId, PromoteError)>,
+    /// XIAs whose every face now carries the picked material: it is their
+    /// primary now.
+    pub primary: Vec<XiaId>,
+    /// XIAs whose every face now carries no material, demoted back to Shapes
+    /// (ADR-091): `(xia, shape)`.
+    pub demoted: Vec<(XiaId, crate::ShapeId)>,
+}
+
 /// Successful promotion outcome. The XIA's stored material has been
 /// updated and (if Phase 1.B has landed) `promoted` flag set.
 #[derive(Clone, Copy, Debug, PartialEq)]

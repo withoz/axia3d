@@ -8,6 +8,8 @@
  * Material이 없으면 Volume은 Appearance(기하)로만 존재합니다.
  */
 
+import type { MaterialPick } from '../bridge/WasmBridge';
+
 // ═══════════════════════════════════════
 //  기하 계층 상태 (Geometry Layer)
 // ═══════════════════════════════════════
@@ -87,7 +89,13 @@ export interface PhysicalProperties {
   restitution: number;         // 0.0 ~ 1.0 — 탄성계수 (복원력)
   specificGravity: number;     // 비중 (밀도 / 물의 밀도)
   thermalConductivity: number; // W/(m·K) — 열전도율
-  fireRating: FireRating;      // 화재 등급
+  /**
+   * 화재 등급. Absent on a material the engine made (ADR-313 D4) or mirrored
+   * from it (D3): the engine's rating is a different model (None / Minutes),
+   * and a new or imported material claims none, so the app shows no rating
+   * rather than inventing one.
+   */
+  fireRating?: FireRating;
   elasticModulus?: number;    // GPa — 탄성률 (향후 확장)
   compressiveStrength?: number; // MPa — 압축강도 (향후 확장)
 }
@@ -281,6 +289,52 @@ const BUILTIN_MATERIALS: Material[] = [
   },
 ];
 
+/** One entry of the engine's `getAllMaterials()` list (ADR-313 D3). */
+interface EngineMaterial {
+  id: number;
+  name: string;
+  nameEn: string;
+  density: number;
+  color: string; // '#rrggbb'
+  friction?: number;
+  restitution?: number;
+  specificGravity?: number;
+  thermalConductivity?: number;
+  roughness?: number;
+  metalness?: number;
+  opacity?: number;
+}
+
+/**
+ * A material the engine holds and the app had no entry for, as the app's
+ * `Material`. Every number is the engine's; where the engine list carries no
+ * value the field keeps a neutral default, and the fire rating is left absent.
+ */
+function mirrorEngineMaterial(em: EngineMaterial): Material {
+  const color = parseInt(String(em.color ?? '#888888').replace('#', ''), 16);
+  return {
+    id: `engine-${em.id}`,
+    rustId: em.id,
+    name: em.name,
+    nameEn: em.nameEn,
+    category: 'custom',
+    physical: {
+      density: em.density,
+      friction: em.friction ?? 0.5,
+      restitution: em.restitution ?? 0.5,
+      specificGravity: em.specificGravity ?? em.density / 1000,
+      thermalConductivity: em.thermalConductivity ?? 0,
+    },
+    visual: {
+      color: Number.isFinite(color) ? color : 0x888888,
+      roughness: em.roughness ?? 0.5,
+      metalness: em.metalness ?? 0,
+      opacity: em.opacity ?? 1,
+    },
+    builtIn: false,
+  };
+}
+
 // ═══════════════════════════════════════
 //  MaterialLibrary 클래스
 // ═══════════════════════════════════════
@@ -334,6 +388,33 @@ export class MaterialLibrary {
     return mat;
   }
 
+  /**
+   * ADR-313 D4 — a custom material the ENGINE holds too.
+   *
+   * `addCustom` alone makes a material only this table knows. The engine then
+   * refuses to record it on a face (`AssignMaterial` rejects an id its library
+   * does not hold), so it was never saved, never exported, and the next time
+   * anything read the faces back from the engine it was gone — measured for
+   * Quick Colour: an unrelated draw and undo turned a red face grey. Quick
+   * Colour had invented ids ≥ 10001 on the belief that the engine stored ids as
+   * opaque numbers; the texture dialog sent 0, which is FORM_MATERIAL — "no
+   * material" — and which the engine refuses since ADR-313.
+   *
+   * The engine creates it in the Project tier (so it is saved with the file)
+   * and the id it returns is the one this table uses. `null` when the engine
+   * cannot create it — nothing is added then, so nothing is assigned that the
+   * engine would not keep.
+   */
+  addEngineMaterial(material: Omit<Material, 'builtIn' | 'rustId'>): Material | null {
+    const rustId: number | null | undefined = this.bridge?.addProjectMaterial?.(
+      material.name,
+      material.nameEn,
+      material.visual.color,
+    );
+    if (typeof rustId !== 'number' || rustId <= 0) return null;
+    return this.addCustom({ ...material, rustId });
+  }
+
   removeCustom(id: string): boolean {
     const mat = this.materials.get(id);
     if (!mat || mat.builtIn) return false;
@@ -348,39 +429,64 @@ export class MaterialLibrary {
 
   // --- 재질 할당 (Face → Material) ---
 
-  /** 면에 재질 부여 → Volume이 XIA로 전환되는 트리거 */
+  /** 면에 재질 부여. `true` when the engine took it — see `pickMaterial`. */
   assignToFaces(faceIds: number[], materialId: string): boolean {
-    const mat = this.materials.get(materialId);
-    if (!mat) return false;
+    return this.pickMaterial(faceIds, materialId) !== null;
+  }
 
-    // TS 로컬 상태 업데이트
+  /**
+   * ADR-313 D5 — give faces a material, and say what became of their owners.
+   *
+   * The engine records the pick as one undo step, and in the same step an
+   * owner whose every face now carries the material follows it: a Shape is
+   * promoted to a XIA (the four ADR-050 conditions decide — `refused` says
+   * why not), a XIA takes it as its primary. The engine goes first and the
+   * table follows only what it accepted; `null` when it refused.
+   * (`assignMaterial` is for a bridge without the entry — test fakes.)
+   */
+  pickMaterial(faceIds: number[], materialId: string): MaterialPick | null {
+    const mat = this.materials.get(materialId);
+    if (!mat) return null;
+
+    let out: MaterialPick | null = { faces: faceIds.length };
+    if (this.bridge?.assignMaterialToFaces) {
+      out = this.bridge.assignMaterialToFaces(faceIds, mat.rustId);
+      if (!out) return null;
+    } else if (this.bridge?.assignMaterial) {
+      this.bridge.assignMaterial(new Uint32Array(faceIds), mat.rustId);
+    }
+
     for (const fid of faceIds) {
       this.assignments.set(fid, materialId);
     }
-
-    // Rust 엔진 동기화 (WASM → scene.execute(AssignMaterial) → XIA 자동 승격)
-    if (this.bridge?.assignMaterial) {
-      const ids = new Uint32Array(faceIds);
-      this.bridge.assignMaterial(ids, mat.rustId);
-    }
-
     this.notifyListeners();
-    return true;
+    return out;
   }
 
-  /** 면에서 재질 제거 → XIA가 Volume으로 복귀 */
+  /** 면에서 재질 제거 — see `removeMaterialFrom`. */
   unassignFromFaces(faceIds: number[]): void {
+    this.removeMaterialFrom(faceIds);
+  }
+
+  /**
+   * ADR-313 D5 — take the material off faces, as one undo step; a XIA left
+   * with no material on any face is demoted back to a Shape in that same step
+   * (ADR-091), and `demoted` lists it.
+   */
+  removeMaterialFrom(faceIds: number[]): MaterialPick | null {
     for (const fid of faceIds) {
       this.assignments.delete(fid);
     }
 
-    // Rust 엔진 동기화 (WASM → scene.execute(RemoveMaterial) → XIA 자동 강등)
-    if (this.bridge?.removeMaterial) {
-      const ids = new Uint32Array(faceIds);
-      this.bridge.removeMaterial(ids);
+    let out: MaterialPick | null = { faces: faceIds.length };
+    if (this.bridge?.removeMaterialFromFaces) {
+      out = this.bridge.removeMaterialFromFaces(faceIds);
+    } else if (this.bridge?.removeMaterial) {
+      this.bridge.removeMaterial(new Uint32Array(faceIds));
     }
 
     this.notifyListeners();
+    return out;
   }
 
   /** 면의 재질 조회 */
@@ -471,51 +577,69 @@ export class MaterialLibrary {
     for (const l of this.listeners) l();
   }
 
-  // --- Rust 상태 동기화 (undo/redo 후) ---
+  // --- 엔진에서 되읽기 (ADR-313 D3) ---
 
   /**
-   * Rust 엔진의 material 할당 상태를 TS로 동기화합니다.
-   * undo/redo 후 호출하여 TS ↔ Rust 상태를 일치시킵니다.
-   */
-  /**
-   * Rust 엔진의 face별 material 할당 상태를 TS로 동기화합니다.
-   * undo/redo 후 호출하여 TS ↔ Rust 상태를 일치시킵니다.
+   * Make the app's assignments exactly what the engine holds.
    *
-   * bridge.getFaceMaterial(faceId)를 사용하여 개별 face의 material을 읽습니다.
+   * The engine is the truth for which face carries which material; this table
+   * is how the app draws it (메타-원칙 #13). Until ADR-313 nothing read it back:
+   * the viewport colours faces from `assignments`, and after a file was opened,
+   * an IFC imported or a face split, the engine held materials this table did
+   * not (measured: a reopened brick box came back grey while the engine still
+   * read 벽돌; an imported brick member never showed at all). The method this
+   * replaces, `syncFromRust`, only re-read faces the app already knew.
+   *
+   * Every face is read in one call. A material the engine holds and the app has
+   * no entry for — one an IFC import or the Asset Library created — is mirrored
+   * in from the engine's own numbers, so it can be drawn and named; nothing is
+   * invented for it except the absence of a fire rating (see PhysicalProperties).
+   *
+   * No-op when the engine cannot answer, which is not the same as the engine
+   * saying "nothing has a material". Notifies only when something changed.
    */
-  syncFromRust(): void {
-    if (!this.bridge?.getFaceMaterial) return;
+  syncFromEngine(): void {
+    const faces: Map<number, number> | null = this.bridge?.getFaceMaterials?.() ?? null;
+    if (!faces) return;
 
-    // rustId → TS material id 역매핑
-    const rustIdToTsId = new Map<number, string>();
-    for (const mat of this.materials.values()) {
-      if (mat.rustId) rustIdToTsId.set(mat.rustId, mat.id);
+    const byRustId = new Map<number, string>();
+    for (const mat of this.materials.values()) byRustId.set(mat.rustId, mat.id);
+
+    let engineList: EngineMaterial[] | null = null;
+    for (const rustId of new Set(faces.values())) {
+      if (byRustId.has(rustId)) continue;
+      engineList ??= this.readEngineMaterials();
+      const em = engineList.find((m) => m.id === rustId);
+      if (!em) continue;
+      const mirrored = mirrorEngineMaterial(em);
+      this.materials.set(mirrored.id, mirrored);
+      byRustId.set(rustId, mirrored.id);
     }
 
-    // 현재 할당된 faceId 목록을 기준으로 Rust 상태 확인
-    let changed = false;
-    const newAssignments = new Map<number, string>();
+    const next = new Map<number, string>();
+    for (const [faceId, rustId] of faces) {
+      const id = byRustId.get(rustId);
+      if (id) next.set(faceId, id);
+    }
 
-    // 기존 assignments의 face들 + 지금 알려진 face들을 확인
-    for (const [fid] of this.assignments) {
-      const rustMatId: number = this.bridge.getFaceMaterial(fid);
-      if (rustMatId > 0) {
-        const tsId = rustIdToTsId.get(rustMatId);
-        if (tsId) {
-          newAssignments.set(fid, tsId);
-          if (this.assignments.get(fid) !== tsId) changed = true;
-        } else {
-          changed = true; // 기존에 할당되어 있었는데 Rust에서 없어짐
-        }
-      } else {
-        // Rust에서 material 0(기본) → TS에서 해제
-        changed = true;
+    let changed = next.size !== this.assignments.size;
+    if (!changed) {
+      for (const [faceId, id] of next) {
+        if (this.assignments.get(faceId) !== id) { changed = true; break; }
       }
     }
-
-    if (changed) {
-      this.assignments = newAssignments;
+    if (changed || (engineList !== null)) {
+      this.assignments = next;
       this.notifyListeners();
+    }
+  }
+
+  private readEngineMaterials(): EngineMaterial[] {
+    try {
+      const json = this.bridge?.getAllMaterials?.();
+      return json ? (JSON.parse(json) as EngineMaterial[]) : [];
+    } catch {
+      return [];
     }
   }
 

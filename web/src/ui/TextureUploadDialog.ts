@@ -7,7 +7,7 @@
  *   3. FileReader → base64 data URL 변환
  *   4. projection (planar/box/cylindrical) + scale 선택
  *   5. "새 재질" 이름 입력
- *   6. MaterialLibrary.addCustom() 호출 + 즉시 할당
+ *   6. MaterialLibrary.addEngineMaterial() 호출 (엔진에도 재질 생성, ADR-313 D4) + 즉시 할당
  *
  * 저장:
  *   · TextureInfo.dataUrl은 .xia 파일에 그대로 포함 (base64)
@@ -62,21 +62,29 @@ export async function openTextureUploadDialog(
   const name = prompt(t('새 재질 이름'), file.name.replace(/\.(png|jpe?g|webp)$/i, ''));
   if (!name) return null;
 
-  // Step 4 — Material 생성.
+  // Step 4 — Material 생성, 엔진에도 (ADR-313 D4).
+  //
+  // This sent `rustId: 0` with a comment saying addCustom would assign one; it
+  // never did. 0 is FORM_MATERIAL, "no material": before ADR-313 the engine
+  // recorded it (its library alone called 0 Concrete), and since then it refuses
+  // it, so the face keeps whatever material it had. Either way the engine never
+  // held the new material. The texture itself still lives only in the app (the
+  // engine's layered channels are a separate path, ADR-099).
   const lib = getMaterialLibrary();
-  const material = lib.addCustom({
+  const material = lib.addEngineMaterial({
     id: `custom-${Date.now().toString(36)}`,
-    rustId: 0,  // lib 내부에서 rustId 할당; addCustom 구현에서 처리
     name,
     nameEn: name,
     category: 'custom',
+    // The engine's own physical values for a new Project material, and no fire
+    // rating (the engine's is None). The look below — roughness and the image —
+    // stays the app's alone; the engine is sent only the colour.
     physical: {
       density: 1000,
       friction: 0.5,
-      restitution: 0.3,
+      restitution: 0.5,
       specificGravity: 1.0,
       thermalConductivity: 0.5,
-      fireRating: 'retardant',
     },
     visual: {
       color: 0xffffff,
@@ -92,6 +100,10 @@ export async function openTextureUploadDialog(
       },
     },
   });
+  if (!material) {
+    alert(t('재질을 만들 수 없습니다 — 엔진이 준비되지 않았습니다.'));
+    return null;
+  }
 
   // Step 5 — 선택된 face에 할당.
   if (selectedFaceIds.length > 0) {

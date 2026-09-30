@@ -32,7 +32,7 @@ pub use axia_geo::{Plane, same_plane, EPS_PLANE_NORMAL, EPS_PLANE_OFFSET};
 pub use shape::{Shape, ShapeId};
 pub use reference::{Reference, ReferenceCategory, ReferenceId};
 pub use boolean_group::BooleanGroupTag;
-pub use promote::{PromoteError, PromoteOk, XiaKind};
+pub use promote::{MaterialPick, PromoteError, PromoteOk, XiaKind};
 pub use commands::{Command, CommandResult};
 pub use scene::{
     Scene, SolidOwner, FORM_MATERIAL, RectOpening,

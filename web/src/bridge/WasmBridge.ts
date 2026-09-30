@@ -882,6 +882,11 @@ type AxiaEngineExtended = AxiaEngine & {
   remove_material?(faceIds: Uint32Array): boolean;
   get_face_material?(faceIdRaw: number): number;
   get_all_materials?(): string;
+  /** ADR-313 D3 — flat `[face, material, …]` for every face that has one. */
+  getFaceMaterials?(): Uint32Array;
+  /** ADR-313 D5 — a material pick / removal as one undo step; JSON result. */
+  assignMaterialToFaces?(faceIds: Uint32Array, materialId: number): string;
+  removeMaterialFromFaces?(faceIds: Uint32Array): string;
   // Face Split — draw line on face to subdivide
   splitFaceByLine?(faceId: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): string;
   // ADR-202 β-3 — draw a closed circle on a Sphere face (곡면 위 직접 그리기 S9).
@@ -7289,7 +7294,11 @@ export class WasmBridge {
   //  Material 연산 (Disconnection ① 해결)
   // ═══════════════════════════════════════
 
-  /** 면에 재질 할당 → Rust scene.execute(AssignMaterial) → XIA 자동 승격 */
+  /**
+   * 면에 재질 할당 — the engine's plain command. It is not an undo step and it
+   * promotes nothing; the comment here said "XIA 자동 승격" and it never did.
+   * The app's pick is `assignMaterialToFaces` (ADR-313 D5).
+   */
   assignMaterial(faceIds: Uint32Array, materialIdRaw: number): boolean {
     if (!this.engine?.assign_material) return false;
     this.markDirty();
@@ -7301,7 +7310,10 @@ export class WasmBridge {
     }
   }
 
-  /** 면에서 재질 제거 → Rust scene.execute(RemoveMaterial) → XIA 자동 강등 */
+  /**
+   * 면에서 재질 제거 — the plain command: not an undo step, demotes nothing.
+   * The app's removal is `removeMaterialFromFaces` (ADR-313 D5).
+   */
   removeMaterial(faceIds: Uint32Array): boolean {
     if (!this.engine?.remove_material) return false;
     this.markDirty();
@@ -7310,6 +7322,43 @@ export class WasmBridge {
     } catch (e) {
       console.error('[WasmBridge] removeMaterial failed:', e);
       return false;
+    }
+  }
+
+  /**
+   * ADR-313 D5 — the app's material pick, recorded by the engine as ONE undo
+   * step. `assignMaterial` above runs the plain command, which records
+   * nothing: an undo right after a pick took back the step before it
+   * (measured — an extruded box lost its extrude).
+   *
+   * `null` when the engine refuses (its library does not hold the material)
+   * — nothing changed then. An engine built before this entry gets the plain
+   * command instead, which works but is not an undo step.
+   */
+  assignMaterialToFaces(faceIds: number[], materialId: number): MaterialPick | null {
+    if (!this.engine?.assignMaterialToFaces) {
+      return this.assignMaterial(Uint32Array.from(faceIds), materialId) ? { faces: faceIds.length } : null;
+    }
+    this.markDirty();
+    try {
+      return JSON.parse(this.engine.assignMaterialToFaces(Uint32Array.from(faceIds), materialId)) as MaterialPick;
+    } catch (e) {
+      this.reportOnce('assignMaterialToFaces', e);
+      return null;
+    }
+  }
+
+  /** ADR-313 D5 — take the material off faces, as ONE undo step; fallback as above. */
+  removeMaterialFromFaces(faceIds: number[]): MaterialPick | null {
+    if (!this.engine?.removeMaterialFromFaces) {
+      return this.removeMaterial(Uint32Array.from(faceIds)) ? { faces: faceIds.length } : null;
+    }
+    this.markDirty();
+    try {
+      return JSON.parse(this.engine.removeMaterialFromFaces(Uint32Array.from(faceIds))) as MaterialPick;
+    } catch (e) {
+      this.reportOnce('removeMaterialFromFaces', e);
+      return null;
     }
   }
 
@@ -7323,7 +7372,28 @@ export class WasmBridge {
     }
   }
 
-  /** 전체 재질 할당 상태 조회 (JSON) */
+  /**
+   * ADR-313 D3 — every face that carries a material, read from the engine in
+   * one call: `face id → engine material id`. A face with no material is
+   * absent.
+   *
+   * `null` when the engine cannot answer (a build without the export), which
+   * the caller must not read as "no materials": an empty map means that.
+   */
+  getFaceMaterials(): Map<number, number> | null {
+    if (!this.engine?.getFaceMaterials) return null;
+    try {
+      const flat = this.engine.getFaceMaterials();
+      const out = new Map<number, number>();
+      for (let i = 0; i + 1 < flat.length; i += 2) out.set(flat[i], flat[i + 1]);
+      return out;
+    } catch (e) {
+      this.reportOnce('getFaceMaterials', e);
+      return null;
+    }
+  }
+
+  /** 전체 재질 목록 (JSON) — id·이름·물성·색. */
   getAllMaterials(): string | null {
     if (!this.engine?.get_all_materials) return null;
     try {
@@ -8025,6 +8095,23 @@ export interface XiaInfo {
   height?: number;  // mm
   surfaceArea?: number; // mm²
   volume?: number;      // mm³
+}
+
+/**
+ * ADR-313 D5 — what one material pick did (engine `MaterialPick`). The owner
+ * fields are absent when the engine predates them (the plain-command fallback).
+ */
+export interface MaterialPick {
+  /** Faces the pick was given. */
+  faces: number;
+  /** Shapes whose every face now carries the pick, promoted to XIAs. */
+  promoted?: Array<{ shape: number; xia: number }>;
+  /** Such Shapes the engine refused to promote; `reason` is a stable code. */
+  refused?: Array<{ shape: number; reason: string; detail: string }>;
+  /** XIAs whose every face now carries the pick — it is their primary. */
+  primary?: number[];
+  /** XIAs a removal left with no material, demoted back to Shapes (ADR-091). */
+  demoted?: Array<{ xia: number; shape: number }>;
 }
 
 export interface GroupInfo {
