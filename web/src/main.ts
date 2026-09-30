@@ -23,6 +23,7 @@ import { CapabilityExplorerPanel } from './ui/CapabilityExplorerPanel';
 import { InvariantVerifierPanel } from './ui/InvariantVerifierPanel';
 import { AuditLogViewerPanel } from './ui/AuditLogViewerPanel';
 import { getAuditLog } from './core/AuditLog';
+import { getOperationLog } from './core/OperationLog';
 import { AnalyticHoverOverlay } from './core/AnalyticHoverOverlay';
 import { ConstraintVisual } from './ui/ConstraintVisual';
 import { DimensionManager } from './ui/DimensionManager';
@@ -515,7 +516,6 @@ async function main() {
     // was never registered — so the sampler read 0 and the handler never ran
     // (measured 2026-09-30: 1 entry in the History panel, sampler 0, forced
     // evict left the entry in place). Read the singleton directly.
-    const { getOperationLog } = await import('./core/OperationLog');
     // History evict — clears the OperationLog (ADR-013 §3 priority 3). Only
     // `window.__AXIA_EVICT()` runs eviction today; nothing calls it on a timer.
     evictionPolicy.register('history', 3, () => {
