@@ -207,6 +207,43 @@ web/src/ui/CapabilityExplorerPanel.ts (신규)
 
 ---
 
+## 6. Amendment 1 — Step 1 의 surface 주장 정정 (2026-09-30, 배선 감사)
+
+> 메타-원칙 #10 에 따라 위 본문은 그대로 둔다. 이 절은 덧붙이는 기록이다.
+
+Step 1 (§3.1) 이 ActionCatalog 에 등록한 Phase O+P+L₂ endpoint 13개는
+`surfaces: ['mcp','palette']`, `status: 'ok'` 였다. 근거로 인용된 결정
+D-B (surfaces) · D-E (status) 는 **이 문서에 없다** — §2.3 은 D1~D7 이고,
+D-B~D-G 는 `packages/axia-action-catalog/src/catalog.ts` 주석과
+`test/catalog.test.ts` 의 `§D-B`/`§D-E` 주석으로만 남아 있었다.
+
+측정 (2026-09-30):
+
+| 주장 | 실측 |
+|---|---|
+| `'mcp'` (13개 전부) | MCP 서버가 13개 중 **0개** 를 제공 — `packages/axia-mcp-server/src` 에 그 이름이 한 번도 없다 (handler 도, `tiers.ts` 선언도). `aliases.mcp` 는 예약된 이름(D-G)일 뿐 capability 가 있다는 뜻이 아니다 |
+| `'palette'` + `'ok'` (13개 전부) | Capability Explorer 가 실행하는 것은 **7개** (`main.ts` 의 `directDispatch`). 나머지 6개 — `bool-dispatch` 와 `attach-surface-{plane,cylinder,sphere,cone,torus}-validated` — 는 목록에 뜨고, 누르면 "알 수 없는 명령입니다" |
+
+정정:
+
+- 13개 모두 `surfaces: ['palette']`.
+- 6개는 `status: 'stub'`, 설명에 stub 임을 적었다. Explorer 는 stub 에
+  예전 안내문 "복합 인자가 필요합니다. 코드 / MCP 호출 권장." (MCP 도 제공하지
+  않는다) 대신 "아직 어떤 화면도 이 명령을 실행하지 않습니다 — 엔진 함수만
+  있습니다 (stub)." 를 보여 준다.
+
+가드: `web/src/commands/CatalogConsistency.test.ts` 의 describe
+'ActionCatalog surface claims are backed by what they name' —
+`'mcp'` 주장은 MCP 서버에 그 이름의 handler 가 있어야, `'palette'` +
+`'ok'` 주장은 Explorer 가 실제로 부르는 경로 (`main.ts` 의 `directDispatch`
+→ `dispatchMenuAction` 의 `#menubar` · `#statusbar` 항목과
+`CONTEXT_SELECTION_ACTIONS` → `executeAction` 의 `action === '…'` id)
+중 하나에 그 id 가 있어야 통과한다. **카탈로그 패키지 자체 테스트는
+CI 에서 돌지 않으므로** (`.github/workflows/` 에 `axia-action-catalog`
+0회, 루트 `npm test` 는 `web` workspace 만) 가드를 web 쪽에 두었다.
+
+---
+
 *Author*: AXiA team (Path Z 사용자 결정 2026-05-04)
 *Status*: Draft — Step 1 sign-off 대기
 *Queue commitment*: ADR-067 Step 1 (Auto-merge after push_pull) — 본

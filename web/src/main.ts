@@ -23,6 +23,7 @@ import { CapabilityExplorerPanel } from './ui/CapabilityExplorerPanel';
 import { InvariantVerifierPanel } from './ui/InvariantVerifierPanel';
 import { AuditLogViewerPanel } from './ui/AuditLogViewerPanel';
 import { getAuditLog } from './core/AuditLog';
+import { getOperationLog } from './core/OperationLog';
 import { AnalyticHoverOverlay } from './core/AnalyticHoverOverlay';
 import { ConstraintVisual } from './ui/ConstraintVisual';
 import { DimensionManager } from './ui/DimensionManager';
@@ -509,14 +510,22 @@ async function main() {
       t();
       return 50_000;
     });
-    // History evict — drop oldest entries from OperationLog.
+    // The operation log is a module singleton (getOperationLog), not a
+    // container service. Both the 'history' evict handler and the 'history'
+    // sampler below used to look it up as container key 'operationLog', which
+    // was never registered — so the sampler read 0 and the handler never ran
+    // (measured 2026-09-30: 1 entry in the History panel, sampler 0, forced
+    // evict left the entry in place). Read the singleton directly.
+    // History evict — clears the OperationLog (ADR-013 §3 priority 3). Only
+    // `window.__AXIA_EVICT()` runs eviction today; nothing calls it on a timer.
     evictionPolicy.register('history', 3, () => {
-      const log = (container.tryGet?.('operationLog') as { clear?: () => void; getAll?: () => unknown[] } | undefined);
-      if (!log?.clear) return 0;
-      const before = (log.getAll?.() ?? []).length;
+      const log = getOperationLog();
+      const before = log.getAll().length;
       log.clear();
       return before * 200;  // ~200 bytes/entry
     });
+    // Rust slot storage — ADR-013 §6 rust_slot_bytes = WebAssembly.Memory.byteLength.
+    memoryBudget.registerSampler('rust', () => bridge.wasmMemoryBytes());
     // Three.js geometry size sampler.
     memoryBudget.registerSampler('geometry', () => {
       const vp = container.tryGet?.('viewport') as { meshGroup?: { traverse?: (cb: (o: any) => void) => void } } | undefined;
@@ -533,12 +542,8 @@ async function main() {
     });
     // History (OperationLog) size sampler.
     memoryBudget.registerSampler('history', () => {
-      try {
-        const log = (container.tryGet?.('operationLog') as { getAll?: () => unknown[] } | undefined);
-        const arr = log?.getAll?.() ?? [];
-        // Approximate: 200 bytes/entry (id, kind, name, params, ts, inputs, outputs).
-        return arr.length * 200;
-      } catch { return 0; }
+      // Approximate: 200 bytes/entry (id, kind, name, params, ts, inputs, outputs).
+      return getOperationLog().getAll().length * 200;
     });
   });
   debugLog('[Main] ServiceContainer initialized with services:', container.keys());

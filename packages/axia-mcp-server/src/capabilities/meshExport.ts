@@ -5,7 +5,7 @@
  * ⚠ Written against the engine's own buffers rather than Three.js. The browser
  * exports through `OBJExporter` / `STLExporter`, which need a `THREE.Object3D`
  * and a DOM-shaped runtime; the MCP server is plain Node. The buffers
- * (`getPositions` / `getNormals` / `getIndices`) carry exactly what those
+ * (`get_positions` / `get_normals` / `get_indices`) carry exactly what those
  * exporters would have read, so this is the same geometry by a shorter route,
  * not a second source of truth.
  *
