@@ -986,6 +986,18 @@ export class WasmBridge {
     return this.engine !== null;
   }
 
+  /** Bytes of WASM linear memory — the engine's whole heap, which is where the
+   *  Rust slot storage lives (ADR-013 §6 `rust_slot_bytes` =
+   *  `WebAssembly.Memory.byteLength`). 0 before init or if init failed.
+   *
+   *  ⚠ The memory is NOT on the engine object. `init()` returns it and it is
+   *  held here; `AxiaEngine` has no `memory` member. The memory budget's 'rust'
+   *  sampler read `bridge.engine.memory` and so reported 0 for the life of the
+   *  app (measured 2026-09-30: 0 against 1,966,080 real bytes). */
+  wasmMemoryBytes(): number {
+    return this.wasmMemory?.buffer.byteLength ?? 0;
+  }
+
   /** Mark buffers as dirty (call after any topology-changing operation).
    *  Also bumps the WASM-crossing counter for ADR-012 telemetry —
    *  every mutating call into Rust passes through here. */

@@ -153,23 +153,18 @@ declare global {
 }
 
 /**
- * Register baseline samplers + install `window.__AXIA_MEMORY` getter.
- * Other modules can call memoryBudget.registerSampler() afterwards.
+ * Install the `window.__AXIA_MEMORY` getter. Samplers are registered by the
+ * code that owns what they measure — main.ts registers 'rust', 'geometry' and
+ * 'history', where the bridge / viewport / log are in scope and typed.
+ *
+ * ⚠ A 'rust' sampler used to live here. It reached the bridge through the
+ * container's private map (`window.__axia.services.get('bridge')`) and read
+ * `bridge.engine.memory`, which does not exist — the WASM memory is returned by
+ * `init()` and held on the bridge, not on the engine. Nothing typed that path,
+ * so it reported 0 for the life of the app (measured 2026-09-30).
  */
 export function installMemoryGlobal(): void {
   if (typeof window === 'undefined') return;
-
-  // ── (a) Rust slot storage — WebAssembly.Memory.byteLength ──
-  // Best-effort: requires the engine to expose a wasm Memory reference.
-  memoryBudget.registerSampler('rust', () => {
-    const w = window as unknown as {
-      __axia?: { services?: { get?: (k: string) => unknown } };
-    };
-    const bridge = w.__axia?.services?.get?.('bridge') as
-      | { engine?: { memory?: WebAssembly.Memory } }
-      | undefined;
-    return bridge?.engine?.memory?.buffer?.byteLength ?? 0;
-  });
 
   Object.defineProperty(window, '__AXIA_MEMORY', {
     configurable: true,
