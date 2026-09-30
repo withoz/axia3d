@@ -86,14 +86,14 @@ const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// MCP capability schema version (semver). MCP server must satisfy
 /// `^MAJOR.MINOR` against this string. ADR-041 P26.2.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "schema_version")]
 pub fn schema_version() -> String {
     SCHEMA_VERSION.to_string()
 }
 
 /// Engine build version (axia-wasm crate version). For audit logs and
 /// drift detection. ADR-041 P26.2.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "engine_version")]
 pub fn engine_version() -> String {
     ENGINE_VERSION.to_string()
 }
@@ -772,8 +772,9 @@ impl AxiaEngine {
     // Bridge surface for the form-layer Shape draw variants (P-5a/P-5b).
     // Signature pattern matches existing `draw_rect` / `draw_line` /
     // `draw_circle` — f64 return, -1.0 = error, else = ShapeId.raw() as
-    // f64. New endpoints are NOT under js_name attribute (Rust snake_case
-    // is exposed as-is, mirroring the existing draw_* family).
+    // f64. New endpoints keep their Rust snake_case name in JS, mirroring
+    // the existing draw_* family — written out as a quoted js_name so the
+    // export baseline can see them (step6_additive_only.rs, 2026-09-30).
     //
     // All transactions are managed inside `Scene::exec_draw_*_as_shape`
     // (Phase 1 delegates to legacy path, Phase 2 wraps conversion).
@@ -782,6 +783,7 @@ impl AxiaEngine {
 
     /// ADR-050 P-5c — Draw a rectangle as a form-layer Shape (no Xia).
     /// Returns ShapeId.raw() as f64 on success, -1.0 on error.
+    #[wasm_bindgen(js_name = "draw_rect_as_shape")]
     pub fn draw_rect_as_shape(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -820,6 +822,7 @@ impl AxiaEngine {
     /// ADR-050 P-5c — Draw a line as a form-layer Shape (no Xia).
     /// Returns ShapeId.raw() as f64 on success, -1.0 on error.
     /// `nx/ny/nz = 0` means surface_normal is None (free-edge mode).
+    #[wasm_bindgen(js_name = "draw_line_as_shape")]
     pub fn draw_line_as_shape(
         &mut self,
         x0: f64, y0: f64, z0: f64,
@@ -1033,6 +1036,7 @@ impl AxiaEngine {
 
     /// ADR-050 P-5c — Draw a circle as a form-layer Shape (no Xia).
     /// Returns ShapeId.raw() as f64 on success, -1.0 on error.
+    #[wasm_bindgen(js_name = "draw_circle_as_shape")]
     pub fn draw_circle_as_shape(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -1070,6 +1074,7 @@ impl AxiaEngine {
     /// Builds N plain Line segments (NO Arc metadata / NO ≥12 circle threshold),
     /// so a polygon stays a polygon even under `face_rederive_on_draw`. Distinct
     /// from `draw_circle_as_shape`. Returns ShapeId.raw() as f64, -1.0 on error.
+    #[wasm_bindgen(js_name = "draw_polygon_as_shape")]
     pub fn draw_polygon_as_shape(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -3368,6 +3373,7 @@ impl AxiaEngine {
 
     /// Create a cylinder primitive.
     /// Returns the base face ID for Push/Pull operations.
+    #[wasm_bindgen(js_name = "create_cylinder")]
     pub fn create_cylinder(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -3418,6 +3424,7 @@ impl AxiaEngine {
 
     /// Create a cone primitive.
     /// Returns the base face ID for Push/Pull operations.
+    #[wasm_bindgen(js_name = "create_cone")]
     pub fn create_cone(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -3467,6 +3474,7 @@ impl AxiaEngine {
 
     /// Create an axis-aligned box primitive (6-face closed solid).
     /// Returns the bottom face ID for Push/Pull operations.
+    #[wasm_bindgen(js_name = "create_box")]
     pub fn create_box(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -3506,6 +3514,7 @@ impl AxiaEngine {
 
     /// Create a sphere primitive (UV sphere).
     /// Returns a face ID from the sphere for Push/Pull operations.
+    #[wasm_bindgen(js_name = "create_sphere")]
     pub fn create_sphere(
         &mut self,
         cx: f64, cy: f64, cz: f64,
@@ -4145,6 +4154,7 @@ impl AxiaEngine {
     /// Returns the first face ID owned by the given XIA ID.
     /// draw_rect/draw_circle return XIA IDs; push_pull expects face IDs.
     /// Returns u32::MAX on failure.
+    #[wasm_bindgen(js_name = "get_xia_face")]
     pub fn get_xia_face(&self, xia_id: u32) -> u32 {
         if let Some(xia) = self.scene.xias.get(&xia_id) {
             if let Some(&fid) = xia.face_ids.first() {
@@ -4156,6 +4166,7 @@ impl AxiaEngine {
 
     /// face가 속한 XIA의 ID 반환 (O(1) 역인덱스)
     /// 없으면 u32::MAX 반환
+    #[wasm_bindgen(js_name = "get_xia_for_face")]
     pub fn get_xia_for_face(&self, face_id_raw: u32) -> u32 {
         let fid = FaceId::new(face_id_raw);
         self.scene.get_xia_for_face(fid).unwrap_or(u32::MAX)
@@ -4241,6 +4252,7 @@ impl AxiaEngine {
     ///
     /// Per W-1-β scope: Extrude mode only. Other modes (Revolve / Sweep /
     /// Loft) get separate exports in W-3 / W-4.
+    #[wasm_bindgen(js_name = "create_solid_extrude")]
     pub fn create_solid_extrude(
         &mut self,
         face_id_raw: u32,
@@ -4376,6 +4388,7 @@ impl AxiaEngine {
     /// returns FALSE and the Scene rolls the mesh back byte-identical. The UI
     /// surfaces `lastError()` (a clear "taper too steep / use a flat profile"
     /// message) rather than silently producing a non-tapered straight solid.
+    #[wasm_bindgen(js_name = "create_solid_extrude_tapered")]
     pub fn create_solid_extrude_tapered(
         &mut self,
         face_id_raw: u32,
@@ -4452,6 +4465,7 @@ impl AxiaEngine {
     /// profile returns FALSE and the Scene rolls the mesh back byte-identical.
     /// The UI surfaces `lastError()` rather than silently producing a straight
     /// cylinder.
+    #[wasm_bindgen(js_name = "create_solid_extrude_cone")]
     pub fn create_solid_extrude_cone(
         &mut self,
         face_id_raw: u32,
@@ -4516,6 +4530,7 @@ impl AxiaEngine {
     /// negative / zero-sum distance, a solid-face profile (is_move_only), or a
     /// non-(Plane, AllLinear|AllCircular) profile returns FALSE and the Scene
     /// rolls the mesh back byte-identical. The UI surfaces `lastError()`.
+    #[wasm_bindgen(js_name = "create_solid_extrude_bidirectional")]
     pub fn create_solid_extrude_bidirectional(
         &mut self,
         face_id_raw: u32,
@@ -4576,6 +4591,7 @@ impl AxiaEngine {
     /// at its longest boundary edges) so both caps match → manifold loft solid.
     /// Returns true on success, false on error (< 3 verts / same face / curved
     /// or multi-loop profile).
+    #[wasm_bindgen(js_name = "create_solid_loft")]
     pub fn create_solid_loft(&mut self, profile_face_raw: u32, other_profile_raw: u32) -> bool {
         let profile = FaceId::new(profile_face_raw);
         let other = FaceId::new(other_profile_raw);
@@ -4625,6 +4641,7 @@ impl AxiaEngine {
     /// CAPPED wedge solid (θ=0 + θ=angle end caps). Profile must be a single
     /// planar polygon whose plane contains the axis and (for partial) stays
     /// clear of it. Returns true on success.
+    #[wasm_bindgen(js_name = "create_solid_revolve")]
     pub fn create_solid_revolve(
         &mut self,
         profile_face_raw: u32,
@@ -4901,7 +4918,7 @@ impl AxiaEngine {
     /// - Empty group → no-op, returns true.
     /// - All faces coplanar → falls back to per-face regular push_pull
     ///   (prevents degenerate walls when smooth group contains only split sub-faces).
-    #[wasm_bindgen]
+    #[wasm_bindgen(js_name = "push_pull_smooth_group_seamless")]
     pub fn push_pull_smooth_group_seamless(
         &mut self,
         face_ids: Vec<u32>,
@@ -5518,6 +5535,7 @@ impl AxiaEngine {
     // Undo/Redo
     // ========================================================================
 
+    #[wasm_bindgen(js_name = "undo")]
     pub fn undo(&mut self) -> bool {
         let result = self.scene.execute(Command::Undo);
         self.mark_topology_changed();  // undo can restore/remove faces
@@ -5525,6 +5543,7 @@ impl AxiaEngine {
         matches!(result, axia_core::commands::CommandResult::MeshUpdated)
     }
 
+    #[wasm_bindgen(js_name = "redo")]
     pub fn redo(&mut self) -> bool {
         let result = self.scene.execute(Command::Redo);
         self.mark_topology_changed();  // redo can restore/remove faces
@@ -5532,10 +5551,12 @@ impl AxiaEngine {
         matches!(result, axia_core::commands::CommandResult::MeshUpdated)
     }
 
+    #[wasm_bindgen(js_name = "can_undo")]
     pub fn can_undo(&self) -> bool {
         self.scene.transactions.can_undo()
     }
 
+    #[wasm_bindgen(js_name = "can_redo")]
     pub fn can_redo(&self) -> bool {
         self.scene.transactions.can_redo()
     }
@@ -5544,6 +5565,7 @@ impl AxiaEngine {
     // Mesh export (cached)
     // ========================================================================
 
+    #[wasm_bindgen(js_name = "get_positions")]
     pub fn get_positions(&mut self) -> Vec<f32> {
         self.rebuild_cache();
         self.cached_positions.clone()
@@ -5603,11 +5625,13 @@ impl AxiaEngine {
         self.cached_positions_f64.clone()
     }
 
+    #[wasm_bindgen(js_name = "get_normals")]
     pub fn get_normals(&mut self) -> Vec<f32> {
         self.rebuild_cache();
         self.cached_normals.clone()
     }
 
+    #[wasm_bindgen(js_name = "get_indices")]
     pub fn get_indices(&mut self) -> Vec<u32> {
         self.rebuild_cache();
         self.cached_indices.clone()
@@ -6423,6 +6447,7 @@ impl AxiaEngine {
 
     /// Get the FaceId for each triangle (one u32 per triangle).
     /// Use: face_map[triangleIndex] → FaceId for push_pull.
+    #[wasm_bindgen(js_name = "get_face_map")]
     pub fn get_face_map(&mut self) -> Vec<u32> {
         self.rebuild_cache();
         self.cached_face_map.clone()
@@ -6432,6 +6457,7 @@ impl AxiaEngine {
     /// Returns flat [x0,y0,z0, x1,y1,z1, ...] — use with THREE.LineSegments.
     /// Coplanar edges (angle ≤ 15°) are automatically hidden.
     /// Centerline edges are excluded — call getCenterlineLines() separately.
+    #[wasm_bindgen(js_name = "get_edge_lines")]
     pub fn get_edge_lines(&mut self) -> Vec<f32> {
         self.rebuild_cache();
         self.cached_edge_lines.clone()
@@ -6448,6 +6474,7 @@ impl AxiaEngine {
 
     /// Edge line segment index → EdgeId raw value mapping.
     /// segment[i]의 EdgeId = edge_map[i]
+    #[wasm_bindgen(js_name = "get_edge_map")]
     pub fn get_edge_map(&mut self) -> Vec<u32> {
         self.rebuild_cache();
         self.cached_edge_map.clone()
@@ -6642,6 +6669,7 @@ impl AxiaEngine {
     /// Wrapped in an undo transaction (Bug #1 fix, 2026-04-17) — previously
     /// this op mutated the mesh without recording a snapshot, causing Ctrl+Z
     /// to skip past the deletion to an earlier command.
+    #[wasm_bindgen(js_name = "delete_face")]
     pub fn delete_face(&mut self, face_id_raw: u32) -> bool {
         let fid = FaceId::new(face_id_raw);
         if !self.scene.mesh.faces.contains(fid) {
@@ -6676,6 +6704,7 @@ impl AxiaEngine {
     /// Legacy signature returning just bool — calls the cascaded_count version.
     /// New code should prefer `delete_edge_cascade` which reports how many faces
     /// were removed so the UI can show a toast.
+    #[wasm_bindgen(js_name = "delete_edge")]
     pub fn delete_edge(&mut self, edge_id_raw: u32) -> bool {
         self.delete_edge_cascade(edge_id_raw) >= 0
     }
@@ -6730,6 +6759,7 @@ impl AxiaEngine {
 
     /// Batch delete faces and edges in a single undo transaction.
     /// Called from JS delete action — undo restores everything at once.
+    #[wasm_bindgen(js_name = "batch_delete")]
     pub fn batch_delete(&mut self, face_ids: &[u32], edge_ids: &[u32]) -> bool {
         if face_ids.is_empty() && edge_ids.is_empty() {
             return false;
@@ -7948,6 +7978,7 @@ impl AxiaEngine {
         }
     }
 
+    #[wasm_bindgen(js_name = "get_face_normal")]
     pub fn get_face_normal(&self, face_id_raw: u32) -> Vec<f64> {
         let fid = FaceId::new(face_id_raw);
         if let Some(face) = self.scene.mesh.faces.get(fid) {
@@ -8521,6 +8552,7 @@ impl AxiaEngine {
     /// DCEL 위상(topology) 기반으로 seedFace에 연결된 모든 face를 BFS 탐색.
     /// half-edge의 radial partner(next_rad)를 통해 edge를 공유하는 인접 face를 찾습니다.
     /// 좌표 비교 없이 순수 위상 구조만 사용 → 다른 Volume의 face가 섞이지 않음.
+    #[wasm_bindgen(js_name = "get_connected_faces")]
     pub fn get_connected_faces(&self, seed_face_raw: u32) -> Vec<u32> {
         use std::collections::{HashSet, VecDeque};
 
@@ -8593,6 +8625,7 @@ impl AxiaEngine {
         visited.into_iter().map(|f| f.raw()).collect()
     }
 
+    #[wasm_bindgen(js_name = "get_stats")]
     pub fn get_stats(&self) -> String {
         let stats = self.scene.stats();
         format!(
@@ -8608,10 +8641,12 @@ impl AxiaEngine {
         )
     }
 
+    #[wasm_bindgen(js_name = "vert_count")]
     pub fn vert_count(&self) -> usize {
         self.scene.mesh.vert_count()
     }
 
+    #[wasm_bindgen(js_name = "face_count")]
     pub fn face_count(&self) -> usize {
         self.scene.mesh.face_count()
     }
@@ -8629,6 +8664,7 @@ impl AxiaEngine {
     ///
     /// 특정 XIA 하나의 정보가 필요하면 먼저 `get_xia_face(xia_id)`로 대표 face를 얻은
     /// 뒤 그 XIA의 모든 face_ids를 수집해 이 함수에 전달하거나, 새 `get_xia_stats` 사용.
+    #[wasm_bindgen(js_name = "get_xia_info")]
     pub fn get_xia_info(&self, face_ids_raw: &[u32]) -> String {
         use std::collections::HashSet;
 
@@ -8782,6 +8818,7 @@ impl AxiaEngine {
     // ========================================================================
 
     /// 프로젝트 데이터를 바이너리 스냅샷으로 내보내기 (versioned format with magic bytes)
+    #[wasm_bindgen(js_name = "export_snapshot")]
     pub fn export_snapshot(&self) -> Vec<u8> {
         match self.scene.export_versioned_snapshot() {
             Ok(data) => {
@@ -9251,6 +9288,7 @@ impl AxiaEngine {
     }
 
     /// 바이너리 스냅샷으로부터 프로젝트 복원 (supports versioned and legacy formats)
+    #[wasm_bindgen(js_name = "import_snapshot")]
     pub fn import_snapshot(&mut self, data: &[u8]) -> bool {
         match self.scene.import_versioned_snapshot(data) {
             Ok(()) => {
@@ -9269,6 +9307,7 @@ impl AxiaEngine {
 
     /// Orient all faces for consistent normals.
     /// Returns number of faces flipped.
+    #[wasm_bindgen(js_name = "orient_faces")]
     pub fn orient_faces(&mut self) -> usize {
         let (flipped, visited) = self.scene.orient_faces();
         debug_log!("[RUST] orient_faces: flipped={} visited={}", flipped, visited);
@@ -10623,6 +10662,7 @@ impl AxiaEngine {
 
     /// DXF 파일 바이트를 파싱하여 DCEL 메시로 가져오기
     /// 반환: JSON 문자열 (통계 정보)
+    #[wasm_bindgen(js_name = "import_dxf")]
     pub fn import_dxf(&mut self, data: &[u8]) -> String {
         debug_log!("[RUST] import_dxf: {} bytes", data.len());
 
@@ -10658,6 +10698,7 @@ impl AxiaEngine {
     /// faces_a, faces_b: face ID 배열 (u32)
     /// op: "union" | "subtract" | "intersect"
     /// 반환: JSON 문자열 (결과 정보)
+    #[wasm_bindgen(js_name = "boolean_op")]
     pub fn boolean_op(
         &mut self,
         faces_a: &[u32],
@@ -11234,6 +11275,7 @@ impl AxiaEngine {
     // ========================================================================
 
     /// 선택된 face들의 정점을 이동
+    #[wasm_bindgen(js_name = "translate_faces")]
     pub fn translate_faces(&mut self, face_ids: &[u32], dx: f64, dy: f64, dz: f64) -> bool {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         let delta = DVec3::new(dx, dy, dz);
@@ -11286,6 +11328,7 @@ impl AxiaEngine {
 
     /// 선택된 face들의 정점을 회전
     /// cx,cy,cz: 회전 중심, ax,ay,az: 회전축, angle_deg: 각도 (도)
+    #[wasm_bindgen(js_name = "rotate_faces")]
     pub fn rotate_faces(
         &mut self, face_ids: &[u32],
         cx: f64, cy: f64, cz: f64,
@@ -11334,6 +11377,7 @@ impl AxiaEngine {
 
     /// 선택된 face들의 정점을 스케일
     /// cx,cy,cz: 스케일 중심, sx,sy,sz: 축별 배율
+    #[wasm_bindgen(js_name = "scale_faces")]
     pub fn scale_faces(
         &mut self, face_ids: &[u32],
         cx: f64, cy: f64, cz: f64,
@@ -11957,6 +12001,7 @@ impl AxiaEngine {
 
     /// Offset: face의 경계를 dist만큼 안쪽(+)/바깥쪽(-)으로 오프셋
     /// 반환: JSON 결과 { ok, innerFace, stripFaces, ... }
+    #[wasm_bindgen(js_name = "offset_face")]
     pub fn offset_face(&mut self, face_id_raw: u32, dist: f64) -> String {
         let fid = FaceId::new(face_id_raw);
 
@@ -12019,6 +12064,7 @@ impl AxiaEngine {
     /// "offset then push/pull inward" recess as one manifold-safe op. Guarded by
     /// the closure-preserving + self-intersection gate. Returns JSON
     /// `{ ok, pocketFace, wallFaces, frameFaces }` or `{ ok:false, error }`.
+    #[wasm_bindgen(js_name = "create_recess")]
     pub fn create_recess(&mut self, face_id_raw: u32, inset: f64, depth: f64) -> String {
         let fid = FaceId::new(face_id_raw);
         let mat = axia_core::FORM_MATERIAL;
@@ -12067,6 +12113,7 @@ impl AxiaEngine {
     /// Read-only recess preview geometry for the UI ghost (no mutation).
     /// Returns JSON `{ ok, insetLoop:[x,y,z,...], floorLoop:[x,y,z,...] }` —
     /// the inset boundary flush with the surface and the recessed floor loop.
+    #[wasm_bindgen(js_name = "recess_preview")]
     pub fn recess_preview(&self, face_id_raw: u32, inset: f64, depth: f64) -> String {
         let fid = FaceId::new(face_id_raw);
         match self.scene.mesh.recess_preview(fid, inset, depth) {
@@ -12090,6 +12137,7 @@ impl AxiaEngine {
 
     /// Edge(line)를 평행하게 offset하여 새 edge 생성 (선만 복사, 면은 만들지 않음)
     /// plane_normal: 참조 평면 법선 (Y-up = 0,1,0)
+    #[wasm_bindgen(js_name = "offset_edge")]
     pub fn offset_edge(
         &mut self,
         edge_id_raw: u32,
@@ -12139,6 +12187,7 @@ impl AxiaEngine {
     ///   - `"other"` (with `message`) — any other failure
     ///
     /// On success: `{"ok":true,"newEdge":<u32>,"newV0":<u32>,"newV1":<u32>}`.
+    #[wasm_bindgen(js_name = "offset_edge_on_host")]
     pub fn offset_edge_on_host(&mut self, edge_id_raw: u32, dist: f64) -> String {
         use axia_geo::operations::offset::OffsetEdgeError;
         let eid = EdgeId::new(edge_id_raw);
@@ -12229,6 +12278,7 @@ impl AxiaEngine {
     /// `arc_plane_mismatch` — and any other Plane-host applicable
     /// errors. Free-wire-specific reasons (no_reference_plane,
     /// wire_not_planar) do NOT appear here since caller supplies plane.
+    #[wasm_bindgen(js_name = "offset_edge_with_reference_plane")]
     pub fn offset_edge_with_reference_plane(
         &mut self,
         edge_id_raw: u32,
@@ -12289,6 +12339,7 @@ impl AxiaEngine {
     }
 
     /// face 집합의 중심점 반환 [x, y, z]
+    #[wasm_bindgen(js_name = "faces_centroid")]
     pub fn faces_centroid(&self, face_ids: &[u32]) -> Vec<f64> {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         match self.scene.mesh.faces_centroid(&fids) {
@@ -12303,6 +12354,7 @@ impl AxiaEngine {
 
     /// 선택된 face들을 그룹으로 생성
     /// 반환: group ID (성공) 또는 0 (실패)
+    #[wasm_bindgen(js_name = "create_group")]
     pub fn create_group(&mut self, name: &str, face_ids: &[u32]) -> f64 {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         let cmd = Command::CreateGroup {
@@ -12320,6 +12372,7 @@ impl AxiaEngine {
     }
 
     /// 그룹 해제
+    #[wasm_bindgen(js_name = "delete_group")]
     pub fn delete_group(&mut self, group_id: u32) -> bool {
         let cmd = Command::DeleteGroup { group_id };
         let result = self.scene.execute(cmd);
@@ -12327,6 +12380,7 @@ impl AxiaEngine {
     }
 
     /// 그룹 이름 변경
+    #[wasm_bindgen(js_name = "rename_group")]
     pub fn rename_group(&mut self, group_id: u32, new_name: &str) -> bool {
         let cmd = Command::RenameGroup {
             group_id,
@@ -12337,6 +12391,7 @@ impl AxiaEngine {
     }
 
     /// 그룹 가시성 토글
+    #[wasm_bindgen(js_name = "toggle_group_visibility")]
     pub fn toggle_group_visibility(&mut self, group_id: u32) -> bool {
         let cmd = Command::ToggleGroupVisibility { group_id };
         let result = self.scene.execute(cmd);
@@ -12350,12 +12405,14 @@ impl AxiaEngine {
     }
 
     /// face가 잠긴 그룹에 속하는지 확인
+    #[wasm_bindgen(js_name = "is_face_locked")]
     pub fn is_face_locked(&self, face_id_raw: u32) -> bool {
         let fid = axia_geo::FaceId::new(face_id_raw);
         self.scene.is_face_locked(fid)
     }
 
     /// 그룹 잠금 토글
+    #[wasm_bindgen(js_name = "toggle_group_lock")]
     pub fn toggle_group_lock(&mut self, group_id: u32) -> bool {
         let cmd = Command::ToggleGroupLock { group_id };
         let result = self.scene.execute(cmd);
@@ -12363,6 +12420,7 @@ impl AxiaEngine {
     }
 
     /// face가 속한 그룹 ID 조회 (없으면 0 반환)
+    #[wasm_bindgen(js_name = "get_group_for_face")]
     pub fn get_group_for_face(&self, face_id_raw: u32) -> f64 {
         let fid = FaceId::new(face_id_raw);
         match self.scene.groups.get_group_for_face(fid) {
@@ -12372,6 +12430,7 @@ impl AxiaEngine {
     }
 
     /// 그룹의 모든 face ID 반환 (재귀적)
+    #[wasm_bindgen(js_name = "get_group_faces")]
     pub fn get_group_faces(&self, group_id: u32) -> Vec<u32> {
         self.scene.groups.get_all_faces_recursive(group_id)
             .iter()
@@ -12380,24 +12439,28 @@ impl AxiaEngine {
     }
 
     /// 그룹에 face 추가
+    #[wasm_bindgen(js_name = "add_faces_to_group")]
     pub fn add_faces_to_group(&mut self, group_id: u32, face_ids: &[u32]) -> bool {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         self.scene.groups.add_faces_to_group(group_id, &fids)
     }
 
     /// 그룹에서 face 제거
+    #[wasm_bindgen(js_name = "remove_faces_from_group")]
     pub fn remove_faces_from_group(&mut self, group_id: u32, face_ids: &[u32]) -> bool {
         let fids: Vec<FaceId> = face_ids.iter().map(|&id| FaceId::new(id)).collect();
         self.scene.groups.remove_faces_from_group(group_id, &fids)
     }
 
     /// 중첩 그룹 설정
+    #[wasm_bindgen(js_name = "set_group_parent")]
     pub fn set_group_parent(&mut self, child_id: u32, parent_id: f64) -> bool {
         let parent = if parent_id <= 0.0 { None } else { Some(parent_id as u32) };
         self.scene.groups.set_parent(child_id, parent)
     }
 
     /// 그룹을 컴포넌트로 변환
+    #[wasm_bindgen(js_name = "make_component")]
     pub fn make_component(&mut self, group_id: u32, name: &str) -> f64 {
         match self.scene.groups.make_component(group_id, name.to_string()) {
             Some(def_id) => {
@@ -12436,6 +12499,7 @@ impl AxiaEngine {
     }
 
     /// 그룹 정보 JSON 반환
+    #[wasm_bindgen(js_name = "get_group_info")]
     pub fn get_group_info(&self, group_id: u32) -> String {
         match self.scene.groups.export_group_info(group_id) {
             Some(json) => json,
@@ -12444,11 +12508,13 @@ impl AxiaEngine {
     }
 
     /// 전체 그룹 트리 JSON 반환
+    #[wasm_bindgen(js_name = "get_all_groups")]
     pub fn get_all_groups(&self) -> String {
         self.scene.groups.export_all_groups_json()
     }
 
     /// 그룹 수
+    #[wasm_bindgen(js_name = "group_count")]
     pub fn group_count(&self) -> usize {
         self.scene.groups.group_count()
     }
@@ -12458,6 +12524,7 @@ impl AxiaEngine {
     // ═══════════════════════════════════════════════
 
     /// 면에 재질 부여 (material_id_raw = MaterialId의 raw u32 값)
+    #[wasm_bindgen(js_name = "assign_material")]
     pub fn assign_material(&mut self, face_ids_raw: &[u32], material_id_raw: u32) -> bool {
         let face_ids: Vec<FaceId> = face_ids_raw.iter()
             .map(|&r| FaceId::new(r))
@@ -12474,6 +12541,7 @@ impl AxiaEngine {
     }
 
     /// 면에서 재질 제거 → XIA가 Volume으로 복귀
+    #[wasm_bindgen(js_name = "remove_material")]
     pub fn remove_material(&mut self, face_ids_raw: &[u32]) -> bool {
         let face_ids: Vec<FaceId> = face_ids_raw.iter()
             .map(|&r| FaceId::new(r))
@@ -12489,6 +12557,7 @@ impl AxiaEngine {
     }
 
     /// 면의 재질 ID 조회 (없으면 0 반환, 0 = 기본 재질)
+    #[wasm_bindgen(js_name = "get_face_material")]
     pub fn get_face_material(&self, face_id_raw: u32) -> u32 {
         let fid = FaceId::new(face_id_raw);
         if let Some(face) = self.scene.mesh.faces.get(fid) {
@@ -12498,6 +12567,7 @@ impl AxiaEngine {
     }
 
     /// 전체 재질 목록 JSON 반환 (format! 기반, serde_json 불필요)
+    #[wasm_bindgen(js_name = "get_all_materials")]
     pub fn get_all_materials(&self) -> String {
         let mats = self.scene.material_library.all();
         if mats.is_empty() {
