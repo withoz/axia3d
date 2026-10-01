@@ -53,8 +53,17 @@ const mockEngine: Record<string, any> = {
   remove_faces_from_group: vi.fn().mockReturnValue(true),
   set_group_parent: vi.fn().mockReturnValue(true),
   make_component: vi.fn().mockReturnValue(1),
-  get_group_info: vi.fn().mockReturnValue('{"id":1,"name":"Group1","faceCount":3}'),
-  get_all_groups: vi.fn().mockReturnValue('[]'),
+  // ⚠ The engine's real shape, measured in a browser 2026-10-01: there is NO
+  // `faceCount` key. Its keys are id / name / faceIds / children / visible /
+  // locked / parent / isComponent / componentDefId. This mock used to supply
+  // `faceCount` and no `faceIds`, which is why nothing caught the Outliner
+  // rendering `(undefined)` beside every group that came from the engine.
+  get_group_info: vi.fn().mockReturnValue(
+    '{"id":1,"name":"Group1","faceIds":[4,5,6],"children":[],"visible":true,'
+    + '"locked":false,"parent":null,"isComponent":false,"componentDefId":null}'),
+  get_all_groups: vi.fn().mockReturnValue(
+    '[{"id":1,"name":"Group1","faceIds":[4,5],"children":[],"visible":true,'
+    + '"locked":false,"parent":null,"isComponent":false,"componentDefId":null}]'),
   group_count: vi.fn().mockReturnValue(1),
   import_dxf: vi.fn().mockReturnValue('{"faces":10}'),
   recordRectOpening: vi.fn(),
@@ -2074,9 +2083,22 @@ describe('WasmBridge', () => {
       expect(info!.id).toBe(1);
     });
 
+    it('getGroupInfo fills the faceCount the engine does not send', () => {
+      const info = bridge.getGroupInfo(1);
+      // PREMISE: the mock really omits it — otherwise this says nothing.
+      expect(JSON.parse(mockEngine.get_group_info()).faceCount).toBeUndefined();
+      expect(info!.faceCount, 'counted from faceIds').toBe(3);
+    });
+
     it('getAllGroups returns array', () => {
       const groups = bridge.getAllGroups();
       expect(Array.isArray(groups)).toBe(true);
+    });
+
+    it('getAllGroups fills it too — the Outliner reads this one', () => {
+      const groups = bridge.getAllGroups();
+      expect(JSON.parse(mockEngine.get_all_groups())[0].faceCount).toBeUndefined();
+      expect(groups[0].faceCount, 'counted from faceIds').toBe(2);
     });
 
     it('groupCount returns number', () => {
