@@ -614,7 +614,6 @@ type AxiaEngineExtended = AxiaEngine & {
   boolean_op?(a: Uint32Array, b: Uint32Array, op: string): string;
   booleanSolid?(a: Uint32Array, b: Uint32Array, op: string): string;
   sheetBoolean?(a: number, b: number, op: string): string;
-  drawPolyline?(points: Float64Array): number;
   getPositionsPtr?(): number;
   getPositionsLen?(): number;
   getNormalsPtr?(): number;
@@ -927,7 +926,6 @@ type AxiaEngineExtended = AxiaEngine & {
   // Delta Buffer Export
   getDirtyFaceBuffers?(): WasmDeltaBuffers | undefined;
   getCacheVersion?(): number;
-  get_dirty_face_count?(): number;
 };
 
 export class WasmBridge {
