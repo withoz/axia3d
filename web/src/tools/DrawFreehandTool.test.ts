@@ -1,8 +1,10 @@
 /**
  * DrawFreehandTool — form-mode dispatch coverage.
  *
- * ADR-087 K-γ: form-mode 활성 시 `bridge.drawPolylineAsShape` (Plane
- * attach hint 전달) 라우팅, 비활성 시 legacy `bridge.drawPolyline`.
+ * ADR-087 K-γ: form-mode routes to `bridge.drawPolylineAsShape`, which carries
+ * the Plane attach hint. There is no legacy fallback: `drawPolyline` was retired
+ * by ADR-087 K-ζ and the bridge has no such method, so a test asserting it was
+ * not called could not fail. Removed 2026-10-01 with its two mocks.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
@@ -25,7 +27,6 @@ vi.mock('../curves/CurveRegistry', () => ({
 function mockToolContext() {
   return {
     bridge: {
-      drawPolyline: vi.fn().mockReturnValue(0),
       drawPolylineAsShape: vi.fn().mockReturnValue(0),
     },
     viewport: {
@@ -65,7 +66,6 @@ describe('DrawFreehandTool — ADR-087 K-ε kernel-aware dispatch', () => {
     tool.onMouseUp({} as MouseEvent);
 
     expect(ctx.bridge.drawPolylineAsShape).toHaveBeenCalledTimes(1);
-    expect(ctx.bridge.drawPolyline).not.toHaveBeenCalled();
     // Verify normal hint = (0, 0, 1) (the mocked draw plane normal)
     const args = ctx.bridge.drawPolylineAsShape.mock.calls[0];
     const normalArg = args[1];
@@ -92,8 +92,7 @@ describe('DrawFreehandTool — ADR-284 β-4-3 curved-face dispatch', () => {
   function sphereCtx() {
     return {
       bridge: {
-        drawPolyline: vi.fn().mockReturnValue(0),
-        drawPolylineAsShape: vi.fn().mockReturnValue(0),
+          drawPolylineAsShape: vi.fn().mockReturnValue(0),
         drawPolylineOnCurved: vi.fn().mockReturnValue('{"cap":4,"annulus":0}'),
         drawOpenSeamOnCurved: vi.fn().mockReturnValue('{"a":4,"b":5}'),
       },
