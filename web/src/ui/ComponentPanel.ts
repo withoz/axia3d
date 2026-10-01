@@ -197,6 +197,9 @@ export class ComponentPanel {
         ${group.isComponent && group.componentDefId != null
           ? `<button class="cp-btn-place cp-toggle" data-action="place" title="${t('컴포넌트 배치 — 원본 옆에 사본을 놓습니다')}">⊕</button>`
           : ''}
+        <button class="cp-btn-edit cp-toggle" data-action="add-faces" title="${t('선택한 면을 이 그룹에 추가')}">+</button>
+        <button class="cp-btn-edit cp-toggle" data-action="remove-faces" title="${t('선택한 면을 이 그룹에서 빼기')}">−</button>
+        <button class="cp-btn-edit cp-toggle" data-action="nest" title="${t('패널에서 선택한 그룹을 이 그룹 안으로')}">↳</button>
         <button class="cp-btn-rename cp-toggle" data-action="rename" title="${t('이름 변경')}">✎</button>
         <button class="cp-btn-delete cp-toggle" data-action="delete" title="${t('그룹 해제')}">✕</button>
       </div>
@@ -295,6 +298,61 @@ export class ComponentPanel {
           Toast.info(t('이름을 {name} 으로 바꿨습니다', { name: trimmed }));
         } else {
           Toast.error(this.bridge.lastError?.() || t('이름 변경에 실패했습니다'));
+        }
+        this.refresh();
+        break;
+      }
+      // ADR — the three edits the Outliner never offered. `addFacesToGroup`,
+      // `removeFacesFromGroup` and `setGroupParent` are engine ops with WASM
+      // exports and bridge wrappers, and until 2026-10-01 none had a caller:
+      // the UI could create a group and dissolve one, and nothing in between.
+      //
+      // ⚠ The panel RENDERS a nested tree (childMap, per-depth indent) while
+      // `create_group` always leaves `parent` unset and nothing called
+      // `set_parent` — it drew a tree the user could not build.
+      case 'add-faces':
+      case 'remove-faces': {
+        const faces = this.selection.getSelectedFaces();
+        if (faces.length === 0) {
+          Toast.warning(t('먼저 면을 선택하세요'));
+          break;
+        }
+        const adding = action === 'add-faces';
+        const ok = adding
+          ? this.bridge.addFacesToGroup(groupId, faces)
+          : this.bridge.removeFacesFromGroup(groupId, faces);
+        if (ok) {
+          Toast.info(adding
+            ? t('면 {n}개를 그룹에 더했습니다', { n: faces.length })
+            : t('면 {n}개를 그룹에서 뺐습니다', { n: faces.length }));
+        } else {
+          Toast.error(this.bridge.lastError?.() || t('그룹 면 변경에 실패했습니다'));
+        }
+        this.callbacks.syncMesh?.();
+        this.refresh();
+        break;
+      }
+      case 'nest': {
+        // The child is whatever row is selected in THIS panel, so the id is one
+        // the engine gave us. It has to be: `set_parent` accepts an id that
+        // names no group and records it (measured in
+        // `the_outliner_edits_a_group.rs`), so an invented id would dangle.
+        const child = this.selectedGroupId;
+        if (child == null) {
+          Toast.warning(t('넣을 그룹을 패널에서 먼저 선택하세요'));
+          break;
+        }
+        if (child === groupId) {
+          Toast.warning(t('그룹을 자기 자신 안에 넣을 수 없습니다'));
+          break;
+        }
+        // The engine refuses a cycle (self or any ancestor) and says so by
+        // returning false — the panel's recursive render depends on that.
+        if (this.bridge.setGroupParent(child, groupId)) {
+          Toast.info(t('Group-{child} 를 Group-{parent} 안에 넣었습니다',
+            { child, parent: groupId }));
+        } else {
+          Toast.error(t('중첩할 수 없습니다 — 상위 그룹은 하위로 들어갈 수 없습니다'));
         }
         this.refresh();
         break;
@@ -413,6 +471,17 @@ export class ComponentPanel {
       }
       .cp-row:hover .cp-btn-rename { opacity: 0.6; }
       .cp-btn-rename:hover { opacity: 1 !important; }
+      .cp-btn-edit {
+        background: none;
+        border: none;
+        color: #90a4ae;
+        cursor: pointer;
+        font-size: 11px;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      .cp-row:hover .cp-btn-edit { opacity: 0.6; }
+      .cp-btn-edit:hover { opacity: 1 !important; }
     `;
     document.head.appendChild(style);
   }
