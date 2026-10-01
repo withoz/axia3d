@@ -44,6 +44,13 @@
  * spelling gap would make this check total; mapping 75 names by hand to get
  * there is not obviously worth it while the arity and order checks hold.
  *
+ * ⚠ THE PREMISE TEST IS LOAD-BEARING, measured by breaking the `.d.ts` parser
+ * the way it broke once before (a 2-space pattern on a 4-space file): the arity
+ * and reorder checks both PASSED against an empty engine map, because they skip
+ * any name they cannot find on the engine. What failed was `both sides were
+ * parsed` and, as a second backstop, `names an export the engine does not
+ * have` — every member became a phantom at once. Keep those two.
+ *
  * ⚠ AND IT SAYS NOTHING ABOUT VALUES. The chamfer defect was a literal `1`
  * passed into a parameter the engine range-checks (`ensure!(segments >= 2)`),
  * and every signature in it was correct. Swept for siblings on 2026-10-01 —

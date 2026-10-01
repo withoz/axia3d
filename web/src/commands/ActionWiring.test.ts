@@ -54,6 +54,9 @@
  *                         against AxiaEngine's members only (not DeltaBuffers')
  *                         THIS FILE ('every engine call made outside the bridge
  *                         exists') — `bridge.engine?.X` / aliases elsewhere
+ *                         bridge/theEngineDeclarationsSayWhatTheEngineTakes
+ *                         — the SIGNATURE, not just the name: arity, parameter
+ *                         order, and declarations with no export behind them
  *   E  export → engine    wasm-pack; a missing fn does not compile
  *
  *   Other consumers of the same engine, deliberately NOT in this file:
@@ -73,8 +76,20 @@
  * browser reached past it (2026-09-29). Swept the other engine guards of that
  * shape — `revolve: segments >= 3`, `array_*: count >= 1`, `loft: k >= 3` —
  * and found no sibling: none of them takes its value from a literal at a TS
- * call site. There is no general guard for this; it is measured per op, and
- * the two that hold the chamfer are named in `theChamferMenuItemChamfers`.
+ * call site. There is no general guard for VALUES; they are measured per op,
+ * and the two that hold the chamfer are named in `theChamferMenuItemChamfers`.
+ * The sweep was repeated across every bridge call site passing a numeric
+ * literal on 2026-10-01 and still finds no sibling.
+ *
+ * SIGNATURES, though, turned out to be guardable, and are now guarded in
+ * `bridge/theEngineDeclarationsSayWhatTheEngineTakes`. `AxiaEngineExtended`
+ * is an INTERSECTION with the generated class, so a hand-written declaration
+ * with the wrong arity — or the right arity in the wrong order — becomes an
+ * accepted overload rather than an error, and wasm-bindgen pads a missing
+ * trailing argument with 0 instead of throwing. Measured at 0 of each when it
+ * landed, plus two declarations with no export behind them (`drawPolyline`,
+ * `get_dirty_face_count`), which were deleted so that tsc now rejects a call
+ * this file would only have caught after someone wrote one.
  *
  * ⚠ HOW LINK D FAILED (2026-09-29): the bridge names an engine method three
  * ways — `this.engine.X(…)`, `this.engine?.X`, and `(this.engine as …).X` —
