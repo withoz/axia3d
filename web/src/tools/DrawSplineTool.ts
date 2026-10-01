@@ -20,12 +20,24 @@
 import * as THREE from 'three';
 import { ITool, ToolContext, DrawPlaneInfo } from './ITool';
 import { debugLog } from '../utils/debug';
+import { getDrawCurveMode } from './DrawCurveSettings';
 
 /** Finish-on-duplicate threshold (mm) — a double-click lands two points at
  *  (near) the same spot; treat that as the commit gesture. */
 const SPLINE_DBLCLICK_EPSILON_MM = 0.5;
 /** Default cubic degree (clamped to N-1 for few points). */
 const SPLINE_MAX_DEGREE = 3;
+/** Closure detection threshold (mm) — the same 1e-3 DrawBezierTool uses for
+ *  its A-ψ branch (ADR-026 P12 cardinal snap range). The last click landing
+ *  this close to the first is a closed loop. Reachable by hand because OSNAP
+ *  snaps to the start vertex (ADR-292); without snap the open path is taken,
+ *  exactly as for the Bezier. */
+const SPLINE_CLOSURE_EPSILON_MM = 1e-3;
+/** Fewest points that can close, MEASURED not assumed: at n=3 the degree is 2
+ *  and the engine routes to its Bezier arm, which refuses. n=4 upward make a
+ *  face. Pinned in `a_closed_spline_closes.rs` — if that floor moves, this
+ *  comes down with it. */
+const SPLINE_CLOSURE_MIN_POINTS = 4;
 /** Preview tessellation sample count. */
 const SPLINE_PREVIEW_SAMPLES = 48;
 /** Committed-curve tessellation sample count. Bounded (NOT the engine's
@@ -193,6 +205,65 @@ export class DrawSplineTool implements ITool {
   private commit(): void {
     const n = this.points.length;
     if (n < 2) return;
+
+    // A closed loop, the way DrawBezierTool already does it (ADR-089 A-ψ).
+    //
+    // ⚠ `drawClosedBSplineAsCurve` had ZERO callers until 2026-10-01 — engine
+    // op, WASM export and bridge wrapper all present since ADR-089 A-Α, and
+    // nothing reached them. Found by walking the wiring map backwards, and no
+    // guard could have seen it: nothing pointed at the wrapper, and the wrapper
+    // calls a name that IS exported, so link D was satisfied. A wrapper nobody
+    // calls breaks no link.
+    //
+    // The finish gesture compares against the PREVIOUS point, so clicking back
+    // onto the first one is an ordinary control point; Enter or a double-click
+    // then commits with the loop closed.
+    const p0 = this.points[0];
+    const closureGap = p0.distanceTo(this.points[n - 1]);
+    if (
+      getDrawCurveMode() &&
+      n >= SPLINE_CLOSURE_MIN_POINTS &&
+      closureGap < SPLINE_CLOSURE_EPSILON_MM
+    ) {
+      const degree = this.degreeFor(n);
+      const knots = this.clampedKnots(n, degree);
+      const ctrlFlat = new Float64Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        ctrlFlat[i * 3]     = this.points[i].x;
+        ctrlFlat[i * 3 + 1] = this.points[i].y;
+        ctrlFlat[i * 3 + 2] = this.points[i].z;
+      }
+      // Exact closure: the engine's own check is 1e-6, tighter than the gesture
+      // tolerance above, so the last point is written from the first rather
+      // than trusted.
+      ctrlFlat[(n - 1) * 3]     = p0.x;
+      ctrlFlat[(n - 1) * 3 + 1] = p0.y;
+      ctrlFlat[(n - 1) * 3 + 2] = p0.z;
+      const ok = this.ctx.bridge.drawClosedBSplineAsCurve(
+        ctrlFlat, new Float64Array(knots), degree,
+      );
+      if (typeof ok === 'number' && ok >= 0) {
+        // Sticky last drawn plane on a synthesised face only (ADR-164 β-2,
+        // Q1=a strict) — the same condition the Bezier applies.
+        if (this.plane) {
+          this.ctx.setLastDrawnPlane?.({
+            origin: p0,
+            normal: this.plane.normal,
+            up: this.plane.up,
+            source: 'view',
+          });
+        }
+        this.ctx.syncMesh();
+        debugLog(
+          `[Spline/Closed] n=${n} gap=${closureGap.toExponential(2)}mm → ` +
+          `drawClosedBSplineAsCurve (shapeId=${ok}, kernel-native closed loop)`
+        );
+        return;
+      }
+      // The kernel declined. Fall through to the open path rather than return,
+      // so the user still gets the curve they drew.
+      debugLog(`[Spline/Closed] kernel declined (${ok}) — falling through to the open spline`);
+    }
 
     // ADR-201 β-2 — analytic B-spline via `drawBSplineWithCurve`. β-1 이 엔진
     // tessellation 을 64 sub-range 세그먼트로 bound (이전 ~4096 → syncMesh freeze
