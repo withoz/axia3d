@@ -7268,13 +7268,31 @@ export class WasmBridge {
     }
   }
 
+  /**
+   * 엔진의 그룹 JSON 에는 `faceCount` 가 없다 — 실측 2026-10-01, 키는
+   * id / name / faceIds / children / visible / locked / parent / isComponent /
+   * componentDefId 이다. 그런데 `GroupInfo` 는 `faceCount: number` 를
+   * 선언하고 `JSON.parse(…) as GroupInfo` 가 그걸 단정해서, Outliner 가
+   * 엔진에서 온 모든 그룹 옆에 `(undefined)` 를 그렸다.
+   *
+   * ⚠ 가다 들통 봄다 — 패널의 로컬 fallback 경로는 `faceCount` 를 직접
+   * 만들어 넣어서 숫자가 나왔고, 테스트 mock 도 전부 그 필드를 넣었다.
+   * MCP 서버의 `list_groups` 만 없을 수 있다고 보고 방어하고 있었다.
+   *
+   * 여기서 맞추므로 인터페이스의 비-optional `faceCount` 가 참이 된다.
+   */
+  private static withFaceCount(raw: GroupInfo): GroupInfo {
+    return { ...raw, faceCount: raw.faceCount ?? raw.faceIds?.length ?? 0 };
+  }
+
   /** 그룹 정보 JSON */
   getGroupInfo(groupId: number): GroupInfo | null {
     if (!this.engine) return null;
     try {
       const json = this.engine.get_group_info?.(groupId);
       if (!json) return null;
-      return JSON.parse(json) as GroupInfo;
+      const raw = JSON.parse(json) as GroupInfo;
+      return WasmBridge.withFaceCount(raw);
     } catch {
       return null;
     }
@@ -7286,7 +7304,7 @@ export class WasmBridge {
     try {
       const json = this.engine.get_all_groups?.();
       if (!json) return [];
-      return JSON.parse(json) as GroupInfo[];
+      return (JSON.parse(json) as GroupInfo[]).map(WasmBridge.withFaceCount);
     } catch {
       return [];
     }
